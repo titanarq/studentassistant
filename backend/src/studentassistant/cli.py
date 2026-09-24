@@ -3,8 +3,8 @@
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
 `cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, and `setup` creates or clones the vault on this PC
-and records it in the configuration file.
+(or a page range of it) to a topic as a source, `setup` creates or clones the vault on this PC
+and records it in the configuration file, and `purge` applies the vault's retention policy.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -32,6 +32,13 @@ import uvicorn
 from studentassistant import __version__
 from studentassistant.config import ServerSettings, Settings, check_repo_name, write_vault_config
 from studentassistant.llm.cost import day_usd, utc_now
+from studentassistant.observer import (
+    COMPACTED_EVENT_KIND,
+    ObserverStateError,
+    compaction_payload,
+    current_observer_snapshot,
+    load_observer_snapshot,
+)
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
 from studentassistant.sources import (
@@ -51,8 +58,21 @@ from studentassistant.vault import (
     list_subjects,
     list_topics,
     read_ledger,
+    require_topic,
+    topic_directory,
 )
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.purge import (
+    REASON_TEXT,
+    Compaction,
+    PurgeError,
+    PurgeItem,
+    TopicPurgePlan,
+    apply_purge,
+    format_size,
+    plan_topic_purge,
+    purged_history_paths,
+)
 from studentassistant.vault.setup import SetupError, SetupResult, clone_vault, create_vault
 
 cli = typer.Typer(
@@ -383,3 +403,187 @@ def setup(
         raise typer.Exit(code=1) from error
     write_vault_config(result.vault.path, result.repo)
     typer.echo(_SETUP_DONE[result.action].format(path=result.vault.path, repo=result.repo))
+
+
+HARD_PURGE_WARNING = (
+    "--hard reescribe el historial de la bóveda: lo purgado desaparece de todas sus versiones y"
+    " la rama y las etiquetas se suben a GitHub a la fuerza. Después, cualquier otro PC que tenga"
+    " la bóveda debe clonarla de nuevo (studentassistant setup --clone en una carpeta vacía) o, si"
+    " no tiene nada sin subir, ejecutar `git fetch origin && git reset --hard origin/main` en"
+    " ella; si no, volvería a subir lo purgado. Detén el servidor antes de continuar."
+)
+HARD_PURGE_WORD = "reescribir"
+
+
+def _purge_targets(vault: Vault, topic: str | None) -> list[tuple[str, str]]:
+    if topic is None:
+        return [
+            (subject.slug, stored.slug)
+            for subject in list_subjects(vault)
+            for stored in list_topics(vault, subject.slug)
+        ]
+    subject_slug, _, topic_slug = topic.partition("/")
+    if not subject_slug or not topic_slug or "/" in topic_slug:
+        typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+        raise typer.Exit(code=2)
+    try:
+        require_topic(vault, subject_slug, topic_slug)
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    return [(subject_slug, topic_slug)]
+
+
+def _compaction(vault: Vault, subject_slug: str, topic_slug: str) -> Compaction | None:
+    """Where the topic's folded events end, from the observer's current snapshot."""
+    try:
+        snapshot = current_observer_snapshot(vault, subject_slug, topic_slug)
+    except ObserverStateError as error:
+        typer.echo(f"{subject_slug}/{topic_slug}: sus eventos no se compactan ({error}).")
+        return None
+    if snapshot.cursor is None:
+        return None
+    return Compaction(
+        session_id=snapshot.cursor.session_id,
+        seq=snapshot.cursor.seq,
+        kind=COMPACTED_EVENT_KIND,
+        payload=compaction_payload(snapshot),
+    )
+
+
+def _item_line(item: PurgeItem) -> str:
+    size = (
+        format_size(item.size_before)
+        if item.removed
+        else f"{format_size(item.size_before)} -> {format_size(item.size_after or 0)}"
+    )
+    verb = "se borra" if item.removed else "se compacta"
+    return f"  - {item.path}: {verb} ({REASON_TEXT[item.reason]}, {size})"
+
+
+def _print_plan(plan: TopicPurgePlan) -> None:
+    name = f"{plan.subject_slug}/{plan.topic_slug}"
+    if plan.skipped is not None:
+        typer.echo(f"{name}: se omite, {plan.skipped}.")
+        return
+    typer.echo(f"{name}:" if plan.items else f"{name}: nada que purgar.")
+    for item in plan.items:
+        typer.echo(_item_line(item))
+    for path in plan.protected:
+        typer.echo(f"  = {path}: se conserva (lo citan los apuntes)")
+
+
+@cli.command()
+def purge(
+    topic: Annotated[
+        str | None, typer.Option("--topic", help="Solo este tema, como <asignatura>/<tema>.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo mostrar lo que se purgaría y cuánto ocupa.")
+    ] = False,
+    hard: Annotated[
+        bool,
+        typer.Option("--hard", help="Además, reescribir el historial de git para liberar espacio."),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="No pedir confirmación para --hard.")] = False,
+) -> None:
+    """Apply the retention policy ([vault.purge]) to every topic, or to one, and commit it.
+
+    Never removes a transcript, the notes or what they cite. The purge is a normal commit, so it
+    can be undone from git history; `--hard` rewrites that history (asking first) and force-pushes.
+    """
+    settings = Settings()
+    try:
+        vault = Vault.open(settings.vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    targets = _purge_targets(vault, topic)
+    sync = GitSync(vault, settings.vault.git)
+    has_remote = sync.git.run("remote", "get-url", settings.vault.git.remote).ok
+    if not dry_run:
+        sync.checkpoint("cambios pendientes antes de la purga")
+        if hard and has_remote:
+            pulled = sync.sync()
+            if not pulled.ok:
+                typer.echo(
+                    f"No se puede purgar con --hard sin estar al día con GitHub: {pulled.message}"
+                )
+                raise typer.Exit(code=1)
+    try:
+        plans = [
+            plan_topic_purge(
+                sync,
+                subject_slug,
+                topic_slug,
+                settings.vault.purge,
+                _compaction(vault, subject_slug, topic_slug),
+            )
+            for subject_slug, topic_slug in targets
+        ]
+    except (PurgeError, VaultError) as error:
+        typer.echo(f"No se puede preparar la purga: {error}")
+        raise typer.Exit(code=1) from error
+    for plan in plans:
+        _print_plan(plan)
+    items = [item for plan in plans for item in plan.items]
+    saved = format_size(sum(item.saved_bytes for item in items))
+
+    if dry_run:
+        typer.echo(
+            f"Simulación: se liberarían {saved} en {len(items)} archivos; no se ha cambiado nada."
+        )
+        if hard:
+            roots = [
+                topic_directory(vault, plan.subject_slug, plan.topic_slug)
+                for plan in plans
+                if plan.skipped is None
+            ]
+            earlier = purged_history_paths(sync, roots)
+            removed = {item.path for item in items if item.removed}
+            typer.echo(
+                f"Con --hard se borrarían del historial {len(removed | set(earlier))} archivos."
+            )
+        return
+    if hard and not yes:
+        typer.echo(HARD_PURGE_WARNING)
+        answer = typer.prompt(f"Escribe «{HARD_PURGE_WORD}» para continuar", default="")
+        if answer.strip() != HARD_PURGE_WORD:
+            typer.echo("Cancelado: no se ha cambiado nada.")
+            raise typer.Exit(code=1)
+
+    def refresh_snapshot(plan: TopicPurgePlan) -> None:
+        if plan.compacts_events:
+            load_observer_snapshot(vault, plan.subject_slug, plan.topic_slug)
+
+    try:
+        result = apply_purge(sync, plans, hard=hard, before_commit=refresh_snapshot)
+    except (PurgeError, VaultError) as error:
+        typer.echo(f"La purga no se ha completado: {error}")
+        raise typer.Exit(code=1) from error
+    if result.commit is None:
+        typer.echo("Nada que purgar.")
+    else:
+        typer.echo(
+            f"Purga guardada en {result.commit[:10]}: {saved} menos en la bóveda; sigue"
+            " recuperable en el historial de git."
+        )
+        if not hard and has_remote:
+            if sync.push_now():
+                typer.echo("Subida a GitHub.")
+            else:
+                typer.echo("No se ha podido subir ahora; se subirá en la próxima sincronización.")
+    if result.history is not None:
+        history = result.history
+        typer.echo(
+            f"Historial reescrito: {len(history.paths)} archivos fuera de todas las versiones;"
+            f" el repositorio ocupa {format_size(history.size_after)}"
+            f" (antes {format_size(history.size_before)})."
+        )
+        if history.pushed:
+            typer.echo(
+                "Subido a GitHub a la fuerza: clona de nuevo la bóveda en los demás PCs antes de"
+                " usarlos."
+            )
+    elif hard:
+        typer.echo("No había nada purgado en el historial que reescribir.")

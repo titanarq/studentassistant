@@ -15,8 +15,8 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issue #29: the knowledge-state model, its ops, the pure fold, the
-snapshot and the vault-backed loader. The live loop, the pending queue's deduplication, the
+What exists today, after issues #29 and #31: the knowledge-state model, its ops, the pure fold,
+the snapshot, the vault-backed loader and the compaction the vault purge writes. The live loop, the pending queue's deduplication, the
 digest and the purge are not written yet. Everything below is re-exported by
 `studentassistant.observer`.
 
@@ -32,6 +32,10 @@ digest and the purge are not written yet. Everything below is re-exported by
   with `payload.segment_id` and the server capture ingestion MUST append `capture.stored` with
   `payload.capture_id`, using the protocol ids (`segment_id` of `transcript.final`, `capture_id`
   of the captures REST call), so ops can reference those segments and captures.
+- `COMPACTED_EVENT_KIND = "observer.compacted"`: written only by the vault purge (#31) in place
+  of every earlier event of the topic; its payload (`compaction_payload(snapshot)`:
+  `state_version`, `state`) becomes the fold's state at that event. A newer `state_version` or a
+  payload that is not a `TopicState` is an `InvalidEventError`; an older version is taken as it is.
 - Every other kind is ignored.
 
 ### State ops -- `ops.py`
@@ -70,6 +74,11 @@ order.
 `advance_snapshot(snapshot | None, tail) -> ObserverSnapshot` folds the tail on a copy (a tail
 event at or before the cursor is an `EventOrderError`); `fold_from(snapshot, tail) -> TopicState`
 equals `fold` over all the events for every split point; `snapshot_of(events)` folds from scratch.
+`compaction_payload(snapshot)` is the payload of the `observer.compacted` event that replaces the
+events `snapshot` folded (`studentassistant purge` builds a `vault.purge.Compaction` from it and
+the snapshot's cursor): the fold of the compacted log equals the fold of the original one.
+`STATE_VERSION` lives in `state.py` (the fold checks compaction payloads against it) and is still
+re-exported from here.
 
 ### Loader -- `loader.py`
 `load_observer_snapshot(vault, subject_slug, topic_slug) -> ObserverSnapshot` reads the events
@@ -78,7 +87,9 @@ it and writes the result back (`write_observer_snapshot`) when it changed. The s
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
-folded raises and nothing is written. Nothing in `studentassistant.observer` opens a file, runs
+folded raises and nothing is written. `current_observer_snapshot(vault, subject_slug,
+topic_slug)` returns the same up-to-date snapshot without writing it back (the purge's dry run
+uses it). Nothing in `studentassistant.observer` opens a file, runs
 git, imports `studentassistant.llm`/`anthropic` or imports a vault submodule: only the
 `studentassistant.vault` root (checked by `tests/observer/test_boundaries.py`).
 

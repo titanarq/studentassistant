@@ -3,6 +3,7 @@
 from studentassistant.observer.fold import (
     CAPTURE_EVENT_KIND,
     CAPTURE_ID_KEY,
+    COMPACTED_EVENT_KIND,
     SEGMENT_EVENT_KIND,
     SEGMENT_ID_KEY,
     DuplicateIdError,
@@ -16,7 +17,7 @@ from studentassistant.observer.fold import (
     fold,
     validate_op,
 )
-from studentassistant.observer.loader import load_observer_snapshot
+from studentassistant.observer.loader import current_observer_snapshot, load_observer_snapshot
 from studentassistant.observer.ops import (
     OP_NAMES,
     STATE_OP_EVENT_KIND,
@@ -38,6 +39,7 @@ from studentassistant.observer.snapshot import (
     STATE_VERSION,
     ObserverSnapshot,
     advance_snapshot,
+    compaction_payload,
     fold_from,
     snapshot_of,
 )
@@ -54,6 +56,7 @@ from studentassistant.observer.state import (
 __all__ = [
     "CAPTURE_EVENT_KIND",
     "CAPTURE_ID_KEY",
+    "COMPACTED_EVENT_KIND",
     "OP_NAMES",
     "SEGMENT_EVENT_KIND",
     "SEGMENT_ID_KEY",
@@ -87,6 +90,8 @@ __all__ = [
     "UnknownIdError",
     "advance_snapshot",
     "apply_op",
+    "compaction_payload",
+    "current_observer_snapshot",
     "fold",
     "fold_from",
     "load_observer_snapshot",

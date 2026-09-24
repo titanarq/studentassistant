@@ -34,6 +34,28 @@ def _still_valid(snapshot: ObserverSnapshot, events: list[TopicEvent]) -> bool:
     return snapshot.cursor == EventRef(session_id=session_id, seq=event.seq)
 
 
+def _stored_and_current(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> tuple[ObserverSnapshot | None, ObserverSnapshot]:
+    events = list(read_topic_events(vault, subject_slug, topic_slug))
+    try:
+        stored = read_observer_snapshot(vault, subject_slug, topic_slug, ObserverSnapshot)
+    except SnapshotFileError:
+        stored = None
+    base = stored if stored is not None and _still_valid(stored, events) else None
+    start = base.event_count if base is not None else 0
+    return stored, advance_snapshot(base, events[start:])
+
+
+def current_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> ObserverSnapshot:
+    """`load_observer_snapshot` without writing the refreshed snapshot back: reads only.
+
+    Raises:
+        What `load_observer_snapshot` raises.
+    """
+    return _stored_and_current(vault, subject_slug, topic_slug)[1]
+
+
 def load_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> ObserverSnapshot:
     """The topic's up-to-date observer snapshot; the stored one is refreshed when it changed.
 
@@ -47,14 +69,7 @@ def load_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> 
             topic or a session it cannot read.
         ObserverStateError: an event of the log cannot be folded (see `fold`).
     """
-    events = list(read_topic_events(vault, subject_slug, topic_slug))
-    try:
-        stored = read_observer_snapshot(vault, subject_slug, topic_slug, ObserverSnapshot)
-    except SnapshotFileError:
-        stored = None
-    base = stored if stored is not None and _still_valid(stored, events) else None
-    start = base.event_count if base is not None else 0
-    snapshot = advance_snapshot(base, events[start:])
+    stored, snapshot = _stored_and_current(vault, subject_slug, topic_slug)
     if snapshot != stored:
         write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)
     return snapshot

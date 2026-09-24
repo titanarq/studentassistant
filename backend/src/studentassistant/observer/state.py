@@ -15,6 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from studentassistant.observer.ops import Id, PendingCategory
 from studentassistant.vault import SourceKind
 
+# Bumped whenever the fold's meaning changes: a snapshot of another version is folded again from
+# scratch rather than trusted, and a compacted log written by a newer version is refused.
+STATE_VERSION = 1
+
 
 class _StateModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
