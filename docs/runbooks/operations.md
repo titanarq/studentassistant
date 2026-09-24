@@ -82,7 +82,13 @@ the whole board: `gh project item-list --limit 1000` (~108 points on project 3, 
 
 `scripts/agent_os_patches/` replaces both lookups with one ~1-point query each
 (`issue.projectItems` filtered to `project.board_number`, and the board's `Status` field by
-name), falling back to the mechanism's original on any error:
+name, archived items left out as `item-list` does), falling back to the mechanism's original
+on any error. If a subtree pull removes or renames anything the patch replaces or calls
+(`board_item_id`, `board_status_field`, `_gh`), or the patch cannot be imported, `issues_main.py`
+prints one `agent_os_patches: ... unpatched` warning to stderr and runs the same `main()`
+unpatched: every `issues.py` call keeps working at the old cost. Seeing that warning in the guard
+journal (`journalctl --user -u studentassistant-guard.service -o cat | grep agent_os_patches`)
+means the patch needs updating for the new subtree.
 
 - `python` -- an interpreter wrapper: `-m agent_os.issues` runs `issues_main.py` (imports
   `agent_os.issues`, installs `board_lookup.py`, calls the same `main()`); everything else goes

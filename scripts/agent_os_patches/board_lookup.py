@@ -14,7 +14,12 @@ the issue's own `projectItems`, and the board's `Status` field by name.
 Every replacement falls back to the mechanism's original function on ANY error (a failed `gh`,
 unexpected JSON, an owner that is neither user nor org, a board without a field named `Status`),
 so the worst case is the old cost, never a failed move. A clean "the issue has no item on this
-board" answer is a real answer (`None`), not an error, and does not fall back.
+board" answer is a real answer (`None`), not an error, and does not fall back. Archived items are
+left out, as `gh project item-list` leaves them out.
+
+`install` checks the module still has every attribute it patches or calls (`PATCHED`, `_gh`);
+when a subtree pull renamed one, it warns once and patches nothing, so `issues.py` runs as the
+mechanism ships it (the old cost) instead of every call crashing.
 
 `install(issues_module)` swaps both functions in the module's globals, which is where
 `mirror_board_column` looks them up. It is applied by `issues_main.py`, the entry point the
@@ -31,7 +36,7 @@ from types import ModuleType
 
 ITEM_QUERY = """query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){issue(number:$number){
-    projectItems(first:20){nodes{id project{number owner{
+    projectItems(first:20,includeArchived:false){nodes{id isArchived project{number owner{
       ... on Organization{login} ... on User{login}}}}}}}}"""
 
 FIELD_QUERY = """query($owner:String!,$board:Int!){
@@ -45,7 +50,12 @@ _original_item_id: Callable | None = None
 _original_status_field: Callable | None = None
 
 
-class CheapLookupFailed(Exception):
+# What `install` swaps, and what the replacements call; all must exist in `agent_os.issues`.
+PATCHED = ("board_item_id", "board_status_field")
+REQUIRED = (*PATCHED, "_gh")
+
+
+class CheapLookupFailed(Exception):  # noqa: N818 -- a signal to fall back, not an error to report
     """Anything that makes the cheap answer untrustworthy; always means "use the original"."""
 
 
@@ -61,7 +71,8 @@ def _graphql(query: str, **variables: object) -> dict:
     assert _issues is not None
     result = _issues._gh(*args)
     if result.returncode != 0:
-        raise CheapLookupFailed(f"gh api graphql exited {result.returncode}: {result.stderr.strip()[:200]}")
+        stderr = result.stderr.strip()[:200]
+        raise CheapLookupFailed(f"gh api graphql exited {result.returncode}: {stderr}")
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -87,6 +98,8 @@ def cheap_item_id(owner: str, board: int, repo: str, number: int) -> str | None:
         # first:20 may have cut the list; an issue on 20+ boards is not worth a second query.
         raise CheapLookupFailed("issue is on 20 or more projects")
     for node in nodes:
+        if (node or {}).get("isArchived"):
+            continue
         project = (node or {}).get("project") or {}
         login = ((project.get("owner") or {}).get("login") or "").lower()
         if project.get("number") == board and login == owner.lower():
@@ -96,8 +109,8 @@ def cheap_item_id(owner: str, board: int, repo: str, number: int) -> str | None:
 
 def cheap_status_field(owner: str, board: int) -> tuple[str, str, dict[str, str]]:
     """`(project id, Status field id, {option name: option id})`, as `board_status_field` returns.
-    Raises CheapLookupFailed when the board has no single-select field named `Status` (the original's
-    first-single-select fallback is then the original's job)."""
+    Raises CheapLookupFailed when the board has no single-select field named `Status` (the
+    original's first-single-select fallback is then the original's job)."""
     data = _graphql(FIELD_QUERY, owner=owner, board=board)
     project = (data.get("repositoryOwner") or {}).get("projectV2")
     if not isinstance(project, dict) or not project.get("id"):
@@ -127,14 +140,25 @@ def board_status_field(owner: str, board: int) -> tuple[str, str, dict[str, str]
         return _original_status_field(owner, board)
 
 
-def install(issues_module: ModuleType) -> None:
-    """Swap the two lookups in `agent_os.issues`. Idempotent."""
+def install(issues_module: ModuleType) -> bool:
+    """Swap the two lookups in `agent_os.issues`; True when they are (now or already) swapped.
+    Idempotent. When the module lacks anything in `REQUIRED`, warns once on stderr, changes
+    nothing and returns False: the unpatched mechanism still works, only at the old cost."""
     global _issues, _original_item_id, _original_status_field
     if getattr(issues_module, "_agent_os_patches_board_lookup", False):
-        return
+        return True
+    missing = [name for name in REQUIRED if not callable(getattr(issues_module, name, None))]
+    if missing:
+        print(
+            f"agent_os_patches: agent_os.issues has no {', '.join(missing)}; running it unpatched"
+            " (board lookups at the old cost -- update scripts/agent_os_patches/)",
+            file=sys.stderr,
+        )
+        return False
     _issues = issues_module
     _original_item_id = issues_module.board_item_id
     _original_status_field = issues_module.board_status_field
     issues_module.board_item_id = board_item_id
     issues_module.board_status_field = board_status_field
     issues_module._agent_os_patches_board_lookup = True
+    return True
