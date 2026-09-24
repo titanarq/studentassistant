@@ -13,6 +13,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
+import anyio
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -25,6 +26,8 @@ CAPTURE_ID = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a60"
 OTHER_CAPTURE_ID = "5d2a7e10-3c4b-4f9a-a1d2-7e6f5c4b3a21"
 JPEG = b"\xff\xd8\xff\xe0" + b"notes-page" * 20 + b"\xff\xd9"
 BOUNDARY = "sa-test-boundary"
+RECEIVE_TIMEOUT_S = 5.0
+"""How long a test waits for a server message before it fails (instead of hanging CI)."""
 
 
 def upload(client: TestClient, session_id: str, capture_id: str = CAPTURE_ID) -> Any:
@@ -73,9 +76,29 @@ def connect(ws: WsHarness, client: TestClient) -> Any:
     return client.websocket_connect(ws.path)
 
 
+def receive_json(socket: Any, timeout: float = RECEIVE_TIMEOUT_S) -> Any:
+    """The next JSON message of `socket`, failing the test if none arrives within `timeout`.
+
+    Starlette's `WebSocketTestSession.receive_json` waits forever; this reads the same in-portal
+    stream it reads (`_send_rx`) under `anyio.fail_after`, so a missing message fails fast and a
+    cancelled read loses nothing.
+    """
+
+    async def receive() -> Any:
+        with anyio.fail_after(timeout):
+            return await socket._send_rx.receive()
+
+    try:
+        message = socket.portal.call(receive)
+    except TimeoutError:
+        pytest.fail(f"no server message within {timeout} s")
+    socket._raise_on_close(message)
+    return json.loads(message["text"])
+
+
 def handshake(ws: WsHarness, socket: Any) -> None:
     socket.send_json(ws.hello())
-    assert socket.receive_json()["type"] == "hello.ack"
+    assert receive_json(socket)["type"] == "hello.ack"
 
 
 def publish_notice(ws: WsHarness, socket: Any, pending_count: int) -> None:
@@ -105,9 +128,9 @@ def test_a_stored_capture_is_acknowledged_once_on_the_socket(
     with connect(ws, client) as socket:
         handshake(ws, socket)
         assert upload(client, ws.session_id).status_code == 201
-        ack = socket.receive_json()
+        ack = receive_json(socket)
         publish_notice(ws, socket, 1)
-        after = socket.receive_json()
+        after = receive_json(socket)
 
     parse_server_event(ack)
     assert ack == {"type": "ack", "capture_ids": [CAPTURE_ID], "server_time_ms": ws.clock.now}
@@ -118,12 +141,12 @@ def test_a_duplicate_upload_is_not_acknowledged_again(ws: WsHarness, client: Tes
     with connect(ws, client) as socket:
         handshake(ws, socket)
         assert upload(client, ws.session_id).status_code == 201
-        assert socket.receive_json()["capture_ids"] == [CAPTURE_ID]
+        assert receive_json(socket)["capture_ids"] == [CAPTURE_ID]
         duplicate = upload(client, ws.session_id)
         assert duplicate.status_code == 200
         assert duplicate.json()["status"] == "duplicate"
         publish_notice(ws, socket, 2)
-        assert socket.receive_json() == {
+        assert receive_json(socket) == {
             "type": "notice",
             "pending_count": 2,
             "server_time_ms": ws.clock.now,
@@ -135,7 +158,7 @@ def test_each_capture_gets_its_own_ack(ws: WsHarness, client: TestClient) -> Non
         handshake(ws, socket)
         assert upload(client, ws.session_id).status_code == 201
         assert upload(client, ws.session_id, OTHER_CAPTURE_ID).status_code == 201
-        acks = [socket.receive_json(), socket.receive_json()]
+        acks = [receive_json(socket), receive_json(socket)]
     assert [ack["capture_ids"] for ack in acks] == [[CAPTURE_ID], [OTHER_CAPTURE_ID]]
 
 
@@ -146,7 +169,7 @@ def test_a_reconnecting_client_is_not_replayed_past_acks(ws: WsHarness, client: 
     with connect(ws, client) as socket:
         handshake(ws, socket)
         publish_notice(ws, socket, 0)
-        assert socket.receive_json()["type"] == "notice"
+        assert receive_json(socket)["type"] == "notice"
 
 
 def test_switch_source_over_the_socket_stores_the_next_capture_under_that_source(
@@ -164,7 +187,7 @@ def test_switch_source_over_the_socket_stores_the_next_capture_under_that_source
         )
         wait_for_buttons(ws, 1)
         assert upload(client, ws.session_id).status_code == 201
-        assert socket.receive_json()["capture_ids"] == [CAPTURE_ID]
+        assert receive_json(socket)["capture_ids"] == [CAPTURE_ID]
 
     book = sources_directory(ws.vault, "fisica", "cinematica", "book")
     assert (book / "page-001.jpg").read_bytes() == JPEG
@@ -179,7 +202,7 @@ def test_without_a_switch_the_capture_stays_notes(ws: WsHarness, client: TestCli
     with connect(ws, client) as socket:
         handshake(ws, socket)
         assert upload(client, ws.session_id).status_code == 201
-        assert socket.receive_json()["type"] == "ack"
+        assert receive_json(socket)["type"] == "ack"
     notes = sources_directory(ws.vault, "fisica", "cinematica", "notes")
     assert (notes / "page-001.jpg").read_bytes() == JPEG
     (event,) = ws.events_of("capture.stored")
