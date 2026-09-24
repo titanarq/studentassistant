@@ -40,9 +40,36 @@ Everything below is re-exported from the package root; other modules import only
 - Audio frames: `AudioFrame`, `encode_frame`, `decode_frame`, `HEADER_SIZE`, `MAGIC`, and the
   errors `AudioFrameError`, `WrongMagicError`, `IncompatibleAudioFrameVersionError`.
 
+## Android (Kotlin)
+Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
+kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
+`android/gradle/libs.versions.toml`):
+- Version: `PROTOCOL_VERSION` (`"1.0"`), `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
+  `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
+  with the same message as the backend's) and `negotiate`.
+- Client WS events: the sealed `ClientEvent` (`Hello` with `ClientCapabilities` / `AudioFormat`,
+  `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`); server WS
+  events: the sealed `ServerEvent` (`HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`,
+  `Notice`, `ServerAck`). Both are discriminated on the wire field `type` (`@SerialName` +
+  `@JsonClassDiscriminator`); `decodeClientEvent` / `decodeServerEvent` throw
+  `SerializationException` on an unknown or missing `type`, and `encodeClientEvent` /
+  `encodeServerEvent` write it.
+- REST bodies: the same names as the Python models (`PairRequest`, `PairResponse`, ...,
+  `CaptureUploadRequest`, `CaptureUploadResponse`); literal-valued fields are Kotlin enums.
+- `ProtocolJson`, the codec every class goes through: unknown fields rejected, absent optionals
+  decoded as `null` and omitted on encode.
+- Registry: `MESSAGE_CODECS`, mapping each `protocol/<name>.schema.json` name to a `MessageCodec`
+  (declared class + decode/encode), and `codecFor(name)`.
+
 ## Tests
 - `backend/tests/protocol/test_examples.py` walks `protocol/*.schema.json`: each schema needs a
   same-named example and a registered model; the example validates against the schema and
   round-trips through the model without loss.
 - `backend/tests/protocol/test_audio_frame.py` round-trips a frame and rejects a wrong magic and an
   incompatible MAJOR.
+- `android/app/src/test/.../protocol/ProtocolExamplesTest.kt` decodes every shared example through
+  `MESSAGE_CODECS`, checks the declared class and that re-encoding gives the same JSON value; an
+  example with no codec (or a codec with no example) fails it. The examples are not copied: the
+  `:app` test source set adds the repository's `protocol/` as a resources directory
+  (`sourceSets.test.resources.srcDir(rootProject.file("../protocol"))`), so they are read from the
+  classpath as `examples/<name>.json`.
