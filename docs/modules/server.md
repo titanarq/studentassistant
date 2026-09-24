@@ -366,8 +366,15 @@ replace all three.
   event loop; inbound messages are handled one at a time in order. Outbound traffic goes through
   the connection's bounded bus subscription, which drops the oldest notices (partials) when the
   client reads slowly and never a persisted event.
-- Not yet: flushing the provider (`finish()`) when a session ends, and the `capture_ids` side of
-  the `ack` (the capture upload task).
+- **Ending**: the gateway registers `end_session(session_id)` as a `SessionService`
+  `add_before_ended` hook, so it runs before `session.ended` is published (and so before the
+  pipeline drain and the vault end). Under the session's receive-state lock it flushes the
+  server-side provider (`finish()`), publishes the returned segments as `transcript.final` /
+  `transcript.partial` exactly like the ones audio produced (same `server-<n>` ids), and drops the
+  session's receive state, even when the flush fails or times out (the hook runner logs it). It
+  only publishes on the bus, never calls back into `SessionService` (the session lock is held).
+  A socket of the session still open then handles no further message (closed with 4404), and a
+  new socket of it is refused, although `end` still has it attached.
 
 ### Session event bus -- `server/bus.py`
 
