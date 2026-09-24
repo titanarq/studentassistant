@@ -97,6 +97,19 @@ whatever follows the last newline; a complete line that is not JSON or not the m
 `JsonlError`. `last_seq(path)` is the highest `seq` among the complete lines (0 for an empty or
 missing file), which stays right after a `merge=union` reordered lines.
 
+### Ledger -- `ledger.py`
+`LedgerEntry` is one line of a topic's `ledger.jsonl`: `time` (timezone-aware, kept in UTC),
+`role`, `model`, `prompt_hash?`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
+`cache_write_tokens`, `estimated_usd?` (`None` when the model has no price), `subject`, `topic`,
+`session?`. `append_ledger_entry(vault, subject_slug, topic_slug, entry)` appends it through
+`append_jsonl` (secret guard included), creating the file on first use; an unknown subject or topic
+is the usual `SubjectNotFoundError`/`TopicNotFoundError`, and an entry whose `subject`/`topic` are
+not the slugs it is written under is a `LedgerError`. `read_ledger(vault, subject_slug, topic_slug)`
+returns the entries in file order (empty without a file, a torn last line ignored);
+`read_all_ledgers(vault)` yields every entry of every topic, subjects and topics by slug;
+`ledger_path(...)` gives the path. Pricing and caps are the llm module's; this module never
+imports it and runs no git.
+
 ### Sources -- `sources.py`
 `put_source(vault, subject_slug, topic_slug, kind, name, content, meta)` stores bytes or text
 under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the content's path:
@@ -176,16 +189,16 @@ Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yam
 `push_backoff_initial_seconds`, `push_backoff_max_seconds`, `timeout_seconds` (120, per git
 command).
 
-`studentassistant.vault` re-exports the vault, subject, topic, session, source, JSONL, git sync and
-secret-guard names of this section; the YAML models, the slug helpers, the file writers, `redact`
-and `summarize_changes` are imported from their own module.
+`studentassistant.vault` re-exports the vault, subject, topic, session, source, JSONL, ledger, git
+sync and secret-guard names of this section; the YAML models, the slug helpers, the file writers,
+`redact` and `summarize_changes` are imported from their own module.
 
 ### Not written yet
-As of issue #21 no code reads or writes these parts of the layout:
+As of issues #21 and #119 no code reads or writes these parts of the layout:
 - **notes** -- `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005 (its version
   tags exist: `create_notes_tag`).
 - **generated** -- `generated/` and everything the generators put in it.
-- Also unwritten: `state/`, `review/pending.yaml`, `conversations/` and `ledger.jsonl`; the
+- Also unwritten: `state/`, `review/pending.yaml` and `conversations/`; the
   derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge` described below.
 
 ## Purge
