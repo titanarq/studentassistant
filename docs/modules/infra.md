@@ -52,6 +52,27 @@ The defaults live here and nowhere else:
 | `llm.roles.observer.model`, `llm.roles.transcriber.model` | `claude-sonnet-5` (ADR-0004) |
 | `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
 
+## CI (`.github/workflows/ci.yml`)
+Triggered on every `pull_request` with no `paths` filter, top-level `permissions: contents: read`.
+Every job is `runs-on: ubuntu-latest` (GitHub-hosted); never `self-hosted` under any label -- the
+repo is public (`docs/runbooks/operations.md`, "CI runners: GitHub-hosted only").
+
+| job | runs when | setup | command |
+|---|---|---|---|
+| `changes` | always | `actions/checkout` with `fetch-depth: 0` | `git diff --name-only <PR base sha> <github.sha>` -> outputs `backend`, `web`, `android` |
+| `backend` | `backend` output is `true` | `astral-sh/setup-uv`, Python 3.12 | `bash scripts/test.sh backend` |
+| `web` | `web` output is `true` | `actions/setup-node`, Node 22 | `bash scripts/test.sh web`, then `npm run build` in `web/` if `web/package.json` exists |
+| `android` | `android` output is `true` | `actions/setup-java` JDK 17 (temurin); the image's preinstalled SDK (`$ANDROID_HOME`) | `bash scripts/test.sh android test -Dorg.gradle.workers.max=2` |
+| `ci` | always (`if: always()`), needs all four | -- | fails if any needed job is `failure`/`cancelled`; `skipped` is fine |
+
+Path filters (plain shell in the `changes` job, no third-party action): `backend/**` -> backend;
+`web/**` -> web; `android/**` -> android; `protocol/**` -> backend and android;
+`scripts/test.sh` and `.github/workflows/ci.yml` -> all three. Each suite job ends with an
+`if: failure()` step that prints `.cache/test-<suite>-last.log`. A suite whose skeleton does not
+exist yet is skipped by `scripts/test.sh` and its job ends green. `ci` is the one check every PR
+always gets, including PRs that touch no suite. `.github/workflows/ci-agent-os.yml` is the
+mechanism's own, separate, path-filtered workflow.
+
 ## Boundaries
 - `config/agents.yaml`, `config/agent_prompts/*` and `agent_os/` are the human's / mechanism's.
 - No product logic here.
