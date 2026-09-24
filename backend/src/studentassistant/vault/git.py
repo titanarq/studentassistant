@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,10 +74,19 @@ class GitCommandError(VaultError):
 class GitRunner:
     """Runs git in one vault root as one identity."""
 
-    def __init__(self, root: Path, identity: GitIdentity, timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        root: Path,
+        identity: GitIdentity,
+        timeout: float = 120.0,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
         self.root = root
         self.identity = identity
         self.timeout = timeout
+        # Extra variables for every command (how git authenticates to GitHub, `vault/github.py`):
+        # a credential reaches git only this way, never through a URL or the repository's config.
+        self.extra_environment = dict(environment or {})
 
     def _environment(self) -> dict[str, str]:
         environment = dict(os.environ)
@@ -91,6 +101,7 @@ class GitRunner:
             LANG="C",
         )
         environment.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+        environment.update(self.extra_environment)
         return environment
 
     def run(self, *args: str, timeout: float | None = None) -> GitResult:

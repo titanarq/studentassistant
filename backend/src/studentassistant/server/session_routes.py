@@ -3,7 +3,8 @@
 Thin: each route validates its body with the protocol model, calls the `SessionService` on
 `app.state.sessions` and answers with the protocol model it returns. Lifecycle refusals map to
 HTTP: an unknown subject, topic or session is 404, a clash with the current state (another session
-active or unended, a session already ended) is 409, and a vault that cannot be opened is 503.
+active or unended, a session already ended, a vault pull that hit a conflict at session start --
+the detail names the conflicting paths) is 409, and a vault that cannot be opened is 503.
 Optional fields are left out rather than sent as `null`, as the protocol's schemas want.
 Every route sits behind the LAN guard, the Host allowlist and the bearer check.
 """

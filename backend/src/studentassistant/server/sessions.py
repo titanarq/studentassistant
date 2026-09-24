@@ -11,6 +11,13 @@ Every lifecycle change is itself published on the `SessionBus` as a persisted ev
 (`session.started`, `session.resumed`, `session.ended`, origin `user`); ending a session then
 checkpoints the vault and pushes it through the vault's `GitSync`.
 
+The vault is pulled (`GitSync.sync()`) when it is first opened, before the scan for unended
+sessions, and again before every session start; a `conflict` refuses the start
+(`VaultSyncConflictError`), while an unreachable remote or refused credentials are only logged
+(offline-first). While the app is serving (`startup()` .. `shutdown()`, the app's lifespan) the
+`GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
+flushes whatever is still pending.
+
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
 within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. Every vault call
 runs in a worker thread, and lifecycle changes are serialised by one lock.
@@ -19,6 +26,8 @@ runs in a worker thread, and lifecycle changes are serialised by one lock.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +44,7 @@ from studentassistant.vault import (
     NoOpenSessionError,
     Session,
     StoredSubject,
+    SyncResult,
     Vault,
     VaultError,
     create_subject,
@@ -52,6 +62,11 @@ SESSION_ENDED = "session.ended"
 LIFECYCLE_KINDS = frozenset({SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED})
 
 T = TypeVar("T")
+
+DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
+"""How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
+
+logger = logging.getLogger(__name__)
 
 
 class LifecycleError(Exception):
@@ -82,6 +97,18 @@ class SessionAlreadyEndedError(SessionConflictError):
     """The session has ended; it cannot be resumed or ended again."""
 
 
+class VaultSyncConflictError(SessionConflictError):
+    """Pulling the vault hit a conflict git cannot merge; `conflicts` lists the paths.
+
+    Nothing is auto-resolved (ADR-0002): the rebase was aborted and the local state kept, and no
+    session starts until the student resolves it.
+    """
+
+    def __init__(self, message: str, conflicts: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.conflicts = conflicts
+
+
 @dataclass(frozen=True)
 class OpenSession:
     """The active session as other server code (the WebSocket gateway) sees it."""
@@ -101,7 +128,8 @@ class SessionService:
 
     Give it an open `vault` (tests: `tmp_vault`), or `vault_settings` to open the configured
     vault lazily on first use (`VaultUnavailableError` while it cannot be opened). `sync` defaults
-    to a `GitSync` of that vault with `vault_settings.git`.
+    to a `GitSync` of that vault with `vault_settings.git`. `sync_interval` is how often the
+    background loop (only between `startup()` and `shutdown()`) checks what is due.
     """
 
     def __init__(
@@ -112,6 +140,7 @@ class SessionService:
         sync: GitSync | None = None,
         vault_settings: VaultSettings | None = None,
         host: str | None = None,
+        sync_interval: float = DEFAULT_SYNC_INTERVAL_SECONDS,
     ) -> None:
         self.bus = bus
         self._vault = vault
@@ -123,6 +152,9 @@ class SessionService:
         # Unended sessions by (subject, topic); the attached one is `_active`.
         self._open: dict[tuple[str, str], str] = {}
         self._active: Session | None = None
+        self._sync_interval = sync_interval
+        self._serving = False
+        self._runner: asyncio.Task[None] | None = None
         if bus.on_append is None:
             bus.on_append = self._note_change
 
@@ -141,6 +173,39 @@ class SessionService:
     @property
     def sync(self) -> GitSync | None:
         return self._sync
+
+    @property
+    def sync_running(self) -> bool:
+        """Whether the background `GitSync.run()` loop is running."""
+        return self._runner is not None and not self._runner.done()
+
+    # -- serving (the app's lifespan) ----------------------------------------------------------
+
+    async def startup(self) -> None:
+        """Start serving: from now on an open vault gets the background commit/push loop.
+
+        The vault itself is still opened lazily, by the first request that needs it.
+        """
+        self._serving = True
+        if self._loaded:
+            self._start_runner()
+
+    async def shutdown(self) -> None:
+        """Stop the background loop, then commit and push what is pending (in a worker thread)."""
+        self._serving = False
+        runner, self._runner = self._runner, None
+        if runner is not None:
+            runner.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await runner
+        if self._loaded and self._sync is not None:
+            await asyncio.to_thread(self._sync.flush)
+
+    def _start_runner(self) -> None:
+        if self._serving and self._sync is not None and not self.sync_running:
+            self._runner = asyncio.create_task(
+                self._sync.run(self._sync_interval), name="vault-git-sync"
+            )
 
     # -- subjects and topics -------------------------------------------------------------------
 
@@ -183,8 +248,11 @@ class SessionService:
     ) -> protocol.Session:
         """Start a session of one topic and publish `session.started`.
 
+        The vault is pulled first; see `_pull`.
+
         Raises:
             ActiveSessionExistsError: a session is active or still unended.
+            VaultSyncConflictError: pulling the vault hit a conflict; nothing was started.
             SubjectNotFoundError, TopicNotFoundError: no such subject or topic.
         """
         vault = await self._ready()
@@ -195,6 +263,14 @@ class SessionService:
                     f"session {existing} of topic {subject}/{topic} is still open: resume or end"
                     " it before starting another",
                     existing,
+                )
+            result = await self._pull("session start")
+            if result is not None and result.outcome == "conflict":
+                paths = ", ".join(result.conflicts) or "(git named no path)"
+                raise VaultSyncConflictError(
+                    f"the vault could not be synced: {result.message}; conflicting paths: {paths}."
+                    " Resolve the conflict in the vault before starting a session",
+                    result.conflicts,
                 )
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
@@ -333,11 +409,15 @@ class SessionService:
                 vault = self._vault
                 if vault is None:
                     vault = await self._call(Vault.open, self._settings.path)
-                self._open = await asyncio.to_thread(_scan_open_sessions, vault)
                 if self._sync is None:
                     self._sync = GitSync(vault, self._settings.git)
+                # Pull before the scan, so sessions another PC left open are seen. A conflict is
+                # only logged here: the next session start pulls again and refuses on it.
+                await self._pull("vault open")
+                self._open = await asyncio.to_thread(_scan_open_sessions, vault)
                 self._vault = vault
                 self._loaded = True
+                self._start_runner()
         assert self._vault is not None
         return self._vault
 
@@ -347,6 +427,24 @@ class SessionService:
             return await asyncio.to_thread(function, *args)
         except VaultError as error:
             raise VaultUnavailableError(f"the vault cannot be opened: {error}") from error
+
+    async def _pull(self, when: str) -> SyncResult | None:
+        """`GitSync.sync()` in a worker thread; every outcome but `ok` is logged, none raised."""
+        sync = self._sync
+        if sync is None:
+            return None
+        result = await asyncio.to_thread(sync.sync)
+        if result.outcome == "conflict":
+            logger.error(
+                "vault sync at %s: conflict in %s: %s",
+                when,
+                ", ".join(result.conflicts),
+                result.message,
+            )
+        elif not result.ok:
+            # offline, auth, error: work goes on locally and a later sync or push catches up.
+            logger.warning("vault sync at %s: %s: %s", when, result.outcome, result.message)
+        return result
 
     def _note_change(self) -> None:
         if self._sync is not None:
@@ -411,6 +509,7 @@ def _epoch_ms(moment: datetime) -> int:
 
 
 __all__ = [
+    "DEFAULT_SYNC_INTERVAL_SECONDS",
     "LIFECYCLE_KINDS",
     "SESSION_ENDED",
     "SESSION_RESUMED",
@@ -422,5 +521,6 @@ __all__ = [
     "SessionConflictError",
     "SessionService",
     "UnknownSessionError",
+    "VaultSyncConflictError",
     "VaultUnavailableError",
 ]

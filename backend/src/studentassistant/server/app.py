@@ -16,6 +16,8 @@ redacted from every log record (`redaction.py`).
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -78,6 +80,10 @@ def create_app(
     first request that needs it, so creating an app never touches a vault. `sync` defaults to a
     `GitSync` of that vault. `stt` is the `[stt]` section the session WebSocket follows (default:
     the configured one).
+
+    The app's lifespan drives that sync: while the app serves, an open vault gets the background
+    commit/push loop (`SessionService.startup`), and shutdown stops it and flushes what is pending
+    (`SessionService.shutdown`).
     """
     install_log_redaction()
     if server is None or stt is None or (vault is None and vault_settings is None):
@@ -86,7 +92,7 @@ def create_app(
         stt = settings.stt if stt is None else stt
         vault_settings = settings.vault if vault_settings is None else vault_settings
     devices = DeviceStore(server.devices_path)
-    app = FastAPI(title="Student Assistant", version=__version__)
+    app = FastAPI(title="Student Assistant", version=__version__, lifespan=_lifespan)
     app.state.server = server
     app.state.devices = devices
     app.state.codes = PairingCodes() if codes is None else codes
@@ -130,6 +136,16 @@ def create_app(
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    sessions: SessionService = app.state.sessions
+    await sessions.startup()
+    try:
+        yield
+    finally:
+        await sessions.shutdown()
 
 
 def _add_web_routes(app: FastAPI, static_dir: Path) -> None:
