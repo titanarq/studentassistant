@@ -66,7 +66,7 @@ repo is public (`docs/runbooks/operations.md`, "CI runners: GitHub-hosted only")
 | `ci` | always (`if: always()`), needs all four | -- | fails if any needed job is `failure`/`cancelled`; `skipped` is fine |
 
 Path filters (plain shell in the `changes` job, no third-party action): `backend/**` -> backend;
-`web/**` -> web; `android/**` -> android; `protocol/**` -> backend and android;
+`web/**` -> web; `android/**` -> android; `protocol/**` -> backend, web and android;
 `scripts/test.sh` and `.github/workflows/ci.yml` -> all three. Each suite job ends with an
 `if: failure()` step that prints `.cache/test-<suite>-last.log`. A suite whose skeleton does not
 exist yet is skipped by `scripts/test.sh` and its job ends green. `ci` is the one check every PR
