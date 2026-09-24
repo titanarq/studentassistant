@@ -28,6 +28,10 @@ digest and the purge are not written yet. Everything below is re-exported by
   `CAPTURE_EVENT_KIND = "capture.stored"` (`payload["capture_id"]`): fact events written by the
   capture side; the fold only registers their id, so ops can reference that segment or capture.
   A repeated id keeps its first registration.
+- Producers MUST emit them: the stt/server segment ingestion MUST append `transcript.final`
+  with `payload.segment_id` and the server capture ingestion MUST append `capture.stored` with
+  `payload.capture_id`, using the protocol ids (`segment_id` of `transcript.final`, `capture_id`
+  of the captures REST call), so ops can reference those segments and captures.
 - Every other kind is ignored.
 
 ### State ops -- `ops.py`
@@ -75,7 +79,8 @@ discarded and the log folded from scratch when it is unreadable, of another `sta
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
 folded raises and nothing is written. Nothing in `studentassistant.observer` opens a file, runs
-git or imports `studentassistant.llm`/`anthropic` (checked by `tests/observer/test_boundaries.py`).
+git, imports `studentassistant.llm`/`anthropic` or imports a vault submodule: only the
+`studentassistant.vault` root (checked by `tests/observer/test_boundaries.py`).
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

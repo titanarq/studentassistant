@@ -1,5 +1,5 @@
-"""ADR-0002/0004: the observer's state code reaches the vault only through its functions and
-imports no LLM code."""
+"""ADR-0002/0004: the observer reaches the vault only through the `studentassistant.vault` root,
+writes no file and imports no LLM code."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import studentassistant.observer
 
 OBSERVER_DIR = Path(studentassistant.observer.__file__).resolve().parent
 FORBIDDEN_MODULES = ("anthropic", "studentassistant.llm", "subprocess", "shutil")
+# The vault is reached through its public root only, never one of its submodules.
+VAULT_PACKAGE = "studentassistant.vault"
 FORBIDDEN_CALLS = ("open", "write_text", "write_bytes", "mkdir", "unlink", "rename", "replace")
 
 
@@ -32,10 +34,12 @@ def offences(path: Path) -> list[str]:
         for name in names:
             if any(name == m or name.startswith(m + ".") for m in FORBIDDEN_MODULES):
                 found.append(f"{path.name}:{node.lineno} imports {name}")
+            elif name.startswith(VAULT_PACKAGE + "."):
+                found.append(f"{path.name}:{node.lineno} imports vault internal {name}")
     return found
 
 
-def test_observer_imports_no_llm_and_writes_no_file() -> None:
+def test_observer_imports_no_llm_nor_vault_internals_and_writes_no_file() -> None:
     found = [o for path in sorted(OBSERVER_DIR.rglob("*.py")) for o in offences(path)]
     assert found == []
 
@@ -45,5 +49,8 @@ def test_the_check_catches_what_it_forbids(tmp_path: Path) -> None:
     sample.write_text(
         "import subprocess\nfrom studentassistant.llm import x\n"
         "open('f')\nPath('p').write_text('')\n"
+        "from studentassistant.vault.sources import SourceKind\n"
+        "import studentassistant.vault.state\n"
+        "from studentassistant.vault import Event\n"
     )
-    assert len(offences(sample)) == 4
+    assert len(offences(sample)) == 6

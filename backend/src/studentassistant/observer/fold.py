@@ -46,7 +46,7 @@ from studentassistant.observer.state import (
     SourceContext,
     TopicState,
 )
-from studentassistant.vault.session_models import Event
+from studentassistant.vault import Event
 
 SEGMENT_EVENT_KIND = "transcript.final"
 SEGMENT_ID_KEY = "segment_id"

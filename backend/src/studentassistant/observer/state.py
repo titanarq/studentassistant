@@ -13,7 +13,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.observer.ops import Id, PendingCategory
-from studentassistant.vault.sources import SourceKind
+from studentassistant.vault import SourceKind
 
 
 class _StateModel(BaseModel):

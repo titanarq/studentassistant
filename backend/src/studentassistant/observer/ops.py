@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from studentassistant.vault.sources import SourceKind
+from studentassistant.vault import SourceKind
 
 # The event kind whose payload is one state op. Named once here; every reader and writer of
 # observer state ops uses this constant (documented in docs/modules/observer.md).

@@ -132,7 +132,7 @@ under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning th
 `page-NNN.<ext>` + `page-NNN.yaml` for `notes`, `book` and `pdf` (the extension taken from `name`)
 and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`). The number is one past
 the highest already in the directory, derived files included. `sources_directory(...)` gives the
-path; `SOURCE_KINDS` lists the kinds. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
+path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
 
 ### Secret guard -- `secrets.py`
