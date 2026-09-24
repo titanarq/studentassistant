@@ -1,0 +1,29 @@
+# The mechanism's own CI, copied as-is by `agent-os install` when the host has no
+# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 6). A host that already
+# runs its own tests job can instead fold these two steps into it, the way a host whose
+# `ci.yml` already exists does -- this file exists so a fresh host has something that works
+# without hand-writing it first.
+name: agent-os
+
+on:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The mechanism carries its own interpreter (agent_os/docs/AGENT_OS.md §4.1): nothing below needs the
+      # host project's own virtualenv to exist.
+      - name: bootstrap the mechanism's own interpreter
+        run: bash agent_os/bootstrap.sh
+
+      # No database, no network, no real backend: the same subset `agent_os/tests/conftest.py`
+      # keeps separate from the host's own fixtures, and the run a second host can also make.
+      - name: the mechanism's own suite
+        run: agent_os/.venv/bin/pytest agent_os/tests -q

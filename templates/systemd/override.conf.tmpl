@@ -1,0 +1,15 @@
+# Two things the base unit gets wrong on its own, found operating the mechanism
+# (agent_os/docs/AGENT_OS.md §7 row (h), docs/runbooks/agent_monitor.md):
+#
+# PATH: the systemd --user manager's own PATH does not carry wherever a backend CLI or a version
+# manager put its binaries, and the base unit's own Environment=PATH does not either. This
+# drop-in's PATH is __PATH_SOURCE_NOTE__.
+#
+# KillMode: the tick is Type=oneshot, so systemd stops the unit and, under the default
+# control-group kill mode, SIGKILLs everything still in its cgroup the moment ExecStart returns.
+# A worker launched during a tick escapes the process group (`setsid`) but not the cgroup, so it
+# was killed seconds after the tick that launched it finished. KillMode=process kills only the
+# main process and leaves a detached run alone.
+[Service]
+Environment="PATH=__PATH__"
+KillMode=process

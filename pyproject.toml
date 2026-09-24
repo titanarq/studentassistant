@@ -1,0 +1,46 @@
+# The agent operating system, packaged so it can be lifted out of a host project as one directory
+# (docs/adr/2026-09-21-the-mechanism-is-one-directory-extended-by-hosts-and-never-modified.md).
+# Its own interpreter, its own dependencies, its own tests: nothing here is resolved through the
+# host project's editable install, which is what made the mechanism's own cross-module imports work
+# in exactly one host and nowhere else.
+[project]
+name = "agent-os"
+version = "0.1.0"
+description = "Runs a software project with agents: guard, planner, worker and one-shot role drivers, tracker CLI"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "PyJWT>=2.8",
+]
+
+# For a host that prefers a name on PATH over `python -m agent_os.<module>`; the drivers use the
+# module form, because the resolved interpreter is the one thing they always have.
+[project.scripts]
+agent-os-guard = "agent_os.guard:main"
+agent-os-issues = "agent_os.issues:main"
+agent-os-lib = "agent_os.lib:main"
+agent-os-install = "agent_os.install:main"
+agent-os-doctor = "agent_os.doctor:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+# Matches the host project's own configuration on purpose: a file that moves between the two trees
+# must not be reformatted by the move.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_os"]

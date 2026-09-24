@@ -1,0 +1,34 @@
+# The mechanism's own CI, for its own repository (split from a host's
+# `agent_os/` by `git subtree split`, #515). GitHub reads workflows only at a repository's root, so
+# inside a host this file is inert: it runs only once `agent_os/` IS the root. Same run as the
+# host's out-of-tree step: bootstrap the mechanism's own interpreter from scratch, lint it, and run
+# its suite with no database, no network and no real backend.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    # GitHub's runners set FORCE_COLOR and Rich then splits flag-shaped tokens in CLI error text
+    # into ANSI-wrapped spans; TERM=dumb renders as a local run does.
+    env:
+      TERM: dumb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: bootstrap the mechanism's own interpreter
+        run: bash bootstrap.sh
+
+      - name: ruff
+        run: .venv/bin/ruff check . && .venv/bin/ruff format --check .
+
+      - name: the mechanism's suite
+        run: .venv/bin/pytest tests -q
