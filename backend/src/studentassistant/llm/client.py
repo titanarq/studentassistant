@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from studentassistant.config import Effort, LlmRoleSettings, Settings
+from studentassistant.config import Effort, LlmRoleSettings, LlmSettings, Settings
 from studentassistant.llm.caching import cache_stable_prefix, system_blocks
+from studentassistant.llm.cost import Clock, LedgerBinding, check_caps, record_call, utc_now
 from studentassistant.llm.errors import (
     LLMRetriesExhaustedError,
     LLMTransientError,
@@ -17,6 +19,8 @@ from studentassistant.llm.transport import AnthropicTransport, Transport
 from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse
 
 Sleep = Callable[[float], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
 
 # Exponential backoff between attempts: 1 s, 2 s, 4 s... capped; a server `retry-after` wins.
 BACKOFF_BASE_SECONDS = 1.0
@@ -34,7 +38,11 @@ def backoff_delay(attempt: int, error: LLMTransientError) -> float:
 
 
 class LLMClient:
-    """A Claude client bound to one role. Every call streams and retries transient failures."""
+    """A Claude client bound to one role. Every call streams and retries transient failures.
+
+    With a `ledger` binding, each call is checked against the cost caps of `llm_settings` first
+    and every successful one is appended to the bound topic's ledger; without one, neither.
+    """
 
     def __init__(
         self,
@@ -44,12 +52,18 @@ class LLMClient:
         transport: Transport,
         max_attempts: int,
         sleep: Sleep = asyncio.sleep,
+        ledger: LedgerBinding | None = None,
+        llm_settings: LlmSettings | None = None,
+        clock: Clock = utc_now,
     ) -> None:
         self.role = role
         self.settings = settings
         self.transport = transport
         self.max_attempts = max_attempts
+        self.ledger = ledger
+        self.llm_settings = llm_settings or LlmSettings()
         self._sleep = sleep
+        self._clock = clock
 
     @property
     def model(self) -> str:
@@ -113,8 +127,22 @@ class LLMClient:
         max_tokens: int | None = None,
         cache: bool = True,
         prompt_hash: str | None = None,
+        confirm_over_cap: bool = False,
     ) -> LLMResponse:
-        """One Claude call: build the request for this role and send it."""
+        """One Claude call: build the request for this role and send it.
+
+        With a ledger binding: raises `CostCapReachedError` (observer, transcriber) or
+        `CostConfirmationRequiredError` (editor, generator, unless `confirm_over_cap`) when a cost
+        cap is reached, and records the call once it succeeds.
+        """
+        if self.ledger is not None:
+            check_caps(
+                self.role,
+                self.ledger,
+                self.llm_settings,
+                now=self._clock(),
+                confirm_over_cap=confirm_over_cap,
+            )
         request = self.build_request(
             messages,
             system=system,
@@ -124,7 +152,23 @@ class LLMClient:
             cache=cache,
             prompt_hash=prompt_hash,
         )
-        return await self.send(request)
+        response = await self.send(request)
+        if self.ledger is not None:
+            self._record(request, response)
+        return response
+
+    def _record(self, request: LLMRequest, response: LLMResponse) -> None:
+        # The call is done and paid for: a ledger that cannot be written must not lose the answer.
+        assert self.ledger is not None
+        try:
+            record_call(self.ledger, request, response, self.llm_settings.prices, now=self._clock())
+        except Exception:
+            logger.exception(
+                "could not record a %s call in the ledger of %s/%s",
+                self.role,
+                self.ledger.subject,
+                self.ledger.topic,
+            )
 
 
 def get_client(
@@ -133,11 +177,14 @@ def get_client(
     settings: Settings | None = None,
     transport: Transport | None = None,
     sleep: Sleep = asyncio.sleep,
+    ledger: LedgerBinding | None = None,
+    clock: Clock = utc_now,
 ) -> LLMClient:
     """The client for `role`, configured from `[llm.roles.<role>]`.
 
     Tests pass `transport=FakeClaude(...)`; without one the real, streaming Anthropic transport is
-    used. Raises `UnknownRoleError` for a role outside `ROLES`.
+    used. With `ledger`, calls are capped and recorded (see `LLMClient`); `clock` gives the UTC
+    time of each entry and of the day cap. Raises `UnknownRoleError` for a role outside `ROLES`.
     """
     if role not in ROLES:
         raise UnknownRoleError(role, ROLES)
@@ -149,4 +196,7 @@ def get_client(
         transport=transport or AnthropicTransport(),
         max_attempts=settings.llm.max_attempts,
         sleep=sleep,
+        ledger=ledger,
+        llm_settings=settings.llm,
+        clock=clock,
     )

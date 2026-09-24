@@ -80,9 +80,11 @@ async def structured[T: BaseModel](
     system: str | list[str] | list[dict[str, Any]] | None = None,
     max_tokens: int | None = None,
     prompt_hash: str | None = None,
+    confirm_over_cap: bool = False,
 ) -> StructuredResult[T]:
     """Ask `client` for an `output` instance through the strict tool `tool_name`.
 
+    Each underlying call (the re-ask included) is capped and recorded like `LLMClient.create`.
     Raises `StructuredOutputError` when the re-ask fails too, `RefusalError` on a refusal.
     """
     instruction = load_prompt(INSTRUCTION_PROMPT).render(tool_name=tool_name)
@@ -102,6 +104,7 @@ async def structured[T: BaseModel](
             tool_choice={"type": "auto"},
             max_tokens=max_tokens,
             prompt_hash=prompt_hash,
+            confirm_over_cap=confirm_over_cap,
         )
         responses.append(response)
         value, reason = _check(response, tool_name, output)
