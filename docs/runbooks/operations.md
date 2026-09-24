@@ -75,6 +75,7 @@ subtree is pulled.
 - agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
 - agent-os#39 a refiner split leaves dependents blocked by the open original (manual repoint, below).
 - agent-os#41 the validator worktree gets no environment in this monorepo (workaround below).
+- agent-os#52 the guard's Qwen stall bookkeeping carries over between runs (workaround below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
@@ -162,6 +163,27 @@ a key to `msgtext` in place (same length, safe on a live log) and runs as the gu
 `ExecStartPre` through the drop-in `scripts/systemd/studentassistant-guard.service.d/sanitize-role-logs.conf`
 (COPIED to `~/.config/systemd/user/studentassistant-guard.service.d/`, then daemon-reload). Remove
 all three once agent-os#37 is fixed and the subtree is pulled.
+
+## Stall counter carried over between runs (workaround titanarq/agent-os#52)
+
+On Qwen, which has no event timestamps, `guard.turns_since_commit` counts the current run's
+commits (`<startref>..HEAD`) but compares them with `commit_count` in `.cache/agent_guard_<backend>.json`.
+Nothing resets that file when a new issue is dispatched. After a 5-commit run on #14, the #19 run
+inherited `commit_count=5, turn_count_at_commit=12`, and the tick reported `qwen: alive, -7 turns
+since last commit`. The stall cut came late, and the run's first 5 commits would never have moved
+the anchor. `scripts/reset_stale_stall_bookkeeping.py` compares the live run's issue + startref with
+`.cache/agent_guard_<backend>.run` under the guard's own `.lock`. On a mismatch, or when
+`turn_count_at_commit` is ahead of the live turn count (a resume), it sets `commit_count` to the run's
+real commit count and `turn_count_at_commit` to the current turn count, and clears
+`warned_at_turn_count`. Anchoring at "now" can never cause a cut. It runs as the guard unit's
+`ExecStartPre` through the drop-in
+`scripts/systemd/studentassistant-guard.service.d/reset-stale-stall-bookkeeping.conf`, which is
+prefixed `-` so a failure never stops the tick. COPY the drop-in to
+`~/.config/systemd/user/studentassistant-guard.service.d/` only after this script is on `main`,
+then daemon-reload. It was applied by hand once on 2026-09-24 for the qwen #19 run (5/12 -> 0/15).
+Until the drop-in is installed, run the script by hand after each dispatch:
+`agent_os/.venv/bin/python scripts/reset_stale_stall_bookkeeping.py`. Remove the script, the
+drop-in and this note once agent-os#52 is fixed and the subtree is pulled.
 
 ## After a refiner split (workaround titanarq/agent-os#39)
 
