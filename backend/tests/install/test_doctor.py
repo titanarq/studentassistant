@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 
 import pytest
-from whisper_fakes import hide_faster_whisper, install_fakes
 
 from github_fakes import LocalHost
 from studentassistant.config import Settings
@@ -15,6 +14,7 @@ from studentassistant.install.doctor import Check, DoctorProbes, run_doctor
 from studentassistant.install.service import SystemctlResult
 from studentassistant.llm import LLMAPIError, LLMConnectionError
 from studentassistant.vault.setup import create_vault
+from whisper_fakes import hide_faster_whisper, install_fakes
 
 KEY = "sk-" + "ant-" + "api03-" + "y" * 40
 

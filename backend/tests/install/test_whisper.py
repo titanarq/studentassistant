@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from whisper_fakes import hide_faster_whisper, install_fakes
 
 from studentassistant.config import DEFAULT_WHISPER_DEVICE, DEFAULT_WHISPER_MODEL, SttSettings
 from studentassistant.install import whisper
+from whisper_fakes import hide_faster_whisper, install_fakes
 
 
 def whisper_settings(**options: object) -> SttSettings:
