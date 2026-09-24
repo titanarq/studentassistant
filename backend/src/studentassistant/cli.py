@@ -2,12 +2,14 @@
 
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
-and `cost` prints what the Claude calls recorded in the vault's ledgers cost.
+`cost` prints what the Claude calls recorded in the vault's ledgers cost, and `setup` creates or
+clones the vault on this PC and records it in the configuration file.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
 where the server listens comes from `studentassistant.config` (the TOML file plus the `SA_*`
-environment variables), so there is one way to configure the backend and not two.
+environment variables), so there is one way to configure the backend and not two. `setup`'s
+options are the answers it writes into that configuration, not a second way to set it.
 """
 
 from __future__ import annotations
@@ -17,14 +19,17 @@ import json
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any
+from enum import StrEnum
+from pathlib import Path
+from typing import Annotated, Any
 
+import click
 import segno
 import typer
 import uvicorn
 
 from studentassistant import __version__
-from studentassistant.config import ServerSettings, Settings
+from studentassistant.config import ServerSettings, Settings, check_repo_name, write_vault_config
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
@@ -38,6 +43,8 @@ from studentassistant.vault import (
     list_topics,
     read_ledger,
 )
+from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.setup import SetupError, SetupResult, clone_vault, create_vault
 
 cli = typer.Typer(
     name="studentassistant",
@@ -189,3 +196,109 @@ def cost(
         if not printed:
             typer.echo("Sin gasto registrado.")
     typer.echo(f"Hoy (UTC): ${day_usd(vault, utc_now()):.4f}")
+
+
+class SetupMode(StrEnum):
+    """What `setup` does with the GitHub repository (the values are the Spanish prompt answers)."""
+
+    create = "crear"
+    clone = "clonar"
+
+
+def _github_host() -> GitHubHost:
+    """The way this PC reaches GitHub (tests replace this with a local one)."""
+    return select_host()
+
+
+def _ask_repo() -> str:
+    while True:
+        repo = typer.prompt("Repositorio de GitHub (propietario/nombre)").strip()
+        try:
+            return check_repo_name(repo)
+        except ValueError:
+            typer.echo(f"«{repo}» no es válido: escríbelo como propietario/nombre.")
+
+
+_SETUP_DONE = {
+    "created": "Vault creado en {path} y subido a {repo}.",
+    "cloned": "Vault clonado de {repo} en {path}.",
+    "already-set-up": "Este PC ya tenía el vault de {repo} en {path}: no hay nada que hacer.",
+}
+
+
+@cli.command()
+def setup(
+    vault_repo: Annotated[
+        str | None, typer.Option(help="Repositorio de GitHub del vault, propietario/nombre.")
+    ] = None,
+    path: Annotated[
+        Path | None, typer.Option(help="Carpeta local del vault (por defecto, vault.path).")
+    ] = None,
+    create: Annotated[
+        bool, typer.Option("--create", help="Crear un vault nuevo y un repositorio privado.")
+    ] = False,
+    clone: Annotated[
+        bool, typer.Option("--clone", help="Clonar un vault que ya está en GitHub.")
+    ] = False,
+    student: Annotated[
+        str | None, typer.Option(help="Tu nombre, tal como lo guardará un vault nuevo.")
+    ] = None,
+) -> None:
+    """Create or clone the vault from GitHub and record it in the configuration file.
+
+    Every option left out is asked for (in Spanish); with `--vault-repo`, `--path` and one of
+    `--create`/`--clone` nothing is asked. Re-running with the same answers changes nothing.
+    """
+    if create and clone:
+        typer.echo("Elige solo una opción: --create o --clone.")
+        raise typer.Exit(code=2)
+    settings = Settings()
+    # With the repository, the path and the mode given nothing is asked, not even the name.
+    unattended = (create or clone) and vault_repo is not None and path is not None
+    if create or clone:
+        mode = SetupMode.create if create else SetupMode.clone
+    else:
+        mode = typer.prompt(
+            "¿Quieres crear un vault nuevo o clonar uno que ya está en GitHub?",
+            type=click.Choice([m.value for m in SetupMode]),
+            default=SetupMode.clone.value,
+        )
+        mode = SetupMode(mode)
+    if vault_repo is None:
+        vault_repo = _ask_repo()
+    else:
+        try:
+            check_repo_name(vault_repo)
+        except ValueError:
+            typer.echo(f"«{vault_repo}» no es válido: escríbelo como propietario/nombre.")
+            raise typer.Exit(code=2) from None
+    if path is None:
+        path = Path(
+            typer.prompt("Carpeta local del vault", default=str(settings.vault.path))
+        ).expanduser()
+    if mode is SetupMode.create and student is None:
+        owner = vault_repo.split("/")[0]
+        student = (
+            owner
+            if unattended
+            else typer.prompt("Tu nombre (así te llamará la aplicación)", default=owner)
+        )
+
+    git = settings.vault.git
+    try:
+        host = _github_host()
+        result: SetupResult
+        if mode is SetupMode.create:
+            assert student is not None
+            result = create_vault(
+                path, vault_repo, student, host, git.author_email, git.timeout_seconds
+            )
+        else:
+            result = clone_vault(
+                path, vault_repo, host, author_email=git.author_email, timeout=git.timeout_seconds
+            )
+    except (SetupError, GitHubHostError) as error:
+        typer.echo(f"No se pudo preparar el vault: {error}")
+        raise typer.Exit(code=1) from error
+    write_vault_config(result.vault.path, result.repo)
+    typer.echo(_SETUP_DONE[result.action].format(path=result.vault.path, repo=result.repo))
