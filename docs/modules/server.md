@@ -267,7 +267,8 @@ WebSocket gateway publish and subscribe here.
 
 - `attach(session)` / `detach(session_id)` / `is_attached(session_id)`: the lifecycle service
   attaches the vault `Session` handle of the active session; publishing for any other session is
-  refused (`SessionNotAttachedError`, a `BusError`).
+  refused (`SessionNotAttachedError`, a `BusError`). `attached(session_id)` returns that handle
+  (None when not attached): the app gives it to the stt `TranscriptPipeline` as its lookup.
 - `await publish(session_id, kind, origin, payload=None, *, persist=True, t=None) -> BusEvent`.
   A persisted event is appended to the session's `events.jsonl` through the vault handle (never
   written by the bus, ADR-0002; the write runs in a worker thread), gets the log's next `seq`, and

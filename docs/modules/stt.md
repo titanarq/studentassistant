@@ -36,6 +36,42 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   `provider_class(name)`, `registered_providers()`, `register_provider(name, cls)`,
   `unregister_provider(name)`; an unknown name raises `UnknownProviderError` listing the
   registered ones. `ENTRY_POINT_GROUP = "studentassistant.stt_providers"`.
+- `TranscriptAssembler` (`stt/transcript.py`, pure logic) -- one session's canonical transcript:
+  `add(final) -> NormalisedSegment | None` returns what to append, `seed(segment)` records one
+  already in `transcript.jsonl` (a resumed session). Rules, for finals in arrival order (partials
+  and blank finals are never written; words compare case-insensitively without punctuation):
+  1. a final with the same span and text as a written one is dropped;
+  2. a final whose span lies inside a written final with the same text is dropped;
+  3. a final that overlaps one of the last `OVERLAP_LOOKBACK` (8) written finals in time (the last
+     one also when it starts before it) is trimmed of the words it repeats: all its words in a
+     row inside that final -> dropped; otherwise the longest prefix repeating that final's end
+     is cut and its start moves to that final's end (a restarted recognizer never writes the
+     same words twice);
+  4. written starts never decrease: a late final is placed after the last written one (start
+     clamped to its start) and is never dropped when it carries new words.
+- `TranscriptPipeline(bus, lookup, *, clock=...)` (`stt/pipeline.py`) -- subscribes to the bus for
+  `transcript.final` and `session.ended` (`start()` / `await stop()`, the app's lifespan does both
+  on `app.state.transcripts`), runs one assembler per session and appends each segment with
+  `Session.append_transcript` (session ms) in a worker thread. `bus` is anything with the
+  `EventBus` protocol's `subscribe` (the server's `SessionBus`); `lookup: SessionLookup` maps a
+  session id to its open vault `Session` (the app passes `SessionBus.attached`), so `stt` never
+  imports `server`. A final after `session.ended`, or refused by the vault (`SessionEndedError`),
+  is logged and dropped; a `SecretRefused` one is logged and skipped; nothing is raised into the
+  bus. `await drain()` returns once every event delivered so far is processed.
+  Latency log: logger `studentassistant.stt.pipeline`, one INFO record per appended segment,
+  `latency_ms` = session time of the append minus the segment's end, with `session_id`,
+  `provider` and `transcript_seq` as record attributes.
+  Not yet: `SessionService.end` does not wait for the pipeline before ending the vault session,
+  so a final published just before `session.ended` can lose the race (it is then logged as lost;
+  #140).
+- `BufferedProvider(inner, *, max_backlog_seconds=...)` (`stt/buffered.py`) -- a
+  `SpeechToTextProvider` wrapping another one so the gateway never waits for inference: `feed`
+  enqueues the chunk and returns what `inner` produced since the previous call; one background
+  task feeds `inner` in order. While more than `max_backlog_seconds` of audio is queued, buffered
+  partials a newer segment supersedes are dropped (`dropped` counts them); finals never are.
+  `finish()` drains the queue, flushes `inner` and returns the rest; `close()` stops the task.
+  `buffered_provider_from_settings(settings.stt)` wraps `provider_from_settings`; the app's
+  gateway builds its server-mode providers with it.
 - Fakes: `FakeProvider` (registered as `fake`; `segments=` or `options["segments"]`, each
   scripted segment is yielded once the fed audio reaches its `end`, the rest on `finish`) and
   `ScriptedClientSource(segments)` (`play_into(sink)`).
@@ -47,10 +83,13 @@ mode = "client"          # client | server
 provider = "web-speech"  # web-speech | android-speech (client); faster-whisper, a cloud id, fake (server)
 language = "es"
 
+max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
+
 [stt.options.faster-whisper]  # free-form table per provider name, passed to its constructor
 model = "large-v3"
 ```
-Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`.
+Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
+`SA_STT__MAX_BACKLOG_SECONDS`.
 
 ## How to add a server-side provider
 1. One module, e.g. `studentassistant/stt/faster_whisper.py`, with a subclass of
@@ -67,7 +106,9 @@ Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`.
    Re-sync the environment (`uv sync`) so the entry point is installed. An out-of-tree package
    can declare the same group.
 3. One config value: `stt.mode = "server"`, `stt.provider = "faster-whisper"`, options under
-   `[stt.options.faster-whisper]`. Nothing outside `stt` names the class.
+   `max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
+
+[stt.options.faster-whisper]`. Nothing outside `stt` names the class.
 
 A client-side recognizer needs no backend code: its name is just `stt.provider` in client mode,
 stamped on every segment by the `TranscriptSink`.

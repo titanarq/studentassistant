@@ -243,6 +243,10 @@ class SessionBus:
     def is_attached(self, session_id: str) -> bool:
         return session_id in self._sessions
 
+    def attached(self, session_id: str) -> Session | None:
+        """The vault handle of an attached session, None when it is not attached."""
+        return self._sessions.get(session_id)
+
     # -- publish -------------------------------------------------------------------------------
 
     async def publish(
