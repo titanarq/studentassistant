@@ -7,3 +7,9 @@ BUDGET CLASS AND SHAPE OF WORKER TASKS (studentassistant)
    child that still needs them, and prefix every task title with `[task] `.
    A task spanning backend and web or android is split per module. Anything that calls Claude is
    tested with `FakeClaude`; anything that needs speech uses `FakeTranscriber`.
+
+SCRATCH FILES (studentassistant; workaround for titanarq/agent-os#33)
+   Put any scratch file you need (original body, new body, summary) in a directory made with
+   `mktemp -d` and remove only that directory. NEVER create, write or delete anything under
+   `.cache/refiner/` or anywhere else under `.cache/`: that directory holds the driver's own run
+   log, PID file and `runs.tsv` cost ledger, and removing it destroys this run's record.
