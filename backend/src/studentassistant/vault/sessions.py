@@ -16,6 +16,7 @@ git: committing a session is the git-sync task's job.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,13 +33,19 @@ from studentassistant.vault.jsonl import append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.session_models import (
     EVENT_SCHEMA_VERSION,
     SESSION_ID_FORMAT,
+    SESSION_ID_PATTERN,
     Event,
     Origin,
     SessionMeta,
     TranscriptSegment,
     TranscriptWord,
 )
-from studentassistant.vault.topics import TOPIC_FILE_NAME, get_topic, topic_directory
+from studentassistant.vault.topics import (
+    TOPIC_FILE_NAME,
+    get_topic,
+    require_topic,
+    topic_directory,
+)
 from studentassistant.vault.vault import Vault
 
 SESSIONS_DIRNAME = "sessions"
@@ -57,6 +64,10 @@ class NoOpenSessionError(SessionError):
 
 class SessionEndedError(SessionError):
     """The session has ended: its logs take no more lines and it cannot end twice."""
+
+
+class SessionNotFoundError(SessionError):
+    """The topic lists no session with that id (or the id is not a session id at all)."""
 
 
 class SessionFileError(SessionError):
@@ -334,6 +345,47 @@ def read_topic_events(
             raise SessionFileError(f"{events_path} cannot be read: {error}") from error
         for event in events:
             yield meta.id, event
+
+
+def read_session_transcript(
+    vault: Vault, subject_slug: str, topic_slug: str, session_id: str
+) -> list[TranscriptSegment]:
+    """Every complete segment of one listed session's transcript, open or ended, sorted by `seq`.
+
+    Reads the files directly, without a `Session` handle, so nothing is opened for writing and
+    nothing is written. A torn last line is left out, as `read_jsonl` does; the sort undoes any
+    reordering a `merge=union` made.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read (a value that is not a slug is not found).
+        SessionNotFoundError: when `session_id` is not a session id or the topic does not list it.
+        SessionFileError: when the session's `session.yaml` or `transcript.jsonl` is missing or
+            cannot be read.
+        JsonlError: when a complete line of the transcript is not a `TranscriptSegment`.
+    """
+    stored = require_topic(vault, subject_slug, topic_slug)
+    if _SESSION_ID.fullmatch(session_id) is None or session_id not in stored.topic.sessions:
+        raise SessionNotFoundError(
+            f"the topic {topic_slug!r} of the subject {subject_slug!r} has no session"
+            f" {session_id!r}"
+        )
+    directory = sessions_directory(vault, subject_slug, topic_slug) / session_id
+    _read_session_file(directory / SESSION_FILE_NAME)
+    transcript_path = directory / TRANSCRIPT_FILE_NAME
+    try:
+        return sorted(
+            read_jsonl(transcript_path, TranscriptSegment), key=lambda segment: segment.seq
+        )
+    except FileNotFoundError as error:
+        raise SessionFileError(
+            f"{transcript_path} is missing, so the session {session_id} has no transcript"
+        ) from error
+    except OSError as error:
+        raise SessionFileError(f"{transcript_path} cannot be read: {error}") from error
+
+
+_SESSION_ID = re.compile(SESSION_ID_PATTERN)
 
 
 def _read_session_file(session_path: Path) -> SessionMeta:

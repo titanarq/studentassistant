@@ -35,8 +35,12 @@ from yaml import YAMLError
 
 from studentassistant.vault.files import read_yaml, write_yaml_atomic
 from studentassistant.vault.models import Topic
-from studentassistant.vault.slugs import slugify, unique_slug
-from studentassistant.vault.subjects import get_subject, subject_directory
+from studentassistant.vault.slugs import is_slug, slugify, unique_slug
+from studentassistant.vault.subjects import (
+    SubjectNotFoundError,
+    get_subject,
+    subject_directory,
+)
 from studentassistant.vault.vault import Vault, VaultError
 
 TOPICS_DIRNAME = "topics"
@@ -128,6 +132,25 @@ def get_topic(vault: Vault, subject_slug: str, topic_slug: str) -> StoredTopic:
     """
     _require_subject(vault, subject_slug)
     return _read_topic(vault, subject_slug, topic_slug)
+
+
+def require_topic(vault: Vault, subject_slug: str, topic_slug: str) -> StoredTopic:
+    """`get_topic` for slugs that came from outside: refuse any that is not a slug first.
+
+    A value such as `..` or `a/b` is never looked up on disk, so a reader built on this cannot be
+    walked out of `subjects/<subject-slug>/topics/<topic-slug>/`.
+
+    Raises:
+        SubjectNotFoundError: when `subject_slug` is not a slug or names no subject.
+        SubjectFileError: when that subject's `subject.yaml` is missing or unreadable.
+        TopicNotFoundError: when `topic_slug` is not a slug or names no topic of the subject.
+        TopicFileError: when the topic's `topic.yaml` is missing or unreadable.
+    """
+    if not is_slug(subject_slug):
+        raise SubjectNotFoundError(f"{subject_slug!r} is not a subject slug")
+    if not is_slug(topic_slug):
+        raise TopicNotFoundError(f"{topic_slug!r} is not a topic slug")
+    return get_topic(vault, subject_slug, topic_slug)
 
 
 def _require_subject(vault: Vault, subject_slug: str) -> None:

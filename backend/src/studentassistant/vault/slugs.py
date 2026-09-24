@@ -7,6 +7,15 @@ import unicodedata
 from collections.abc import Iterable
 
 _RUNS_THAT_ARE_NOT_SLUG = re.compile(r"[^a-z0-9]+")
+_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def is_slug(value: str) -> bool:
+    """Whether `value` is a slug `slugify`/`unique_slug` could have produced: `[a-z0-9]` runs
+    joined by single hyphens, so it can never be `..`, hold a `/` or name anything but one
+    directory. Readers check a slug that came from outside (a URL) with this before using it.
+    """
+    return _SLUG.fullmatch(value) is not None
 
 
 def slugify(name: str) -> str:
