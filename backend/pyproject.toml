@@ -16,6 +16,11 @@ dynamic = ["version"]
 [project.scripts]
 studentassistant = "studentassistant.cli:cli"
 
+# Server-side speech-to-text providers (ADR-0008): name = "module:SpeechToTextProvider subclass".
+# A new provider is one module + one line here + `stt.provider = "<name>"` in the config.
+[project.entry-points."studentassistant.stt_providers"]
+fake = "studentassistant.stt.fakes:FakeProvider"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

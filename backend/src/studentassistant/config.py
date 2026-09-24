@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
@@ -89,6 +90,29 @@ class LlmSettings(BaseModel):
     roles: LlmRolesSettings = Field(default_factory=LlmRolesSettings)
 
 
+# Speech-to-text (ADR-0008): by default the capture client transcribes (Google) and sends segments.
+DEFAULT_STT_MODE = "client"
+DEFAULT_STT_PROVIDER = "web-speech"
+DEFAULT_STT_LANGUAGE = "es"
+
+
+class SttSettings(BaseModel):
+    """Which speech-to-text path and provider a session uses (ADR-0008)."""
+
+    # `client`: the capture client transcribes and sends segments; `server`: it streams audio and
+    # a `SpeechToTextProvider` registered under `provider` transcribes it here.
+    mode: Literal["client", "server"] = DEFAULT_STT_MODE
+    # `web-speech`, `android-speech`, `faster-whisper`, a cloud id, `fake` in tests.
+    provider: str = DEFAULT_STT_PROVIDER
+    language: str = DEFAULT_STT_LANGUAGE
+    # Free-form settings per provider, keyed by provider name: `[stt.options.faster-whisper]`.
+    options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    def provider_options(self, name: str | None = None) -> dict[str, Any]:
+        """The options table of `name` (the configured provider by default); empty when absent."""
+        return dict(self.options.get(name or self.provider, {}))
+
+
 def config_toml_path() -> Path:
     """The TOML file to read: `SA_CONFIG` when it is set, the default location otherwise."""
     return Path(os.environ.get("SA_CONFIG") or DEFAULT_CONFIG_PATH).expanduser()
@@ -106,6 +130,7 @@ class Settings(BaseSettings):
     server: ServerSettings = Field(default_factory=ServerSettings)
     vault: VaultSettings = Field(default_factory=VaultSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
+    stt: SttSettings = Field(default_factory=SttSettings)
 
     @classmethod
     def settings_customise_sources(
