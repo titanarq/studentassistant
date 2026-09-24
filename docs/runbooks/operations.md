@@ -56,7 +56,7 @@ all outside collaborators (`gh api repos/titanarq/studentassistant/actions/permi
 -> `all_external_contributors`) and the default `GITHUB_TOKEN` is read-only
 (`.../actions/permissions/workflow` -> `default_workflow_permissions=read`).
 
-The "Self-hosted runner" section below documents the machine's local runners for historical /
+The machine's local self-hosted runners belong to teachermovies; nothing in this repo may use them.
 other-repo reference only; nothing in this repo may use them.
 
 ## Board sync workaround (titanarq/agent-os#14)
@@ -68,57 +68,6 @@ missing issues to the board and sets Status per `project.board_columns` (no stat
 Backlog, closed -> Done, `blocked-on-human` -> left as is). Idempotent and quiet; preview with
 `scripts/board_sync.py --dry-run`. Remove the timer and script once agent-os#14 is fixed and the
 subtree is pulled.
-
-## Self-hosted runner (GitHub Actions)
-
-**Actual state (checked 2026-09-24):** there are NO `gh-runner-studentassistant-*` units on this
-machine. The org-level runners are teachermovies' `Titan-tm-1`/`-2` (labels `titanarq,teachermovies`)
-and `Titan-tm-3`/`-4` (label `teachermovies`), all `gh-runner-teachermovies-N.service`. Until
-studentassistant runners are registered, workflows here must target `runs-on: [self-hosted, titanarq]`
-(`ci-agent-os.yml` uses `teachermovies`, which also matches). A `[self-hosted, studentassistant]`
-job would queue forever. The text below describes the intended setup.
-
-The org is on the Free plan with hosted minutes exhausted, so both workflows run
-`runs-on: [self-hosted, studentassistant]` on this machine. Two runners (`Titan-tm-1`, `Titan-tm-2`)
-are registered at **organization** level (`titanarq`, runner group Default, labels
-`titanarq,studentassistant`) so a PR's jobs run in parallel and other (private) org repos can use
-them too -- those repos target `runs-on: [self-hosted, titanarq]`. Each runner has its own
-`_work/`; they share `~/.gradle` (JDK 17 toolchain via foojay in `~/.gradle/jdks`) and
-`~/Android/Sdk`. No other session registers additional runners without coordinating here first.
-
-| unit | runner dir |
-|---|---|
-| `gh-runner-studentassistant-1.service` | `~/actions-runner-studentassistant-1` |
-| `gh-runner-studentassistant-2.service` | `~/actions-runner-studentassistant-2` |
-
-Unit files live in `~/.config/systemd/user/` (`run.sh`, `Restart=always`; needs
-`loginctl show-user $USER -p Linger` = yes to run without a login session).
-
-Under load (both runners plus host worktree builds compiling at once, load average in the low
-20s on 8 cores) a shared, persistent Gradle daemon in `~/.gradle/daemon` is not safe the way the
-cache directories are: `android` jobs on PRs #119-#121 failed with "Gradle build daemon
-disappeared unexpectedly" mid-`assembleDebug`. `ci.yml` runs Gradle with
-`-Dorg.gradle.daemon=false` (`--no-daemon` on the build step) and `-Dorg.gradle.workers.max=2`,
-so CI never registers or reuses a daemon that a concurrent host build could take down, and one
-job leaves cores free for the other runner / worktree builds. `~/.gradle` caches, wrapper dists
-and JDK toolchains stay shared as before.
-
-```sh
-systemctl --user status gh-runner-studentassistant-1 gh-runner-studentassistant-2
-journalctl --user -u gh-runner-studentassistant-1 -n 50 -o cat
-systemctl --user restart gh-runner-studentassistant-1 gh-runner-studentassistant-2
-gh api orgs/titanarq/actions/runners -q '.runners[] | "\(.name) \(.status) \(.busy)"'
-gh api orgs/titanarq/actions/runner-groups -q '.runner_groups[] | "\(.name) public=\(.allows_public_repositories)"'
-```
-
-Re-register (runner removed/offline for >14 days, or moved machine): stop the unit, then in the
-runner dir `./config.sh remove --token "$(gh api -X POST orgs/titanarq/actions/runners/remove-token -q .token)"`
-and `./config.sh --unattended --url https://github.com/titanarq --token "$(gh api -X POST orgs/titanarq/actions/runners/registration-token -q .token)" --labels titanarq,studentassistant --name <host>-tm-N`,
-then start the unit. Never echo the tokens. Upgrade: the runner self-updates while online.
-
-**Rule: never let these runners serve a public repo.** The Default runner group must keep
-`allows_public_repositories=false`, and no org repo using them may be made public while they are
-registered -- any fork PR could run arbitrary code on this machine. Deregister first.
 
 ## Known mechanism issues filed upstream
 
