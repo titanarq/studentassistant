@@ -68,14 +68,17 @@ reads it itself; generating and editing the notes are later issues.
 - `validate(notes, mode="estricto", source_exists=None) -> list[str]` -- Spanish messages, empty
   when the notes are valid; `notes` is a `NotesDocument` or its text. It reports every content
   block without footnote, every reference without definition, every definition that is not a
-  provenance or whose `path` `source_exists` says is missing, every `[^ia]` in `estricto`, a
+  provenance or whose `path` `source_exists` says is missing (for a PDF, its `source_id`, so a
+  cited page is checked too: `sources/pdf/page-001.pdf#page=3`), every `[^ia]` in `estricto`, a
   section without anchor, a repeated anchor and a repeated definition. Each message names the
   section anchor and the block (number and opening words) so it can be sent back to the model as
   is. It never patches the notes: the editor is re-asked (ADR-0005).
 - `topic_source_resolver(vault, subject_slug, topic_slug) -> SourceExists` -- the
   `source_exists` for a topic, locating `sources/<kind>/<file>` through
   `vault.sources_directory` and `sessions/<id>/transcript.jsonl` through
-  `vault.sessions_directory`; any other path (`..` included) does not exist.
+  `vault.sessions_directory`, and `sources/pdf/<file>#page=K` through
+  `sources.pdf_has_page` (the page must be within the imported PDF's `page_count`); any other
+  path (`..` included) does not exist.
 
 ### Example
 ```python

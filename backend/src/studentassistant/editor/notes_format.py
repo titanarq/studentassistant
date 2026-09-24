@@ -26,6 +26,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
+from studentassistant.sources import pdf_has_page
 from studentassistant.vault import Vault, sessions_directory, sources_directory
 
 FidelityMode = Literal["estricto", "ampliado"]
@@ -450,8 +451,9 @@ def validate(
     Reports: a content block (paragraph, list-item group, table) without a footnote; a footnote
     reference with no definition; a definition that is not a provenance this format knows or whose
     source does not exist (asked of `source_exists` with the topic-relative path, e.g.
-    `sources/notes/page-004.jpg`); any `[^ia]` in `estricto` mode; a section without anchor, a
-    repeated anchor and a repeated footnote definition. An empty list means the notes are valid.
+    `sources/notes/page-004.jpg`, or for a PDF with its page, `sources/pdf/page-001.pdf#page=3`);
+    any `[^ia]` in `estricto` mode; a section without anchor, a repeated anchor and a repeated
+    footnote definition. An empty list means the notes are valid.
     `source_exists=None` skips only the existence check. The notes are never changed.
     """
     document = parse(notes) if isinstance(notes, str) else notes
@@ -505,11 +507,10 @@ def validate(
                     " ampliado por la IA."
                 )
             continue
-        if (
-            source_exists is not None
-            and provenance.path is not None
-            and not source_exists(provenance.path)
-        ):
+        # A PDF page is asked with its page (`sources/pdf/page-001.pdf#page=3`), so a page the
+        # stored PDF does not have is reported like a missing source.
+        cited = provenance.source_id if provenance.kind == "pdf" else provenance.path
+        if source_exists is not None and cited is not None and not source_exists(cited):
             errors.append(
                 f"Nota al pie [^{label}]: la fuente {provenance.source_id} no existe en el tema."
             )
@@ -540,18 +541,23 @@ def _opening(block: Block, width: int = 40) -> str:
 # --------------------------------------------------------------------------------------------
 
 _SOURCE_PATH = re.compile(r"^sources/(?P<kind>notes|book|pdf|web)/(?P<name>[A-Za-z0-9._-]+)$")
+_PDF_PAGE_PATH = re.compile(r"^sources/pdf/[A-Za-z0-9._-]+#page=\d+$")
 _TRANSCRIPT_PATH = re.compile(rf"^sessions/(?P<session>\d{{8}}-\d{{6}})/{TRANSCRIPT_FILE_NAME}$")
 
 
 def topic_source_resolver(vault: Vault, subject_slug: str, topic_slug: str) -> SourceExists:
     """A `source_exists` for one topic, locating each path through the vault's public directories.
 
-    Only the paths a provenance can name are answered (`sources/<kind>/<file>` and
-    `sessions/<id>/transcript.jsonl`); anything else, `..` included, does not exist.
+    Only the paths a provenance can name are answered (`sources/<kind>/<file>`,
+    `sources/pdf/<file>#page=K` and `sessions/<id>/transcript.jsonl`); anything else, `..`
+    included, does not exist. A PDF page exists when the stored PDF's sidecar says it has that
+    page (`sources.pdf_has_page`).
     """
 
     def source_exists(path: str) -> bool:
         target: Path
+        if _PDF_PAGE_PATH.match(path) is not None:
+            return pdf_has_page(vault, subject_slug, topic_slug, path)
         if (source := _SOURCE_PATH.match(path)) is not None:
             directory = sources_directory(vault, subject_slug, topic_slug, source.group("kind"))
             target = directory / source.group("name")
