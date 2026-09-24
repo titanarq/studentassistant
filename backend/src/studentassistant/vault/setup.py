@@ -59,7 +59,7 @@ class SetupResult:
 
 
 def _no_hook(vault: Vault) -> None:
-    """The default post-clone hook: nothing yet (the index rebuild will plug in here)."""
+    """The default post-clone hook: nothing (the CLI passes the index rebuild)."""
 
 
 def _no_warning(message: str) -> None:

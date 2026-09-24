@@ -35,10 +35,10 @@ Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents st
 of sessions are `YYYYMMDD-HHMMSS`.
 
 ## Public surface
-What exists today, after issues #19, #20, #21, #22 and #135: the vault itself, its subjects and its topics,
+What exists today, after issues #19, #20, #21, #22, #135 and #23: the vault itself, its subjects and its topics,
 their sessions with the two append-only logs, their sources, the secret guard, the helpers all of
 them are written with, the read-only functions the web read API uses, the git sync that commits, pushes and pulls them, and the `setup` that
-creates or clones the vault from GitHub. The layout above is the target, not the state -- see "Not written
+creates or clones the vault from GitHub, and the derived SQLite index. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
@@ -188,7 +188,8 @@ key written even when its value is `None`, no `---` or `...` marker, and no wrap
 default 80 columns) and `read_yaml(path, model)`.
 
 ### Git sync -- `git.py`, `sync.py`
-Only these two modules and the setup below run git on the vault.
+Only these two modules, the setup and the index below run git on the vault (the index only
+read-only commands: `rev-parse`, `tag --list`).
 `GitRunner(root, identity, timeout, environment=None)` runs `git` as a
 subprocess in the vault root with a `GitIdentity(name, email)` as author and committer (passed in
 the environment, so no git configuration decides it), never prompts (`GIT_TERMINAL_PROMPT=0`,
@@ -281,7 +282,7 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
 - `clone_vault(path, repo, host, post_clone=<no-op>, author_email=..., timeout=...)` -- refuses a
   non-empty `path` and a repository that does not exist; clones; `Vault.open` checks the format (a
   `VaultFormatError` becomes a Spanish `SetupError` and the clone stays in place); verifies push
-  access; then calls `post_clone(vault)` once (where the index rebuild will plug in).
+  access; then calls `post_clone(vault)` once (the CLI passes the index rebuild).
 - Idempotence: a git repository at `path` whose `origin` is `host.remote_url(repo)` (a trailing
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
   create whose first push never happened is pushed); `post_clone` is not called.
@@ -301,10 +302,64 @@ defaulting to the repository owner, which is also what it takes unattended), run
 the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`, optional,
 `SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
 
+### Derived index -- `index.py`
+A SQLite database at `vault.index_path` (`VaultSettings.index_path`, `SA_VAULT__INDEX_PATH`,
+default `~/.cache/studentassistant/index.sqlite3`): a cache (ADR-0002), never inside the vault,
+every row read from vault files, so it can be deleted at any time.
+
+`VaultIndex.open(vault, path)` creates the file (and its parents) when missing and makes it
+current: it is rebuilt from scratch when it is new, not a usable SQLite file, of another
+`INDEX_SCHEMA_VERSION`, built for another vault (resolved path) or at another git HEAD than the
+vault's (a clone, a pull); otherwise it is updated. `is_current()` says whether schema, vault and
+HEAD match; `refresh()` is `rebuild()` when not current and `update()` otherwise. `rebuild()`
+drops every table and indexes the whole vault; `update()` is incremental: it walks `subjects/`
+(symlinks never followed), compares each file's fingerprint (mtime ns, size, inode) with the one
+recorded, and re-reads only the *units* one of whose files appeared, changed or disappeared. A
+unit is `subject.yaml`; `topic.yaml`; a session's `session.yaml` + `transcript.jsonl`
+(`events.jsonl` is not indexed); one `sources/<kind>/` directory; `notes/apuntes.md`;
+`review/pending.yaml`. Both return an `IndexReport` (`rebuilt`, `units_indexed`, `units_removed`,
+`documents`, `skipped`): a unit whose files this backend cannot read is left out and listed in
+`skipped` as `(unit, reason)`, never failing the rest, and is retried when its files change. The
+notes version tags (`*/apuntes-vN`) are re-listed on every update, and the HEAD the index reflects
+is recorded. `run(interval=5.0)` is an asyncio loop calling `update()` in a worker thread until
+cancelled (how a running backend keeps it current after vault writes); every other method
+blocks. One lock serialises a `VaultIndex`, so threads may share it; `close()` it, or use it as a
+context manager. `rebuild_index(vault, path)` is what `studentassistant index rebuild` runs:
+open, rebuild, close (a corrupt file is replaced). A database that cannot be created is a
+`VaultIndexError`.
+
+Listings (frozen dataclasses, deterministic order, dates as ISO 8601 strings): `subjects()` ->
+`IndexedSubject(slug, name)`; `topics(subject=None)` -> `IndexedTopic(subject, slug, title,
+fidelity_mode, created_at)`; `sessions(subject=None, topic=None)` -> `IndexedSession(subject,
+topic, id, started_at, ended_at, host)`; `sources(subject=None, topic=None)` ->
+`IndexedSource(subject, topic, kind, path, meta)` in `list_sources` order, `path` being what
+`read_source` takes; `pending(subject=None, topic=None)` -> `PendingItem(subject, topic,
+position, item)`, the entries of `review/pending.yaml` as the file holds them (a top-level list,
+or the `items` list of a mapping; their schema is the observer's); `note_versions(topic=None)` ->
+`NoteVersion(topic, version, name, commit)`, keyed by topic slug as the tags are.
+
+`search(query, subject=None, topic=None, kinds=None, limit=20)` -> `SearchHit`s over FTS5
+(`unicode61`, diacritics removed: `fotosintesis` finds `fotosíntesis`). `query` is plain text,
+never FTS5 syntax: every word must appear, as a prefix; a query without a word matches nothing.
+`kinds` narrows to `DOC_KINDS`: `notes` (`notes/apuntes.md`), `page` (a page transcription
+`sources/{notes,book,pdf}/page-NNN.md`), `web` (`sources/web/NNN-<slug>.md`) and `transcript`
+(one final segment). Ranked by BM25, ties by path then `seq`, so the same vault always gives the
+same list. A hit has `kind`, `path` (the vault-relative file), `source` (for a page, its original
+`page-NNN.<ext>`, which the web opens; for web, the page itself; `None` for notes and
+transcripts), `subject`, `topic`, and for a transcript `session`, `seq` and `t_start`; `snippet`
+puts each matched term between `SNIPPET_START` (`\x02`) and `SNIPPET_END` (`\x03`), control
+characters no vault text holds, so the web can highlight without trusting any markup. An unknown
+kind or a `limit` below 1 is a `ValueError`.
+
+The command: `studentassistant index rebuild` rebuilds the configured vault's index and prints the
+number of searchable documents and any unit left out; `setup` rebuilds it right after a clone
+(ADR-0002: install -> setup -> clone -> index rebuild).
+
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
 ledger, notes, git sync and secret-guard names of this section; the YAML models, the slug helpers, the
-file writers, `redact`, `summarize_changes` and the GitHub and setup names are imported from their
-own module (`studentassistant.vault.github`, `studentassistant.vault.setup`).
+file writers, `redact`, `summarize_changes` and the GitHub, setup and index names are imported
+from their own module (`studentassistant.vault.github`, `studentassistant.vault.setup`,
+`studentassistant.vault.index`).
 
 ### Not written yet
 As of issues #21, #117, #119 and #135 no code reads or writes these parts of the layout:
@@ -312,8 +367,8 @@ As of issues #21, #117, #119 and #135 no code reads or writes these parts of the
   (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md`, `review/pending.yaml` and `conversations/`; the
-  derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge` described below.
+- Also unwritten: `state/digest.md`, `review/pending.yaml` (the index reads it when present) and
+  `conversations/`; and the retention `purge` described below.
 
 ## Purge
 `studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);
