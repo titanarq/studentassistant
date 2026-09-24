@@ -1,0 +1,14 @@
+{
+  "type": "hello",
+  "protocol_version": "1.0",
+  "capabilities": {
+    "stt": "client",
+    "stt_provider": "web-speech",
+    "audio_format": {
+      "encoding": "pcm16",
+      "sample_rate_hz": 16000,
+      "channels": 1
+    }
+  },
+  "client_time_ms": 1790251200000
+}

@@ -1,0 +1,29 @@
+{
+  "capture_id": "0b6f5d0e-3c1a-4a8e-9d2b-7f4e1c9a5b30",
+  "trigger": "command",
+  "command_id": "cmd-17",
+  "client_time_ms": 1790251260000,
+  "images": [
+    {
+      "part": "image_0",
+      "content_type": "image/jpeg",
+      "width_px": 4032,
+      "height_px": 3024,
+      "client_time_ms": 1790251260000
+    },
+    {
+      "part": "image_1",
+      "content_type": "image/jpeg",
+      "width_px": 4032,
+      "height_px": 3024,
+      "client_time_ms": 1790251260150
+    },
+    {
+      "part": "image_2",
+      "content_type": "image/jpeg",
+      "width_px": 4032,
+      "height_px": 3024,
+      "client_time_ms": 1790251260300
+    }
+  ]
+}

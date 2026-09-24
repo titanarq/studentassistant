@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.topics.create.request.schema.json",
+  "title": "rest.topics.create.request",
+  "description": "POST /api/subjects/{subject_id}/topics body.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

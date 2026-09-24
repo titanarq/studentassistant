@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/server.transcript.partial.schema.json",
+  "title": "server.transcript.partial",
+  "description": "Interim normalised text of an utterance still being spoken, in session time; a later one replaces it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "segment_id",
+    "session_start_ms",
+    "session_end_ms",
+    "text",
+    "language"
+  ],
+  "properties": {
+    "type": {
+      "const": "transcript.partial"
+    },
+    "segment_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "description": "The partials and the final of one utterance share it."
+    },
+    "session_start_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Session time (ms since the session started, backend clock) when the utterance started."
+    },
+    "session_end_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Session time at the end of the recognised text; never before session_start_ms."
+    },
+    "text": {
+      "type": "string",
+      "description": "Normalised text, whichever STT path produced it (ADR-0008)."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+      "description": "BCP 47 tag, e.g. es-ES."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Recognizer score, when one was reported."
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.pair.response.schema.json",
+  "title": "rest.pair.response",
+  "description": "POST /api/pair response: the device's id and its bearer token (never logged).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "device_id",
+    "token",
+    "protocol_version"
+  ],
+  "properties": {
+    "device_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sent as Authorization: Bearer <token>."
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "MAJOR.MINOR protocol_version."
+    }
+  }
+}

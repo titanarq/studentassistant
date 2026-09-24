@@ -1,0 +1,6 @@
+{
+  "type": "command",
+  "command_id": "cmd-0003",
+  "command": "capture_now",
+  "server_time_ms": 1790251259850
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/server.notice.schema.json",
+  "title": "server.notice",
+  "description": "Status the client shows the student, such as how many doubts await review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "pending_count",
+    "server_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "notice"
+    },
+    "pending_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Items in the pending-review queue (doubts awaiting the student)."
+    },
+    "server_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms, when the message was sent."
+    }
+  }
+}

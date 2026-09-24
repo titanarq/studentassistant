@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.sessions.captures.response.schema.json",
+  "title": "rest.sessions.captures.response",
+  "description": "POST /api/sessions/{id}/captures response; `duplicate` when capture_id was already stored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "capture_id",
+    "session_id",
+    "status",
+    "image_count",
+    "received_at_ms"
+  ],
+  "properties": {
+    "capture_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "status": {
+      "enum": [
+        "stored",
+        "duplicate"
+      ]
+    },
+    "image_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "received_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms."
+    }
+  }
+}
