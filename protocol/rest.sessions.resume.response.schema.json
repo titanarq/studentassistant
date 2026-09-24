@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.sessions.resume.response.schema.json",
+  "title": "rest.sessions.resume.response",
+  "description": "POST /api/sessions/{id}/resume response (empty body): the reopened session and the captures it already holds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "subject_id",
+    "topic_id",
+    "status",
+    "started_at_ms",
+    "ws_path",
+    "protocol_version"
+  ],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "status": {
+      "const": "active"
+    },
+    "started_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms."
+    },
+    "ws_path": {
+      "type": "string",
+      "pattern": "^/ws/sessions/[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "description": "Where to open the WebSocket: /ws/sessions/{session_id}."
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "MAJOR.MINOR protocol_version."
+    },
+    "received_capture_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "description": "Captures already stored, so a resuming client re-uploads only the rest."
+    }
+  }
+}

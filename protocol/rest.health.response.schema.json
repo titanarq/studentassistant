@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.health.response.schema.json",
+  "title": "rest.health.response",
+  "description": "GET /api/health response. No auth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "protocol_version",
+    "server_time_ms"
+  ],
+  "properties": {
+    "status": {
+      "const": "ok"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "MAJOR.MINOR protocol_version."
+    },
+    "server_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms."
+    }
+  }
+}

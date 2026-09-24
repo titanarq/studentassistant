@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from studentassistant.protocol.base import ProtocolModel
 from studentassistant.protocol.version import VERSION_PATTERN
 
 
-class _Message(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class AudioFormat(_Message):
+class AudioFormat(ProtocolModel):
     """The only audio the backend accepts in server STT mode (ADR-0001, ADR-0008)."""
 
     encoding: Literal["pcm16"]
@@ -21,7 +18,7 @@ class AudioFormat(_Message):
     channels: Literal[1]
 
 
-class ClientCapabilities(_Message):
+class ClientCapabilities(ProtocolModel):
     """What the client can do; the backend picks the STT mode in `hello.ack`."""
 
     # The client's preferred STT mode; the backend may still ask for the other one.
@@ -32,7 +29,7 @@ class ClientCapabilities(_Message):
     audio_format: AudioFormat | None = None
 
 
-class ClientHello(_Message):
+class ClientHello(ProtocolModel):
     """First message on the WebSocket: version, capabilities and the clock-sync reading."""
 
     type: Literal["hello"]
