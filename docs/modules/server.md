@@ -42,6 +42,17 @@ Routes registered today:
 - `POST /api/pair` (`rest.pair.request` -> `rest.pair.response`): redeems a code and returns a new
   `device_id` and bearer `token`. An unknown, expired or already redeemed code is 401 with the same
   body in all three cases. Codes live only in the serving process's memory.
+- `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
+  as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
+  `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
+  `unpriced_day_calls` and `unpriced_models` (calls of a model missing from `[llm.prices]`, which
+  add 0 to the totals). Optional query parameters `subject` and `topic` (slugs, given together) and
+  `session` select the session whose total is reported; without them `session_usd` is 0 and only
+  the day total drives the flags. A `session` without `subject` and `topic`, or only one of those
+  two, is 422, an unknown subject/topic 404 (`"No existe ese tema en la bóveda."`), a vault that
+  cannot be opened 503; every `detail` is Spanish. The vault and the caps come from `studentassistant.config`, read on every
+  request. The server computes no cost itself. Needs the bearer check like every non-exempt route.
+  A local endpoint, not part of protocol v1.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
   `backend/src/studentassistant/server/static/` (`Path(__file__).parent / "static"` -- a
   code-layout constant, not a configuration knob; tests pass a temporary directory). The web

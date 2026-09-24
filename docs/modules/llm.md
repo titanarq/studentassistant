@@ -83,7 +83,9 @@ No price or cap lives anywhere but these config defaults.
   first, then `"day"`), `limit_usd` and `total_usd`; nothing is sent when they are raised.
 - `cost_status(binding, settings=None, *, now=None) -> CostStatus` (`session_usd`, `day_usd`,
   `max_usd_per_session`, `max_usd_per_day`, `observer_paused`, `editor_needs_confirmation`, the
-  last two true once either cap is reached) for the server's status endpoint.
+  last two true once either cap is reached; `unpriced_session_calls`, `unpriced_day_calls` and
+  `unpriced_models` count the entries of each scope with no known cost) for the server's
+  `GET /api/cost`.
 - CLI: `studentassistant cost [--topic <subject-slug>/<topic-slug>]` prints, from the configured
   vault, USD and tokens per topic with spend (or the one topic) plus `Hoy (UTC)`; an unknown or
   malformed topic exits 1 with a Spanish message.

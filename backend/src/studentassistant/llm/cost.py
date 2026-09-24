@@ -89,6 +89,11 @@ class CostStatus(BaseModel):
     # Both are true once either cap is reached: the observer is paused and the editor asks first.
     observer_paused: bool
     editor_needs_confirmation: bool
+    # Calls of a model missing from `[llm.prices]` add 0 to the totals above: they are counted
+    # here, per scope, so a client can say the caps may be underestimating the spend.
+    unpriced_session_calls: int = 0
+    unpriced_day_calls: int = 0
+    unpriced_models: list[str] = []
 
 
 def _usd(entries: Iterable[LedgerEntry]) -> float:
@@ -97,16 +102,24 @@ def _usd(entries: Iterable[LedgerEntry]) -> float:
 
 def session_usd(binding: LedgerBinding) -> float:
     """USD of the bound session's entries (0 when the binding names no session)."""
+    return _usd(_session_entries(binding))
+
+
+def _session_entries(binding: LedgerBinding) -> list[LedgerEntry]:
     if binding.session is None:
-        return 0.0
+        return []
     entries = read_ledger(binding.vault, binding.subject, binding.topic)
-    return _usd(entry for entry in entries if entry.session == binding.session)
+    return [entry for entry in entries if entry.session == binding.session]
+
+
+def _day_entries(vault: Vault, now: datetime) -> list[LedgerEntry]:
+    day = now.astimezone(UTC).date()
+    return [entry for entry in read_all_ledgers(vault) if entry.time.date() == day]
 
 
 def day_usd(vault: Vault, now: datetime) -> float:
     """USD of every entry in the vault whose `time` falls on `now`'s UTC day."""
-    day = now.astimezone(UTC).date()
-    return _usd(entry for entry in read_all_ledgers(vault) if entry.time.date() == day)
+    return _usd(_day_entries(vault, now))
 
 
 def _reached_cap(
@@ -183,15 +196,26 @@ def record_call(
 def cost_status(
     binding: LedgerBinding, settings: Settings | None = None, *, now: datetime | None = None
 ) -> CostStatus:
-    """The binding's session and day spend against the configured caps."""
+    """The binding's session and day spend against the configured caps.
+
+    Entries without a known cost (`estimated_usd = None`) add 0 to the totals and are counted in
+    `unpriced_session_calls` / `unpriced_day_calls`, their models in `unpriced_models`.
+    """
     llm = (settings or Settings()).llm
     now = now or utc_now()
     reached = _reached_cap(binding, llm, now) is not None
+    session_entries = _session_entries(binding)
+    day_entries = _day_entries(binding.vault, now)
+    unpriced_session = [entry for entry in session_entries if entry.estimated_usd is None]
+    unpriced_day = [entry for entry in day_entries if entry.estimated_usd is None]
     return CostStatus(
-        session_usd=session_usd(binding),
-        day_usd=day_usd(binding.vault, now),
+        session_usd=_usd(session_entries),
+        day_usd=_usd(day_entries),
         max_usd_per_session=llm.max_usd_per_session,
         max_usd_per_day=llm.max_usd_per_day,
         observer_paused=reached,
         editor_needs_confirmation=reached,
+        unpriced_session_calls=len(unpriced_session),
+        unpriced_day_calls=len(unpriced_day),
+        unpriced_models=sorted({entry.model for entry in unpriced_session + unpriced_day}),
     )
