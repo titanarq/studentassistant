@@ -27,8 +27,12 @@ at import time). `server` is the `[server]` config section (`ServerSettings`; de
 clock). The app keeps both, and its `DeviceStore`, in `app.state.server` / `.codes` / `.devices`.
 Routes registered today:
 
-- `GET /api/health` -> `{"status": "ok", "version": "<package version>"}`, whether or not the web
-  app is built.
+- `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
+  `{"status": "ok", "protocol_version": "<PROTOCOL_VERSION>", "server_time_ms": <epoch ms>}` and no
+  other key (strict clients reject unknown keys), whether or not the web app is built.
+  Unauthenticated, still behind the LAN guard and the Host allowlist. The package version is not
+  part of it; it stays in the app's OpenAPI metadata (`GET /openapi.json` `info.version`, behind the
+  usual bearer check).
 - `POST /api/pair/codes` (loopback callers only; anyone else gets 403) -> `{"url", "code",
   "expires_at"}`: a one-time pairing code (`XXXX-XXXX`, from an alphabet without 0/O/1/I) valid
   for 5 minutes and redeemable once. `url` is the LAN base URL for the capture client:

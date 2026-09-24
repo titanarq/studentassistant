@@ -44,7 +44,8 @@ token):
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
 - `src/App.tsx` is the placeholder study desk: heading "Mesa de estudio", fetches
-  `GET /api/health` on mount and shows the backend `version` (Spanish loading/error states).
+  `GET /api/health` on mount, decodes it strictly as `rest.health.response` and shows the
+  backend `protocol_version` (Spanish loading/error states; any other shape is the error state).
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.

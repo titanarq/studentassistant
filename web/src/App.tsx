@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { decodeHealthResponse } from "./protocol";
 
 type Health =
   | { state: "loading" }
-  | { state: "ok"; version: string }
+  | { state: "ok"; protocolVersion: string }
   | { state: "error" };
 
 export default function App() {
@@ -13,10 +14,12 @@ export default function App() {
     fetch("/api/health")
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<{ status: string; version: string }>;
+        return response.json() as Promise<unknown>;
       })
       .then((body) => {
-        if (!cancelled) setHealth({ state: "ok", version: body.version });
+        // Decoded strictly as protocol v1 `rest.health.response`; any other shape is an error.
+        const health = decodeHealthResponse(body, "");
+        if (!cancelled) setHealth({ state: "ok", protocolVersion: health.protocol_version });
       })
       .catch(() => {
         if (!cancelled) setHealth({ state: "error" });
@@ -30,7 +33,7 @@ export default function App() {
     <main>
       <h1>Mesa de estudio</h1>
       {health.state === "loading" && <p>Conectando con el servidor…</p>}
-      {health.state === "ok" && <p>Servidor en marcha, versión {health.version}</p>}
+      {health.state === "ok" && <p>Servidor en marcha, protocolo {health.protocolVersion}</p>}
       {health.state === "error" && <p role="alert">No se pudo conectar con el servidor.</p>}
     </main>
   );

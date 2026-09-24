@@ -2,8 +2,8 @@
 
 A factory, not a module-level `app`, so uvicorn, the CLI and each test get an instance of their own
 and nothing is imported -- and therefore nothing is registered or connected -- until somebody asks
-for an app. Today it carries the health endpoint the runbooks and the packaging checks use to see
-that the process is up, the two pairing endpoints, and the built web app
+for an app. Today it carries the protocol v1 health endpoint the runbooks and the packaging checks
+use to see that the process is up, the two pairing endpoints, and the built web app
 (`web/` -> `server/static/`) served at `/` with an SPA fallback; every other route of the
 phone<->backend contract lands here later.
 
@@ -14,6 +14,7 @@ redacted from every log record (`redaction.py`).
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -24,6 +25,8 @@ from pydantic import BaseModel
 
 from studentassistant import __version__
 from studentassistant.config import ServerSettings, Settings
+from studentassistant.protocol.rest import HealthResponse
+from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
@@ -37,13 +40,6 @@ NOT_BUILT_HINT = "The web app has not been built yet: run `cd web && npm run bui
 
 _RESERVED_PREFIXES = ("api", "ws")
 """First path segments that belong to the backend: never answered with the SPA's `index.html`."""
-
-
-class HealthResponse(BaseModel):
-    """The answer to `GET /api/health`: the process is up, and this is what it is running."""
-
-    status: Literal["ok"] = "ok"
-    version: str
 
 
 class NotBuiltResponse(BaseModel):
@@ -91,7 +87,13 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> HealthResponse:
-        return HealthResponse(version=__version__)
+        # Protocol v1 `rest.health.response`: strict clients reject any other key, so the package
+        # version is not here (it stays in the OpenAPI metadata, `GET /openapi.json`).
+        return HealthResponse(
+            status="ok",
+            protocol_version=PROTOCOL_VERSION,
+            server_time_ms=time.time_ns() // 1_000_000,
+        )
 
     app.include_router(pairing_router(server, devices, app.state.codes))
 

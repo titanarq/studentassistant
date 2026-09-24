@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from studentassistant import __version__
 from studentassistant.config import ServerSettings
+from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.app import STATIC_DIR, create_app
 
 INDEX_HTML = "<!doctype html><title>Student Assistant</title><div id='root'></div>"
@@ -66,7 +66,8 @@ def test_hint_when_not_built(tmp_path: Path, server: ServerSettings) -> None:
     assert isinstance(body["hint"], str) and body["hint"]
     assert "npm run build" in body["hint"]
 
-    assert client.get("/api/health").json() == {"status": "ok", "version": __version__}
+    health = client.get("/api/health").json()
+    assert (health["status"], health["protocol_version"]) == ("ok", PROTOCOL_VERSION)
 
 
 def test_root_serves_index_html(built: TestClient) -> None:
@@ -103,4 +104,5 @@ def test_path_outside_the_static_dir_is_not_served(built: TestClient, built_dir:
 
 
 def test_health_still_answers_when_built(built: TestClient) -> None:
-    assert built.get("/api/health").json() == {"status": "ok", "version": __version__}
+    health = built.get("/api/health").json()
+    assert (health["status"], health["protocol_version"]) == ("ok", PROTOCOL_VERSION)
