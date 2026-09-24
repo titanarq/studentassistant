@@ -31,8 +31,8 @@ the `studentassistant` console script.
 `studentassistant/server/app.py`. A factory, not a module-level `app`: uvicorn, the CLI and every
 test get an instance of their own, and nothing is imported -- therefore nothing registered or
 connected -- until somebody asks for an app. It serves `GET /api/health`, which answers
-`{"status": "ok", "version": ...}`; every other route of the phone<->backend contract lands there
-later.
+the protocol v1 `rest.health.response` (`status`, `protocol_version`, `server_time_ms`); every
+other route of the phone<->backend contract lands there later.
 
 ### Configuration
 `studentassistant/config.py`: `Settings()` (pydantic-settings) reads the TOML at
