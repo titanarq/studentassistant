@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The backend runs on the student's PC and is reached over plain HTTP on the LAN (ADR-0001;
+  its LAN guard refuses non-private peers). The backend's address is only known at pairing time
+  (the QR's `url`), so cleartext cannot be scoped to one domain here: it is allowed for every
+  host, and the user CAs stay untrusted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
