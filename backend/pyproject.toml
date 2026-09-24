@@ -3,6 +3,7 @@ name = "studentassistant"
 description = "Turns handwritten class notes into faithful digital study notes (Ubuntu PC backend)."
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.141.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
 ]
@@ -20,6 +21,7 @@ packages = ["src/studentassistant"]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13.1",
     "pytest>=9.1.1",
     "ruff>=0.16.8",
 ]
