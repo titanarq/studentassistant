@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
 from yaml import safe_dump, safe_load
 
 from studentassistant.vault.models import VaultFileModel
@@ -108,6 +109,22 @@ def write_yaml_atomic(path: Path, model: VaultFileModel) -> None:
     first line of a vault file is its first field and the last one is its last field.
     """
     write_text_atomic(path, dump_yaml(model.model_dump(mode="json")))
+
+
+def write_json_atomic(path: Path, model: BaseModel) -> None:
+    """Dump `model` as indented JSON and write it to `path` through `write_text_atomic`.
+
+    The dump is `model_dump_json(indent=2)` plus a final newline: keys in the order the model
+    declares them, so the same model is always the same bytes and a diff shows only what changed.
+    Any Pydantic model is accepted, since a JSON state file's model belongs to the module that
+    owns its content (the observer's snapshot, say), never to the vault.
+
+    Raises:
+        SecretRefused: when the dump looks like it carries a key; nothing is written.
+        FileNotFoundError: when `path`'s directory does not exist.
+        OSError: when the write fails; `path` keeps the content it had.
+    """
+    write_text_atomic(path, model.model_dump_json(indent=2) + "\n")
 
 
 def read_yaml[T: VaultFileModel](path: Path, model: type[T]) -> T:

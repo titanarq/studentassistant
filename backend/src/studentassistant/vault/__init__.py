@@ -25,6 +25,8 @@ from studentassistant.vault.sessions import (
     SessionError,
     SessionFileError,
     end_session,
+    list_sessions,
+    read_topic_events,
     resume_session,
     sessions_directory,
     start_session,
@@ -35,6 +37,12 @@ from studentassistant.vault.sources import (
     UnknownSourceKindError,
     put_source,
     sources_directory,
+)
+from studentassistant.vault.state import (
+    SnapshotFileError,
+    StateError,
+    read_observer_snapshot,
+    write_observer_snapshot,
 )
 from studentassistant.vault.subjects import (
     StoredSubject,
@@ -97,7 +105,9 @@ __all__ = [
     "SessionError",
     "SessionFileError",
     "SessionMeta",
+    "SnapshotFileError",
     "SourceError",
+    "StateError",
     "StoredSubject",
     "StoredTopic",
     "SubjectError",
@@ -127,6 +137,7 @@ __all__ = [
     "guard",
     "last_seq",
     "ledger_path",
+    "list_sessions",
     "list_subjects",
     "list_topics",
     "looks_like_secret",
@@ -135,6 +146,8 @@ __all__ = [
     "read_all_ledgers",
     "read_jsonl",
     "read_ledger",
+    "read_observer_snapshot",
+    "read_topic_events",
     "resume_session",
     "sessions_directory",
     "sources_directory",
@@ -142,4 +155,5 @@ __all__ = [
     "subject_directory",
     "topic_directory",
     "topics_directory",
+    "write_observer_snapshot",
 ]
