@@ -17,6 +17,7 @@ from typing import Any
 
 from studentassistant.config import Settings
 from studentassistant.llm.client import LLMClient, Sleep, get_client
+from studentassistant.llm.cost import Clock, LedgerBinding, utc_now
 from studentassistant.llm.errors import FakeClaudeExhaustedError, LLMError
 from studentassistant.llm.types import LLMRequest, LLMResponse, Usage
 
@@ -69,10 +70,18 @@ class FakeClaude:
 
     # -- use -------------------------------------------------------------------------------
     def client(
-        self, role: str, *, settings: Settings | None = None, sleep: Sleep = no_sleep
+        self,
+        role: str,
+        *,
+        settings: Settings | None = None,
+        sleep: Sleep = no_sleep,
+        ledger: LedgerBinding | None = None,
+        clock: Clock = utc_now,
     ) -> LLMClient:
         """`get_client(role)` wired to this fake (and to a sleep that does not wait)."""
-        return get_client(role, settings=settings, transport=self, sleep=sleep)
+        return get_client(
+            role, settings=settings, transport=self, sleep=sleep, ledger=ledger, clock=clock
+        )
 
     @property
     def pending(self) -> int:

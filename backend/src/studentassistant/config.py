@@ -153,11 +153,63 @@ class LlmRolesSettings(BaseModel):
     generator: GeneratorRoleSettings = Field(default_factory=GeneratorRoleSettings)
 
 
+class LlmPrice(BaseModel):
+    """What one model costs, in USD per million tokens of each kind the API reports."""
+
+    input_per_mtok: float = Field(ge=0)
+    output_per_mtok: float = Field(ge=0)
+    # 5-minute cache writes (`cache_control: ephemeral`), the only TTL this backend sets.
+    cache_write_per_mtok: float = Field(ge=0)
+    cache_read_per_mtok: float = Field(ge=0)
+
+
+# Anthropic list prices of the two default models (USD per MTok): cache writes are 1.25x input
+# (5-minute TTL), cache reads as published. A model missing here is recorded with no price.
+DEFAULT_LLM_PRICES: dict[str, dict[str, float]] = {
+    FAST_MODEL: {
+        "input_per_mtok": 2.0,
+        "output_per_mtok": 10.0,
+        "cache_write_per_mtok": 2.5,
+        "cache_read_per_mtok": 0.2,
+    },
+    CAPABLE_MODEL: {
+        "input_per_mtok": 4.0,
+        "output_per_mtok": 20.0,
+        "cache_write_per_mtok": 5.0,
+        "cache_read_per_mtok": 0.2,
+    },
+}
+
+
+def _default_prices() -> dict[str, LlmPrice]:
+    return {model: LlmPrice(**price) for model, price in DEFAULT_LLM_PRICES.items()}
+
+
 class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
     roles: LlmRolesSettings = Field(default_factory=LlmRolesSettings)
     max_attempts: int = Field(default=DEFAULT_LLM_MAX_ATTEMPTS, ge=1)
+    # Cost caps in USD (no cap when unset): the calls of one session, and every call of the
+    # current UTC day across the whole vault. Only calls bound to a ledger count and are capped.
+    max_usd_per_session: float | None = Field(default=None, ge=0)
+    max_usd_per_day: float | None = Field(default=None, ge=0)
+    # `[llm.prices."<model id>"]`: a configured table is merged over the defaults, key by key, so
+    # adding a model or changing one price keeps the rest.
+    prices: dict[str, LlmPrice] = Field(default_factory=_default_prices)
+
+    @field_validator("prices", mode="before")
+    @classmethod
+    def merge_default_prices(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        merged: dict[str, Any] = {model: dict(price) for model, price in DEFAULT_LLM_PRICES.items()}
+        for model, price in value.items():
+            if isinstance(price, dict) and model in merged:
+                merged[model] = {**merged[model], **price}
+            else:
+                merged[model] = price
+        return merged
 
 
 # Speech-to-text (ADR-0008): by default the capture client transcribes (Google) and sends segments.
