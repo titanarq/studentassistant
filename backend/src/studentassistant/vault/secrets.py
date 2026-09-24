@@ -61,3 +61,10 @@ def guard(content: bytes | str) -> None:
     pattern = looks_like_secret(content)
     if pattern is not None:
         raise SecretRefused(pattern)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace every match of every secret pattern in `text` with `***`, for logs and statuses."""
+    for pattern in _PATTERNS.values():
+        text = pattern.sub("***", text)
+    return text
