@@ -35,9 +35,9 @@ Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents st
 of sessions are `YYYYMMDD-HHMMSS`.
 
 ## Public surface
-What exists today, after issues #19, #20, #21 and #22: the vault itself, its subjects and its topics,
+What exists today, after issues #19, #20, #21, #22 and #135: the vault itself, its subjects and its topics,
 their sessions with the two append-only logs, their sources, the secret guard, the helpers all of
-them are written with, the git sync that commits, pushes and pulls them, and the `setup` that
+them are written with, the read-only functions the web read API uses, the git sync that commits, pushes and pulls them, and the `setup` that
 creates or clones the vault from GitHub. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
@@ -95,6 +95,11 @@ subject_slug, topic_slug)` yields `(session_id, Event)` for every session of the
 in id order and events sorted by `seq` within each (a `merge=union` may have reordered the lines).
 A missing topic is a `TopicNotFoundError`; a listed session whose `events.jsonl` is missing is a
 `SessionFileError`.
+`read_session_transcript(vault, subject_slug, topic_slug, session_id)` returns the
+`TranscriptSegment`s of one listed session, open or ended, sorted by `seq` (a torn last line left
+out), reading the files directly: no `Session` handle, nothing written. An id that is not a
+session id or that the topic does not list is a `SessionNotFoundError`; a missing
+`transcript.jsonl` is a `SessionFileError`.
 
 ### Topic state -- `state.py`
 `write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)` writes any Pydantic model as
@@ -135,6 +140,33 @@ and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`). The nu
 the highest already in the directory, derived files included. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
+`list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
+content's vault-relative POSIX path --, `meta` -- the parsed sidecar, or `None`) per stored source,
+ordered by kind (`SOURCE_KINDS` order) then number; sidecars, derived files (`page-NNN.md` beside
+another `page-NNN.<ext>`, `page-NNN.page.jpg`) and symlinks are not listed, and a topic without
+`sources/` lists as empty. `read_source(vault, vault_relative_path)` returns a `SourceContent`
+(`content` bytes, `meta` of the page's sidecar or `None`, `media_type` guessed from the extension,
+`application/octet-stream` when unknown). The path is taken literally (never URL-decoded) and must
+be `subjects/<slug>/topics/<slug>/sources/<kind>/<file>`: absolute, `..`/`.`/empty segments,
+backslashes, NUL, anything outside a topic's `sources/<kind>/`, or a file that resolves (symlinks
+followed) anywhere but that directory is a `SourcePathError`; a well-formed path with no file is a
+`SourceNotFoundError`; a sidecar that is not a YAML mapping is a `SourceFileError` (all three are
+`SourceError`s). A symlinked sidecar is never followed. Neither function writes or runs git.
+
+### Notes and generated material -- `notes.py`
+`read_notes(vault, subject_slug, topic_slug)` returns the text of `notes/apuntes.md`, or `None`
+when it has not been written yet (a symlink or non-UTF-8 file is a `NotesError`, a `VaultError`).
+`list_generated(vault, subject_slug, topic_slug)` returns the sorted vault-relative POSIX paths of
+every file under `generated/`, subdirectories included and symlinks skipped; an empty list when
+the directory does not exist. `notes_path(...)` and `generated_directory(...)` give the paths.
+Nothing here writes or runs git; writing notes and generated material belongs to the editor and
+generators tasks.
+
+### Reading with ids from outside
+Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `list_generated`)
+goes through `require_topic(vault, subject_slug, topic_slug)` (`topics.py`): a value that is not a
+slug (`slugs.is_slug`: `[a-z0-9]` runs joined by single hyphens) is a `SubjectNotFoundError` or a
+`TopicNotFoundError` without touching the disk, so an id from a URL cannot walk out of its topic.
 
 ### Secret guard -- `secrets.py`
 `looks_like_secret(content)` returns the name of the first pattern the text or bytes match
@@ -270,15 +302,16 @@ the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`
 `SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
 
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
-ledger, git sync and secret-guard names of this section; the YAML models, the slug helpers, the
+ledger, notes, git sync and secret-guard names of this section; the YAML models, the slug helpers, the
 file writers, `redact`, `summarize_changes` and the GitHub and setup names are imported from their
 own module (`studentassistant.vault.github`, `studentassistant.vault.setup`).
 
 ### Not written yet
-As of issues #21, #117 and #119 no code reads or writes these parts of the layout:
-- **notes** -- `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005 (its version
-  tags exist: `create_notes_tag`).
-- **generated** -- `generated/` and everything the generators put in it.
+As of issues #21, #117, #119 and #135 no code reads or writes these parts of the layout:
+- **notes** -- writing `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005
+  (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
+- **generated** -- writing `generated/` and everything the generators put in it (listing exists:
+  `list_generated`).
 - Also unwritten: `state/digest.md`, `review/pending.yaml` and `conversations/`; the
   derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge` described below.
 
