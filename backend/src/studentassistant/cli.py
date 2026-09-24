@@ -291,7 +291,13 @@ def setup(
         if mode is SetupMode.create:
             assert student is not None
             result = create_vault(
-                path, vault_repo, student, host, git.author_email, git.timeout_seconds
+                path,
+                vault_repo,
+                student,
+                host,
+                git.author_email,
+                git.timeout_seconds,
+                warn=typer.echo,
             )
         else:
             result = clone_vault(

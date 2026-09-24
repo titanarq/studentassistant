@@ -167,3 +167,18 @@ def test_select_host_without_gh_nor_token_explains_in_spanish(fake_gh: Path) -> 
     with pytest.raises(GitHubHostError) as error:
         select_host({})
     assert "No hay forma de acceder a GitHub" in str(error.value)
+
+
+def test_gh_host_reads_the_visibility_of_a_repository(fake_gh: Path, github_root: Path) -> None:
+    bare_repo(github_root, "ana/vault")
+    public = bare_repo(github_root, "ana/publico")
+    (public / "PUBLIC").touch()
+    host = GhCliHost()
+    assert host.repo_is_private("ana/vault") is True
+    assert host.repo_is_private("ana/publico") is False
+    with pytest.raises(GitHubHostError, match="visibilidad"):
+        host.repo_is_private("ana/no-existe")
+
+
+def test_token_host_cannot_tell_the_visibility() -> None:
+    assert TokenHost(GITHUB_PAT).repo_is_private("ana/vault") is None

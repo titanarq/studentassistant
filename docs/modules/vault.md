@@ -215,11 +215,12 @@ command).
 
 `GitHubHost` (protocol, `github.py`): `name`, `authenticated()`, `remote_url(repo)` (the
 `https://github.com/<owner>/<name>.git` git uses; no credential in it), `repo_exists(repo)`,
-`create_private_repo(repo)` and `git_environment()` (the variables a git child process needs to
+`repo_is_private(repo)` (`None` when the host cannot tell), `create_private_repo(repo)` and `git_environment()` (the variables a git child process needs to
 authenticate). Two implementations, both taking a `remote_base` (default `GITHUB_URL`; tests point
 it at `file://` bare repositories):
 - `GhCliHost(gh="gh", remote_base, timeout)` -- `gh auth status` decides `authenticated`;
-  `gh api repos/<repo>` answers `repo_exists` (a 404 is `False`); `gh repo create <repo> --private`
+  `gh api repos/<repo>` answers `repo_exists` (a 404 is `False`); `gh repo view <repo> --json
+  visibility` answers `repo_is_private`; `gh repo create <repo> --private`
   creates; git borrows `gh`'s credential through `gh auth git-credential` as credential helper,
   given as `GIT_CONFIG_*` environment variables (other helpers reset first), so nothing is written
   to any git configuration.
@@ -228,7 +229,7 @@ it at `file://` bare repositories):
   reaches git only as the `STUDENTASSISTANT_GIT_TOKEN` (`GIT_TOKEN_ENV_VAR`) variable of the child
   process, which an environment-given credential helper reads: never in a remote URL,
   `.git/config`, the vault, `config.toml` or a message; `repr()` omits it. `repo_exists` is a
-  `git ls-remote`. `create_private_repo` always refuses with `NO_GH_CREATE_MESSAGE` (install and
+  `git ls-remote`; `repo_is_private` is always `None`. `create_private_repo` always refuses with `NO_GH_CREATE_MESSAGE` (install and
   log in to `gh`, or create an empty private repository by hand and re-run: creating is a REST call
   and this module has no HTTP client).
 
@@ -238,9 +239,11 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
 `GitHubHostError` message; messages are Spanish, shown to the student as they are.
 
 `setup.py` (`repo` is always `owner/name`, checked by `config.check_repo_name`):
-- `create_vault(path, repo, student, host, author_email=..., timeout=...)` -- refuses a non-empty
-  `path` (an empty directory is accepted) and a repository that exists with commits; creates it
-  private when it does not exist (an existing empty one is used as it is); then `Vault.init(path,
+- `create_vault(path, repo, student, host, author_email=..., timeout=..., warn=<no-op>)` -- refuses
+  a non-empty `path` (an empty directory is accepted) and a repository that exists with commits;
+  creates it private when it does not exist; an existing empty one is used once `repo_is_private`
+  says so -- a public one is refused, and when the host cannot tell (token, no `gh`) `warn` gets
+  `NOT_KNOWN_PRIVATE_WARNING` (Spanish: confirm on GitHub it is private; the CLI prints it); then `Vault.init(path,
   student)`, commits the first files (`vault creado`), adds `origin`, pushes `main` and verifies
   push access. Everything GitHub could refuse is checked before anything is written locally.
 - `clone_vault(path, repo, host, post_clone=<no-op>, author_email=..., timeout=...)` -- refuses a
@@ -261,8 +264,8 @@ clone, repository, local path defaulting to `vault.path`, and for a new vault th
 defaulting to the repository owner, which is also what it takes unattended), runs the flow with
 `select_host()` and then `config.write_vault_config(vault_path, repo)`. That writer merges
 `vault.path` (absolute) and `vault.repo` into the TOML at `config_toml_path()` (`SA_CONFIG` or
-`~/.config/studentassistant/config.toml`), keeping every other key and comment, writing nothing
-else, and leaving the file untouched when it already holds those values: re-running `setup` with
+`~/.config/studentassistant/config.toml`), keeping every other key and comment and the file's permission bits
+(a new file is `0600`, `NEW_CONFIG_MODE`), writing nothing else, and leaving the file untouched when it already holds those values: re-running `setup` with
 the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`, optional,
 `SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
 

@@ -70,6 +70,10 @@ class GitHubHost(Protocol):
         """Whether `repo` exists and is visible with this host's credential."""
         ...
 
+    def repo_is_private(self, repo: str) -> bool | None:
+        """Whether the existing `repo` is private; `None` when this host cannot tell."""
+        ...
+
     def create_private_repo(self, repo: str) -> None:
         """Create `repo` as an empty private repository."""
         ...
@@ -166,6 +170,14 @@ class GhCliHost:
             f"no se pudo comprobar si existe {repo} en GitHub: {_last_line(completed)}"
         )
 
+    def repo_is_private(self, repo: str) -> bool:
+        completed = self._gh("repo", "view", repo, "--json", "visibility", "--jq", ".visibility")
+        if completed.returncode != 0:
+            raise GitHubHostError(
+                f"no se pudo comprobar la visibilidad de {repo} en GitHub: {_last_line(completed)}"
+            )
+        return completed.stdout.strip().upper() == "PRIVATE"
+
     def create_private_repo(self, repo: str) -> None:
         completed = self._gh("repo", "create", repo, "--private")
         if completed.returncode != 0:
@@ -215,6 +227,9 @@ class TokenHost:
         raise GitHubHostError(
             f"no se pudo comprobar si existe {repo} en GitHub: {_last_line(completed)}"
         )
+
+    def repo_is_private(self, repo: str) -> None:
+        return None  # only the GitHub API knows, and this host has no way to ask it
 
     def create_private_repo(self, repo: str) -> None:
         raise GitHubHostError(NO_GH_CREATE_MESSAGE)

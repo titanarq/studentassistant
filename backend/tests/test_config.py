@@ -181,3 +181,31 @@ def test_vault_repo_is_optional_and_validated(config_toml: Path) -> None:
     write_toml(config_toml, '[vault]\nrepo = "mal repo"\n')
     with pytest.raises(ValueError):
         Settings()
+
+
+def test_write_vault_config_keeps_the_mode_of_an_existing_file(
+    config_toml: Path, tmp_path: Path
+) -> None:
+    from studentassistant.config import write_vault_config
+
+    write_toml(config_toml, "[server]\nport = 9100\n")
+    config_toml.chmod(0o600)
+
+    assert write_vault_config(tmp_path / "vault", "ana/vault") is True
+
+    assert config_toml.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in config_toml.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_write_vault_config_creates_a_new_file_owner_only(
+    config_toml: Path, tmp_path: Path
+) -> None:
+    from studentassistant.config import write_vault_config
+
+    old_umask = os.umask(0o002)
+    try:
+        write_vault_config(tmp_path / "vault", "ana/vault")
+    finally:
+        os.umask(old_umask)
+
+    assert config_toml.stat().st_mode & 0o777 == 0o600

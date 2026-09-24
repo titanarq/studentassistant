@@ -269,6 +269,9 @@ def test_setup_with_a_token_never_writes_or_prints_it(
     )
 
     assert result.exit_code == 0, result.output
+    assert "Aviso: sin `gh` no se puede comprobar que el repositorio ana/vault sea privado" in (
+        result.output
+    )
     assert token not in result.output
     assert token not in config_toml.read_text(encoding="utf-8")
     assert token not in (vault_path / ".git" / "config").read_text(encoding="utf-8")

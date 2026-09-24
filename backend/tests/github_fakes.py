@@ -33,9 +33,10 @@ class LocalHost:
 
     name = "local"
 
-    def __init__(self, root: Path, authenticated: bool = True) -> None:
+    def __init__(self, root: Path, authenticated: bool = True, private: bool | None = True) -> None:
         self.root = root
         self._authenticated = authenticated
+        self.private = private
         self.created: list[str] = []
 
     def authenticated(self) -> bool:
@@ -46,6 +47,9 @@ class LocalHost:
 
     def repo_exists(self, repo: str) -> bool:
         return (self.root / f"{repo}.git").is_dir()
+
+    def repo_is_private(self, repo: str) -> bool | None:
+        return self.private
 
     def create_private_repo(self, repo: str) -> None:
         self.created.append(repo)
@@ -67,6 +71,10 @@ case "$1 $2" in
     if [ -e "$FAKE_GH_ROOT/.broken" ]; then echo "HTTP 500: boom token=$GH_TOKEN" >&2; exit 1; fi
     if [ -d "$FAKE_GH_ROOT/$repo.git" ]; then exit 0; fi
     echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  "repo view")
+    if [ "$4 $5 $6 $7" != "--json visibility --jq .visibility" ]; then echo "bad $*" >&2; exit 2; fi
+    if [ ! -d "$FAKE_GH_ROOT/$3.git" ]; then echo "Could not resolve" >&2; exit 1; fi
+    if [ -e "$FAKE_GH_ROOT/$3.git/PUBLIC" ]; then echo PUBLIC; else echo PRIVATE; fi ;;
   "repo create")
     if [ "$4" != "--private" ]; then echo "not private" >&2; exit 1; fi
     if [ -e "$FAKE_GH_ROOT/.broken" ]; then echo "HTTP 500: boom token=$GH_TOKEN" >&2; exit 1; fi

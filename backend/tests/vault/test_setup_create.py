@@ -146,9 +146,13 @@ def test_create_with_a_token_leaves_it_nowhere_on_disk(tmp_path: Path, github: P
     host = TokenHost(GITHUB_PAT, remote_base=remote_base(github))
     config = tmp_path / "config.toml"
 
-    result = create_vault(tmp_path / "vault", REPO, STUDENT, host)
+    warnings: list[str] = []
+
+    result = create_vault(tmp_path / "vault", REPO, STUDENT, host, warn=warnings.append)
 
     assert result.action == "created"
+    assert len(warnings) == 1
+    assert "no se puede comprobar que el repositorio ana/vault sea privado" in warnings[0]
     written = [p for p in (tmp_path / "vault").rglob("*") if p.is_file()]
     written += [p for p in github.rglob("*") if p.is_file()]
     assert (tmp_path / "vault" / ".git" / "config") in written
@@ -188,3 +192,61 @@ def test_create_through_a_logged_in_gh(
     assert result.action == "created"
     assert "repo create ana/vault --private" in log.read_text()
     assert commit_count(github / "ana" / "vault.git", "main") == 1
+
+
+def test_create_refuses_an_existing_public_repository(tmp_path: Path, github: Path) -> None:
+    bare_repo(github, REPO)
+    host = LocalHost(github, private=False)
+
+    with pytest.raises(SetupError, match="es público"):
+        create_vault(tmp_path / "vault", REPO, STUDENT, host)
+    assert not (tmp_path / "vault").exists()
+
+
+def test_create_through_gh_refuses_a_hand_made_public_repository(
+    tmp_path: Path, github: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from github_fakes import install_fake_gh
+    from studentassistant.vault.github import GhCliHost
+
+    env: dict[str, str] = {}
+    install_fake_gh(tmp_path / "bin", github, tmp_path / "gh.log", env)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    (bare_repo(github, REPO) / "PUBLIC").touch()
+    host = GhCliHost(remote_base=remote_base(github))
+
+    with pytest.raises(SetupError, match="es público"):
+        create_vault(tmp_path / "vault", REPO, STUDENT, host)
+    assert not (tmp_path / "vault").exists()
+    assert commit_count_or_zero(github / "ana" / "vault.git") == 0
+
+
+def test_create_through_gh_uses_a_hand_made_private_repository_without_warning(
+    tmp_path: Path, github: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from github_fakes import install_fake_gh
+    from studentassistant.vault.github import GhCliHost
+
+    env: dict[str, str] = {}
+    install_fake_gh(tmp_path / "bin", github, tmp_path / "gh.log", env)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    bare_repo(github, REPO)
+    warnings: list[str] = []
+
+    result = create_vault(
+        tmp_path / "vault",
+        REPO,
+        STUDENT,
+        GhCliHost(remote_base=remote_base(github)),
+        warn=warnings.append,
+    )
+
+    assert result.action == "created"
+    assert warnings == []
+    assert "repo view ana/vault --json visibility" in (tmp_path / "gh.log").read_text()
+
+
+def commit_count_or_zero(origin: Path) -> int:
+    return len(git(origin, "rev-list", "--all").split())

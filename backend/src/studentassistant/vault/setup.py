@@ -35,9 +35,14 @@ from studentassistant.vault.vault import (
 REMOTE = "origin"
 INITIAL_COMMIT_MESSAGE = "vault creado"
 DEFAULT_SETUP_TIMEOUT_SECONDS = 120.0
+NOT_KNOWN_PRIVATE_WARNING = (
+    "Aviso: sin `gh` no se puede comprobar que el repositorio {repo} sea privado. Confirma en"
+    " GitHub que lo es: el vault guarda tus apuntes y tus clases."
+)
 
 SetupAction = Literal["created", "cloned", "already-set-up"]
 PostCloneHook = Callable[[Vault], None]
+Warn = Callable[[str], None]
 
 
 class SetupError(VaultError):
@@ -55,6 +60,10 @@ class SetupResult:
 
 def _no_hook(vault: Vault) -> None:
     """The default post-clone hook: nothing yet (the index rebuild will plug in here)."""
+
+
+def _no_warning(message: str) -> None:
+    """The default `warn`: nobody to tell."""
 
 
 def _check_repo(repo: str) -> None:
@@ -145,12 +154,15 @@ def create_vault(
     host: GitHubHost,
     author_email: str = DEFAULT_VAULT_AUTHOR_EMAIL,
     timeout: float = DEFAULT_SETUP_TIMEOUT_SECONDS,
+    warn: Warn = _no_warning,
 ) -> SetupResult:
     """Create a new vault at `path` and push it to a new private repository `repo` (`owner/name`).
 
     An existing empty repository is used as it is (that is how a PC without `gh` creates one: by
-    hand on GitHub); a repository that already has commits is refused. Everything GitHub could
-    refuse is checked before anything is written locally.
+    hand on GitHub) once it is known to be private: a public one is refused, and when the host
+    cannot tell (a token without `gh`) `warn` is given a Spanish message asking the student to
+    confirm it. A repository that already has commits is refused. Everything GitHub could refuse
+    is checked before anything is written locally.
 
     Raises:
         SetupError: on any refusal or failure (Spanish message).
@@ -176,6 +188,15 @@ def create_vault(
                 f"el repositorio {repo} ya existe en GitHub y no está vacío: para usarlo en este"
                 " PC elige clonar, o crea un vault nuevo con otro nombre"
             )
+        private = host.repo_is_private(repo)
+        if private is False:
+            raise SetupError(
+                f"el repositorio {repo} es público y el vault guarda tus apuntes y tus clases:"
+                " hazlo privado en GitHub (Settings > Danger Zone > Change visibility) y vuelve a"
+                " lanzar `setup`"
+            )
+        if private is None:
+            warn(NOT_KNOWN_PRIVATE_WARNING.format(repo=repo))
     else:
         host.create_private_repo(repo)
 
