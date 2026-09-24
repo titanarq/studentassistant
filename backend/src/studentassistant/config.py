@@ -9,9 +9,12 @@ always wins over the file. Model ids, paths and defaults live here and nowhere e
 from __future__ import annotations
 
 import os
+import re
+import stat
 from pathlib import Path
 from typing import Any, Literal
 
+import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
@@ -96,12 +99,33 @@ class VaultSettings(BaseModel):
     model_config = ConfigDict(validate_default=True)
 
     path: Path = DEFAULT_VAULT_PATH
+    # The GitHub repository the vault is pushed to, `owner/name`; written by `studentassistant
+    # setup`, unset until then.
+    repo: str | None = None
     git: VaultGitSettings = Field(default_factory=VaultGitSettings)
 
     @field_validator("path")
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
+
+    @field_validator("repo")
+    @classmethod
+    def check_repo(cls, repo: str | None) -> str | None:
+        if repo is not None:
+            check_repo_name(repo)
+        return repo
+
+
+# A GitHub repository as `owner/name`: GitHub's own character sets for both halves.
+REPO_NAME_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
+
+
+def check_repo_name(repo: str) -> str:
+    """Return `repo` when it is `owner/name`; raise `ValueError` otherwise."""
+    if not REPO_NAME_PATTERN.fullmatch(repo) or repo.split("/")[1] in (".", ".."):
+        raise ValueError(f"{repo!r} is not a GitHub repository written as owner/name")
+    return repo
 
 
 # Effort is always sent explicitly: Opus 5.5 would otherwise default to `medium` (ADR-0004).
@@ -238,6 +262,50 @@ class SttSettings(BaseModel):
 def config_toml_path() -> Path:
     """The TOML file to read: `SA_CONFIG` when it is set, the default location otherwise."""
     return Path(os.environ.get("SA_CONFIG") or DEFAULT_CONFIG_PATH).expanduser()
+
+
+# A configuration file `write_vault_config` creates is readable by its owner only.
+NEW_CONFIG_MODE = 0o600
+
+
+def write_vault_config(vault_path: Path, repo: str) -> bool:
+    """Record `vault.path` and `vault.repo` in the TOML file at `config_toml_path()`.
+
+    Every other key, table and comment already in the file is kept as it was (the file is edited,
+    not regenerated), and nothing but these two keys is ever written, so no secret can reach it.
+    The path is written absolute. The file keeps its permission bits (a new one is born `0600`),
+    because the temporary file it is replaced by is created with them, never with the umask.
+    Returns whether the file changed: writing the values it already holds leaves it untouched,
+    modification time included.
+    """
+    check_repo_name(repo)
+    target = config_toml_path()
+    original = target.read_text(encoding="utf-8") if target.exists() else ""
+    document = tomlkit.parse(original)
+    vault = document.get("vault")
+    if vault is None:
+        vault = tomlkit.table()
+        document["vault"] = vault
+    vault["path"] = str(vault_path.expanduser().resolve())
+    vault["repo"] = repo
+    updated = tomlkit.dumps(document)
+    if updated == original:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else NEW_CONFIG_MODE
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+    try:
+        os.fchmod(descriptor, mode)  # `os.open` applies the umask to `mode`; undo that
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return True
 
 
 class Settings(BaseSettings):
