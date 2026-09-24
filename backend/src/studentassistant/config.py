@@ -55,6 +55,40 @@ class ServerSettings(BaseModel):
         return path.expanduser()
 
 
+# Vault git sync (ADR-0002): commits are batched after a quiet period, pushes are debounced.
+DEFAULT_COMMIT_QUIET_SECONDS = 30.0
+DEFAULT_COMMIT_MAX_DELAY_SECONDS = 300.0
+DEFAULT_PUSH_DEBOUNCE_SECONDS = 120.0
+DEFAULT_PUSH_BACKOFF_INITIAL_SECONDS = 15.0
+DEFAULT_PUSH_BACKOFF_MAX_SECONDS = 900.0
+DEFAULT_GIT_TIMEOUT_SECONDS = 120.0
+DEFAULT_VAULT_REMOTE = "origin"
+# The author email a vault commit carries when none is configured: a reserved `.invalid` domain,
+# so no real mailbox is ever claimed on the student's behalf.
+DEFAULT_VAULT_AUTHOR_EMAIL = "estudiante@studentassistant.invalid"
+
+
+class VaultGitSettings(BaseModel):
+    """How the vault is committed, pushed and pulled (ADR-0002)."""
+
+    # The identity every vault commit and tag is authored as. Unset, the name is the student's
+    # display name recorded in `vault.yaml`.
+    author_name: str | None = None
+    author_email: str = DEFAULT_VAULT_AUTHOR_EMAIL
+    remote: str = DEFAULT_VAULT_REMOTE
+    # Pending changes are committed once nothing changed for this long...
+    commit_quiet_seconds: float = Field(default=DEFAULT_COMMIT_QUIET_SECONDS, ge=0)
+    # ...or, under a steady stream of changes, this long after the first uncommitted one.
+    commit_max_delay_seconds: float = Field(default=DEFAULT_COMMIT_MAX_DELAY_SECONDS, ge=0)
+    # A new commit is pushed this long after the first unpushed one (not reset by later ones).
+    push_debounce_seconds: float = Field(default=DEFAULT_PUSH_DEBOUNCE_SECONDS, ge=0)
+    # A failed push is retried after `initial`, doubling per consecutive failure up to `max`.
+    push_backoff_initial_seconds: float = Field(default=DEFAULT_PUSH_BACKOFF_INITIAL_SECONDS, gt=0)
+    push_backoff_max_seconds: float = Field(default=DEFAULT_PUSH_BACKOFF_MAX_SECONDS, gt=0)
+    # A network git command (push, pull, ls-remote) is killed after this long.
+    timeout_seconds: float = Field(default=DEFAULT_GIT_TIMEOUT_SECONDS, gt=0)
+
+
 class VaultSettings(BaseModel):
     """Where the private git repository holding every piece of content lives (ADR-0002)."""
 
@@ -62,6 +96,7 @@ class VaultSettings(BaseModel):
     model_config = ConfigDict(validate_default=True)
 
     path: Path = DEFAULT_VAULT_PATH
+    git: VaultGitSettings = Field(default_factory=VaultGitSettings)
 
     @field_validator("path")
     @classmethod

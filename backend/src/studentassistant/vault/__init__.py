@@ -1,5 +1,6 @@
 """Git-backed content store: layout, writers, commit/push/pull, setup, SQLite index."""
 
+from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secret
 from studentassistant.vault.session_models import (
@@ -37,6 +38,16 @@ from studentassistant.vault.subjects import (
     list_subjects,
     subject_directory,
 )
+from studentassistant.vault.sync import (
+    Clock,
+    GitSync,
+    NotesTag,
+    PushFailure,
+    SyncResult,
+    SyncStatus,
+    SystemClock,
+    notes_tag_name,
+)
 from studentassistant.vault.topics import (
     StoredTopic,
     TopicError,
@@ -59,9 +70,17 @@ from studentassistant.vault.vault import (
 __all__ = [
     "EVENT_SCHEMA_VERSION",
     "SOURCE_KINDS",
+    "Clock",
     "Event",
+    "GitCommandError",
+    "GitIdentity",
+    "GitResult",
+    "GitRunner",
+    "GitSync",
     "JsonlError",
     "NoOpenSessionError",
+    "NotesTag",
+    "PushFailure",
     "SecretRefused",
     "Session",
     "SessionEndedError",
@@ -74,6 +93,9 @@ __all__ = [
     "SubjectError",
     "SubjectFileError",
     "SubjectNotFoundError",
+    "SyncResult",
+    "SyncStatus",
+    "SystemClock",
     "TopicError",
     "TopicFileError",
     "TopicNotFoundError",
@@ -96,6 +118,7 @@ __all__ = [
     "list_subjects",
     "list_topics",
     "looks_like_secret",
+    "notes_tag_name",
     "put_source",
     "read_jsonl",
     "resume_session",

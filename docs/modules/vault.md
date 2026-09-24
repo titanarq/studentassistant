@@ -35,9 +35,9 @@ Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents st
 of sessions are `YYYYMMDD-HHMMSS`.
 
 ## Public surface
-What exists today, after issues #19 and #20: the vault itself, its subjects and its topics, their
-sessions with the two append-only logs, their sources, the secret guard, and the helpers all of
-them are written with. The layout above is the target, not the state -- see "Not written
+What exists today, after issues #19, #20 and #21: the vault itself, its subjects and its topics,
+their sessions with the two append-only logs, their sources, the secret guard, the helpers all of
+them are written with, and the git sync that commits, pushes and pulls them. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
@@ -124,19 +124,69 @@ and `write_yaml_atomic(path, model)` (keys in declaration order, every declared
 key written even when its value is `None`, no `---` or `...` marker, and no wrapping at PyYAML's
 default 80 columns) and `read_yaml(path, model)`.
 
-`studentassistant.vault` re-exports the vault, subject, topic, session, source, JSONL and
-secret-guard names of this section; the YAML models, the slug helpers and the file writers are
-imported from their own module.
+### Git sync -- `git.py`, `sync.py`
+Only these two modules run git on the vault. `GitRunner(root, identity, timeout)` runs `git` as a
+subprocess in the vault root with a `GitIdentity(name, email)` as author and committer (passed in
+the environment, so no git configuration decides it), never prompts (`GIT_TERMINAL_PROMPT=0`,
+SSH `BatchMode`), is killed after `timeout`, and returns a `GitResult` (`ok`, `describe()`) whose
+output went through `redact` (URL userinfo and the secret-guard patterns become `***`);
+`check(...)` raises `GitCommandError` instead.
+
+`GitSync(vault, settings=None, clock=None)` drives one vault; `settings` is a `VaultGitSettings`
+(`studentassistant.config`, `[vault.git]` / `SA_VAULT__GIT__*`), `clock` any object with
+`monotonic()` (`SystemClock` by default; tests inject a manual one). It never sleeps and starts no
+thread:
+- `note_change()` -- called after a vault write; cheap, runs no git. The batch is committed by
+  `run_due()` once nothing changed for `commit_quiet_seconds` (default 30) or at the latest
+  `commit_max_delay_seconds` (default 300) after its first change, with an aggregated Spanish
+  subject (`sesión 20260924-183000: 12 segmentos, 2 capturas`; `summarize_changes` builds it from
+  the staged diff: transcript lines are segments, event lines events, new `sources/notes/*.yaml`
+  captures, other new source sidecars `fuentes`; otherwise `N archivos cambiados`).
+- `checkpoint(message)` -- commits every pending change now, `message` as subject and the summary
+  as body; returns the commit or `None` (nothing to commit: never an empty commit; or a failure,
+  kept in `status().last_error`). Never raises.
+- Push: a commit schedules a push `push_debounce_seconds` (default 120) after the first unpushed
+  commit (later commits do not postpone it). `run_due()` pushes when due; `push_now()` pushes at
+  once; `flush()` commits what is pending and pushes (session end, shutdown). `git push
+  --follow-tags <remote> main`. A failure (`offline`, `auth`, `rejected`, `error`) is recorded as a
+  `PushFailure` and retried after `push_backoff_initial_seconds` (default 15), doubling per
+  consecutive failure up to `push_backoff_max_seconds` (default 900). Never raised; local commits
+  are never touched by a failed push. A `rejected` push (the remote moved on) keeps being retried
+  and keeps failing until a `sync()` rebases the local commits.
+- `sync()` -- commits what is pending, then `git pull --rebase <remote> main` (nothing to do when
+  the remote has no `main` yet). `*.jsonl` conflicts resolve by `merge=union`; any other conflict
+  aborts the rebase, leaving HEAD, the local commits and the working tree as they were, and returns
+  a `SyncResult` with `outcome="conflict"` and the `conflicts` paths (ADR-0002: surfaced, never
+  auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
+  local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
+  session start (wiring owned by `server`), before capture writes start.
+- `create_notes_tag(topic_slug, message=None)` commits what is pending and puts the annotated tag
+  `<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing (`notes_tag_name`), pushed by
+  the next push; `list_notes_tags(topic_slug)` returns the `NotesTag`s (`name`, `version`,
+  `commit`) oldest first. A non-slug raises `ValueError`.
+- `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
+  `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
+  `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`.
+- `run(interval=1.0)` -- the asyncio loop: `run_due()` in a worker thread every `interval`, until
+  cancelled. Every other method blocks on git; async callers use `asyncio.to_thread`.
+
+Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yaml`),
+`author_email` (default `estudiante@studentassistant.invalid`), `remote` (`origin`),
+`commit_quiet_seconds`, `commit_max_delay_seconds`, `push_debounce_seconds`,
+`push_backoff_initial_seconds`, `push_backoff_max_seconds`, `timeout_seconds` (120, per git
+command).
+
+`studentassistant.vault` re-exports the vault, subject, topic, session, source, JSONL, git sync and
+secret-guard names of this section; the YAML models, the slug helpers, the file writers, `redact`
+and `summarize_changes` are imported from their own module.
 
 ### Not written yet
-As of issue #20 no code reads or writes these parts of the layout:
-- **notes** -- `notes/apuntes.md`, and with it the provenance footnotes and the version tags of
-  ADR-0005.
+As of issue #21 no code reads or writes these parts of the layout:
+- **notes** -- `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005 (its version
+  tags exist: `create_notes_tag`).
 - **generated** -- `generated/` and everything the generators put in it.
-- Also unwritten: `state/`, `review/pending.yaml`, `conversations/` and `ledger.jsonl`; the git
-  cycle of `checkpoint`/`sync` -- commits, push and pull with the bare-repo remote (task
-  vault-git-sync); the derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge`
-  described below.
+- Also unwritten: `state/`, `review/pending.yaml`, `conversations/` and `ledger.jsonl`; the
+  derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge` described below.
 
 ## Purge
 `studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);
