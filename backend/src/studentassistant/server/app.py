@@ -4,9 +4,9 @@ A factory, not a module-level `app`, so uvicorn, the CLI and each test get an in
 and nothing is imported -- and therefore nothing is registered or connected -- until somebody asks
 for an app. Today it carries the protocol v1 health endpoint the runbooks and the packaging checks
 use to see that the process is up, the two pairing endpoints, the subjects/topics/sessions REST
-routes (`session_routes.py`) over the session lifecycle service and its event bus, and the built
-web app (`web/` -> `server/static/`) served at `/` with an SPA fallback; every other route of the
-phone<->backend contract lands here later.
+routes (`session_routes.py`) over the session lifecycle service and its event bus, the capture
+client's session WebSocket (`ws.py`), and the built web app (`web/` -> `server/static/`) served at
+`/` with an SPA fallback; every other route of the phone<->backend contract lands here later.
 
 Every request first passes the LAN guard (loopback and private addresses only), then the Host
 allowlist (against DNS rebinding), then the bearer check (`auth.py`); tokens and pairing codes are
@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from studentassistant import __version__
-from studentassistant.config import ServerSettings, Settings, VaultSettings
+from studentassistant.config import ServerSettings, Settings, SttSettings, VaultSettings
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
@@ -37,6 +37,7 @@ from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
+from studentassistant.server.ws import SessionGateway, ws_router
 from studentassistant.vault import GitSync, Vault
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -63,6 +64,7 @@ def create_app(
     vault: Vault | None = None,
     sync: GitSync | None = None,
     vault_settings: VaultSettings | None = None,
+    stt: SttSettings | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app with every route this backend serves.
 
@@ -74,12 +76,14 @@ def create_app(
     `vault` is the content store the session routes work on (tests pass `tmp_vault`); without one,
     the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on the
     first request that needs it, so creating an app never touches a vault. `sync` defaults to a
-    `GitSync` of that vault.
+    `GitSync` of that vault. `stt` is the `[stt]` section the session WebSocket follows (default:
+    the configured one).
     """
     install_log_redaction()
-    if server is None or (vault is None and vault_settings is None):
+    if server is None or stt is None or (vault is None and vault_settings is None):
         settings = Settings()
         server = settings.server if server is None else server
+        stt = settings.stt if stt is None else stt
         vault_settings = settings.vault if vault_settings is None else vault_settings
     devices = DeviceStore(server.devices_path)
     app = FastAPI(title="Student Assistant", version=__version__)
@@ -90,6 +94,8 @@ def create_app(
     app.state.sessions = SessionService(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )
+    assert stt is not None
+    app.state.gateway = SessionGateway(app.state.bus, app.state.sessions, stt)
 
     # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
     # then the bearer check.
@@ -119,6 +125,7 @@ def create_app(
     app.include_router(pairing_router(server, devices, app.state.codes))
     app.include_router(session_router())
     app.include_router(cost_router())
+    app.include_router(ws_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
