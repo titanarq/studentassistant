@@ -198,6 +198,14 @@ class SessionService:
     def sync(self) -> GitSync | None:
         return self._sync
 
+    async def open_vault(self) -> Vault:
+        """The vault, opened (and pulled and scanned) on first use, for the read-only routes.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+        """
+        return await self._ready()
+
     @property
     def sync_running(self) -> bool:
         """Whether the background `GitSync.run()` loop is running."""
