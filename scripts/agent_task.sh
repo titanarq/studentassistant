@@ -4,4 +4,10 @@
 # the systemd unit, the `.claude/agents/*.md` prompts, `CLAUDE.md`, `docs/modules/workers.md` and
 # the memory notes all name it, and because the worker worktrees execute the MAIN checkout's copy
 # -- a rename with no shim breaks a run in flight. It adds no behaviour and no argument of its own.
-exec "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../agent_os/bin/agent_task.sh" "$@"
+# Workaround titanarq/agent-os#27 (docs/runbooks/operations.md): the one thing it does add is a
+# default AGENT_OS_PYTHON of scripts/agent_os_patches/python, the interpreter wrapper that runs
+# `-m agent_os.issues` with cheap board lookups; the driver exports it to every child. Drop the
+# export once agent-os#27 is fixed and the subtree is pulled.
+here=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+export AGENT_OS_PYTHON=${AGENT_OS_PYTHON:-$here/agent_os_patches/python}
+exec "$here/../agent_os/bin/agent_task.sh" "$@"
