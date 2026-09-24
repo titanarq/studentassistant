@@ -69,9 +69,49 @@ Backlog, closed -> Done, `blocked-on-human` -> left as is). Idempotent and quiet
 `scripts/board_sync.py --dry-run`. Remove the timer and script once agent-os#14 is fixed and the
 subtree is pulled.
 
+## GraphQL quota and cheap board lookups (workaround titanarq/agent-os#27)
+
+The owner's GraphQL quota (5000 points/h) is shared with teachermovies and every `gh` call made
+as MatillaM. **`gh api rate_limit` misreports GraphQL on this account**; measure with
+`gh api graphql -f query='{rateLimit{remaining used resetAt cost}}'` (the probe itself is ~0-1).
+
+Every `issues.py move` mirrors the column through `mirror_board_column`, whose two lookups page
+the whole board: `gh project item-list --limit 1000` (~108 points on project 3, 91 items) and
+`gh project view` + `gh project field-list` (~3 + ~103). Measured on 2026-09-24, one no-op
+`scripts/issues.py move 74 refine` cost **~224 points before, ~5-6 after** the workaround.
+
+`scripts/agent_os_patches/` replaces both lookups with one ~1-point query each
+(`issue.projectItems` filtered to `project.board_number`, and the board's `Status` field by
+name), falling back to the mechanism's original on any error:
+
+- `python` -- an interpreter wrapper: `-m agent_os.issues` runs `issues_main.py` (imports
+  `agent_os.issues`, installs `board_lookup.py`, calls the same `main()`); everything else goes
+  to `agent_os/.venv/bin/python` untouched (`AGENT_OS_REAL_PYTHON` overrides it).
+- The `scripts/` shims (`issues.py`, `agent_guard.py`, `agent_task.sh`, `worker_task.sh`,
+  `planner_task.sh`, `qwen_task.sh`) default `AGENT_OS_PYTHON` to that wrapper. The mechanism
+  reads that variable everywhere (`agent_os_python()`), and the drivers export it, so this covers
+  the guard unit (its `ExecStart` is the `agent_guard.py` shim) and its promotions/reconciliations,
+  the planner, refiner, validator and worker runs it launches, the prompts' `"$AGENT_OS_PYTHON" -m
+  agent_os.issues`, and interactive `scripts/issues.py`. No systemd drop-in is needed.
+- Not covered: a caller that runs `agent_os/.venv/bin/python -m agent_os.issues` (or
+  `bash agent_os/bin/*.sh`) directly with `AGENT_OS_PYTHON` unset or set elsewhere. Use the
+  `scripts/` paths, or `export AGENT_OS_PYTHON=$PWD/scripts/agent_os_patches/python`.
+- Tests: `agent_os/.venv/bin/pytest scripts/agent_os_patches -q` (fake `gh`, no network); CI runs
+  them in `.github/workflows/ci-agent-os.yml`.
+
+Remove the directory, the shims' `AGENT_OS_PYTHON` lines and this section once agent-os#27 is
+fixed and the subtree is pulled.
+
+## Branch protection on `main`
+
+`main` requires the `ci` status check (`strict=false`: a PR need not be up to date with `main`),
+no required reviews, and `enforce_admins=false`, so the human's direct pushes still work. Read it
+with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
+
 ## Known mechanism issues filed upstream
 
 - agent-os#14 board item resolution (workaround above).
+- agent-os#27 `issues.py move` board lookups cost O(board size) GraphQL points (workaround above).
 - agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
 - agent-os#39 a refiner split leaves dependents blocked by the open original (manual repoint, below).
 - agent-os#41 the validator worktree gets no environment in this monorepo (workaround below).
