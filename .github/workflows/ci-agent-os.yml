@@ -5,8 +5,8 @@
 # without hand-writing it first.
 name: agent-os
 
-# Only when the mechanism (or this file) changes: no ruleset/branch protection can require this
-# check on a Free-plan private repo, so a path filter cannot leave a required check pending.
+# Only when the mechanism (or this file) changes: no ruleset/branch protection requires this
+# check, so a path filter cannot leave a required check pending.
 on:
   pull_request:
     paths:
@@ -15,8 +15,9 @@ on:
 
 jobs:
   tests:
-    # Self-hosted (see ci.yml). The machine's system python3 (3.12) bootstraps the venv.
-    runs-on: [self-hosted, teachermovies]
+    # GitHub-hosted only: the repo is public, never self-hosted (docs/runbooks/operations.md).
+    # The image's system python3 (3.12 on ubuntu-24.04) bootstraps the venv.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 

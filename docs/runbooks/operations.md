@@ -41,6 +41,24 @@ Alarms: an `EXPECT` past its `cutoff` with no later line; a Qwen issue past ~60 
   (re-arm: `systemctl --user daemon-reload && systemctl --user enable --now studentassistant-guard.timer`).
 - Wake the planner early: comment the reason, then `scripts/issues.py update N --add-label wake:planner`.
 
+## CI runners: GitHub-hosted only (repo is public)
+
+Since 2026-09-24 `titanarq/studentassistant` is a **public** repository, so GitHub-hosted Actions
+minutes are free. **Every workflow in this repo uses `runs-on: ubuntu-latest`** (GitHub-hosted).
+Never target `self-hosted` (any label) from this repo: a fork PR could run arbitrary code on the
+human's machine. The org's Default runner group keeps `allows_public_repositories=false`, so a
+self-hosted job here would queue forever anyway. Toolchains come from the hosted image or from
+setup actions (`actions/setup-python`/`astral-sh/setup-uv`, `actions/setup-node`,
+`actions/setup-java` with JDK 17; the image ships an Android SDK in `$ANDROID_HOME`).
+
+Repo Actions settings for public-repo safety (keep them): fork PR workflows need approval for
+all outside collaborators (`gh api repos/titanarq/studentassistant/actions/permissions/fork-pr-contributor-approval`
+-> `all_external_contributors`) and the default `GITHUB_TOKEN` is read-only
+(`.../actions/permissions/workflow` -> `default_workflow_permissions=read`).
+
+The "Self-hosted runner" section below documents the machine's local runners for historical /
+other-repo reference only; nothing in this repo may use them.
+
 ## Board sync workaround (titanarq/agent-os#14)
 
 `issues.py move` resolves the board item with `gh project item-list`, which returns 0 items for
