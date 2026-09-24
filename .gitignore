@@ -1,0 +1,42 @@
+# Agent OS runtime state and credentials -- never tracked
+.cache/
+.secrets/
+.env
+.claude/worktrees/
+scratchpad/
+
+# Local launcher
+claudedontask.sh
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Web
+node_modules/
+web/dist/
+backend/src/studentassistant/server/static/
+
+# Gradle / Android
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+.kotlin/
+local.properties
+*.apk
+*.aab
+*.hprof
+.idea/
+*.iml
+.DS_Store
+*.jks
+*.keystore
+keystore.properties
+
+# Never commit a real vault or recordings into the code repo
+vault/
+recordings/
