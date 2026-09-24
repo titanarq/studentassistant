@@ -69,25 +69,60 @@ class VaultSettings(BaseModel):
         return path.expanduser()
 
 
+# Effort is always sent explicitly: Opus 5.5 would otherwise default to `medium` (ADR-0004).
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+FAST_EFFORT: Effort = "medium"
+CAPABLE_EFFORT: Effort = "high"
+FAST_MAX_TOKENS = 16_000
+CAPABLE_MAX_TOKENS = 64_000
+# Attempts per call (the first one included) before a 429/5xx/connection error surfaces.
+DEFAULT_LLM_MAX_ATTEMPTS = 4
+
+
 class LlmRoleSettings(BaseModel):
-    """One Claude role: the model that answers it."""
+    """One Claude role: the model that answers it, its effort and its output ceiling."""
 
     model: str
+    effort: Effort = CAPABLE_EFFORT
+    max_tokens: int = Field(default=CAPABLE_MAX_TOKENS, gt=0)
+
+
+# One subclass per role, so a partial `[llm.roles.<role>]` table (or `SA_LLM__ROLES__...` variable)
+# keeps that role's defaults for the keys it does not set.
+class ObserverRoleSettings(LlmRoleSettings):
+    model: str = FAST_MODEL
+    effort: Effort = FAST_EFFORT
+    max_tokens: int = Field(default=FAST_MAX_TOKENS, gt=0)
+
+
+class TranscriberRoleSettings(LlmRoleSettings):
+    model: str = FAST_MODEL
+    effort: Effort = FAST_EFFORT
+    max_tokens: int = Field(default=FAST_MAX_TOKENS, gt=0)
+
+
+class EditorRoleSettings(LlmRoleSettings):
+    model: str = CAPABLE_MODEL
+
+
+class GeneratorRoleSettings(LlmRoleSettings):
+    model: str = CAPABLE_MODEL
 
 
 class LlmRolesSettings(BaseModel):
-    """Which model each role uses."""
+    """Which model, effort and max_tokens each role uses."""
 
-    observer: LlmRoleSettings = Field(default_factory=lambda: LlmRoleSettings(model=FAST_MODEL))
-    transcriber: LlmRoleSettings = Field(default_factory=lambda: LlmRoleSettings(model=FAST_MODEL))
-    editor: LlmRoleSettings = Field(default_factory=lambda: LlmRoleSettings(model=CAPABLE_MODEL))
-    generator: LlmRoleSettings = Field(default_factory=lambda: LlmRoleSettings(model=CAPABLE_MODEL))
+    observer: ObserverRoleSettings = Field(default_factory=ObserverRoleSettings)
+    transcriber: TranscriberRoleSettings = Field(default_factory=TranscriberRoleSettings)
+    editor: EditorRoleSettings = Field(default_factory=EditorRoleSettings)
+    generator: GeneratorRoleSettings = Field(default_factory=GeneratorRoleSettings)
 
 
 class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
     roles: LlmRolesSettings = Field(default_factory=LlmRolesSettings)
+    max_attempts: int = Field(default=DEFAULT_LLM_MAX_ATTEMPTS, ge=1)
 
 
 # Speech-to-text (ADR-0008): by default the capture client transcribes (Google) and sends segments.
