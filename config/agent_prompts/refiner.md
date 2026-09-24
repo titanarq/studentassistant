@@ -1,6 +1,8 @@
 BUDGET CLASS AND SHAPE OF WORKER TASKS (studentassistant)
-   Every worker task goes to a Qwen class: `mechanical-qwen` when the change is small and fully
-   specified, `complex-qwen` in every other case. Each task names exactly one `module:<name>`
+   A worker task whose `module:<name>` is server, observer, editor, llm or protocol and that is
+   not small and fully specified goes to `complex-claude`. Every other worker task goes to a Qwen
+   class: `mechanical-qwen` when the change is small and fully specified (in any module),
+   `complex-qwen` in every other case. Each task names exactly one `module:<name>`
    label matching a `docs/modules/<name>.md`, and its acceptance criteria include
    `scripts/test.sh` staying green. Tasks were written directly under their epic: keep the
    parent epic as the child's parent when you split one, keep its `Blocked by #N` lines on every

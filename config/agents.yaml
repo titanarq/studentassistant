@@ -155,7 +155,7 @@ classes:
   # it on Qwen (qwen_fallback_eligible), so a spent window never stalls the critical path.
   complex-claude:
     backend: claude
-    model: claude-opus-5
+    model: claude-opus-5-5
     max_context: 800000
     max_cost_usd: 20.0
     max_total_tokens: 150000000
@@ -165,7 +165,7 @@ classes:
   planner:
     role: planner
     backend: claude
-    model: claude-opus-5
+    model: claude-opus-5-5
     max_context: 40000
     max_cost_usd: 2.0
     max_total_tokens: 2000000
@@ -179,7 +179,7 @@ classes:
   validator:
     role: validator
     backend: claude
-    model: claude-opus-5
+    model: claude-opus-5-5
     max_context: 200000
     max_cost_usd: 5.0
     max_total_tokens: 10000000
@@ -193,7 +193,7 @@ classes:
   refiner:
     role: refiner
     backend: claude
-    model: claude-opus-5
+    model: claude-opus-5-5
     max_context: 200000
     max_cost_usd: 5.0
     max_total_tokens: 10000000

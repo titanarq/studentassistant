@@ -209,8 +209,19 @@ Since 2026-09-24 `planner.max_parallel_issues` is 2 and the class `complex-claud
 claude, `qwen_fallback_eligible: true`) carries the harder critical-path backend tasks: every open
 `complex-qwen` task in modules server, observer, editor, llm and protocol was retagged to it.
 Everything else stays on `mechanical-qwen`/`complex-qwen`. The refiner's extras
-(`config/agent_prompts/refiner.md`, human-owned) still say every worker task goes to Qwen, so a
-task it writes or splits in those modules comes back as `complex-qwen` until that file is updated.
+(`config/agent_prompts/refiner.md`, updated with the human's authorization) route complex tasks in
+those five modules to `complex-claude` and everything else to the Qwen classes. Every Claude class
+and role runs `claude-opus-5-5` (human's decision, 2026-09-24).
+
+## Validator worktree has no environment (agent-os, see below)
+
+The driver's throwaway validator worktree only symlinks the main checkout's root `.venv`/`.env`;
+this repo has neither (the backend venv is `backend/.venv`), so the validator gets an empty tree.
+`scripts/test.sh` provisions itself (`uv sync --frozen` / `npm ci` from the lock files) when an
+environment is missing, so a re-run validator is told in its planner context to run
+`scripts/test.sh` in its worktree:
+`bash agent_os/bin/agent_task.sh validator <pr> "<context>"` after moving the issue back to
+`status:ai-completed`.
 
 ## Starting the agents
 

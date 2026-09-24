@@ -7,6 +7,11 @@
 #        scripts/test.sh web [vitest args]
 #        scripts/test.sh android [gradle args]   e.g. scripts/test.sh android :app:testDebugUnitTest
 # Never runs integration tests (GPU, network, real Claude) nor instrumented Android tests.
+# Self-provisioning: on a fresh checkout or worktree (e.g. the validator's throwaway worktree,
+# which gets no environment from the agent-os driver) it creates what each suite needs from the
+# committed lock files -- backend/.venv via `uv sync --frozen`, web/node_modules via `npm ci` --
+# so running this command IS the supported way to get an environment; nothing is linked from
+# another tree. Only the first run needs the network (package download).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .cache
@@ -24,7 +29,8 @@ report() { # suite status log
 run_backend() {
   local log=.cache/test-backend-last.log
   if [ ! -f backend/pyproject.toml ]; then echo "skip backend: no backend/pyproject.toml yet"; return 0; fi
-  ( cd backend && uv run --frozen ruff check . && uv run --frozen ruff format --check . \
+  ( cd backend && { [ -x .venv/bin/python ] || { echo "bootstrap: uv sync --frozen (no backend/.venv)"; uv sync --frozen; }; } \
+      && uv run --frozen ruff check . && uv run --frozen ruff format --check . \
       && uv run --frozen pytest -q -m "not integration" "$@" ) >"$log" 2>&1
   local s=$?; report backend $s "$log"; return $s
 }
