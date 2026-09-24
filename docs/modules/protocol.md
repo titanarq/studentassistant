@@ -40,6 +40,24 @@ Everything below is re-exported from the package root; other modules import only
 - Audio frames: `AudioFrame`, `encode_frame`, `decode_frame`, `HEADER_SIZE`, `MAGIC`, and the
   errors `AudioFrameError`, `WrongMagicError`, `IncompatibleAudioFrameVersionError`.
 
+## Public surface (web, `web/src/protocol/`)
+Everything below is re-exported from `web/src/protocol/index.ts`; the capture page imports only
+from there. Types mirror the Python models field for field; decoders are dependency-free and as
+strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
+throw `ProtocolDecodeError` naming the offending field.
+- Version: `PROTOCOL_VERSION` (`"1.0"`), `parseVersion`, `checkCompatible` (throws
+  `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
+- Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
+  `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union
+  `ClientEvent` discriminated on `type`, and `parseClientEvent`.
+- Server WS events: `HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`, `Notice`,
+  `ServerAck`; the union `ServerEvent` discriminated on `type`, and `parseServerEvent`. Both parse
+  functions throw on an unknown or missing `type`.
+- REST bodies: the same names as the Python list above (`PairRequest` ... `CaptureUploadResponse`),
+  each with a `decode<Name>` decoder.
+- Registry: `DECODERS` (schema name -> decoder), `MessageTypes`, `MessageName`, `isMessageName`,
+  `parseMessage(name, data)`.
+
 ## Android (Kotlin)
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
@@ -67,6 +85,11 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
   round-trips through the model without loss.
 - `backend/tests/protocol/test_audio_frame.py` round-trips a frame and rejects a wrong magic and an
   incompatible MAJOR.
+- `web/src/protocol/protocol.test.ts` (vitest, Node environment) reads the repository's own
+  `protocol/examples/` through `web/src/test/protocolExamples.ts`: every example needs a
+  registered decoder, every decoder an example, and each example round-trips to the same JSON
+  value. `npm test` runs `tsc` first, so the `never` checks over `switch (event.type)` fail the
+  suite when a union member and its `case` drift apart.
 - `android/app/src/test/.../protocol/ProtocolExamplesTest.kt` decodes every shared example through
   `MESSAGE_CODECS`, checks the declared class and that re-encoding gives the same JSON value; an
   example with no codec (or a codec with no example) fails it. The examples are not copied: the
