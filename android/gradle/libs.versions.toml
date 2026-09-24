@@ -1,0 +1,26 @@
+# Single source of truth for every version in the android build (AGENTS.md "Kotlin / Android
+# conventions"). No version literal may appear in any build.gradle.kts; the one exception is the
+# foojay resolver plugin in settings.gradle.kts, because Gradle evaluates pluginManagement before
+# this file loads.
+
+[versions]
+agp = "8.6.1"
+kotlin = "2.1.21"
+foojayResolver = "0.8.0" # applied from settings.gradle.kts, which cannot read this catalog
+activityCompose = "1.10.1"
+composeBom = "2025.08.00"
+junit = "4.13.2"
+
+[libraries]
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+
+# Tests: JVM only (src/test), fakes over mocks (AGENTS.md)
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
