@@ -286,6 +286,11 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
   create whose first push never happened is pushed); `post_clone` is not called.
 - `verify_push_access(runner)` -- `git push --dry-run origin main`; failing it is a `SetupError`.
+- `check_remote_access(path, host, repo=None, author_email=..., timeout=...) -> RemoteAccess`
+  -- for `studentassistant doctor`: the (redacted) `origin` URL, `repo_matches` (`None` without
+  `repo` or `host`) and `push_error` (`None` when the dry-run push succeeded, else the Spanish
+  reason). `host=None` runs git with no extra credentials. No repository or no `origin` is a
+  `SetupError`. Writes nothing.
 - Both return a `SetupResult` (`vault`, `repo`, `action`: `created`, `cloned` or
   `already-set-up`); every refusal is a `SetupError` (a `VaultError`) with a Spanish message, or
   the host's `GitHubHostError`.
