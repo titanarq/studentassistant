@@ -1,0 +1,16 @@
+{
+  "subject_id": "biologia",
+  "topics": [
+    {
+      "topic_id": "la-celula",
+      "subject_id": "biologia",
+      "name": "La célula",
+      "open_session_id": "s-20260924-1805"
+    },
+    {
+      "topic_id": "fotosintesis",
+      "subject_id": "biologia",
+      "name": "Fotosíntesis"
+    }
+  ]
+}

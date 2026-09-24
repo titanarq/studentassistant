@@ -1,0 +1,7 @@
+{
+  "type": "hello.ack",
+  "protocol_version": "1.0",
+  "stt_mode": "client",
+  "clock_offset_ms": -350,
+  "server_time_ms": 1790251199650
+}

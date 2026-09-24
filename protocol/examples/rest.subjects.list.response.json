@@ -1,0 +1,12 @@
+{
+  "subjects": [
+    {
+      "subject_id": "biologia",
+      "name": "Biología"
+    },
+    {
+      "subject_id": "historia",
+      "name": "Historia de España"
+    }
+  ]
+}

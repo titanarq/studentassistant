@@ -69,12 +69,53 @@ Backlog, closed -> Done, `blocked-on-human` -> left as is). Idempotent and quiet
 `scripts/board_sync.py --dry-run`. Remove the timer and script once agent-os#14 is fixed and the
 subtree is pulled.
 
+## GraphQL quota and cheap board lookups (workaround titanarq/agent-os#27)
+
+The owner's GraphQL quota (5000 points/h) is shared with teachermovies and every `gh` call made
+as MatillaM. **`gh api rate_limit` misreports GraphQL on this account**; measure with
+`gh api graphql -f query='{rateLimit{remaining used resetAt cost}}'` (the probe itself is ~0-1).
+
+Every `issues.py move` mirrors the column through `mirror_board_column`, whose two lookups page
+the whole board: `gh project item-list --limit 1000` (~108 points on project 3, 91 items) and
+`gh project view` + `gh project field-list` (~3 + ~103). Measured on 2026-09-24, one no-op
+`scripts/issues.py move 74 refine` cost **~224 points before, ~5-6 after** the workaround.
+
+`scripts/agent_os_patches/` replaces both lookups with one ~1-point query each
+(`issue.projectItems` filtered to `project.board_number`, and the board's `Status` field by
+name), falling back to the mechanism's original on any error:
+
+- `python` -- an interpreter wrapper: `-m agent_os.issues` runs `issues_main.py` (imports
+  `agent_os.issues`, installs `board_lookup.py`, calls the same `main()`); everything else goes
+  to `agent_os/.venv/bin/python` untouched (`AGENT_OS_REAL_PYTHON` overrides it).
+- The `scripts/` shims (`issues.py`, `agent_guard.py`, `agent_task.sh`, `worker_task.sh`,
+  `planner_task.sh`, `qwen_task.sh`) default `AGENT_OS_PYTHON` to that wrapper. The mechanism
+  reads that variable everywhere (`agent_os_python()`), and the drivers export it, so this covers
+  the guard unit (its `ExecStart` is the `agent_guard.py` shim) and its promotions/reconciliations,
+  the planner, refiner, validator and worker runs it launches, the prompts' `"$AGENT_OS_PYTHON" -m
+  agent_os.issues`, and interactive `scripts/issues.py`. No systemd drop-in is needed.
+- Not covered: a caller that runs `agent_os/.venv/bin/python -m agent_os.issues` (or
+  `bash agent_os/bin/*.sh`) directly with `AGENT_OS_PYTHON` unset or set elsewhere. Use the
+  `scripts/` paths, or `export AGENT_OS_PYTHON=$PWD/scripts/agent_os_patches/python`.
+- Tests: `agent_os/.venv/bin/pytest scripts/agent_os_patches -q` (fake `gh`, no network); CI runs
+  them in `.github/workflows/ci-agent-os.yml`.
+
+Remove the directory, the shims' `AGENT_OS_PYTHON` lines and this section once agent-os#27 is
+fixed and the subtree is pulled.
+
+## Branch protection on `main`
+
+`main` requires the `ci` status check (`strict=false`: a PR need not be up to date with `main`),
+no required reviews, and `enforce_admins=false`, so the human's direct pushes still work. Read it
+with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
+
 ## Known mechanism issues filed upstream
 
 - agent-os#14 board item resolution (workaround above).
+- agent-os#27 `issues.py move` board lookups cost O(board size) GraphQL points (workaround above).
 - agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
 - agent-os#39 a refiner split leaves dependents blocked by the open original (manual repoint, below).
 - agent-os#41 the validator worktree gets no environment in this monorepo (workaround below).
+- agent-os#52 the guard's Qwen stall bookkeeping carries over between runs (workaround below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
@@ -162,6 +203,27 @@ a key to `msgtext` in place (same length, safe on a live log) and runs as the gu
 `ExecStartPre` through the drop-in `scripts/systemd/studentassistant-guard.service.d/sanitize-role-logs.conf`
 (COPIED to `~/.config/systemd/user/studentassistant-guard.service.d/`, then daemon-reload). Remove
 all three once agent-os#37 is fixed and the subtree is pulled.
+
+## Stall counter carried over between runs (workaround titanarq/agent-os#52)
+
+On Qwen, which has no event timestamps, `guard.turns_since_commit` counts the current run's
+commits (`<startref>..HEAD`) but compares them with `commit_count` in `.cache/agent_guard_<backend>.json`.
+Nothing resets that file when a new issue is dispatched. After a 5-commit run on #14, the #19 run
+inherited `commit_count=5, turn_count_at_commit=12`, and the tick reported `qwen: alive, -7 turns
+since last commit`. The stall cut came late, and the run's first 5 commits would never have moved
+the anchor. `scripts/reset_stale_stall_bookkeeping.py` compares the live run's issue + startref with
+`.cache/agent_guard_<backend>.run` under the guard's own `.lock`. On a mismatch, or when
+`turn_count_at_commit` is ahead of the live turn count (a resume), it sets `commit_count` to the run's
+real commit count and `turn_count_at_commit` to the current turn count, and clears
+`warned_at_turn_count`. Anchoring at "now" can never cause a cut. It runs as the guard unit's
+`ExecStartPre` through the drop-in
+`scripts/systemd/studentassistant-guard.service.d/reset-stale-stall-bookkeeping.conf`, which is
+prefixed `-` so a failure never stops the tick. COPY the drop-in to
+`~/.config/systemd/user/studentassistant-guard.service.d/` only after this script is on `main`,
+then daemon-reload. It was applied by hand once on 2026-09-24 for the qwen #19 run (5/12 -> 0/15).
+Until the drop-in is installed, run the script by hand after each dispatch:
+`agent_os/.venv/bin/python scripts/reset_stale_stall_bookkeeping.py`. Remove the script, the
+drop-in and this note once agent-os#52 is fixed and the subtree is pulled.
 
 ## After a refiner split (workaround titanarq/agent-os#39)
 

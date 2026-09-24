@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.sessions.start.request.schema.json",
+  "title": "rest.sessions.start.request",
+  "description": "POST /api/sessions body: a session is about exactly one topic of one subject, fixed here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_id",
+    "topic_id",
+    "client_time_ms"
+  ],
+  "properties": {
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock, Unix epoch ms."
+    }
+  }
+}

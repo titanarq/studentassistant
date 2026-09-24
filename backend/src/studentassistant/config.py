@@ -21,6 +21,8 @@ from pydantic_settings import (
 
 DEFAULT_CONFIG_PATH = Path("~/.config/studentassistant/config.toml")
 DEFAULT_VAULT_PATH = Path("~/StudentAssistant/vault")
+# Paired capture clients: machine-local state, never inside the vault.
+DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
 
 # Claude roles: the observer reads the live session, the editor and the generators write (ADR-0004).
 FAST_MODEL = "claude-sonnet-5"
@@ -32,8 +34,24 @@ class ServerSettings(BaseModel):
 
     # ADR-0001: the backend binds the LAN interfaces so the phone and the web page can reach it;
     # pairing and the bearer token, not the bind address, are what protect it.
+    model_config = ConfigDict(validate_default=True)
+
     host: str = "0.0.0.0"
     port: int = 8765
+    # A loopback client (the web UI on the PC itself) needs no bearer token while this is true.
+    trust_localhost: bool = True
+    # The paired devices and their salted token hashes (file mode 600).
+    devices_path: Path = DEFAULT_DEVICES_PATH
+    # The LAN base URL put in the pairing QR; unset, it is `http://<this PC's LAN address>:<port>`.
+    public_url: str | None = None
+    # Extra names a request's `Host` header may carry (e.g. `mypc.local`), beyond `localhost`,
+    # loopback/private IP literals, `host` and `public_url`'s host: the DNS-rebinding allowlist.
+    allowed_hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("devices_path")
+    @classmethod
+    def expand_user(cls, path: Path) -> Path:
+        return path.expanduser()
 
 
 class VaultSettings(BaseModel):

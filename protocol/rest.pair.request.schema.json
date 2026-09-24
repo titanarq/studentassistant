@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.pair.request.schema.json",
+  "title": "rest.pair.request",
+  "description": "POST /api/pair body: exchanges the one-time code from the pairing QR for a bearer token. No auth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pairing_code",
+    "device_name",
+    "client_kind",
+    "protocol_version"
+  ],
+  "properties": {
+    "pairing_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "device_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "client_kind": {
+      "enum": [
+        "web",
+        "android"
+      ]
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "MAJOR.MINOR protocol_version."
+    }
+  }
+}

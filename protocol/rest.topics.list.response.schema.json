@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.topics.list.response.schema.json",
+  "title": "rest.topics.list.response",
+  "description": "GET /api/subjects/{subject_id}/topics response.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_id",
+    "topics"
+  ],
+  "properties": {
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "topic_id",
+          "subject_id",
+          "name"
+        ],
+        "properties": {
+          "topic_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "subject_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "open_session_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "description": "The session still open on this topic, if any; the client resumes it instead of starting one."
+          }
+        }
+      }
+    }
+  }
+}

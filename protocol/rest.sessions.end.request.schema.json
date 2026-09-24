@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.sessions.end.request.schema.json",
+  "title": "rest.sessions.end.request",
+  "description": "POST /api/sessions/{id}/end body.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "client_time_ms",
+    "reason"
+  ],
+  "properties": {
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock, Unix epoch ms."
+    },
+    "reason": {
+      "enum": [
+        "button",
+        "command"
+      ],
+      "description": "Ended with the button or by a voice command (ADR-0006)."
+    }
+  }
+}

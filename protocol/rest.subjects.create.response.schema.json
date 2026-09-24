@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.subjects.create.response.schema.json",
+  "title": "rest.subjects.create.response",
+  "description": "POST /api/subjects response: the created subject.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_id",
+    "name"
+  ],
+  "properties": {
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

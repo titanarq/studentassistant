@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/server.ack.schema.json",
+  "title": "server.ack",
+  "description": "The backend stored audio up to a frame seq and/or the listed captures; at least one of the two is present.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "server_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "ack"
+    },
+    "audio_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Highest binary audio frame seq received so far (server STT mode only)."
+    },
+    "capture_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "description": "Captures now stored."
+    },
+    "server_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms, when the message was sent."
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "audio_seq"
+      ]
+    },
+    {
+      "required": [
+        "capture_ids"
+      ]
+    }
+  ]
+}

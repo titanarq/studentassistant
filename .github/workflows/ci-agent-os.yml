@@ -12,6 +12,9 @@ on:
     paths:
       - "agent_os/**"
       - ".github/workflows/ci-agent-os.yml"
+      - "scripts/agent_os_patches/**"
+      - "scripts/*.py"
+      - "scripts/*.sh"
 
 jobs:
   tests:
@@ -39,3 +42,8 @@ jobs:
           agent_os/.venv/bin/pytest agent_os/tests -q \
             --deselect tests/test_agent_task.py::test_a_role_that_runs_tests_gets_a_worktree_of_its_own_and_pythonpath_at_it \
             --deselect tests/test_agent_task.py::test_the_environment_the_driver_exports_resolves_the_worktrees_copy_and_not_the_main_checkouts
+
+      # Host-side workaround titanarq/agent-os#27 (docs/runbooks/operations.md): the cheap board
+      # lookups and the interpreter wrapper, against the mechanism they patch. Fake gh, no network.
+      - name: host patches to the mechanism
+        run: agent_os/.venv/bin/pytest scripts/agent_os_patches -q

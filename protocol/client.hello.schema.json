@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/client.hello.schema.json",
+  "title": "client.hello",
+  "description": "First client message on /ws/sessions/{id}: protocol version, capabilities and the client clock reading used for clock sync.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "protocol_version", "capabilities", "client_time_ms"],
+  "properties": {
+    "type": { "const": "hello" },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "MAJOR.MINOR; the backend refuses a different MAJOR."
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stt", "stt_provider"],
+      "properties": {
+        "stt": {
+          "enum": ["client", "server"],
+          "description": "The client's preferred STT mode; the backend chooses in hello.ack."
+        },
+        "stt_provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Id of the client's own recognizer, e.g. web-speech or android-speech."
+        },
+        "audio_format": {
+          "type": "object",
+          "description": "Present only when the client can stream audio for server-side STT.",
+          "additionalProperties": false,
+          "required": ["encoding", "sample_rate_hz", "channels"],
+          "properties": {
+            "encoding": { "const": "pcm16" },
+            "sample_rate_hz": { "const": 16000 },
+            "channels": { "const": 1 }
+          }
+        }
+      }
+    },
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock in Unix epoch milliseconds when the message was sent."
+    }
+  }
+}

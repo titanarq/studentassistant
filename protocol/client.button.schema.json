@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/client.button.schema.json",
+  "title": "client.button",
+  "description": "The student pressed the button equivalent of a voice command (ADR-0006).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "button",
+    "client_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "button"
+    },
+    "button": {
+      "enum": [
+        "next_page",
+        "important",
+        "switch_source",
+        "pause",
+        "resume",
+        "end_session",
+        "web_search"
+      ],
+      "description": "Button equivalent of an ADR-0006 voice command. Capture is not here: the client takes the photos itself and uploads them with trigger button."
+    },
+    "source": {
+      "enum": [
+        "book",
+        "notes",
+        "pdf"
+      ],
+      "description": "The source switched to; present exactly when button is switch_source."
+    },
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock, Unix epoch ms, when the button was pressed."
+    }
+  },
+  "if": {
+    "properties": {
+      "button": {
+        "const": "switch_source"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "source"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "source"
+      ]
+    }
+  }
+}
