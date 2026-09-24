@@ -32,6 +32,7 @@ from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.bus import SessionBus
+from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
@@ -41,6 +42,7 @@ from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.ws import SessionGateway, ws_router
+from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
 from studentassistant.vault import GitSync, Vault
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -102,7 +104,11 @@ def create_app(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )
     assert stt is not None
-    app.state.gateway = SessionGateway(app.state.bus, app.state.sessions, stt)
+    app.state.gateway = SessionGateway(
+        app.state.bus, app.state.sessions, stt, provider_factory=buffered_provider_from_settings
+    )
+    # Bus `transcript.final` events -> each session's `transcript.jsonl` (started by the lifespan).
+    app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
 
     # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
     # then the bearer check.
@@ -133,6 +139,7 @@ def create_app(
     app.include_router(session_router())
     app.include_router(cost_router())
     app.include_router(ws_router())
+    app.include_router(captures_router())
     app.include_router(read_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
@@ -143,10 +150,13 @@ def create_app(
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessions: SessionService = app.state.sessions
+    transcripts: TranscriptPipeline = app.state.transcripts
+    transcripts.start()
     await sessions.startup()
     try:
         yield
     finally:
+        await transcripts.stop()
         await sessions.shutdown()
 
 

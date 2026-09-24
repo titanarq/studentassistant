@@ -70,11 +70,59 @@ Routes registered today:
   - `POST /api/sessions` (`rest.sessions.start.request`) -> 201 `rest.sessions.start.response`;
     `POST /api/sessions/{id}/resume` (no body) -> `rest.sessions.resume.response`;
     `POST /api/sessions/{id}/end` (`rest.sessions.end.request`) -> `rest.sessions.end.response`.
-    `received_capture_ids` is always `[]` until the capture upload endpoint exists.
+    `received_capture_ids` lists the captures already stored for the session (the `capture_id`s
+    of its `capture.stored` events, in log order; see the capture upload below), so a resuming
+    client re-uploads only the rest.
   - Errors, as `{"detail": "..."}`: an unknown subject, topic or session is 404; another session
     active or unended (start, resume) is 409 with its id in `X-Open-Session-Id`; resuming or
     ending an ended session is 409; a start refused because pulling the vault hit a conflict is
     409 with the conflicting paths in `detail`; a vault that cannot be opened is 503.
+- `POST /api/sessions/{id}/captures` (`server/captures.py`, `captures_router()`): one burst of
+  stills, protocol v1 "Capture upload (idempotent burst)". Needs the bearer token like every
+  non-exempt route; every refusal is `{"detail": "..."}` with a Spanish `detail` and stores and
+  publishes nothing.
+  - Body: `multipart/form-data`, a `metadata` part holding the `rest.sessions.captures.request`
+    JSON (validated with `protocol.CaptureUploadRequest`) plus one part per image, named by
+    `images[].part`, whose `Content-Type` must equal the image's declared `content_type`. The
+    body is parsed as it streams in (python-multipart), never buffered whole or spooled to disk:
+    what it holds is bounded by the two limits below plus 64 KiB of metadata.
+  - 422: not multipart, a malformed or truncated body, `metadata` missing or invalid (no field
+    beyond the protocol's; `trigger` is `button | command`; `command_id` present exactly when
+    `trigger` is `command`), a part named twice, a named image absent or empty, a part
+    `metadata` does not name, or a `Content-Type` that differs from the declared one.
+  - 413: an image part over `server.max_capture_image_bytes`, more image parts (or declared
+    images) than `server.max_capture_images`, or a `Content-Length` beyond what those limits
+    allow; the read stops at the first byte over.
+  - The session must be the active one (`SessionService.require_active`): unknown 404, ended or
+    unended-but-not-resumed 409, a vault that cannot be opened 503.
+  - Source context: a capture is stored under the session's current source context,
+    `captures.current_source_context(session)`: the `source` of the session's latest persisted
+    `button` event whose `button` is `switch_source` (as the WebSocket gateway publishes it),
+    mapped `notes` -> `notes`, `book` -> `book`, `pdf` -> `pdf`; `notes`
+    (`DEFAULT_SOURCE_KIND`) when there is none. It is read from `events.jsonl` on every upload
+    (with the stored captures, in one worker thread, under the per-session lock), so it survives
+    a backend restart.
+  - Stored: until capture processing exists (the `sources` module) only `images[0]` is stored,
+    as it came, through `vault.put_source(vault, subject, topic, <source context>,
+    "capture.<ext>", bytes, meta)` (`<ext>` from its content type: `.jpg`, `.png`, `.webp`; in a
+    worker thread, followed by `GitSync.note_change()`), so under `sources/<source context>/`.
+    The sidecar `meta`: `capture_id`, `session`, `captured_at` (`images[0].client_time_ms` as
+    ISO 8601 UTC), `trigger`, `command_id` (when present), `image_count`, `width_px`,
+    `height_px` (of `images[0]`), `source_context`. The other images are received, counted and
+    validated, not stored. Then the persisted bus event `capture.stored` (origin `phone`;
+    `observer.CAPTURE_EVENT_KIND`, which the observer's fold registers) is published with payload
+    `capture_id`, `trigger`, `command_id` (when present), `image_count`, `client_time_ms`,
+    `source_path` (the stored file, relative to the vault root) and `source_context` (the same
+    value as the sidecar's). The WebSocket gateway acknowledges that event to the connected
+    client (see "Forwarded to the client" below). Answer: 201 `rest.sessions.captures.response`,
+    `status: "stored"`, `image_count` the images in the burst, `received_at_ms` the backend
+    clock.
+  - Idempotent on `capture_id`: the stored ids of a session are its `capture.stored` events
+    (`sessions.stored_captures(session)`, reading `events.jsonl`, so it survives a restart). A
+    stored id is answered 200 `status: "duplicate"` with the stored `image_count`, storing and
+    publishing nothing. The check and the store are serialised per session, so concurrent
+    uploads of one new id store it once. A session that ends between the check and the event is
+    409 (the source file may stay; the observer never sees it without its event).
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
@@ -226,6 +274,12 @@ another PC left open is seen.
 - For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
   (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
   `get_active(session_id)`, the active session only when it is that one.
+- For the routes that write into the active session (captures): `await
+  require_active(session_id)` -> the vault `Session` handle, raising `UnknownSessionError`,
+  `SessionAlreadyEndedError`, `SessionConflictError` (unended but not resumed) or
+  `VaultUnavailableError`; `note_change()` tells `GitSync` about a vault write. The module-level
+  `stored_captures(session)` -> `{capture_id: payload}` of the session's `capture.stored` events
+  (blocking: call it in a worker thread).
 - Refusals are `LifecycleError`s: `UnknownSessionError`, `SessionConflictError` (with
   `ActiveSessionExistsError`, `SessionAlreadyEndedError` and `VaultSyncConflictError` under it) and
   `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
@@ -288,11 +342,17 @@ replace all three.
     client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
     offset) and `t` = its session time.
 - **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
-  (`transcript.partial`, `transcript.final`, `command`, `notice`) before `hello.ack` and sends
-  each as the matching server message (`transcript.*` from the payload fields above;
-  `command` from `command_id`, `command`; `notice` from `pending_count`; `server_time_ms` from the
-  payload or the clock). A payload that makes no valid message is logged and skipped. The
-  subscription is closed when the socket ends, however it ends.
+  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`) before
+  `hello.ack` and sends each as the matching server message (`transcript.*` from the payload
+  fields above; `command` from `command_id`, `command`; `notice` from `pending_count`;
+  `server_time_ms` from the payload or the clock). A persisted `capture.stored` (the capture
+  upload stored a burst) becomes the capture `ack`: `ServerAck` with `capture_ids:
+  [payload.capture_id]` and `server_time_ms` from the clock, never with `audio_seq`; a
+  `capture.stored` notice is not acknowledged. A client connected when a capture is stored gets
+  exactly one ack for it; a duplicate upload publishes nothing, so it gets none. Past acks are
+  not replayed on (re)connect: a reconnecting client learns the stored captures from
+  `received_capture_ids` in the resume response. A payload that makes no valid message is logged
+  and skipped. The subscription is closed when the socket ends, however it ends.
 - **Backpressure**: vault appends run in worker threads through the bus, so nothing blocks the
   event loop; inbound messages are handled one at a time in order. Outbound traffic goes through
   the connection's bounded bus subscription, which drops the oldest notices (partials) when the
@@ -308,7 +368,8 @@ WebSocket gateway publish and subscribe here.
 
 - `attach(session)` / `detach(session_id)` / `is_attached(session_id)`: the lifecycle service
   attaches the vault `Session` handle of the active session; publishing for any other session is
-  refused (`SessionNotAttachedError`, a `BusError`).
+  refused (`SessionNotAttachedError`, a `BusError`). `attached(session_id)` returns that handle
+  (None when not attached): the app gives it to the stt `TranscriptPipeline` as its lookup.
 - `await publish(session_id, kind, origin, payload=None, *, persist=True, t=None) -> BusEvent`.
   A persisted event is appended to the session's `events.jsonl` through the vault handle (never
   written by the bus, ADR-0002; the write runs in a worker thread), gets the log's next `seq`, and
@@ -351,4 +412,6 @@ WebSocket gateway publish and subscribe here.
 | `trust_localhost` | `true` | loopback clients need no bearer token |
 | `devices_path` | `~/.local/share/studentassistant/devices.json` | the paired devices file |
 | `public_url` | unset | the base URL put in the pairing QR (default: LAN address + port); its host is also an allowed `Host` |
+| `max_capture_image_bytes` | `15728640` (15 MiB) | largest image part a capture burst may carry (413 beyond) |
+| `max_capture_images` | `5` | most images one capture burst may hold (413 beyond) |
 | `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
