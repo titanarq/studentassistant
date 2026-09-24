@@ -44,6 +44,9 @@ class ServerSettings(BaseModel):
     devices_path: Path = DEFAULT_DEVICES_PATH
     # The LAN base URL put in the pairing QR; unset, it is `http://<this PC's LAN address>:<port>`.
     public_url: str | None = None
+    # Extra names a request's `Host` header may carry (e.g. `mypc.local`), beyond `localhost`,
+    # loopback/private IP literals, `host` and `public_url`'s host: the DNS-rebinding allowlist.
+    allowed_hosts: list[str] = Field(default_factory=list)
 
     @field_validator("devices_path")
     @classmethod

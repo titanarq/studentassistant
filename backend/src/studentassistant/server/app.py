@@ -7,8 +7,9 @@ that the process is up, the two pairing endpoints, and the built web app
 (`web/` -> `server/static/`) served at `/` with an SPA fallback; every other route of the
 phone<->backend contract lands here later.
 
-Every request first passes the LAN guard (loopback and private addresses only), then the bearer
-check (`auth.py`); tokens and pairing codes are redacted from every log record (`redaction.py`).
+Every request first passes the LAN guard (loopback and private addresses only), then the Host
+allowlist (against DNS rebinding), then the bearer check (`auth.py`); tokens and pairing codes are
+redacted from every log record (`redaction.py`).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from studentassistant import __version__
 from studentassistant.config import ServerSettings, Settings
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.devices import DeviceStore
-from studentassistant.server.network import LanGuardMiddleware
+from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.redaction import install_log_redaction
 
@@ -73,8 +74,10 @@ def create_app(
     app.state.devices = devices
     app.state.codes = PairingCodes() if codes is None else codes
 
-    # Starlette runs the last one added first: the LAN guard, then the bearer check.
+    # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
+    # then the bearer check.
     app.add_middleware(BearerAuthMiddleware, server=server, devices=devices)
+    app.add_middleware(HostAllowlistMiddleware, server=server)
     app.add_middleware(LanGuardMiddleware)
 
     @app.exception_handler(RequestValidationError)

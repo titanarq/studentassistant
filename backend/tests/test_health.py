@@ -23,7 +23,7 @@ def server(tmp_path: Path) -> ServerSettings:
 @pytest.fixture
 def client(server: ServerSettings) -> TestClient:
     """A client over a freshly built app: it calls the routes without a server or a bound port."""
-    return TestClient(create_app(server=server), client=LOOPBACK)
+    return TestClient(create_app(server=server), base_url="http://localhost:8765", client=LOOPBACK)
 
 
 def test_health_answers_ok_with_the_package_version(client: TestClient) -> None:

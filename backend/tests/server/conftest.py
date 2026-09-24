@@ -23,6 +23,16 @@ LOOPBACK_HOST = "127.0.0.1"
 LAN_HOST = "192.168.1.30"
 PUBLIC_HOST = "8.8.8.8"
 PUBLIC_URL = "http://192.168.1.20:8765"
+LOCAL_BASE_URL = "http://localhost:8765"
+
+
+class HostedTestClient(TestClient):
+    """A TestClient whose WebSockets carry its `base_url`'s Host, not Starlette's `testserver`."""
+
+    def websocket_connect(self, url: str, *args: Any, **kwargs: Any) -> Any:
+        if "://" not in url:
+            url = str(self.base_url.copy_with(scheme="ws")).rstrip("/") + url
+        return super().websocket_connect(url, *args, **kwargs)
 
 
 class FakeClock:
@@ -79,7 +89,21 @@ def client_at(app: FastAPI) -> Callable[[str], TestClient]:
     """A TestClient over `app` whose requests come from `host`."""
 
     def make(host: str) -> TestClient:
-        return TestClient(app, client=(host, 50000))
+        # A browser on the PC sends `localhost`; the LAN uses the address `public_url` names.
+        base_url = LOCAL_BASE_URL if host in (LOOPBACK_HOST, "::1") else PUBLIC_URL
+        return HostedTestClient(app, base_url=base_url, client=(host, 50000))
+
+    return make
+
+
+@pytest.fixture
+def client_with_host() -> Callable[[FastAPI, str], TestClient]:
+    """A loopback TestClient over `app` whose requests carry `Host: host_header`."""
+
+    def make(app: FastAPI, host_header: str) -> TestClient:
+        return HostedTestClient(
+            app, base_url=f"http://{host_header}", client=(LOOPBACK_HOST, 50000)
+        )
 
     return make
 

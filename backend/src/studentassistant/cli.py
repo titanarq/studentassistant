@@ -38,7 +38,9 @@ cli = typer.Typer(
 def serve() -> None:
     """Serve the FastAPI app on the configured host and port until interrupted."""
     server = Settings().server
-    uvicorn.run(create_app(server=server), host=server.host, port=server.port)
+    # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
+    # guard and the loopback trust see (uvicorn trusts it from loopback by default).
+    uvicorn.run(create_app(server=server), host=server.host, port=server.port, proxy_headers=False)
 
 
 @cli.command()

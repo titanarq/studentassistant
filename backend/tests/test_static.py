@@ -39,7 +39,11 @@ def built_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def built(built_dir: Path, server: ServerSettings) -> TestClient:
-    return TestClient(create_app(static_dir=built_dir, server=server), client=LOOPBACK)
+    return TestClient(
+        create_app(static_dir=built_dir, server=server),
+        base_url="http://localhost:8765",
+        client=LOOPBACK,
+    )
 
 
 def test_default_static_dir_is_the_package_static_directory() -> None:
@@ -49,7 +53,11 @@ def test_default_static_dir_is_the_package_static_directory() -> None:
 
 
 def test_hint_when_not_built(tmp_path: Path, server: ServerSettings) -> None:
-    client = TestClient(create_app(static_dir=tmp_path / "missing", server=server), client=LOOPBACK)
+    client = TestClient(
+        create_app(static_dir=tmp_path / "missing", server=server),
+        base_url="http://localhost:8765",
+        client=LOOPBACK,
+    )
 
     response = client.get("/")
     assert response.status_code == 200

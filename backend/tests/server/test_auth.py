@@ -104,7 +104,7 @@ def test_loopback_passes_without_a_token_by_default(local: TestClient) -> None:
 def test_loopback_is_401_when_localhost_is_not_trusted(devices_path: Path, tmp_path: Path) -> None:
     server = ServerSettings(devices_path=devices_path, trust_localhost=False)
     app = _mount_test_routes(create_app(static_dir=tmp_path / "none", server=server))
-    local = TestClient(app, client=("127.0.0.1", 50000))
+    local = TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 50000))
 
     assert local.get("/api/private").status_code == 401
     assert local.get("/api/health").status_code == 200
