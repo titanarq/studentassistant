@@ -2,6 +2,14 @@
 
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
+from studentassistant.vault.ledger import (
+    LedgerEntry,
+    LedgerError,
+    append_ledger_entry,
+    ledger_path,
+    read_all_ledgers,
+    read_ledger,
+)
 from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secret
 from studentassistant.vault.session_models import (
     EVENT_SCHEMA_VERSION,
@@ -86,6 +94,8 @@ __all__ = [
     "GitRunner",
     "GitSync",
     "JsonlError",
+    "LedgerEntry",
+    "LedgerError",
     "NoOpenSessionError",
     "NotesTag",
     "PushFailure",
@@ -118,6 +128,7 @@ __all__ = [
     "VaultMetaError",
     "VaultNotFoundError",
     "append_jsonl",
+    "append_ledger_entry",
     "create_subject",
     "create_topic",
     "end_session",
@@ -125,13 +136,16 @@ __all__ = [
     "get_topic",
     "guard",
     "last_seq",
+    "ledger_path",
     "list_sessions",
     "list_subjects",
     "list_topics",
     "looks_like_secret",
     "notes_tag_name",
     "put_source",
+    "read_all_ledgers",
     "read_jsonl",
+    "read_ledger",
     "read_observer_snapshot",
     "read_topic_events",
     "resume_session",
