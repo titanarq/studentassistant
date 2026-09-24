@@ -107,6 +107,7 @@ registered -- any fork PR could run arbitrary code on this machine. Deregister f
 - agent-os#14 board item resolution (workaround above).
 - agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
 - agent-os#39 a refiner split leaves dependents blocked by the open original (manual repoint, below).
+- agent-os#41 the validator worktree gets no environment in this monorepo (workaround below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
@@ -213,7 +214,7 @@ Everything else stays on `mechanical-qwen`/`complex-qwen`. The refiner's extras
 those five modules to `complex-claude` and everything else to the Qwen classes. Every Claude class
 and role runs `claude-opus-5-5` (human's decision, 2026-09-24).
 
-## Validator worktree has no environment (agent-os, see below)
+## Validator worktree has no environment (workaround titanarq/agent-os#41)
 
 The driver's throwaway validator worktree only symlinks the main checkout's root `.venv`/`.env`;
 this repo has neither (the backend venv is `backend/.venv`), so the validator gets an empty tree.
