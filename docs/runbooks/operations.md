@@ -106,6 +106,7 @@ registered -- any fork PR could run arbitrary code on this machine. Deregister f
 
 - agent-os#14 board item resolution (workaround above).
 - agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
+- agent-os#39 a refiner split leaves dependents blocked by the open original (manual repoint, below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
@@ -193,6 +194,14 @@ a key to `msgtext` in place (same length, safe on a live log) and runs as the gu
 `ExecStartPre` through the drop-in `scripts/systemd/studentassistant-guard.service.d/sanitize-role-logs.conf`
 (COPIED to `~/.config/systemd/user/studentassistant-guard.service.d/`, then daemon-reload). Remove
 all three once agent-os#37 is fixed and the subtree is pulled.
+
+## After a refiner split (workaround titanarq/agent-os#39)
+
+A split leaves the original open with no status label, and every other task's `Blocked by #<original>`
+still points at it, so that chain never unblocks. After each split: rewrite each dependent's line to
+the child(ren) it really needs (`issues.py update N --body-file F --comment ...`), then close the
+original `--reason "not planned"` as superseded. Done so far: #15 -> #84/#85 (dependents #17, #18,
+#45), #18 -> #86/#87/#88 (dependents #27, #33, #40).
 
 ## Starting the agents
 
