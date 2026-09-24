@@ -7,6 +7,14 @@
   laptop camera preview, high-resolution stills (burst), Web Speech API transcription (or audio
   streaming in server STT mode), session buttons, live transcript; speaks protocol v1 exactly
   like the Android app.
+- **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
+  code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
+  and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
+  button. Refused (403), failing and unreachable backends each get a Spanish explanation.
+  Pairing happens **on the PC itself only**: the backend mints codes for loopback callers only
+  and serves the web app to other LAN clients only with a bearer token (#104), so the page has
+  no unauthenticated exemption. It handles only the pairing code -- never a device token -- and
+  stores nothing.
 
 Spanish review UI served by the backend (localhost trusted; other LAN clients use the pairing
 token):
@@ -30,6 +38,11 @@ token):
     `/` (#85).
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
+- `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
+  anything else -> `App`); the backend's SPA fallback serves the app for every non-API path, so
+  no router library is used.
+- `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
+  {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
 - `src/App.tsx` is the placeholder study desk: heading "Mesa de estudio", fetches
   `GET /api/health` on mount and shows the backend `version` (Spanish loading/error states).
 
