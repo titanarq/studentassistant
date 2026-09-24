@@ -88,6 +88,22 @@ ADR-0003 (`seq`, `t`, `origin` in `phone`/`stt`/`observer`/`editor`/`user`, `kin
 accepted on read. `TranscriptSegment` is `seq`, `t_start`, `t_end`, `text`, optional `words`
 (`TranscriptWord`). Refusals are a `SessionError` (`NoOpenSessionError`, `SessionEndedError`,
 `SessionFileError`). This module writes files and never runs git.
+`list_sessions(vault, subject_slug, topic_slug)` returns the `SessionMeta` of every session the
+topic lists, open or ended, ordered by id, and writes nothing; `read_topic_events(vault,
+subject_slug, topic_slug)` yields `(session_id, Event)` for every session of the topic, sessions
+in id order and events sorted by `seq` within each (a `merge=union` may have reordered the lines).
+A missing topic is a `TopicNotFoundError`; a listed session whose `events.jsonl` is missing is a
+`SessionFileError`.
+
+### Topic state -- `state.py`
+`write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)` writes any Pydantic model as
+indented JSON (`files.write_json_atomic`: declaration order, final newline, atomic, secret guard)
+to `state/observer-snapshot.json`, creating `state/`, and returns the path;
+`read_observer_snapshot(vault, subject_slug, topic_slug, model)` validates it into `model`, or
+returns `None` when none was written. The vault never imports the observer: the caller passes
+the model. An unreadable snapshot (not UTF-8, not JSON, not the model) is a `SnapshotFileError`
+(a `StateError`); a missing topic is a `TopicNotFoundError`. `observer_snapshot_path(...)` and
+`state_directory(...)` (imported from `state.py`) give the paths.
 
 ### JSONL logs -- `jsonl.py`
 `append_jsonl(path, obj)` writes one compact JSON object per line with a single write, flush and
@@ -119,7 +135,8 @@ the file), with `VaultMeta`, `Subject` and `Topic`; their fields are declared in
 layout above shows them, because that order is what the dump writes. `slugs.py` holds `slugify(name)`
 and `unique_slug(base, taken)`. `files.py` is the only way a whole vault file reaches the disk:
 `write_text_atomic(path, text)` and `write_bytes_atomic(path, content)` (secret guard, temporary
-file in the target's own directory, fsync of file and directory, then rename), `dump_yaml(mapping)`
+file in the target's own directory, fsync of file and directory, then rename), `dump_yaml(mapping)`,
+`write_json_atomic(path, model)` (indented JSON of any Pydantic model, final newline)
 and `write_yaml_atomic(path, model)` (keys in declaration order, every declared
 key written even when its value is `None`, no `---` or `...` marker, and no wrapping at PyYAML's
 default 80 columns) and `read_yaml(path, model)`.
@@ -176,7 +193,7 @@ Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yam
 `push_backoff_initial_seconds`, `push_backoff_max_seconds`, `timeout_seconds` (120, per git
 command).
 
-`studentassistant.vault` re-exports the vault, subject, topic, session, source, JSONL, git sync and
+`studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL, git sync and
 secret-guard names of this section; the YAML models, the slug helpers, the file writers, `redact`
 and `summarize_changes` are imported from their own module.
 
@@ -185,7 +202,7 @@ As of issue #21 no code reads or writes these parts of the layout:
 - **notes** -- `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005 (its version
   tags exist: `create_notes_tag`).
 - **generated** -- `generated/` and everything the generators put in it.
-- Also unwritten: `state/`, `review/pending.yaml`, `conversations/` and `ledger.jsonl`; the
+- Also unwritten: `state/digest.md`, `review/pending.yaml`, `conversations/` and `ledger.jsonl`; the
   derived SQLite/FTS5 `VaultIndex` and its rebuild; and the retention `purge` described below.
 
 ## Purge

@@ -285,6 +285,57 @@ def end_session(session: Session, ended_at: datetime | None = None) -> SessionMe
         return meta
 
 
+def list_sessions(vault: Vault, subject_slug: str, topic_slug: str) -> list[SessionMeta]:
+    """Every session of the topic, open or ended, ordered by session id; nothing is written.
+
+    The sessions are the ones the topic's `sessions` list names, each read from its
+    `session.yaml`; ids are UTC start times, so id order is start order.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read.
+        SessionFileError: when a listed session's `session.yaml` cannot be read.
+    """
+    stored = get_topic(vault, subject_slug, topic_slug)
+    root = sessions_directory(vault, subject_slug, topic_slug)
+    return [
+        _read_session_file(root / session_id / SESSION_FILE_NAME)
+        for session_id in sorted(set(stored.topic.sessions))
+    ]
+
+
+def read_topic_events(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> Iterator[tuple[str, Event]]:
+    """Yield `(session_id, event)` for every event of every session of the topic.
+
+    Sessions come in id order and, within each one, events in `seq` order -- sorted rather than
+    taken in file order, because a `merge=union` of `events.jsonl` may have reordered its lines.
+    The topic and its sessions are read when iteration starts; a torn last line is left out, as
+    `read_jsonl` does.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read.
+        SessionFileError: when a listed session's `session.yaml` or `events.jsonl` is missing or
+            cannot be read.
+        JsonlError: when a complete line of an event log is not an `Event`.
+    """
+    root = sessions_directory(vault, subject_slug, topic_slug)
+    for meta in list_sessions(vault, subject_slug, topic_slug):
+        events_path = root / meta.id / EVENTS_FILE_NAME
+        try:
+            events = sorted(read_jsonl(events_path, Event), key=lambda event: event.seq)
+        except FileNotFoundError as error:
+            raise SessionFileError(
+                f"{events_path} is missing, so the session {meta.id} has no event log"
+            ) from error
+        except OSError as error:
+            raise SessionFileError(f"{events_path} cannot be read: {error}") from error
+        for event in events:
+            yield meta.id, event
+
+
 def _read_session_file(session_path: Path) -> SessionMeta:
     """Read `session.yaml`, naming in the error which of the ways it can be wrong it is."""
     try:
