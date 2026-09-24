@@ -1,0 +1,10 @@
+{
+  "type": "transcript.client.final",
+  "segment_id": "seg-0007",
+  "client_start_ms": 1790251212300,
+  "client_end_ms": 1790251215100,
+  "text": "la derivada de una constante es cero",
+  "provider": "web-speech",
+  "language": "es-ES",
+  "confidence": 0.92
+}

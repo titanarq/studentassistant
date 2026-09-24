@@ -1,0 +1,9 @@
+{
+  "type": "transcript.client.partial",
+  "segment_id": "seg-0007",
+  "client_start_ms": 1790251212300,
+  "client_end_ms": 1790251213900,
+  "text": "la derivada de una",
+  "provider": "web-speech",
+  "language": "es-ES"
+}

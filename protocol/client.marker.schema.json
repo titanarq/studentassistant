@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/client.marker.schema.json",
+  "title": "client.marker",
+  "description": "A point on the session timeline the student flagged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "client_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "marker"
+    },
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock, Unix epoch ms, of the flagged moment."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Optional short label the student gave the marker."
+    }
+  }
+}

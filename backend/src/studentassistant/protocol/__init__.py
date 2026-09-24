@@ -1,7 +1,19 @@
 """Phone<->backend wire contract (WebSocket + REST)."""
 
 from studentassistant.protocol.base import ProtocolModel
-from studentassistant.protocol.client import AudioFormat, ClientCapabilities, ClientHello
+from studentassistant.protocol.client import (
+    CLIENT_EVENT_ADAPTER,
+    AudioFormat,
+    Button,
+    ClientAck,
+    ClientCapabilities,
+    ClientEvent,
+    ClientHello,
+    Marker,
+    TranscriptClientFinal,
+    TranscriptClientPartial,
+    parse_client_event,
+)
 from studentassistant.protocol.registry import MODELS, model_for
 from studentassistant.protocol.rest import (
     CaptureImage,
@@ -30,16 +42,21 @@ from studentassistant.protocol.version import (
 )
 
 __all__ = [
+    "CLIENT_EVENT_ADAPTER",
     "MODELS",
     "PROTOCOL_VERSION",
     "AudioFormat",
+    "Button",
     "CaptureImage",
     "CaptureUploadRequest",
     "CaptureUploadResponse",
+    "ClientAck",
     "ClientCapabilities",
+    "ClientEvent",
     "ClientHello",
     "HealthResponse",
     "IncompatibleProtocolVersionError",
+    "Marker",
     "PairRequest",
     "PairResponse",
     "ProtocolModel",
@@ -53,8 +70,11 @@ __all__ = [
     "Topic",
     "TopicCreateRequest",
     "TopicsListResponse",
+    "TranscriptClientFinal",
+    "TranscriptClientPartial",
     "check_compatible",
     "model_for",
     "negotiate",
+    "parse_client_event",
     "parse_version",
 ]

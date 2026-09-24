@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/client.ack.schema.json",
+  "title": "client.ack",
+  "description": "The client received a server command (e.g. capture_now, ADR-0006) and acted on it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "command_id",
+    "client_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "ack"
+    },
+    "command_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "description": "Id of the server command message acknowledged."
+    },
+    "client_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Client clock, Unix epoch ms, when the command was acted on."
+    }
+  }
+}

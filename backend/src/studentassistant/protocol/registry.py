@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from studentassistant.protocol.client import ClientHello
+from studentassistant.protocol.client import (
+    Button,
+    ClientAck,
+    ClientHello,
+    Marker,
+    TranscriptClientFinal,
+    TranscriptClientPartial,
+)
 from studentassistant.protocol.rest import (
     CaptureUploadRequest,
     CaptureUploadResponse,
@@ -25,6 +32,11 @@ from studentassistant.protocol.rest import (
 
 MODELS: dict[str, type[BaseModel]] = {
     "client.hello": ClientHello,
+    "client.transcript.client.partial": TranscriptClientPartial,
+    "client.transcript.client.final": TranscriptClientFinal,
+    "client.button": Button,
+    "client.marker": Marker,
+    "client.ack": ClientAck,
     "rest.pair.request": PairRequest,
     "rest.pair.response": PairResponse,
     "rest.health.response": HealthResponse,
