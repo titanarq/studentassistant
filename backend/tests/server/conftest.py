@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from read_api_fixtures import ReadVault, populate
 from ws_harness import MsClock, RecordingSink, WsHarness
 
 from studentassistant.config import ServerSettings, SttSettings
@@ -218,3 +219,34 @@ def ws(
     harness.session = started.json()
     clock.now = harness.started_at_ms + 10_000
     return harness
+
+
+# -- the web read API (`server/read_routes.py`) ------------------------------------------------
+
+
+@pytest.fixture
+def read_vault(tmp_vault: Vault) -> ReadVault:
+    """`tmp_vault` populated as `read_api_fixtures.populate` describes."""
+    return populate(tmp_vault)
+
+
+@pytest.fixture
+def read_app(
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path, read_vault: ReadVault
+) -> FastAPI:
+    """An app over the populated `read_vault`."""
+    return create_app(
+        static_dir=tmp_path / "no-web-build", server=server, codes=codes, vault=read_vault.vault
+    )
+
+
+@pytest.fixture
+def reader(read_app: FastAPI) -> TestClient:
+    """A loopback client (trusted without a token) of `read_app`."""
+    return HostedTestClient(read_app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
+
+
+@pytest.fixture
+def lan_reader(read_app: FastAPI) -> TestClient:
+    """A LAN client of `read_app` with no token."""
+    return HostedTestClient(read_app, base_url=PUBLIC_URL, client=(LAN_HOST, 50000))

@@ -2,9 +2,10 @@
 
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
-`cost` prints what the Claude calls recorded in the vault's ledgers cost, `setup` creates or
-clones the vault on this PC and records it in the configuration file, and `index rebuild`
-recreates the derived search index from the vault.
+`cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
+(or a page range of it) to a topic as a source, `setup` creates or clones the vault on this PC
+and records it in the configuration file, and `index rebuild` recreates the derived search index
+from the vault.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -34,8 +35,16 @@ from studentassistant.config import ServerSettings, Settings, check_repo_name, w
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.sources import (
+    PdfImportError,
+    PdfTooLargeError,
+    import_pdf,
+    parse_page_range,
+)
 from studentassistant.vault import (
+    GitSync,
     LedgerEntry,
+    SecretRefused,
     SubjectNotFoundError,
     TopicNotFoundError,
     Vault,
@@ -198,6 +207,72 @@ def cost(
         if not printed:
             typer.echo("Sin gasto registrado.")
     typer.echo(f"Hoy (UTC): ${day_usd(vault, utc_now()):.4f}")
+
+
+@cli.command("import-pdf")
+def import_pdf_command(
+    topic: Annotated[str, typer.Argument(help="El tema, como <asignatura>/<tema>.")],
+    file: Annotated[Path, typer.Argument(help="El PDF que se importa.")],
+    pages: Annotated[
+        str | None, typer.Option("--pages", help="Solo estas páginas del PDF, p. ej. 82-94.")
+    ] = None,
+) -> None:
+    """Add a PDF, or only a page range of it, to a topic as a source and commit it to the vault.
+
+    The kept pages are stored with their text and a thumbnail each (`studentassistant.sources`);
+    the commit is local, and the server's sync pushes it.
+    """
+    settings = Settings()
+    subject_slug, _, topic_slug = topic.partition("/")
+    if not subject_slug or not topic_slug or "/" in topic_slug:
+        typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+        raise typer.Exit(code=2)
+    try:
+        page_range = parse_page_range(pages) if pages is not None else None
+        if not file.is_file():
+            typer.echo(f"No existe el archivo «{file}».")
+            raise typer.Exit(code=1)
+        if file.stat().st_size > settings.sources.max_pdf_bytes:
+            # Refused before reading it into memory; `import_pdf` words the same limit.
+            raise PdfTooLargeError(
+                f"El PDF «{file.name}» supera el máximo que se importa"
+                f" ({settings.sources.max_pdf_bytes / (1024 * 1024):.1f} MB)."
+            )
+        vault = Vault.open(settings.vault.path)
+        imported = import_pdf(
+            vault,
+            subject_slug,
+            topic_slug,
+            file.name,
+            file.read_bytes(),
+            pages=page_range,
+            settings=settings.sources,
+        )
+    except PdfImportError as error:
+        typer.echo(f"No se ha importado el PDF: {error}")
+        raise typer.Exit(code=1) from error
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    except SecretRefused as error:
+        typer.echo("No se ha importado el PDF: parece contener una clave o un token.")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    GitSync(vault, settings.vault.git).checkpoint(f"Importar PDF {file.name} en {topic}")
+    meta = imported.meta
+    typer.echo(
+        f"PDF importado como {imported.source_id}: páginas {meta['first_page']}-"
+        f"{meta['last_page']} del original ({meta['page_count']} páginas)."
+    )
+    empty = [page.original_page for page in imported.pages if not page.has_text]
+    if empty:
+        typer.echo(
+            "Sin texto extraíble (¿escaneadas?): páginas "
+            + ", ".join(str(number) for number in empty)
+            + "."
+        )
 
 
 index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")

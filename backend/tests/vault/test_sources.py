@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from secret_samples import GITHUB_TOKEN
@@ -16,6 +17,7 @@ from studentassistant.vault import (
     Vault,
     create_subject,
     create_topic,
+    list_sources,
     put_source,
     sources_directory,
 )
@@ -127,3 +129,87 @@ def test_a_source_carrying_a_token_leaves_no_file_and_no_sidecar(
 def test_a_source_of_an_unknown_topic_is_refused(tmp_vault: Vault, topic: tuple[str, str]) -> None:
     with pytest.raises(TopicNotFoundError):
         put_source(tmp_vault, topic[0], "no-existe", "notes", "a.jpg", JPEG, {})
+
+
+def test_derived_files_are_written_next_to_the_page_and_not_listed(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    path = put_source(
+        tmp_vault,
+        *topic,
+        "pdf",
+        "tema.pdf",
+        b"%PDF-1.7\n",
+        {"page_count": 1},
+        derived={"p001.txt": "Texto de la página", "p001.jpg": JPEG},
+    )
+
+    directory = sources_directory(tmp_vault, *topic, "pdf")
+    assert sorted(entry.name for entry in directory.iterdir()) == [
+        "page-001.p001.jpg",
+        "page-001.p001.txt",
+        "page-001.pdf",
+        "page-001.yaml",
+    ]
+    assert (directory / "page-001.p001.txt").read_text(encoding="utf-8") == "Texto de la página"
+    assert [s.path for s in list_sources(tmp_vault, *topic)] == [
+        path.relative_to(tmp_vault.path).as_posix()
+    ]
+    assert put_source(tmp_vault, *topic, "pdf", "otro.pdf", b"%PDF-1.7\n", {}).name == (
+        "page-002.pdf"
+    )
+
+
+@pytest.mark.parametrize("suffix", ["txt", "P001.txt", "p001.", "../x.txt", "p 1.txt", ""])
+def test_a_malformed_derived_suffix_is_refused_before_anything_is_written(
+    tmp_vault: Vault, topic: tuple[str, str], suffix: str
+) -> None:
+    with pytest.raises(SourceError):
+        put_source(tmp_vault, *topic, "pdf", "tema.pdf", b"%PDF", {}, derived={suffix: "x"})
+
+    assert not sources_directory(tmp_vault, *topic, "pdf").exists()
+
+
+def test_web_sources_take_no_derived_files(tmp_vault: Vault, topic: tuple[str, str]) -> None:
+    with pytest.raises(SourceError):
+        put_source(tmp_vault, *topic, "web", "Página", "# P\n", {}, derived={"a.txt": "x"})
+
+
+def test_a_derived_file_carrying_a_token_leaves_nothing_behind(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    with pytest.raises(SecretRefused):
+        put_source(
+            tmp_vault,
+            *topic,
+            "pdf",
+            "tema.pdf",
+            b"%PDF-1.7\n",
+            {},
+            derived={"p001.txt": "ok", "p002.txt": f"token {GITHUB_TOKEN}"},
+        )
+
+    directory = sources_directory(tmp_vault, *topic, "pdf")
+    assert not directory.exists() or list(directory.iterdir()) == []
+
+
+def test_a_failed_derived_write_removes_what_was_already_written(
+    tmp_vault: Vault, topic: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from studentassistant.vault import sources as sources_module
+
+    real = sources_module.write_bytes_atomic
+
+    def failing(path: Path, content: bytes) -> None:
+        if path.name.endswith(".jpg"):
+            raise OSError("disco lleno")
+        real(path, content)
+
+    monkeypatch.setattr(sources_module, "write_bytes_atomic", failing)
+
+    with pytest.raises(OSError, match="disco lleno"):
+        put_source(
+            tmp_vault, *topic, "pdf", "tema.pdf", b"%PDF-1.7\n", {}, derived={"p001.jpg": JPEG}
+        )
+
+    assert list(sources_directory(tmp_vault, *topic, "pdf").iterdir()) == []

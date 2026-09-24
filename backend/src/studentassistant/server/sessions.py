@@ -11,6 +11,14 @@ Every lifecycle change is itself published on the `SessionBus` as a persisted ev
 (`session.started`, `session.resumed`, `session.ended`, origin `user`); ending a session then
 checkpoints the vault and pushes it through the vault's `GitSync`.
 
+Other server code hooks into ending with two ordered hook lists, each hook an async callable of the
+session id, bounded by `end_hook_timeout` and never able to stop the end (a failure or timeout is
+logged): `add_before_ended(hook)` runs before `session.ended` is published (a server-side STT
+provider flushing its tail, #136) and `add_before_close(hook)` after it is published and before the
+vault ends the session (the transcript pipeline's `drain()`, so every `transcript.final` published
+before `session.ended` is in `transcript.jsonl` first). The session is still attached to the bus
+while both run.
+
 The vault is pulled (`GitSync.sync()`) when it is first opened, before the scan for unended
 sessions, and again before every session start; a `conflict` refuses the start
 (`VaultSyncConflictError`), while an unreachable remote or refused credentials are only logged
@@ -33,7 +41,7 @@ import asyncio
 import contextlib
 import logging
 import socket
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, TypeVar
@@ -70,6 +78,12 @@ T = TypeVar("T")
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
 """How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
+
+DEFAULT_END_HOOK_TIMEOUT_SECONDS = 10.0
+"""How long `end` waits for each end hook before logging it and ending the session anyway."""
+
+EndHook = Callable[[str], Awaitable[object]]
+"""An end hook: awaited with the id of the session being ended."""
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +149,7 @@ class SessionService:
     vault lazily on first use (`VaultUnavailableError` while it cannot be opened). `sync` defaults
     to a `GitSync` of that vault with `vault_settings.git`. `sync_interval` is how often the
     background loop (only between `startup()` and `shutdown()`) checks what is due.
+    `end_hook_timeout` bounds each end hook (`add_before_ended`, `add_before_close`).
     """
 
     def __init__(
@@ -146,6 +161,7 @@ class SessionService:
         vault_settings: VaultSettings | None = None,
         host: str | None = None,
         sync_interval: float = DEFAULT_SYNC_INTERVAL_SECONDS,
+        end_hook_timeout: float = DEFAULT_END_HOOK_TIMEOUT_SECONDS,
     ) -> None:
         self.bus = bus
         self._vault = vault
@@ -160,6 +176,9 @@ class SessionService:
         self._sync_interval = sync_interval
         self._serving = False
         self._runner: asyncio.Task[None] | None = None
+        self._end_hook_timeout = end_hook_timeout
+        self._before_ended: list[EndHook] = []
+        self._before_close: list[EndHook] = []
         if bus.on_append is None:
             bus.on_append = self._note_change
 
@@ -179,10 +198,53 @@ class SessionService:
     def sync(self) -> GitSync | None:
         return self._sync
 
+    async def open_vault(self) -> Vault:
+        """The vault, opened (and pulled and scanned) on first use, for the read-only routes.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+        """
+        return await self._ready()
+
     @property
     def sync_running(self) -> bool:
         """Whether the background `GitSync.run()` loop is running."""
         return self._runner is not None and not self._runner.done()
+
+    # -- end hooks ---------------------------------------------------------------------------
+
+    def add_before_ended(self, hook: EndHook) -> None:
+        """Run `hook(session_id)` in `end` before `session.ended` is published.
+
+        For what must still reach the session's logs as events before its end (a server-side STT
+        provider's `finish()` tail). Hooks run in the order they were added.
+        """
+        self._before_ended.append(hook)
+
+    def add_before_close(self, hook: EndHook) -> None:
+        """Run `hook(session_id)` in `end` after `session.ended` is published, before `end_session`.
+
+        For consumers that must finish writing what was published before the end (the transcript
+        pipeline's `drain()`). Hooks run in the order they were added.
+        """
+        self._before_close.append(hook)
+
+    async def _run_end_hooks(self, hooks: list[EndHook], session_id: str, stage: str) -> None:
+        for hook in hooks:
+            try:
+                await asyncio.wait_for(hook(session_id), self._end_hook_timeout)
+            except TimeoutError:
+                logger.error(
+                    "end hook %r (%s) of session %s timed out after %.1f s; ending anyway",
+                    hook,
+                    stage,
+                    session_id,
+                    self._end_hook_timeout,
+                )
+            except Exception:
+                logger.exception(
+                    "end hook %r (%s) of session %s failed; ending anyway", hook, stage, session_id
+                )
 
     # -- serving (the app's lifespan) ----------------------------------------------------------
 
@@ -330,6 +392,9 @@ class SessionService:
     ) -> protocol.SessionEndResponse:
         """Publish `session.ended`, end the session, then checkpoint and push the vault.
 
+        In order: the `add_before_ended` hooks, `session.ended` is published, the
+        `add_before_close` hooks, `end_session`, the bus detach, the checkpoint and push.
+
         A failed commit or push is recorded in the sync status, never raised: the session has
         ended either way and the next sync retries.
 
@@ -344,6 +409,7 @@ class SessionService:
             if attached_here:
                 self.bus.attach(session)
             try:
+                await self._run_end_hooks(self._before_ended, session.id, "before ended")
                 await self.bus.publish(
                     session.id,
                     SESSION_ENDED,
@@ -354,6 +420,7 @@ class SessionService:
                         "device_id": _device(principal),
                     },
                 )
+                await self._run_end_hooks(self._before_close, session.id, "before close")
                 meta = await asyncio.to_thread(end_session, session)
             except BaseException:
                 if attached_here:
@@ -557,12 +624,14 @@ def _epoch_ms(moment: datetime) -> int:
 
 
 __all__ = [
+    "DEFAULT_END_HOOK_TIMEOUT_SECONDS",
     "DEFAULT_SYNC_INTERVAL_SECONDS",
     "LIFECYCLE_KINDS",
     "SESSION_ENDED",
     "SESSION_RESUMED",
     "SESSION_STARTED",
     "ActiveSessionExistsError",
+    "EndHook",
     "LifecycleError",
     "OpenSession",
     "SessionAlreadyEndedError",

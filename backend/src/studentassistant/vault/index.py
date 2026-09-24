@@ -91,11 +91,13 @@ SNIPPET_TOKENS = 16
 DOC_NOTES = "notes"  # notes/apuntes.md
 DOC_PAGE = "page"  # sources/{notes,book,pdf}/page-NNN.md: a page transcription
 DOC_WEB = "web"  # sources/web/NNN-<slug>.md
+DOC_PDF = "pdf"  # sources/pdf/page-NNN.pKKK.txt: the extracted text of page K of a stored PDF
 DOC_TRANSCRIPT = "transcript"  # one final segment of sessions/<id>/transcript.jsonl
-DOC_KINDS: tuple[str, ...] = (DOC_NOTES, DOC_PAGE, DOC_WEB, DOC_TRANSCRIPT)
+DOC_KINDS: tuple[str, ...] = (DOC_NOTES, DOC_PAGE, DOC_PDF, DOC_WEB, DOC_TRANSCRIPT)
 
 _SESSION_ID = re.compile(SESSION_ID_PATTERN)
 _PAGE_TRANSCRIPTION = re.compile(r"^page-(\d{3,})\.md$")
+_PDF_PAGE_TEXT = re.compile(r"^(page-\d{3,})\.p(\d+)\.txt$")
 _QUERY_TERM = re.compile(r"\w+")
 _NOTES_TAG = re.compile(rf"^([a-z0-9]+(?:-[a-z0-9]+)*)/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$")
 # The identity `GitRunner` wants; the index only reads, so it never authors anything.
@@ -850,13 +852,22 @@ def _index_sources(root: Path, directory: Path, subject: str, topic: str, rows: 
     if kind not in PAGED_KINDS:
         return
     for entry in sorted(directory.iterdir()):
-        if entry.is_symlink() or not entry.is_file() or not _PAGE_TRANSCRIPTION.match(entry.name):
+        if entry.is_symlink() or not entry.is_file():
             continue
         relative = _rel(root, entry)
-        source = originals.get(entry.name.split(".", 1)[0], relative)
-        rows.docs.append(
-            (_text(entry), DOC_PAGE, relative, source, subject, topic, None, None, None)
-        )
+        stem = entry.name.split(".", 1)[0]
+        if _PAGE_TRANSCRIPTION.match(entry.name):
+            source = originals.get(stem, relative)
+            rows.docs.append(
+                (_text(entry), DOC_PAGE, relative, source, subject, topic, None, None, None)
+            )
+        elif kind == "pdf" and (pdf_page := _PDF_PAGE_TEXT.match(entry.name)) is not None:
+            # Cited the way provenance cites a PDF page: `sources/pdf/page-NNN.pdf#page=K`.
+            original = originals.get(stem)
+            source = f"{original}#page={int(pdf_page[2])}" if original else None
+            rows.docs.append(
+                (_text(entry), DOC_PDF, relative, source, subject, topic, None, None, None)
+            )
 
 
 def _pending_items(path: Path) -> list[Any]:
@@ -887,6 +898,7 @@ __all__ = [
     "DOC_KINDS",
     "DOC_NOTES",
     "DOC_PAGE",
+    "DOC_PDF",
     "DOC_TRANSCRIPT",
     "DOC_WEB",
     "INDEX_SCHEMA_VERSION",

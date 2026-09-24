@@ -16,7 +16,6 @@ from studentassistant.protocol import AudioFrame, encode_frame
 from studentassistant.stt import (
     BufferedProvider,
     SpeechToTextProvider,
-    TranscriptPipeline,
     buffered_provider_from_settings,
 )
 from studentassistant.stt.fakes import FakeProvider
@@ -38,8 +37,7 @@ def transcript(ws: WsHarness) -> list[tuple[int, int, str]]:
 
 
 def end_session(ws: WsHarness) -> None:
-    pipeline: TranscriptPipeline = ws.app.state.transcripts
-    ws.client.portal.call(pipeline.drain)  # type: ignore[union-attr]
+    # No explicit drain: ending the session waits for the pipeline (the app's end hook, #140).
     response = ws.client.post(
         f"/api/sessions/{ws.session_id}/end", json={"client_time_ms": 90_000, "reason": "button"}
     )

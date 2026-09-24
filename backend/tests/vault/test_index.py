@@ -24,6 +24,7 @@ from studentassistant.vault import (
 from studentassistant.vault.index import (
     DOC_NOTES,
     DOC_PAGE,
+    DOC_PDF,
     DOC_TRANSCRIPT,
     DOC_WEB,
     SNIPPET_END,
@@ -161,6 +162,18 @@ def test_search_finds_every_kind_with_vault_relative_ids(
             "quimica",
         )
         assert index.search("mitocon") != []  # a prefix matches
+
+
+def test_pdf_page_text_is_searchable_and_cites_its_page(
+    tmp_vault: Vault, content: dict[str, str], index_path: Path
+) -> None:
+    pdf = put_source(tmp_vault, "quimica", "enlace-quimico", "pdf", "t.pdf", b"%PDF", {})
+    (pdf.parent / f"{pdf.stem}.p002.txt").write_text("Electronegatividad de Pauling", "utf-8")
+    with VaultIndex.open(tmp_vault, index_path) as index:
+        [hit] = index.search("pauling")
+        assert hit.kind == DOC_PDF
+        assert hit.source == f"{pdf.relative_to(tmp_vault.path).as_posix()}#page=2"
+        assert index.search("pauling", kinds=[DOC_PAGE]) == []
 
 
 def test_search_filters_and_never_takes_fts_syntax(

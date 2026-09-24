@@ -276,6 +276,30 @@ class SttSettings(BaseModel):
         return dict(self.options.get(name or self.provider, {}))
 
 
+# PDF import (`studentassistant.sources.pdf`). The stored PDF goes to Claude base64-encoded (4/3 of
+# its size) inside a request capped at 32 MB, and into plain git (no LFS, ADR-0002), hence 20 MB.
+DEFAULT_MAX_PDF_BYTES = 200 * 1024 * 1024
+DEFAULT_MAX_PDF_PAGES = 100
+DEFAULT_MAX_STORED_PDF_BYTES = 20 * 1024 * 1024
+DEFAULT_PDF_THUMBNAIL_LONG_EDGE = 1200
+DEFAULT_PDF_THUMBNAIL_QUALITY = 85
+
+
+class SourcesSettings(BaseModel):
+    """Limits and rendering of imported sources (`[sources]`, `SA_SOURCES__*`)."""
+
+    # The largest PDF accepted for import at all, before any page range is cut out of it.
+    max_pdf_bytes: int = Field(default=DEFAULT_MAX_PDF_BYTES, ge=1)
+    # The most pages one import may keep (Claude reads up to 600 pages per request, but every page
+    # costs tokens on each editor call); a longer range is refused, never truncated.
+    max_pdf_pages: int = Field(default=DEFAULT_MAX_PDF_PAGES, ge=1)
+    # The largest PDF (the kept pages only) stored in the vault; beyond it the import is refused.
+    max_stored_pdf_bytes: int = Field(default=DEFAULT_MAX_STORED_PDF_BYTES, ge=1)
+    # Page thumbnails: long edge in pixels and JPEG quality.
+    pdf_thumbnail_long_edge: int = Field(default=DEFAULT_PDF_THUMBNAIL_LONG_EDGE, ge=16)
+    pdf_thumbnail_quality: int = Field(default=DEFAULT_PDF_THUMBNAIL_QUALITY, ge=1, le=100)
+
+
 def config_toml_path() -> Path:
     """The TOML file to read: `SA_CONFIG` when it is set, the default location otherwise."""
     return Path(os.environ.get("SA_CONFIG") or DEFAULT_CONFIG_PATH).expanduser()
@@ -338,6 +362,7 @@ class Settings(BaseSettings):
     vault: VaultSettings = Field(default_factory=VaultSettings)
     llm: LlmSettings = Field(default_factory=LlmSettings)
     stt: SttSettings = Field(default_factory=SttSettings)
+    sources: SourcesSettings = Field(default_factory=SourcesSettings)
 
     @classmethod
     def settings_customise_sources(

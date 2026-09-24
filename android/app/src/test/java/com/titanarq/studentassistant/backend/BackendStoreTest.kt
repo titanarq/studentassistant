@@ -2,7 +2,9 @@ package com.titanarq.studentassistant.backend
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -113,7 +115,9 @@ class BackendStoreTest {
         first.save(home)
         first.save(lab)
         first.setActive("d1")
-        scopes.forEach { it.cancel() }
+        // Wait until the first store's scope has completed: DataStore releases the file only then,
+        // and a second store on a file still held throws IllegalStateException.
+        scopes.forEach { it.coroutineContext[Job]!!.cancelAndJoin() }
 
         val reopened = store(file)
 

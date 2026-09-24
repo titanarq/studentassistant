@@ -17,7 +17,10 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/notes/page-NNN.page.jpg            cropped/deskewed page
   sources/notes/page-NNN.md                  page transcription (derived)
   sources/notes/page-NNN.yaml                capture_id, session, captured_at, transcript span, source context
-  sources/book/…  sources/pdf/…  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
+  sources/pdf/page-NNN.pdf                   imported PDF (only the kept page range)
+  sources/pdf/page-NNN.pKKK.txt|.jpg         page K's extracted text and thumbnail (derived)
+  sources/pdf/page-NNN.yaml                  original_name, original_sha256, original_page_count, first_page, last_page, page_count
+  sources/book/…  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
   sessions/<session-id>/session.yaml         started/ended, host, duration, protocol version
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
@@ -133,10 +136,14 @@ returns the entries in file order (empty without a file, a torn last line ignore
 imports it and runs no git.
 
 ### Sources -- `sources.py`
-`put_source(vault, subject_slug, topic_slug, kind, name, content, meta)` stores bytes or text
-under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the content's path:
-`page-NNN.<ext>` + `page-NNN.yaml` for `notes`, `book` and `pdf` (the extension taken from `name`)
-and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`). The number is one past
+`put_source(vault, subject_slug, topic_slug, kind, name, content, meta, derived=None)` stores
+bytes or text under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the
+content's path: `page-NNN.<ext>` + `page-NNN.yaml` for `notes`, `book` and `pdf` (the extension
+taken from `name`) and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`).
+`derived` (paged kinds only) maps suffixes to files written in the same call as
+`page-NNN.<suffix>` -- a suffix is dot-separated lowercase letters and digits with at least one
+dot, e.g. `p003.txt`, `p003.jpg` for a PDF's page 3 -- all guarded before anything is written and
+removed again if any write fails; they are never listed as sources. The number is one past
 the highest already in the directory, derived files included. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
@@ -342,10 +349,12 @@ or the `items` list of a mapping; their schema is the observer's); `note_version
 (`unicode61`, diacritics removed: `fotosintesis` finds `fotosíntesis`). `query` is plain text,
 never FTS5 syntax: every word must appear, as a prefix; a query without a word matches nothing.
 `kinds` narrows to `DOC_KINDS`: `notes` (`notes/apuntes.md`), `page` (a page transcription
-`sources/{notes,book,pdf}/page-NNN.md`), `web` (`sources/web/NNN-<slug>.md`) and `transcript`
-(one final segment). Ranked by BM25, ties by path then `seq`, so the same vault always gives the
+`sources/{notes,book,pdf}/page-NNN.md`), `pdf` (the extracted text `sources/pdf/page-NNN.pKKK.txt`
+of page K of a stored PDF), `web` (`sources/web/NNN-<slug>.md`) and `transcript` (one final
+segment). Ranked by BM25, ties by path then `seq`, so the same vault always gives the
 same list. A hit has `kind`, `path` (the vault-relative file), `source` (for a page, its original
-`page-NNN.<ext>`, which the web opens; for web, the page itself; `None` for notes and
+`page-NNN.<ext>`, which the web opens; for a PDF page, `sources/pdf/page-NNN.pdf#page=K` as
+provenance cites it; for web, the page itself; `None` for notes and
 transcripts), `subject`, `topic`, and for a transcript `session`, `seq` and `t_start`; `snippet`
 puts each matched term between `SNIPPET_START` (`\x02`) and `SNIPPET_END` (`\x03`), control
 characters no vault text holds, so the web can highlight without trusting any markup. An unknown

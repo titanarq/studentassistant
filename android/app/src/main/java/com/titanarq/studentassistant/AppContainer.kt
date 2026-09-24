@@ -8,7 +8,9 @@ import com.titanarq.studentassistant.backend.BackendStore
 import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.OkHttpBackendClient
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
+import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
+import com.titanarq.studentassistant.session.SessionHolder
 import java.io.File
 
 /** Wall-clock time source, so time-dependent logic can be tested with a fake. */
@@ -59,5 +61,13 @@ class AppContainer(
     /** Creates the connection-test screen's [ConnectionTestViewModel]. */
     val connectionTestViewModelFactory: ViewModelProvider.Factory by lazy {
         viewModelFactory { initializer { ConnectionTestViewModel(backendClient, backendStore) } }
+    }
+
+    /** The session the capture screen works on, handed over by the home screen. */
+    val sessionHolder: SessionHolder by lazy { SessionHolder() }
+
+    /** Creates the home screen's [HomeViewModel]. */
+    val homeViewModelFactory: ViewModelProvider.Factory by lazy {
+        viewModelFactory { initializer { HomeViewModel(backendClient, backendStore, sessionHolder, clock) } }
     }
 }
