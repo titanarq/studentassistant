@@ -82,7 +82,6 @@ Everything below is importable from `studentassistant.stt` (the fakes from
 mode = "client"          # client | server
 provider = "web-speech"  # web-speech | android-speech (client); faster-whisper, a cloud id, fake (server)
 language = "es"
-
 max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
 
 [stt.options.faster-whisper]  # free-form table per provider name, passed to its constructor
@@ -106,9 +105,7 @@ Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
    Re-sync the environment (`uv sync`) so the entry point is installed. An out-of-tree package
    can declare the same group.
 3. One config value: `stt.mode = "server"`, `stt.provider = "faster-whisper"`, options under
-   `max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
-
-[stt.options.faster-whisper]`. Nothing outside `stt` names the class.
+   `[stt.options.faster-whisper]`. Nothing outside `stt` names the class.
 
 A client-side recognizer needs no backend code: its name is just `stt.provider` in client mode,
 stamped on every segment by the `TranscriptSink`.
