@@ -1,4 +1,60 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Student Assistant</string>
+
+    <string name="loading">Cargando…</string>
+    <string name="back">Volver</string>
+    <string name="cancel">Cancelar</string>
+
+    <!-- Pairing -->
+    <string name="pairing_title">Emparejar con el ordenador</string>
+    <string name="pairing_scan_hint">Apunta la cámara al código QR que muestra el ordenador (la página «Emparejar» o la orden studentassistant pair).</string>
+    <string name="camera_rationale">Para leer el código QR de emparejamiento, la aplicación necesita la cámara. Solo se usa mientras esta pantalla está abierta.</string>
+    <string name="camera_permission_button">Permitir la cámara</string>
+    <string name="camera_denied">Sin permiso de cámara no se puede leer el código QR. Puedes permitirla o escribir la dirección y el código a mano.</string>
+    <string name="camera_unavailable">No se pudo abrir la cámara. Escribe la dirección y el código a mano.</string>
+    <string name="manual_title">O escríbelo a mano</string>
+    <string name="manual_url_label">Dirección del ordenador</string>
+    <string name="manual_url_placeholder">http://192.168.1.20:8000</string>
+    <string name="manual_code_label">Código de emparejamiento</string>
+    <string name="manual_code_placeholder">ABCD-EFGH</string>
+    <string name="manual_submit">Emparejar</string>
+    <string name="pairing_in_progress">Emparejando…</string>
+    <string name="pairing_done">Emparejado con %1$s.</string>
+    <string name="pairing_continue">Continuar</string>
+    <string name="pairing_retry">Volver a intentarlo</string>
+
+    <!-- Errors -->
+    <string name="error_not_a_pairing_qr">Este código QR no es un código de emparejamiento de Student Assistant.</string>
+    <string name="error_invalid_url">La dirección no es válida. Debe ser como http://192.168.1.20:8000.</string>
+    <string name="error_missing_code">Falta el código de emparejamiento.</string>
+    <string name="error_code_rejected">El código no es válido, ha caducado o ya se usó. Genera uno nuevo en el ordenador.</string>
+    <string name="error_unauthorized">El ordenador no reconoce este teléfono (quizá se revocó el emparejamiento). Vuelve a emparejarlo.</string>
+    <string name="error_http">El ordenador respondió con un error (HTTP %1$d).</string>
+    <string name="error_unreachable">No se pudo conectar con el ordenador. Comprueba que el servidor está en marcha y que el teléfono está en la misma red wifi.</string>
+    <string name="error_incompatible_version">Versión incompatible: el ordenador usa el protocolo %1$s y esta aplicación el %2$s. Actualiza la que sea más antigua.</string>
+    <string name="error_invalid_response">El ordenador respondió algo que esta aplicación no entiende.</string>
+
+    <!-- Paired backends -->
+    <string name="backends_title">Ordenadores emparejados</string>
+    <string name="backends_empty">Todavía no hay ningún ordenador emparejado.</string>
+    <string name="backends_active">Activo</string>
+    <string name="backends_make_active">Usar este</string>
+    <string name="backends_remove">Quitar</string>
+    <string name="backends_remove_confirm_title">¿Quitar %1$s?</string>
+    <string name="backends_remove_confirm_text">Tendrás que volver a emparejarlo para usarlo.</string>
+    <string name="backends_pair_new">Emparejar otro ordenador</string>
+    <string name="backends_test_connection">Probar la conexión</string>
+
+    <!-- Connection test -->
+    <string name="connection_title">Prueba de conexión</string>
+    <string name="connection_backend">Ordenador: %1$s</string>
+    <string name="connection_no_backend">No hay ningún ordenador activo. Empareja uno primero.</string>
+    <string name="connection_health">Servidor accesible</string>
+    <string name="connection_subjects">Acceso autorizado (asignaturas)</string>
+    <string name="connection_not_run">Sin comprobar</string>
+    <string name="connection_running">Comprobando…</string>
+    <string name="connection_health_ok">Correcto (protocolo %1$s)</string>
+    <string name="connection_subjects_ok">Correcto (%1$s asignaturas)</string>
+    <string name="connection_run_again">Volver a probar</string>
 </resources>

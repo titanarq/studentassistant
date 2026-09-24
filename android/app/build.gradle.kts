@@ -52,5 +52,21 @@ dependencies {
     // The v1 wire contract (`protocol` package): @Serializable classes and their JSON codec.
     implementation(libs.kotlinx.serialization.json)
 
+    // View models (pairing, paired backends, connection test) and lifecycle-aware Compose state.
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+
+    // The backend client (`backend` package) and the paired-backends store.
+    implementation(libs.okhttp)
+    implementation(libs.androidx.datastore.core)
+
+    // The pairing QR scanner: CameraX preview + ImageAnalysis, decoded with ZXing core.
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.core)
+
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 }

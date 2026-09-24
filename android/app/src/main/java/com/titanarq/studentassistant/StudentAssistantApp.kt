@@ -1,6 +1,7 @@
 package com.titanarq.studentassistant
 
 import android.app.Application
+import android.os.Build
 
 /** Creates the one [AppContainer] of the process; activities read it from here. */
 class StudentAssistantApp : Application() {
@@ -9,6 +10,6 @@ class StudentAssistantApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        container = AppContainer()
+        container = AppContainer(filesDir = filesDir, deviceName = Build.MODEL ?: "Android")
     }
 }
