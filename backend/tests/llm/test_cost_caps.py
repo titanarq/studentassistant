@@ -204,3 +204,18 @@ def test_cost_status_without_a_session(tmp_vault: Vault, settings: Settings) -> 
     assert status.session_usd == 0.0
     assert status.day_usd == 3.0
     assert not status.observer_paused
+
+
+def test_cost_status_counts_unpriced_calls_per_scope(tmp_vault: Vault, settings: Settings) -> None:
+    topic = make_topic(tmp_vault)
+    seed(tmp_vault, topic, 0.25)
+    seed(tmp_vault, topic, None, model="claude-mystery-1")
+    seed(tmp_vault, topic, None, model="claude-mystery-2", session="20260924-110000")
+
+    status = cost_status(binding(tmp_vault, topic), capped_settings(settings), now=NOON)
+
+    assert status.session_usd == 0.25
+    assert status.day_usd == 0.25
+    assert status.unpriced_session_calls == 1
+    assert status.unpriced_day_calls == 2
+    assert status.unpriced_models == ["claude-mystery-1", "claude-mystery-2"]
