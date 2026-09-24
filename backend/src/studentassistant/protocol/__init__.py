@@ -1,5 +1,15 @@
 """Phone<->backend wire contract (WebSocket + REST)."""
 
+from studentassistant.protocol.audio import (
+    HEADER_SIZE,
+    MAGIC,
+    AudioFrame,
+    AudioFrameError,
+    IncompatibleAudioFrameVersionError,
+    WrongMagicError,
+    decode_frame,
+    encode_frame,
+)
 from studentassistant.protocol.base import ProtocolModel
 from studentassistant.protocol.client import (
     CLIENT_EVENT_ADAPTER,
@@ -54,10 +64,14 @@ from studentassistant.protocol.version import (
 
 __all__ = [
     "CLIENT_EVENT_ADAPTER",
+    "HEADER_SIZE",
+    "MAGIC",
     "MODELS",
     "PROTOCOL_VERSION",
     "SERVER_EVENT_ADAPTER",
     "AudioFormat",
+    "AudioFrame",
+    "AudioFrameError",
     "Button",
     "CaptureImage",
     "CaptureUploadRequest",
@@ -69,6 +83,7 @@ __all__ = [
     "Command",
     "HealthResponse",
     "HelloAck",
+    "IncompatibleAudioFrameVersionError",
     "IncompatibleProtocolVersionError",
     "Marker",
     "Notice",
@@ -91,7 +106,10 @@ __all__ = [
     "TranscriptClientPartial",
     "TranscriptFinal",
     "TranscriptPartial",
+    "WrongMagicError",
     "check_compatible",
+    "decode_frame",
+    "encode_frame",
     "model_for",
     "negotiate",
     "parse_client_event",
