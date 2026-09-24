@@ -29,6 +29,13 @@ one, the vault at `vault_settings.path` (default: the configured `[vault]` secti
 the first request that needs it, so building an app never touches a vault. `sync` is the vault's
 `GitSync` (default: one over that vault with `vault_settings.git`).
 
+The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
+the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
+background asyncio task and commits and pushes batched changes on its own schedule; on shutdown
+`SessionService.shutdown()` cancels that task and runs `GitSync.flush()` in a worker thread, so no
+noted change is left uncommitted. Without the lifespan (a `TestClient` used outside `with`) there
+is no background loop.
+
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`) and `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`).
 Routes registered today:
@@ -64,7 +71,8 @@ Routes registered today:
     `received_capture_ids` is always `[]` until the capture upload endpoint exists.
   - Errors, as `{"detail": "..."}`: an unknown subject, topic or session is 404; another session
     active or unended (start, resume) is 409 with its id in `X-Open-Session-Id`; resuming or
-    ending an ended session is 409; a vault that cannot be opened is 503.
+    ending an ended session is 409; a start refused because pulling the vault hit a conflict is
+    409 with the conflicting paths in `detail`; a vault that cannot be opened is 503.
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
@@ -139,11 +147,12 @@ never echoes the request's `input` back.
 
 ### Session lifecycle -- `server/sessions.py`
 
-`SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None)` (on
+`SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None, sync_interval=1.0)` (on
 `app.state.sessions`) owns subjects/topics listing and creation and the session state machine
 `active` -> `ended`, over the vault's public functions (every call in a worker thread; lifecycle
-changes serialised by one lock). On first use it opens the vault (lazily, when built without one)
-and scans it for unended sessions.
+changes serialised by one lock). On first use it opens the vault (lazily, when built without one),
+pulls it (`GitSync.sync()`, in a worker thread) and then scans it for unended sessions, so a session
+another PC left open is seen.
 
 - A session belongs to exactly one topic of one subject, fixed at start (ADR-0003). There is no
   topic switch: switching topic is ending the session and starting another.
@@ -151,6 +160,14 @@ and scans it for unended sessions.
   names the session in `.session_id`) while any session is unended -- the active one, or one an
   earlier run left unended, which must be resumed or ended first; `resume` is refused while a
   different session is active. Resuming the active session again (a client reconnect) is allowed.
+- `start` pulls the vault first (`GitSync.sync()`, in a worker thread, under the lifecycle lock).
+  A `conflict` outcome refuses the start with `VaultSyncConflictError` (a `SessionConflictError`;
+  `.conflicts` lists the paths, which the message names too) and starts nothing; nothing is
+  auto-resolved (ADR-0002). `offline`, `auth` and `error` are logged and the start proceeds
+  (offline-first). A conflict at vault open is only logged; the next start refuses on it.
+- `startup()` / `shutdown()` (the app's lifespan): between them an open vault has the background
+  `GitSync.run(sync_interval)` task (`sync_running` says whether it runs); `shutdown()` cancels
+  it and flushes (`GitSync.flush()` in a worker thread). No git call runs on the event loop.
 - `resume` continues the session's logs: the next event's `seq` is one past the last in its
   `events.jsonl` (the vault's `resume_session`).
 - Lifecycle events are published on the bus as persisted events with origin `user`:
@@ -165,7 +182,7 @@ and scans it for unended sessions.
   (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
   `get_active(session_id)`, the active session only when it is that one.
 - Refusals are `LifecycleError`s: `UnknownSessionError`, `SessionConflictError` (with
-  `ActiveSessionExistsError` and `SessionAlreadyEndedError` under it) and
+  `ActiveSessionExistsError`, `SessionAlreadyEndedError` and `VaultSyncConflictError` under it) and
   `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
   `TopicNotFoundError`.
 
