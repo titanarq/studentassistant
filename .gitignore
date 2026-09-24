@@ -38,4 +38,5 @@ keystore.properties
 
 # Never commit a real vault or recordings into the code repo
 vault/
+!backend/src/studentassistant/vault/
 recordings/
