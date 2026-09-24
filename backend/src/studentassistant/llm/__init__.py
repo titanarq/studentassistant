@@ -2,7 +2,11 @@
 
 from studentassistant.llm.caching import cache_stable_prefix, cached_block, system_blocks
 from studentassistant.llm.client import LLMClient, backoff_delay, get_client
+from studentassistant.llm.cost import CostStatus, LedgerBinding, cost_status, estimate_usd
 from studentassistant.llm.errors import (
+    CostCapError,
+    CostCapReachedError,
+    CostConfirmationRequiredError,
     FakeClaudeExhaustedError,
     LLMAPIError,
     LLMConnectionError,
@@ -25,6 +29,10 @@ from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse, Role, Too
 __all__ = [
     "ROLES",
     "AnthropicTransport",
+    "CostCapError",
+    "CostCapReachedError",
+    "CostConfirmationRequiredError",
+    "CostStatus",
     "FakeClaude",
     "FakeClaudeExhaustedError",
     "LLMAPIError",
@@ -37,6 +45,7 @@ __all__ = [
     "LLMRetriesExhaustedError",
     "LLMServerError",
     "LLMTransientError",
+    "LedgerBinding",
     "Prompt",
     "PromptNotFoundError",
     "PromptRegistry",
@@ -52,6 +61,8 @@ __all__ = [
     "cache_stable_prefix",
     "cached_block",
     "content_hash",
+    "cost_status",
+    "estimate_usd",
     "get_client",
     "load_prompt",
     "no_sleep",

@@ -1,7 +1,8 @@
 """The `studentassistant` command line.
 
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
-running backend, and `devices` lists (or `devices revoke <id>` removes) the paired capture clients.
+running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
+and `cost` prints what the Claude calls recorded in the vault's ledgers cost.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -24,8 +25,19 @@ import uvicorn
 
 from studentassistant import __version__
 from studentassistant.config import ServerSettings, Settings
+from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.vault import (
+    LedgerEntry,
+    SubjectNotFoundError,
+    TopicNotFoundError,
+    Vault,
+    VaultError,
+    list_subjects,
+    list_topics,
+    read_ledger,
+)
 
 cli = typer.Typer(
     name="studentassistant",
@@ -124,3 +136,56 @@ def revoke(device_id: str) -> None:
         typer.echo(f"No paired device {device_id}.")
         raise typer.Exit(code=1)
     typer.echo(f"Revoked {device_id}.")
+
+
+def _topic_line(name: str, entries: list[LedgerEntry]) -> str:
+    """One topic's totals: USD, tokens by kind, calls, and how many calls had no known price."""
+    usd = sum(entry.estimated_usd or 0.0 for entry in entries)
+    unpriced = sum(1 for entry in entries if entry.estimated_usd is None)
+    line = (
+        f"{name}: ${usd:.4f} ("
+        f"entrada {sum(entry.input_tokens for entry in entries)}, "
+        f"salida {sum(entry.output_tokens for entry in entries)}, "
+        f"caché leída {sum(entry.cache_read_tokens for entry in entries)}, "
+        f"caché escrita {sum(entry.cache_write_tokens for entry in entries)} tokens; "
+        f"{len(entries)} llamadas"
+    )
+    if unpriced:
+        line += f", {unpriced} sin precio conocido"
+    return line + ")"
+
+
+@cli.command()
+def cost(
+    topic: str | None = typer.Option(
+        None, "--topic", help="Only this topic, as <subject-slug>/<topic-slug>."
+    ),
+) -> None:
+    """Print the USD and tokens the ledger records per topic, plus today's (UTC) total."""
+    try:
+        vault = Vault.open(Settings().vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    if topic is not None:
+        subject_slug, _, topic_slug = topic.partition("/")
+        if not subject_slug or not topic_slug:
+            typer.echo(f"«{topic}» no es un tema: usa --topic <asignatura>/<tema>.")
+            raise typer.Exit(code=1)
+        try:
+            entries = read_ledger(vault, subject_slug, topic_slug)
+        except (SubjectNotFoundError, TopicNotFoundError) as error:
+            typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+            raise typer.Exit(code=1) from error
+        typer.echo(_topic_line(topic, entries))
+    else:
+        printed = False
+        for subject in list_subjects(vault):
+            for stored in list_topics(vault, subject.slug):
+                entries = read_ledger(vault, subject.slug, stored.slug)
+                if entries:
+                    typer.echo(_topic_line(f"{subject.slug}/{stored.slug}", entries))
+                    printed = True
+        if not printed:
+            typer.echo("Sin gasto registrado.")
+    typer.echo(f"Hoy (UTC): ${day_usd(vault, utc_now()):.4f}")
