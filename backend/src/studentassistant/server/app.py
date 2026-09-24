@@ -32,6 +32,7 @@ from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.bus import SessionBus
+from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
@@ -125,6 +126,7 @@ def create_app(
     app.include_router(pairing_router(server, devices, app.state.codes))
     app.include_router(session_router())
     app.include_router(cost_router())
+    app.include_router(captures_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

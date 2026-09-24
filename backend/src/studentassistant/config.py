@@ -33,6 +33,10 @@ FAST_MODEL = "claude-sonnet-5"
 CAPABLE_MODEL = "claude-opus-5-5"
 
 
+DEFAULT_MAX_CAPTURE_IMAGE_BYTES = 15 * 1024 * 1024
+DEFAULT_MAX_CAPTURE_IMAGES = 5
+
+
 class ServerSettings(BaseModel):
     """Where the FastAPI app listens."""
 
@@ -51,6 +55,10 @@ class ServerSettings(BaseModel):
     # Extra names a request's `Host` header may carry (e.g. `mypc.local`), beyond `localhost`,
     # loopback/private IP literals, `host` and `public_url`'s host: the DNS-rebinding allowlist.
     allowed_hosts: list[str] = Field(default_factory=list)
+    # `POST /api/sessions/{id}/captures`: the largest single image part a burst may carry, and
+    # the most images one burst may hold; beyond either the upload is refused with 413.
+    max_capture_image_bytes: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGE_BYTES, ge=1)
+    max_capture_images: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGES, ge=1)
 
     @field_validator("devices_path")
     @classmethod

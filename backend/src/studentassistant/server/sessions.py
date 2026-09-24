@@ -21,6 +21,10 @@ flushes whatever is still pending.
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
 within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. Every vault call
 runs in a worker thread, and lifecycle changes are serialised by one lock.
+
+A session's stored captures are the `capture.stored` events of its `events.jsonl`
+(`stored_captures`): session start and resume report their ids in `received_capture_ids`, and the
+capture upload route (`captures.py`) reads them to answer a repeated `capture_id` as a duplicate.
 """
 
 from __future__ import annotations
@@ -29,13 +33,14 @@ import asyncio
 import contextlib
 import logging
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 from studentassistant import protocol
 from studentassistant.config import VaultSettings
+from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
@@ -289,7 +294,7 @@ class SessionService:
                     "device_id": _device(principal),
                 },
             )
-            return _wire_session(session)
+            return await _wire_session(session)
 
     async def resume(
         self, session_id: str, *, principal: Principal | None = None
@@ -313,7 +318,7 @@ class SessionService:
             await self.bus.publish(
                 session.id, SESSION_RESUMED, "user", {"device_id": _device(principal)}
             )
-            return _wire_session(session)
+            return await _wire_session(session)
 
     async def end(
         self,
@@ -367,6 +372,33 @@ class SessionService:
             return protocol.SessionEndResponse(
                 session_id=session.id, status="ended", ended_at_ms=_epoch_ms(meta.ended_at)
             )
+
+    # -- the active session, for the other routes ----------------------------------------------
+
+    async def require_active(self, session_id: str) -> Session:
+        """The vault handle of the active session when it is `session_id`.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+            UnknownSessionError: no topic lists the session.
+            SessionAlreadyEndedError: the session has ended.
+            SessionConflictError: the session is unended but not the active one (not resumed).
+        """
+        vault = await self._ready()
+        active = self._active
+        if active is not None and active.id == session_id:
+            return active
+        if session_id in self._open.values():
+            raise SessionConflictError(
+                f"la sesión {session_id} no está activa: reanúdala antes de enviarle nada"
+            )
+        if await asyncio.to_thread(self._is_listed, vault, session_id):
+            raise SessionAlreadyEndedError(f"la sesión {session_id} ya ha terminado")
+        raise UnknownSessionError(f"no existe la sesión {session_id}")
+
+    def note_change(self) -> None:
+        """Tell the vault's `GitSync` a vault file was written (a no-op before the vault opens)."""
+        self._note_change()
 
     # -- internals -----------------------------------------------------------------------------
 
@@ -486,7 +518,24 @@ def _open_session(session: Session) -> OpenSession:
     )
 
 
-def _wire_session(session: Session) -> protocol.Session:
+def stored_captures(session: Session) -> dict[str, Mapping[str, Any]]:
+    """The captures stored for a session: `capture_id` -> payload of its `capture.stored` event.
+
+    Read from the session's `events.jsonl`, so it survives a backend restart; in log order, and a
+    repeated id keeps its first event. Blocking file I/O: call it from a worker thread.
+    """
+    found: dict[str, Mapping[str, Any]] = {}
+    for event in session.read_events():
+        if event.kind != CAPTURE_EVENT_KIND:
+            continue
+        capture_id = event.payload.get(CAPTURE_ID_KEY)
+        if isinstance(capture_id, str) and capture_id not in found:
+            found[capture_id] = event.payload
+    return found
+
+
+async def _wire_session(session: Session) -> protocol.Session:
+    captures = await asyncio.to_thread(stored_captures, session)
     return protocol.Session(
         session_id=session.id,
         subject_id=session.subject_slug,
@@ -495,8 +544,7 @@ def _wire_session(session: Session) -> protocol.Session:
         started_at_ms=_epoch_ms(session.meta.started_at),
         ws_path=f"/ws/sessions/{session.id}",
         protocol_version=PROTOCOL_VERSION,
-        # No capture store yet (the upload endpoint is a later task of epic #4).
-        received_capture_ids=[],
+        received_capture_ids=list(captures),
     )
 
 
@@ -523,4 +571,5 @@ __all__ = [
     "UnknownSessionError",
     "VaultSyncConflictError",
     "VaultUnavailableError",
+    "stored_captures",
 ]
