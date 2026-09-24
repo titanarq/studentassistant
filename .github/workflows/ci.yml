@@ -1,0 +1,127 @@
+# The project's own CI: the backend, web and android suites of `scripts/test.sh`, each one only
+# when its own paths (or a shared file) changed, plus a `ci` summary job every PR always gets.
+# GitHub-hosted only: the repo is public, never self-hosted (docs/runbooks/operations.md,
+# "CI runners: GitHub-hosted only (repo is public)").
+name: ci
+
+# No paths filter on purpose: every PR gets checks, at least the `ci` summary job. Path
+# filtering happens in the `changes` job below, per suite.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      web: ${{ steps.filter.outputs.web }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Plain git, no third-party change-detection action.
+      - name: which suites changed
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "changed files:"; echo "$changed"
+          backend=false; web=false; android=false
+          while IFS= read -r f; do
+            case "$f" in
+              backend/*) backend=true ;;
+              web/*) web=true ;;
+              android/*) android=true ;;
+              protocol/*) backend=true; android=true ;;
+              scripts/test.sh|.github/workflows/ci.yml) backend=true; web=true; android=true ;;
+            esac
+          done <<< "$changed"
+          {
+            echo "backend=$backend"
+            echo "web=$web"
+            echo "android=$android"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: backend suite
+        run: bash scripts/test.sh backend
+      - name: full backend log
+        if: failure()
+        run: cat .cache/test-backend-last.log || echo "no .cache/test-backend-last.log"
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: web suite
+        run: bash scripts/test.sh web
+      - name: web build
+        run: |
+          if [ -f web/package.json ]; then
+            cd web && npm run build
+          else
+            echo "skip web build: no web/package.json yet"
+          fi
+      - name: full web log
+        if: failure()
+        run: cat .cache/test-web-last.log || echo "no .cache/test-web-last.log"
+
+  android:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # The hosted image ships an Android SDK and sets $ANDROID_HOME / $ANDROID_SDK_ROOT.
+      - name: android sdk
+        run: echo "ANDROID_HOME=${ANDROID_HOME:-unset} ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+      # Extra arguments replace the wrapper's default task, so `test` is repeated; the wrapper
+      # already passes --no-daemon.
+      - name: android suite
+        run: bash scripts/test.sh android test -Dorg.gradle.workers.max=2
+      - name: full android log
+        if: failure()
+        run: cat .cache/test-android-last.log || echo "no .cache/test-android-last.log"
+
+  # The one check every PR always gets: a skipped suite job is fine, a failed or cancelled one
+  # is not.
+  ci:
+    needs: [changes, backend, web, android]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: overall result
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needed job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled) echo "a needed job ended in '$r'"; exit 1 ;;
+            esac
+          done
+          echo "all needed jobs succeeded or were skipped"
