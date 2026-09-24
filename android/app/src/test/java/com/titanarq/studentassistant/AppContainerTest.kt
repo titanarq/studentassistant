@@ -8,6 +8,7 @@ import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.FakeBackendClient
 import com.titanarq.studentassistant.backend.OkHttpBackendClient
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
+import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,7 +81,7 @@ class AppContainerTest {
     }
 
     @Test
-    fun `the view-model factories build the pairing, backends and connection-test view models`() {
+    fun `the view-model factories build the pairing, backends, connection-test and home view models`() {
         val fake = FakeBackendClient()
         val container = AppContainer(
             filesDir = folder.root,
@@ -93,5 +94,7 @@ class AppContainerTest {
         assertTrue(container.pairingViewModelFactory.make(PairingViewModel::class.java) is PairingViewModel)
         assertTrue(container.pairedBackendsViewModelFactory.make(PairedBackendsViewModel::class.java) is PairedBackendsViewModel)
         assertTrue(container.connectionTestViewModelFactory.make(ConnectionTestViewModel::class.java) is ConnectionTestViewModel)
+        assertTrue(container.homeViewModelFactory.make(HomeViewModel::class.java) is HomeViewModel)
+        assertSame(container.sessionHolder, container.sessionHolder)
     }
 }
