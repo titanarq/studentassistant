@@ -14,10 +14,13 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from ws_harness import MsClock, RecordingSink, WsHarness
 
-from studentassistant.config import ServerSettings
+from studentassistant.config import ServerSettings, SttSettings
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
+from studentassistant.stt import SpeechToTextProvider, provider_from_settings
+from studentassistant.vault import Vault
 
 LOOPBACK_HOST = "127.0.0.1"
 LAN_HOST = "192.168.1.30"
@@ -154,3 +157,64 @@ def pair_device(
         return response.json()
 
     return pair
+
+
+# -- the session WebSocket (`server/ws.py`) ----------------------------------------------------
+
+
+@pytest.fixture
+def stt_settings() -> SttSettings:
+    """The `[stt]` section of the WebSocket tests; server-mode tests override it."""
+    return SttSettings(mode="client", provider="web-speech", language="es")
+
+
+@pytest.fixture
+def ws(
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    stt_settings: SttSettings,
+) -> WsHarness:
+    """An app over `tmp_vault` with an active session, a recording sink and `provider_from_settings`
+    (the `fake` provider in server mode), and a gateway clock 10 s after the session started."""
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=server,
+        codes=codes,
+        vault=tmp_vault,
+        stt=stt_settings,
+    )
+    sinks: list[RecordingSink] = []
+    providers: list[SpeechToTextProvider] = []
+
+    def sink_factory(settings: SttSettings, clock_offset: float) -> RecordingSink:
+        sink = RecordingSink(settings.provider, clock_offset=clock_offset)
+        sinks.append(sink)
+        return sink
+
+    def provider_factory(settings: SttSettings) -> SpeechToTextProvider:
+        provider = provider_from_settings(settings)
+        providers.append(provider)
+        return provider
+
+    clock = MsClock()
+    gateway = app.state.gateway
+    gateway.sink_factory = sink_factory
+    gateway.provider_factory = provider_factory
+    gateway.clock = clock
+    client = HostedTestClient(app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
+    lan = HostedTestClient(app, base_url=PUBLIC_URL, client=(LAN_HOST, 50000))
+    harness = WsHarness(app, client, lan, tmp_vault, clock, sinks, providers)
+    assert client.post("/api/subjects", json={"name": "Física"}).status_code == 201
+    assert (
+        client.post("/api/subjects/fisica/topics", json={"name": "Cinemática"}).status_code == 201
+    )
+    started = client.post(
+        "/api/sessions",
+        json={"subject_id": "fisica", "topic_id": "cinematica", "client_time_ms": 1_000},
+    )
+    assert started.status_code == 201
+    harness.session = started.json()
+    clock.now = harness.started_at_ms + 10_000
+    return harness

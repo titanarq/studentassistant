@@ -20,14 +20,15 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
 clock). `vault` is the open `Vault` the session routes work on (tests pass `tmp_vault`); without
 one, the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on
 the first request that needs it, so building an app never touches a vault. `sync` is the vault's
-`GitSync` (default: one over that vault with `vault_settings.git`).
+`GitSync` (default: one over that vault with `vault_settings.git`). `stt` is the `[stt]` section
+(`SttSettings`, default: the configured one) the session WebSocket follows.
 
 The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
 the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
@@ -37,7 +38,8 @@ noted change is left uncommitted. Without the lifespan (a `TestClient` used outs
 is no background loop.
 
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
-`SessionBus`) and `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`).
+`SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
+and `gateway` (the `SessionGateway` of the session WebSocket).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -84,6 +86,8 @@ Routes registered today:
   cannot be opened 503; every `detail` is Spanish. The vault and the caps come from `studentassistant.config`, read on every
   request. The server computes no cost itself. Needs the bearer check like every non-exempt route.
   A local endpoint, not part of protocol v1.
+- `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
+  described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
   `backend/src/studentassistant/server/static/` (`Path(__file__).parent / "static"` -- a
   code-layout constant, not a configuration knob; tests pass a temporary directory). The web
@@ -185,6 +189,75 @@ another PC left open is seen.
   `ActiveSessionExistsError`, `SessionAlreadyEndedError` and `VaultSyncConflictError` under it) and
   `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
   `TopicNotFoundError`.
+
+### Session WebSocket -- `server/ws.py`
+
+`WS /ws/sessions/{session_id}`, protocol v1 (`protocol/README.md`), served by the
+`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...)` on
+`app.state.gateway` (`ws_router()` mounts it). `sink_factory(stt, clock_offset_s)` builds each
+connection's `TranscriptSink` (default `InMemoryTranscriptSink`, whose `clock_offset` is the
+client-clock reading at session start in seconds); `provider_factory(stt)` builds a session's
+server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms. Tests
+replace all three.
+
+- **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
+  `authenticate_websocket` (1008 without a valid token or loopback trust).
+- **Session check** (after `accept()`, so the client can read the reason): a `session_id` that is
+  not the active, attached session (unknown, ended, or unended but not resumed) is closed with
+  `CLOSE_UNKNOWN_SESSION` (4404) and a reason; nothing is published. A session that ends while a
+  socket is open is closed with 4404 on the socket's next publish.
+- **Handshake**: the first message must be `hello` (anything else, a binary frame included, is
+  refused). An incompatible MAJOR closes with 1008 and the `check_compatible` message as reason,
+  and no `hello.ack`. Otherwise `hello.ack` carries `negotiate(hello.protocol_version)`,
+  `stt_mode` = `stt.mode` of the config (never the client's `capabilities.stt`), `audio_format`
+  (`pcm16`, 16000 Hz, mono) exactly in `server` mode, `clock_offset_ms` = backend clock minus
+  `hello.client_time_ms`, and `server_time_ms`. Client times map to backend time by adding the
+  offset and to session time by subtracting the session's `started_at_ms` (clamped at 0). Each
+  (re)connection takes a new offset from its own `hello`. In `server` mode, a session that
+  already received audio also gets an `ack` with its highest contiguous `audio_seq` right after
+  `hello.ack`, so a reconnecting client knows where to resume.
+- **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
+  missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
+  binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a
+  reason (at most 123 bytes); none is ignored and nothing of it is published.
+- **Client mode**: each `transcript.client.partial` / `.final` becomes a `ClientSegment`
+  (client-clock seconds) ingested by the connection's sink. Segments are de-duplicated by
+  `segment_id` per session: once a final has been handled, a repeated final or a later partial of
+  that id is dropped, so resending after a reconnect is idempotent.
+- **Server mode**: binary frames go through `decode_frame`; a wrong magic, another MAJOR or a
+  malformed frame is refused (1008). Frames are de-duplicated by `seq` and fed in `seq` order,
+  starting at 0, as `AudioChunk`s in session time to the session's provider; frames ahead of the
+  next expected `seq` wait in a buffer of at most `MAX_PENDING_FRAMES` (512), past which the
+  socket is closed so the client resends from its last ack. After each frame the backend sends an
+  `ack` with `audio_seq` = the highest contiguous `seq` received (none until frame 0 arrived).
+  Provider segments get backend ids `server-<n>` (a partial and the final after it share one).
+  The provider is built at the session's first server-mode `hello`; a failure closes with 1011.
+- **Resume**: the per-session receive state (finals seen, next audio `seq`, the out-of-order
+  buffer, the provider) outlives the socket and is kept until another session connects, so a
+  client that reconnects and resends from the acknowledged `seq` makes no gap and no duplicate.
+  Several sockets of one session are serialised on that state.
+- **Published on the bus** (`persist=True` unless noted):
+  - `transcript.final` (origin `stt`, `t` = `session_start_ms`) and `transcript.partial`
+    (origin `stt`, a notice: `persist=False`), payload `segment_id`, `session_start_ms`,
+    `session_end_ms`, `text`, `language` (the client's in client mode, `stt.language` in server
+    mode), `provider` (`stt.provider`) and `confidence` when known. `transcript.final` with
+    `payload.segment_id` is what the observer fold registers. A final the vault refuses as
+    secret-looking is logged, not stored, and counts as handled.
+  - `button` (`button`, `source?`), `marker` (`label?`) and `command.ack` (`command_id`) for the
+    client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
+    offset) and `t` = its session time.
+- **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
+  (`transcript.partial`, `transcript.final`, `command`, `notice`) before `hello.ack` and sends
+  each as the matching server message (`transcript.*` from the payload fields above;
+  `command` from `command_id`, `command`; `notice` from `pending_count`; `server_time_ms` from the
+  payload or the clock). A payload that makes no valid message is logged and skipped. The
+  subscription is closed when the socket ends, however it ends.
+- **Backpressure**: vault appends run in worker threads through the bus, so nothing blocks the
+  event loop; inbound messages are handled one at a time in order. Outbound traffic goes through
+  the connection's bounded bus subscription, which drops the oldest notices (partials) when the
+  client reads slowly and never a persisted event.
+- Not yet: flushing the provider (`finish()`) when a session ends, and the `capture_ids` side of
+  the `ack` (the capture upload task).
 
 ### Session event bus -- `server/bus.py`
 
