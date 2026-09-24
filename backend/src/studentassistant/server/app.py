@@ -108,6 +108,8 @@ def create_app(
     )
     # Bus `transcript.final` events -> each session's `transcript.jsonl` (started by the lifespan).
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
+    # Ending a session waits for the pipeline to write every final published before the end.
+    app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
 
     # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
     # then the bearer check.
