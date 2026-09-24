@@ -16,8 +16,11 @@ import com.titanarq.studentassistant.backend.ConnectionTestScreen
 import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.PairedBackendsScreen
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
+import com.titanarq.studentassistant.home.HomeScreen
+import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingScreen
 import com.titanarq.studentassistant.pairing.PairingViewModel
+import com.titanarq.studentassistant.session.CapturePlaceholderScreen
 import com.titanarq.studentassistant.ui.PlaceholderScreen
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.StudentAssistantTheme
@@ -38,7 +41,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Opens pairing when no backend is stored, else the paired backends; routes between them. */
+/** Opens pairing when no backend is stored, else the subjects/topics home; routes between the screens. */
 @Composable
 private fun App(container: AppContainer) {
     val backendsViewModel: PairedBackendsViewModel = viewModel(factory = container.pairedBackendsViewModelFactory)
@@ -54,8 +57,9 @@ private fun App(container: AppContainer) {
         if (current != null && current.backends.isEmpty()) route = Route.PAIRING
     }
     val hasBackends = current?.backends?.isNotEmpty() == true
-    BackHandler(enabled = route != null && route != Route.BACKENDS && hasBackends) {
-        route = Route.BACKENDS
+    // Back from the connection test returns to the backends; from anywhere else, to the home.
+    BackHandler(enabled = route != null && route != Route.HOME && hasBackends) {
+        route = if (route == Route.CONNECTION_TEST) Route.BACKENDS else Route.HOME
     }
 
     when (route) {
@@ -63,7 +67,16 @@ private fun App(container: AppContainer) {
         Route.PAIRING -> PairingScreen(
             viewModel = viewModel<PairingViewModel>(factory = container.pairingViewModelFactory),
             onDone = { route = Route.CONNECTION_TEST },
-            onBack = if (hasBackends) ({ route = Route.BACKENDS }) else null,
+            onBack = if (hasBackends) ({ route = Route.HOME }) else null,
+        )
+        Route.HOME -> HomeScreen(
+            viewModel = viewModel<HomeViewModel>(factory = container.homeViewModelFactory),
+            onSessionOpened = { route = Route.CAPTURE },
+            onBackends = { route = Route.BACKENDS },
+        )
+        Route.CAPTURE -> CapturePlaceholderScreen(
+            sessions = container.sessionHolder,
+            onBack = { route = Route.HOME },
         )
         Route.BACKENDS -> PairedBackendsScreen(
             viewModel = backendsViewModel,

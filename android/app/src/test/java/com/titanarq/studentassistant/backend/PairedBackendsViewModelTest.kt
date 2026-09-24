@@ -52,6 +52,6 @@ class PairedBackendsViewModelTest {
     @Test
     fun `the app opens pairing only when no backend is stored`() {
         assertEquals(Route.PAIRING, startRoute(PairedBackends()))
-        assertEquals(Route.BACKENDS, startRoute(PairedBackends(listOf(home), "d1")))
+        assertEquals(Route.HOME, startRoute(PairedBackends(listOf(home), "d1")))
     }
 }
