@@ -82,3 +82,21 @@ class PromptNotFoundError(LLMError, KeyError):
 
 class FakeClaudeExhaustedError(LLMError, AssertionError):
     """A test's `FakeClaude` received more requests than it had scripted replies."""
+
+
+class CostCapError(LLMError):
+    """A cost cap is reached: `cap` (`"session"` or `"day"`), its `limit_usd`, the `total_usd`."""
+
+    def __init__(self, message: str, *, cap: str, limit_usd: float, total_usd: float) -> None:
+        super().__init__(message)
+        self.cap = cap
+        self.limit_usd = limit_usd
+        self.total_usd = total_usd
+
+
+class CostCapReachedError(CostCapError):
+    """A non-essential call (`observer`, `transcriber`) is paused because a cost cap is reached."""
+
+
+class CostConfirmationRequiredError(CostCapError):
+    """A user-driven call (`editor`, `generator`) over a cost cap needs `confirm_over_cap=True`."""

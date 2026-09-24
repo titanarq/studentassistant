@@ -27,11 +27,28 @@ Decision: ADR-0004.
 `[llm] max_attempts = 4`: attempts per call (first one included) before a 429/5xx/connection error
 surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile).
 
+Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
+`SA_LLM__PRICES__claude-sonnet-5__INPUT_PER_MTOK=2`):
+
+- `[llm] max_usd_per_session`, `max_usd_per_day` (floats, USD): unset = no cap. The day is the
+  UTC day, so the day cap resets at UTC midnight.
+- `[llm.prices."<model id>"]` with `input_per_mtok`, `output_per_mtok`, `cache_write_per_mtok`
+  (5-minute TTL, the one this module sets), `cache_read_per_mtok`, all USD per million tokens.
+  A configured table is merged over the defaults per model and per key.
+
+| model | input | output | cache write | cache read |
+|---|---|---|---|---|
+| `claude-sonnet-5` | 2.00 | 10.00 | 2.50 | 0.20 |
+| `claude-opus-5-5` | 4.00 | 20.00 | 5.00 | 0.20 |
+
+No price or cap lives anywhere but these config defaults.
+
 ## Public surface (`from studentassistant.llm import ...`)
 
-- `get_client(role, *, settings=None, transport=None, sleep=asyncio.sleep) -> LLMClient`;
-  `UnknownRoleError` for any other role. `LLMClient.create(messages, *, system=None, tools=None,
-  tool_choice=None, max_tokens=None, cache=True, prompt_hash=None) -> LLMResponse` (async).
+- `get_client(role, *, settings=None, transport=None, sleep=asyncio.sleep, ledger=None,
+  clock=utc_now) -> LLMClient`; `UnknownRoleError` for any other role.
+  `LLMClient.create(messages, *, system=None, tools=None, tool_choice=None, max_tokens=None,
+  cache=True, prompt_hash=None, confirm_over_cap=False) -> LLMResponse` (async).
   Every call streams (`messages.stream` + `get_final_message`), sends `output_config.effort`,
   never sends `thinking`, and refuses a forced `tool_choice` (`any`/`tool`) with `ValueError`.
   `build_request(...)` returns the `LLMRequest` without sending it.
@@ -43,17 +60,41 @@ surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant aut
   stay volatile. `cached_block(text)` marks an extra breakpoint (e.g. topic sources);
   `cache_stable_prefix`, `system_blocks` are the underlying helpers.
 - `structured(client, messages, OutputModel, *, tool_name, tool_description, system=None,
-  max_tokens=None, prompt_hash=None) -> StructuredResult` (`.value`, `.responses`): a strict tool
+  max_tokens=None, prompt_hash=None, confirm_over_cap=False) -> StructuredResult` (`.value`, `.responses`): a strict tool
   (`strict_tool`) with `tool_choice: auto` and the `structured-output` prompt as instruction;
   the input is parsed with `json` and validated with Pydantic; one re-ask carrying the error,
   then `StructuredOutputError`. `RefusalError` on `stop_reason: refusal`.
+- Cost ledger: `LedgerBinding(vault, subject, topic, session=None)` passed as `ledger=` to
+  `get_client` / `FakeClaude.client` makes every successful `create` append a `LedgerEntry`
+  through `studentassistant.vault.append_ledger_entry` (time from `clock`, role, model, prompt
+  hash, input/output/cache-read/cache-write tokens, `estimated_usd`, subject, topic, session);
+  `structured` records one entry per underlying call, the re-ask included. A failed call records
+  nothing; a ledger that cannot be written is logged and the answer is still returned. Without a
+  binding nothing is recorded and no cap applies; calls with no topic are never recorded.
+- `estimate_usd(usage, model, prices) -> float | None`: `None` for a model missing from
+  `[llm.prices]`, with a warning logged once per model; such an entry keeps its token counts and
+  adds 0 to the capped totals (`studentassistant cost` counts it as "sin precio conocido").
+- Caps, checked before each bound call: the session total is the bound session's entries in its
+  topic's ledger (no session bound = no session cap), the day total every entry of the vault whose
+  `time` falls on the current UTC day. At or over either cap, `observer`/`transcriber` calls raise
+  `CostCapReachedError` (paused, whatever `confirm_over_cap` says) and `editor`/`generator`
+  calls raise `CostConfirmationRequiredError` unless `confirm_over_cap=True`, which proceeds and
+  records normally. Both derive from `CostCapError(LLMError)` with `cap` (`"session"` checked
+  first, then `"day"`), `limit_usd` and `total_usd`; nothing is sent when they are raised.
+- `cost_status(binding, settings=None, *, now=None) -> CostStatus` (`session_usd`, `day_usd`,
+  `max_usd_per_session`, `max_usd_per_day`, `observer_paused`, `editor_needs_confirmation`, the
+  last two true once either cap is reached) for the server's status endpoint.
+- CLI: `studentassistant cost [--topic <subject-slug>/<topic-slug>]` prints, from the configured
+  vault, USD and tokens per topic with spend (or the one topic) plus `Hoy (UTC)`; an unknown or
+  malformed topic exits 1 with a Spanish message.
 - Prompts: `load_prompt(name) -> Prompt` (`name`, `content`, `hash` = `sha256:<hex>`, `render`)
   for `backend/src/studentassistant/prompts/<name>.md`; `PromptRegistry(directory)` (`names`,
   `get`); `content_hash`. Missing prompt: `PromptNotFoundError`.
 - Errors (all subclass `LLMError`; raw SDK exceptions never escape): `LLMTransientError`
   (`LLMRateLimitError`, `LLMServerError`, `LLMConnectionError`; `retry_after`),
   `LLMRetriesExhaustedError` (`attempts`, `last_error`), `LLMAPIError` (`status_code`),
-  `StructuredOutputError`, `RefusalError`, `UnknownRoleError`, `PromptNotFoundError`.
+  `StructuredOutputError`, `RefusalError`, `UnknownRoleError`, `PromptNotFoundError`,
+  `CostCapReachedError`, `CostConfirmationRequiredError`.
 - Tests: `FakeClaude()` scripted with `reply_text`, `reply_tool` (a `str` input stays verbatim
   for malformed JSON), `reply(LLMResponse)`, `fail(error)`; plugs in as
   `get_client(role, transport=fake)` or `fake.client(role, settings=...)` (which also uses
@@ -63,4 +104,5 @@ surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant aut
 - `Transport` protocol / `AnthropicTransport`: the only code that imports `anthropic`
   (`tests/llm/test_import_boundary.py` enforces it for the whole package).
 
-The cost ledger and caps (#28) build on `LLMRequest.role`/`prompt_hash` and `LLMResponse.usage`.
+The cost ledger and caps build on `LLMRequest.role`/`prompt_hash` and `LLMResponse.usage`
+(`input_tokens` are the uncached ones; cache writes and reads are reported apart).
