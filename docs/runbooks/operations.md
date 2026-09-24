@@ -105,6 +105,7 @@ registered -- any fork PR could run arbitrary code on this machine. Deregister f
 ## Known mechanism issues filed upstream
 
 - agent-os#14 board item resolution (workaround above).
+- agent-os#37 guard tick crashes on a `system/permission_denied` stream event (workaround below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
@@ -181,6 +182,17 @@ The first unattended refiner run wrote its scratch copies under `.cache/refiner/
 `rm -rf .cache/refiner`. That deleted the driver's log, PID file and `runs.tsv`. The `SCRATCH FILES` block in
 `config/agent_prompts/refiner.md` tells it to use `mktemp -d` instead. If `.cache/refiner/`
 disappears again, check the refiner's session transcript for an `rm` and report it on #33.
+
+## Guard crash on a string `message` event (workaround titanarq/agent-os#37)
+
+A refused tool call makes Claude Code write `{"type":"system","subtype":"permission_denied",
+...,"message":"<text>"}` into a role log; `claude_jsonl.turn_usage` then raises
+`AttributeError: 'str' object has no attribute 'get'` and every guard tick dies (no promotion,
+no liveness) until the log leaves the quota window. `scripts/sanitize_role_logs.py` renames such
+a key to `msgtext` in place (same length, safe on a live log) and runs as the guard unit's
+`ExecStartPre` through the drop-in `scripts/systemd/studentassistant-guard.service.d/sanitize-role-logs.conf`
+(COPIED to `~/.config/systemd/user/studentassistant-guard.service.d/`, then daemon-reload). Remove
+all three once agent-os#37 is fixed and the subtree is pulled.
 
 ## Starting the agents
 
