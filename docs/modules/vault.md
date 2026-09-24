@@ -35,9 +35,10 @@ Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents st
 of sessions are `YYYYMMDD-HHMMSS`.
 
 ## Public surface
-What exists today, after issues #19, #20 and #21: the vault itself, its subjects and its topics,
+What exists today, after issues #19, #20, #21 and #22: the vault itself, its subjects and its topics,
 their sessions with the two append-only logs, their sources, the secret guard, the helpers all of
-them are written with, and the git sync that commits, pushes and pulls them. The layout above is the target, not the state -- see "Not written
+them are written with, the git sync that commits, pushes and pulls them, and the `setup` that
+creates or clones the vault from GitHub. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
@@ -155,12 +156,14 @@ key written even when its value is `None`, no `---` or `...` marker, and no wrap
 default 80 columns) and `read_yaml(path, model)`.
 
 ### Git sync -- `git.py`, `sync.py`
-Only these two modules run git on the vault. `GitRunner(root, identity, timeout)` runs `git` as a
+Only these two modules and the setup below run git on the vault.
+`GitRunner(root, identity, timeout, environment=None)` runs `git` as a
 subprocess in the vault root with a `GitIdentity(name, email)` as author and committer (passed in
 the environment, so no git configuration decides it), never prompts (`GIT_TERMINAL_PROMPT=0`,
 SSH `BatchMode`), is killed after `timeout`, and returns a `GitResult` (`ok`, `describe()`) whose
 output went through `redact` (URL userinfo and the secret-guard patterns become `***`);
-`check(...)` raises `GitCommandError` instead.
+`check(...)` raises `GitCommandError` instead. `environment` adds variables to every command: it
+is how a GitHub credential reaches git (see "GitHub and setup"), never a URL or `.git/config`.
 
 `GitSync(vault, settings=None, clock=None)` drives one vault; `settings` is a `VaultGitSettings`
 (`studentassistant.config`, `[vault.git]` / `SA_VAULT__GIT__*`), `clock` any object with
@@ -206,9 +209,67 @@ Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yam
 `push_backoff_initial_seconds`, `push_backoff_max_seconds`, `timeout_seconds` (120, per git
 command).
 
+### GitHub and setup -- `github.py`, `setup.py`
+`studentassistant setup` gets a fresh PC to a working vault (ADR-0002: install -> setup -> clone
+-> index rebuild). GitHub is reached only through subprocesses (`gh`, `git`), never HTTP.
+
+`GitHubHost` (protocol, `github.py`): `name`, `authenticated()`, `remote_url(repo)` (the
+`https://github.com/<owner>/<name>.git` git uses; no credential in it), `repo_exists(repo)`,
+`create_private_repo(repo)` and `git_environment()` (the variables a git child process needs to
+authenticate). Two implementations, both taking a `remote_base` (default `GITHUB_URL`; tests point
+it at `file://` bare repositories):
+- `GhCliHost(gh="gh", remote_base, timeout)` -- `gh auth status` decides `authenticated`;
+  `gh api repos/<repo>` answers `repo_exists` (a 404 is `False`); `gh repo create <repo> --private`
+  creates; git borrows `gh`'s credential through `gh auth git-credential` as credential helper,
+  given as `GIT_CONFIG_*` environment variables (other helpers reset first), so nothing is written
+  to any git configuration.
+- `TokenHost(token, remote_base, timeout)` -- a fine-grained token from `GH_TOKEN` or
+  `GITHUB_TOKEN` (`TOKEN_ENV_VARS`, first non-empty wins, `token_from_environment()`). The token
+  reaches git only as the `STUDENTASSISTANT_GIT_TOKEN` (`GIT_TOKEN_ENV_VAR`) variable of the child
+  process, which an environment-given credential helper reads: never in a remote URL,
+  `.git/config`, the vault, `config.toml` or a message; `repr()` omits it. `repo_exists` is a
+  `git ls-remote`. `create_private_repo` always refuses with `NO_GH_CREATE_MESSAGE` (install and
+  log in to `gh`, or create an empty private repository by hand and re-run: creating is a REST call
+  and this module has no HTTP client).
+
+`select_host(environ=None, gh="gh", remote_base=GITHUB_URL)` returns the `GhCliHost` when `gh auth
+status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises `GitHubHostError`
+(`NO_CREDENTIALS_MESSAGE`). Every `gh`/`git` output is passed through `redact` before it reaches a
+`GitHubHostError` message; messages are Spanish, shown to the student as they are.
+
+`setup.py` (`repo` is always `owner/name`, checked by `config.check_repo_name`):
+- `create_vault(path, repo, student, host, author_email=..., timeout=...)` -- refuses a non-empty
+  `path` (an empty directory is accepted) and a repository that exists with commits; creates it
+  private when it does not exist (an existing empty one is used as it is); then `Vault.init(path,
+  student)`, commits the first files (`vault creado`), adds `origin`, pushes `main` and verifies
+  push access. Everything GitHub could refuse is checked before anything is written locally.
+- `clone_vault(path, repo, host, post_clone=<no-op>, author_email=..., timeout=...)` -- refuses a
+  non-empty `path` and a repository that does not exist; clones; `Vault.open` checks the format (a
+  `VaultFormatError` becomes a Spanish `SetupError` and the clone stays in place); verifies push
+  access; then calls `post_clone(vault)` once (where the index rebuild will plug in).
+- Idempotence: a git repository at `path` whose `origin` is `host.remote_url(repo)` (a trailing
+  `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
+  create whose first push never happened is pushed); `post_clone` is not called.
+- `verify_push_access(runner)` -- `git push --dry-run origin main`; failing it is a `SetupError`.
+- Both return a `SetupResult` (`vault`, `repo`, `action`: `created`, `cloned` or
+  `already-set-up`); every refusal is a `SetupError` (a `VaultError`) with a Spanish message, or
+  the host's `GitHubHostError`.
+
+The command (`studentassistant.cli`): `studentassistant setup [--vault-repo owner/name] [--path
+PATH] [--create|--clone] [--student NAME]` asks in Spanish for whatever is missing (create or
+clone, repository, local path defaulting to `vault.path`, and for a new vault the student's name,
+defaulting to the repository owner, which is also what it takes unattended), runs the flow with
+`select_host()` and then `config.write_vault_config(vault_path, repo)`. That writer merges
+`vault.path` (absolute) and `vault.repo` into the TOML at `config_toml_path()` (`SA_CONFIG` or
+`~/.config/studentassistant/config.toml`), keeping every other key and comment, writing nothing
+else, and leaving the file untouched when it already holds those values: re-running `setup` with
+the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`, optional,
+`SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
+
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
 ledger, git sync and secret-guard names of this section; the YAML models, the slug helpers, the
-file writers, `redact` and `summarize_changes` are imported from their own module.
+file writers, `redact`, `summarize_changes` and the GitHub and setup names are imported from their
+own module (`studentassistant.vault.github`, `studentassistant.vault.setup`).
 
 ### Not written yet
 As of issues #21, #117 and #119 no code reads or writes these parts of the layout:
@@ -226,4 +287,6 @@ never removes what the current notes cite.
 - Pure storage: no LLM, no HTTP. Refuses files that look like secrets.
 
 ## Tests
-Against `tmp_vault` fixtures with a local bare repo as "remote"; never GitHub.
+Against `tmp_vault` fixtures with a local bare repo as "remote"; never GitHub. Setup tests use
+`tests/github_fakes.py`: a `LocalHost` over bare repositories under `tmp_path`, a fake `gh` script
+put first on `PATH`, `file://` remote bases, and `SA_CONFIG` inside `tmp_path`.
