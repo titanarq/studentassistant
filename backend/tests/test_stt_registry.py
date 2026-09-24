@@ -133,9 +133,12 @@ def test_importing_stt_pulls_in_no_concrete_provider() -> None:
 
     assert set(loaded) == {
         "studentassistant.stt",
+        "studentassistant.stt.buffered",
         "studentassistant.stt.models",
+        "studentassistant.stt.pipeline",
         "studentassistant.stt.provider",
         "studentassistant.stt.registry",
         "studentassistant.stt.sink",
+        "studentassistant.stt.transcript",
     }
     assert ENTRY_POINT_GROUP == "studentassistant.stt_providers"
