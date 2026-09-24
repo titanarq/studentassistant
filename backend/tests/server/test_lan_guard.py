@@ -55,6 +55,18 @@ def test_a_public_websocket_is_closed_with_1008(client_at: ClientAt) -> None:
     assert closed.value.code == 1008
 
 
+def test_x_forwarded_for_never_changes_the_client_address(client_at: ClientAt) -> None:
+    public_but_forwarded_as_loopback = client_at("8.8.8.8").get(
+        "/api/health", headers={"X-Forwarded-For": "127.0.0.1"}
+    )
+    loopback_forwarded_as_public = client_at("127.0.0.1").post(
+        "/api/pair/codes", headers={"X-Forwarded-For": "8.8.8.8"}
+    )
+
+    assert public_but_forwarded_as_loopback.status_code == 403
+    assert loopback_forwarded_as_public.status_code == 200
+
+
 def test_no_address_is_not_lan() -> None:
     assert is_lan(None) is False
     assert is_lan("") is False
@@ -69,4 +81,4 @@ def test_serve_binds_the_configured_host_and_port(monkeypatch: pytest.MonkeyPatc
     result = CliRunner().invoke(cli, ["serve"])
 
     assert result.exit_code == 0
-    assert calls == [{"host": "192.168.1.20", "port": 9200}]
+    assert calls == [{"host": "192.168.1.20", "port": 9200, "proxy_headers": False}]

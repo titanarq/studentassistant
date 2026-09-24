@@ -56,13 +56,23 @@ Routes registered today:
 
 ### Pairing and authentication (ADR-0001)
 
-Every request passes two ASGI middlewares, in this order:
+Every request passes three ASGI middlewares, in this order:
 
 1. **LAN guard** (`server/network.py`, `LanGuardMiddleware`): the socket peer address must be
    loopback or private -- `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
    `169.254.0.0/16`, `::1`, `fe80::/10`, `fc00::/7` (IPv4-mapped IPv6 is unwrapped). Anything else
-   gets 403 (HTTP) or a 1008 close (WebSocket). `X-Forwarded-For` is never trusted.
-2. **Bearer check** (`server/auth.py`, `BearerAuthMiddleware`): every HTTP route except
+   gets 403 (HTTP) or a 1008 close (WebSocket). `X-Forwarded-For` is never trusted: `serve` runs
+   uvicorn with `proxy_headers=False`, so the socket peer is the only client address.
+2. **Host allowlist** (`server/network.py`, `HostAllowlistMiddleware`), against DNS rebinding (a
+   page on `evil.example` re-pointed at `127.0.0.1` would otherwise count as a trusted loopback
+   client). The `Host` header, port stripped and compared case-insensitively, must be
+   `localhost`, a loopback or private IP literal (the ranges above -- `127.0.0.1`, `[::1]`, this
+   PC's LAN address; rebinding cannot produce an IP literal), `server.host` when it names one
+   address or name, the host of `server.public_url` when set, or an entry of
+   `server.allowed_hosts`. A missing or other `Host` gets 421 (HTTP) or a 1008 close before
+   `accept()` (WebSocket), and never reaches a route or the bearer check. A capture client that
+   reaches the PC by a name (`mypc.local`) needs that name in `allowed_hosts` or `public_url`.
+3. **Bearer check** (`server/auth.py`, `BearerAuthMiddleware`): every HTTP route except
    `EXEMPT_ROUTES` -- `GET /api/health`, `POST /api/pair`, `POST /api/pair/codes` -- needs
    `Authorization: Bearer <token>` of a paired device, else 401 with `WWW-Authenticate: Bearer`.
    A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
@@ -91,7 +101,8 @@ never echoes the request's `input` back.
 
 ### CLI
 
-- `studentassistant serve`: runs the app on `server.host`:`server.port`.
+- `studentassistant serve`: runs the app on `server.host`:`server.port` (uvicorn with
+  `proxy_headers=False`).
 - `studentassistant pair`: asks the running backend for a code (`POST /api/pair/codes` on
   `127.0.0.1:<server.port>`, or on `server.host` when that names one address) and prints a QR of
   the JSON `{"url", "code"}` in the terminal (segno, compact), plus the URL, the code and its expiry.
@@ -107,4 +118,5 @@ never echoes the request's `input` back.
 | `port` | `8765` | bind port of `serve` |
 | `trust_localhost` | `true` | loopback clients need no bearer token |
 | `devices_path` | `~/.local/share/studentassistant/devices.json` | the paired devices file |
-| `public_url` | unset | the base URL put in the pairing QR (default: LAN address + port) |
+| `public_url` | unset | the base URL put in the pairing QR (default: LAN address + port); its host is also an allowed `Host` |
+| `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
