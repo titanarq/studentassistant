@@ -237,7 +237,7 @@ A split leaves the original open with no status label, and every other task's `B
 still points at it, so that chain never unblocks. After each split: rewrite each dependent's line to
 the child(ren) it really needs (`issues.py update N --body-file F --comment ...`), then close the
 original `--reason "not planned"` as superseded. Done so far: #15 -> #84/#85 (dependents #17, #18,
-#45), #18 -> #86/#87/#88 (dependents #27, #33, #40), #27 -> #89/#90 (dependents #32, #33 -> #89; #27 closed after its doubt was answered: #90 moved to p2/M3).
+#45), #18 -> #86/#87/#88 (dependents #27, #33, #40), #27 -> #89/#90 (dependents #32, #33 -> #89; #27 closed after its doubt was answered: #90 moved to p2/M3). #28 -> #119/#120/#121 (dependents #51, #67 -> #120).
 
 ## Worker routing (Claude + Qwen)
 
