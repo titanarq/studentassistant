@@ -7,9 +7,9 @@
 # Point `AGENT_OS_PYTHON` at this file and every mechanism caller uses it: the guard's own
 # subprocesses (`agent_os_python()` reads the variable), the drivers in agent_os/bin/ (they
 # resolve and EXPORT it, so planner/refiner/validator/worker shells inherit it) and the prompts
-# (they spell `"$AGENT_OS_PYTHON" -m agent_os.issues`). Set by the guard drop-in
-# `scripts/systemd/studentassistant-guard.service.d/cheap-board-lookup.conf` and by the scripts/
-# shims. Remove with this directory once agent-os#27 is fixed and the subtree is pulled.
+# (they spell `"$AGENT_OS_PYTHON" -m agent_os.issues`). Set by the scripts/ shims, whose
+# `agent_guard.py` is the guard unit's ExecStart, so no systemd drop-in is needed. Remove with this
+# directory once agent-os#27 is fixed and the subtree is pulled.
 here=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 real=${AGENT_OS_REAL_PYTHON:-$here/../../agent_os/.venv/bin/python}
 # Never ourselves (AGENT_OS_REAL_PYTHON pointed back here), never a missing venv.

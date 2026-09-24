@@ -10,7 +10,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -28,7 +28,10 @@ ITEMS_ON_BOARD = {
             "issue": {
                 "projectItems": {
                     "nodes": [
-                        {"id": "PVTI_other", "project": {"number": 3, "owner": {"login": "someone"}}},
+                        {
+                            "id": "PVTI_other",
+                            "project": {"number": 3, "owner": {"login": "someone"}},
+                        },
                         {"id": "PVTI_4", "project": {"number": 4, "owner": {"login": "titanarq"}}},
                         {"id": "PVTI_3", "project": {"number": 3, "owner": {"login": "TitanArq"}}},
                     ]
@@ -104,6 +107,29 @@ def test_item_lookup_falls_back_to_the_original_on_any_error(patched, monkeypatc
     assert got == "original('titanarq', 3, 'titanarq/studentassistant', 74)"
 
 
+def test_an_archived_item_on_the_board_does_not_count(patched, monkeypatch):
+    board = {"number": 3, "owner": {"login": "titanarq"}}
+    archived = {"id": "PVTI_old", "isArchived": True, "project": board}
+    answer = {"data": {"repository": {"issue": {"projectItems": {"nodes": [archived]}}}}}
+    patched.answers.append(done(answer))
+    monkeypatch.setattr(board_lookup, "_original_item_id", lambda *a: pytest.fail("fell back"))
+    assert issues.board_item_id("titanarq", 3, "titanarq/studentassistant", 74) is None
+    assert any("includeArchived:false" in a for a in patched.calls[0])
+
+
+@pytest.mark.parametrize("missing", ["board_item_id", "board_status_field", "_gh"])
+def test_install_leaves_a_module_without_a_patch_target_unpatched(capsys, missing):
+    module = ModuleType("fake_issues")
+    for name in board_lookup.REQUIRED:
+        setattr(module, name, lambda *a, **k: "original")
+    delattr(module, missing)
+    before = dict(vars(module))
+    assert board_lookup.install(module) is False
+    assert vars(module) == before
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and missing in err[0] and "unpatched" in err[0]
+
+
 def test_status_field_is_read_by_name_in_one_query(patched):
     patched.answers.append(done(STATUS_FIELD))
     assert issues.board_status_field("titanarq", 3) == ("PVT_3", "F_status", {"Backlog": "O1"})
@@ -161,7 +187,8 @@ FAKE_GH = textwrap.dedent(
 
 def test_the_wrapper_runs_issues_move_with_the_patch(tmp_path):
     """`scripts/agent_os_patches/python -m agent_os.issues move` -- what the guard, the drivers and
-    the prompts run once AGENT_OS_PYTHON points at the wrapper -- never calls item-list/field-list."""
+    the prompts run once AGENT_OS_PYTHON points at the wrapper -- never calls item-list or
+    field-list."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     gh = bindir / "gh"
@@ -189,7 +216,7 @@ def test_the_wrapper_runs_issues_move_with_the_patch(tmp_path):
     assert "board:    Backlog" in out.stdout
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert not any(c[:2] in (["project", "item-list"], ["project", "field-list"]) for c in calls)
-    assert ["project", "item-edit"] == next(c[:2] for c in calls if c[0] == "project")
+    assert next(c[:2] for c in calls if c[0] == "project") == ["project", "item-edit"]
 
 
 def test_the_wrapper_passes_everything_else_through(tmp_path):
@@ -202,3 +229,25 @@ def test_the_wrapper_passes_everything_else_through(tmp_path):
         timeout=30,
     )
     assert out.returncode == 0 and out.stdout.strip() == "['a', 'b']"
+
+
+def test_the_wrapper_runs_the_mechanism_unpatched_when_a_target_is_gone(tmp_path):
+    """A subtree pull that renames a patched function must not break every `issues.py` call:
+    `issues_main.py` warns once and runs the same `main()` unpatched."""
+    script = textwrap.dedent(
+        f"""\
+        import runpy, sys
+        sys.path.insert(0, {str(ROOT / "agent_os")!r})
+        from agent_os import issues
+        del issues.board_status_field
+        sys.argv = ["issues_main.py", "--help"]
+        runpy.run_path({str(HERE / "issues_main.py")!r}, run_name="__main__")
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, cwd=tmp_path, timeout=60
+    )
+    assert out.returncode == 0, out.stderr
+    assert "usage" in out.stdout.lower()
+    warnings = [line for line in out.stderr.splitlines() if "agent_os_patches" in line]
+    assert len(warnings) == 1 and "board_status_field" in warnings[0], out.stderr
