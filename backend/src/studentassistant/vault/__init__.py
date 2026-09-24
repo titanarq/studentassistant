@@ -34,6 +34,7 @@ from studentassistant.vault.sessions import (
 from studentassistant.vault.sources import (
     SOURCE_KINDS,
     SourceError,
+    SourceKind,
     UnknownSourceKindError,
     put_source,
     sources_directory,
@@ -107,6 +108,7 @@ __all__ = [
     "SessionMeta",
     "SnapshotFileError",
     "SourceError",
+    "SourceKind",
     "StateError",
     "StoredSubject",
     "StoredTopic",
