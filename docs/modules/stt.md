@@ -61,9 +61,9 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   Latency log: logger `studentassistant.stt.pipeline`, one INFO record per appended segment,
   `latency_ms` = session time of the append minus the segment's end, with `session_id`,
   `provider` and `transcript_seq` as record attributes.
-  Not yet: `SessionService.end` does not wait for the pipeline before ending the vault session,
-  so a final published just before `session.ended` can lose the race (it is then logged as lost;
-  #140).
+  `SessionService.end` awaits `drain()` (a before-close end hook the app adds) after publishing
+  `session.ended` and before the vault ends the session, so every final published before the end
+  is written.
 - `BufferedProvider(inner, *, max_backlog_seconds=...)` (`stt/buffered.py`) -- a
   `SpeechToTextProvider` wrapping another one so the gateway never waits for inference: `feed`
   enqueues the chunk and returns what `inner` produced since the previous call; one background

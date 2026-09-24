@@ -238,7 +238,8 @@ never echoes the request's `input` back.
 
 ### Session lifecycle -- `server/sessions.py`
 
-`SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None, sync_interval=1.0)` (on
+`SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None, sync_interval=1.0,
+end_hook_timeout=10.0)` (on
 `app.state.sessions`) owns subjects/topics listing and creation and the session state machine
 `active` -> `ended`, over the vault's public functions (every call in a worker thread; lifecycle
 changes serialised by one lock). On first use it opens the vault (lazily, when built without one),
@@ -268,6 +269,14 @@ another PC left open is seen.
 - `end` publishes `session.ended`, records `ended_at` (`end_session`), detaches the session from
   the bus, then forces a vault checkpoint (`GitSync.checkpoint("sesión <id> terminada")`) and a
   push (`push_now`). A failed commit or push is left in `GitSync.status()`, never raised.
+- End hooks (`EndHook`: an async callable of the session id), run by `end` in the order added,
+  while the session is still attached to the bus: `add_before_ended(hook)` before `session.ended`
+  is published (for a tail that must still be logged as events, e.g. flushing the server-side STT
+  provider, #136), and `add_before_close(hook)` after it is published and before `end_session`.
+  Each is bounded by `end_hook_timeout`; a hook that fails or times out is logged and the session
+  ends anyway. A hook must not call back into the `SessionService` lifecycle (its lock is held).
+  The app adds `TranscriptPipeline.drain()` as a before-close hook, so every `transcript.final`
+  published before `session.ended` is in `transcript.jsonl` before the session is marked ended.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
 - `await open_vault()` -> the `Vault`, opened (pulled and scanned) on first use like every other
   call, or `VaultUnavailableError`: what the read routes read through.
