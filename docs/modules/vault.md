@@ -232,10 +232,16 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
-- `create_notes_tag(topic_slug, message=None)` commits what is pending and puts the annotated tag
-  `<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing (`notes_tag_name`), pushed by
-  the next push; `list_notes_tags(topic_slug)` returns the `NotesTag`s (`name`, `version`,
-  `commit`) oldest first. A non-slug raises `ValueError`.
+- `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
+  annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
+  for that subject and topic (`notes_tag_name`), pushed by the next push;
+  `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
+  `commit`) oldest first. A non-slug subject or topic raises `ValueError`. Tags are keyed by
+  subject as well as topic because topic slugs are unique only within a subject (#143): two
+  subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
+  `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
+  before this format (the editor, which will, is not written yet), so no vault holds one. ADR-0002
+  still shows the topic-only form.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`.

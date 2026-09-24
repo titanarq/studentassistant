@@ -146,8 +146,8 @@ Routes registered today:
     `session_minutes` (ended sessions by `ended_at - started_at`, an unended one up to now; minutes
     rounded to 0.1), `open_pending` (`len(open_pending())` of the observer's
     `load_observer_snapshot`, which may write the refreshed snapshot back), `notes_version` (the
-    highest `version` of `GitSync.list_notes_tags(topic_id)`, `null` without tags) and `generated`
-    (`list_generated`: vault-relative paths; empty until a generator exists).
+    highest `version` of `GitSync.list_notes_tags(subject_id, topic_id)`, `null` without tags)
+    and `generated` (`list_generated`: vault-relative paths; empty until a generator exists).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
     (`"Todavía no hay apuntes de este tema."`).
