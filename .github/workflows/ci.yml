@@ -39,7 +39,7 @@ jobs:
               backend/*) backend=true ;;
               web/*) web=true ;;
               android/*) android=true ;;
-              protocol/*) backend=true; android=true ;;
+              protocol/*) backend=true; web=true; android=true ;;
               scripts/test.sh|.github/workflows/ci.yml) backend=true; web=true; android=true ;;
             esac
           done <<< "$changed"
