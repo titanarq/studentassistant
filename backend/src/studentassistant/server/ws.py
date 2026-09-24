@@ -16,7 +16,8 @@ protocol v1 flow:
    persisted event, `transcript.partial` as a notice.
 3. `button`, `marker` and the client `ack` are published as persisted events.
 4. Bus events `transcript.partial`, `transcript.final`, `command` and `notice` of the session are
-   forwarded to the client as the matching server messages.
+   forwarded to the client as the matching server messages, and each persisted `capture.stored`
+   (the capture upload stored a burst) as an `ack` with its `capture_ids`.
 
 Every text message is validated with the backend protocol models; an invalid one, one with an
 unknown or missing `type`, or a message the current mode does not allow closes the socket with a
@@ -49,6 +50,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from studentassistant.config import SttSettings
+from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
 from studentassistant.protocol import (
     AudioFormat,
     AudioFrameError,
@@ -95,7 +97,8 @@ COMMAND_ACK = "command.ack"
 # Bus event kinds it forwards to the client (besides the transcript ones).
 COMMAND = "command"
 NOTICE = "notice"
-FORWARDED_KINDS = frozenset({TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, COMMAND, NOTICE})
+CAPTURE_STORED = CAPTURE_EVENT_KIND
+FORWARDED_KINDS = frozenset({TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, COMMAND, NOTICE, CAPTURE_STORED})
 
 CLOSE_UNKNOWN_SESSION = 4404
 """Close code for a `session_id` that is not the active session (unknown, ended, not resumed)."""
@@ -487,6 +490,8 @@ class _Connection:
 
     async def _forward(self, subscription: Subscription) -> None:
         async for event in subscription:
+            if event.kind == CAPTURE_STORED and not event.persisted:
+                continue  # only a stored (persisted) capture is acknowledged
             message = _server_message(event.kind, event.payload, self.gateway.clock)
             if message is None:
                 continue
@@ -520,6 +525,10 @@ def _server_message(
                 pending_count=payload["pending_count"],
                 server_time_ms=payload.get("server_time_ms", clock()),
             )
+        if kind == CAPTURE_STORED:
+            return ServerAck(
+                type="ack", capture_ids=[payload[CAPTURE_ID_KEY]], server_time_ms=clock()
+            )
     except (KeyError, ValidationError):
         logger.warning("a %s bus event does not make a protocol v1 message; not forwarded", kind)
     return None
@@ -539,6 +548,7 @@ def ws_router() -> APIRouter:
 
 __all__ = [
     "BUTTON",
+    "CAPTURE_STORED",
     "CLOSE_INTERNAL_ERROR",
     "CLOSE_PROTOCOL_VIOLATION",
     "CLOSE_UNKNOWN_SESSION",

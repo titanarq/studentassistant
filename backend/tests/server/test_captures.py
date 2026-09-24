@@ -6,6 +6,7 @@ Every refusal is checked to store no source and publish no event.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -236,6 +237,7 @@ def test_a_burst_stores_its_first_image_as_a_notes_source_and_publishes_the_even
         "image_count": 2,
         "client_time_ms": 1_790_000_000_000,
         "source_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.jpg",
+        "source_context": "notes",
     }
     assert (tmp_vault.path / event.payload["source_path"]).read_bytes() == JPEG
     delivered = subscription.get_nowait()
@@ -336,6 +338,81 @@ def test_two_concurrent_uploads_of_one_capture_store_it_once(
     assert sorted(r.json()["status"] for r in results) == ["duplicate", "stored"]
     assert len(stored_files(tmp_vault)) == 2
     assert len(capture_events(tmp_vault, session_id)) == 1
+
+
+# -- source context ----------------------------------------------------------------------------
+
+
+def press(app: FastAPI, session_id: str, button: str, source: str | None = None) -> None:
+    """Publish a `button` event as the WebSocket gateway does (#35) on the app's bus."""
+    payload: dict[str, Any] = {"button": button, "client_time_ms": 1, "backend_time_ms": 1}
+    if source is not None:
+        payload["source"] = source
+    asyncio.run(app.state.bus.publish(session_id, "button", "phone", payload))
+
+
+def sidecar_of(vault: Vault, kind: str) -> dict[str, Any]:
+    path = sources_directory(vault, "fisica", "cinematica", kind) / "page-001.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("source", ["book", "pdf", "notes"])
+def test_a_capture_after_switch_source_is_stored_under_that_source(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault, source: str
+) -> None:
+    press(app, session_id, "switch_source", source)
+    assert upload(client, session_id).status_code == 201
+
+    stored = sources_directory(tmp_vault, "fisica", "cinematica", source) / "page-001.jpg"
+    assert stored.read_bytes() == JPEG
+    assert sidecar_of(tmp_vault, source)["source_context"] == source
+    (event,) = capture_events(tmp_vault, session_id)
+    assert event.payload["source_context"] == source
+    assert event.payload["source_path"] == (
+        f"subjects/fisica/topics/cinematica/sources/{source}/page-001.jpg"
+    )
+    if source != "notes":
+        assert stored_files(tmp_vault) == []
+
+
+def test_the_latest_switch_source_wins_and_other_buttons_do_not_count(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    press(app, session_id, "switch_source", "book")
+    press(app, session_id, "switch_source", "pdf")
+    press(app, session_id, "pause")
+    assert upload(client, session_id).status_code == 201
+    assert sidecar_of(tmp_vault, "pdf")["source_context"] == "pdf"
+
+    press(app, session_id, "switch_source", "notes")
+    assert upload(client, session_id, burst(metadata(capture_id=OTHER_CAPTURE_ID))).status_code == (
+        201
+    )
+    assert sidecar_of(tmp_vault, "notes")["source_context"] == "notes"
+    contexts = [e.payload["source_context"] for e in capture_events(tmp_vault, session_id)]
+    assert contexts == ["pdf", "notes"]
+
+
+def test_without_a_switch_source_captures_stay_notes(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    press(app, session_id, "pause")
+    assert upload(client, session_id).status_code == 201
+    assert sidecar_of(tmp_vault, "notes")["source_context"] == "notes"
+    assert not sources_directory(tmp_vault, "fisica", "cinematica", "book").exists()
+
+
+def test_the_source_context_survives_a_backend_restart(
+    app: FastAPI, client: TestClient, session_id: str, make_app: AppFactory, tmp_vault: Vault
+) -> None:
+    press(app, session_id, "switch_source", "book")
+
+    restarted = client_of(make_app())
+    assert restarted.post(f"/api/sessions/{session_id}/resume").status_code == 200
+    assert upload(restarted, session_id).status_code == 201
+    assert sidecar_of(tmp_vault, "book")["source_context"] == "book"
+    (event,) = capture_events(tmp_vault, session_id)
+    assert event.payload["source_context"] == "book"
 
 
 # -- received_capture_ids ----------------------------------------------------------------------

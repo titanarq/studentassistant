@@ -1,4 +1,4 @@
-"""`POST /api/sessions/{id}/captures`: a burst of stills of protocol v1, stored as a notes source.
+"""`POST /api/sessions/{id}/captures`: a burst of stills of protocol v1, stored as a source.
 
 The body is `multipart/form-data`: a `metadata` part holding the `rest.sessions.captures.request`
 JSON and one part per image, named by that JSON's `images[].part`. The body is parsed as it
@@ -10,9 +10,12 @@ declares is 422. Every refusal (`{"detail": "..."}`, Spanish) stores and publish
 
 The session must be the active one: unknown is 404, ended or not resumed is 409, a vault that
 cannot be opened is 503. Until capture processing exists (the `sources` module), only the burst's
-first image is stored, as it came, through `vault.put_source` as a `notes` source with its sidecar
-metadata; then a persisted `capture.stored` event (origin `phone`) is published on the bus, which
-is also what later uploads read to recognise a repeated `capture_id` (`sessions.stored_captures`).
+first image is stored, as it came, through `vault.put_source` with its sidecar metadata, under the
+session's current source context (`current_source_context`: the `source` of its latest
+`switch_source` button event, `notes` when there is none); then a persisted `capture.stored` event
+(origin `phone`) is published on the bus, which is also what later uploads read to recognise a
+repeated `capture_id` (`sessions.stored_captures`), and which the WebSocket gateway forwards to
+the connected client as its capture `ack`.
 A new capture answers 201 `stored`, a repeated one 200 `duplicate` storing and publishing nothing;
 the check-and-store is serialised per session, so two concurrent uploads of one id store it once.
 """
@@ -57,8 +60,13 @@ MAX_METADATA_BYTES = 64 * 1024
 _MULTIPART_OVERHEAD_BYTES = 64 * 1024
 """Room for boundaries and part headers on top of the parts' own bytes, in the total cap."""
 
-SOURCE_KIND = "notes"
-"""Every capture is stored as the student's notes until the source context is honoured."""
+DEFAULT_SOURCE_KIND = "notes"
+"""The source context of a session before its first `switch_source` button."""
+
+BUTTON_EVENT_KIND = "button"
+SWITCH_SOURCE = "switch_source"
+# Protocol v1 `button.source` -> the vault source kind a capture is stored under.
+_SOURCE_KINDS = {"notes": "notes", "book": "book", "pdf": "pdf"}
 
 _EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
@@ -248,7 +256,26 @@ def _validate(parts: Mapping[str, _Part], server: ServerSettings) -> protocol.Ca
     return metadata
 
 
-def _source_meta(session: Session, metadata: protocol.CaptureUploadRequest) -> dict[str, Any]:
+def current_source_context(session: Session) -> str:
+    """The source kind the session's captures go to now: the `source` of its latest persisted
+    `button` event whose `button` is `switch_source` (mapped to the vault's kind), else `notes`.
+
+    Read from the session's `events.jsonl`, so it survives a backend restart. Blocking file I/O:
+    call it from a worker thread.
+    """
+    context = DEFAULT_SOURCE_KIND
+    for event in session.read_events():
+        if event.kind != BUTTON_EVENT_KIND or event.payload.get("button") != SWITCH_SOURCE:
+            continue
+        kind = _SOURCE_KINDS.get(str(event.payload.get("source")))
+        if kind is not None:
+            context = kind
+    return context
+
+
+def _source_meta(
+    session: Session, metadata: protocol.CaptureUploadRequest, source_context: str
+) -> dict[str, Any]:
     first = metadata.images[0]
     meta: dict[str, Any] = {
         "capture_id": metadata.capture_id,
@@ -262,7 +289,7 @@ def _source_meta(session: Session, metadata: protocol.CaptureUploadRequest) -> d
         "image_count": len(metadata.images),
         "width_px": first.width_px,
         "height_px": first.height_px,
-        "source_context": SOURCE_KIND,
+        "source_context": source_context,
     }
     return meta
 
@@ -311,7 +338,7 @@ def captures_router() -> APIRouter:
             raise HTTPException(refusal.status_code, refusal.detail) from refusal
 
         async with locks.setdefault(session.id, asyncio.Lock()):
-            stored = await asyncio.to_thread(stored_captures, session)
+            stored, context = await asyncio.to_thread(_capture_state, session)
             previous = stored.get(metadata.capture_id)
             if previous is not None:
                 count = previous.get("image_count")
@@ -330,10 +357,10 @@ def captures_router() -> APIRouter:
                     session.vault,
                     session.subject_slug,
                     session.topic_slug,
-                    SOURCE_KIND,
+                    context,
                     f"capture{_EXTENSIONS[first.content_type]}",
                     bytes(parts[first.part].data),
-                    _source_meta(session, metadata),
+                    _source_meta(session, metadata, context),
                 )
             except SecretRefused as error:
                 raise HTTPException(
@@ -349,6 +376,7 @@ def captures_router() -> APIRouter:
                 "image_count": len(metadata.images),
                 "client_time_ms": metadata.client_time_ms,
                 "source_path": _relative(path, session.vault.path),
+                "source_context": context,
             }
             try:
                 await request.app.state.bus.publish(
@@ -365,8 +393,19 @@ def captures_router() -> APIRouter:
     return router
 
 
+def _capture_state(session: Session) -> tuple[dict[str, Mapping[str, Any]], str]:
+    """The session's stored captures and its current source context (blocking)."""
+    return stored_captures(session), current_source_context(session)
+
+
 def _relative(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
 
-__all__ = ["MAX_METADATA_BYTES", "METADATA_PART", "SOURCE_KIND", "captures_router"]
+__all__ = [
+    "DEFAULT_SOURCE_KIND",
+    "MAX_METADATA_BYTES",
+    "METADATA_PART",
+    "captures_router",
+    "current_source_context",
+]
