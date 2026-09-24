@@ -49,6 +49,7 @@ PAGED_KINDS: tuple[str, ...] = ("notes", "book", "pdf")
 _PAGE_NUMBER = re.compile(r"^page-(\d{3,})\.")
 _WEB_NUMBER = re.compile(r"^(\d{3,})-")
 _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
+_DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
 
@@ -108,6 +109,7 @@ def put_source(
     name: str,
     content: bytes | str,
     meta: Mapping[str, Any],
+    derived: Mapping[str, bytes | str] | None = None,
 ) -> Path:
     """Store one source of a topic with its `.yaml` metadata sidecar and return the content's path.
 
@@ -116,9 +118,18 @@ def put_source(
     slug of `NNN-<slug>.md`. `content` is written as it is: bytes untouched, text as UTF-8. `meta`
     is dumped with the same deterministic YAML as every vault file; datetimes become ISO 8601.
 
+    `derived` (paged kinds only) maps name suffixes to files `sources` derived from the content,
+    written next to it as `page-NNN.<suffix>` in the same call: `{"p003.txt": ..., "p003.jpg":
+    ...}` gives `page-NNN.p003.txt` and `page-NNN.p003.jpg` (a PDF's per-page text and image).
+    A suffix is dot-separated lowercase letters and digits with at least one dot, so a derived
+    file never lists as a source of its own nor clashes with the content or its sidecar. All of
+    them pass the secret guard before anything is written, and a failure removes whatever of the
+    source was already written.
+
     Raises:
         UnknownSourceKindError: when `kind` is not a source kind; nothing is written.
-        SourceError: when a paged source's `name` has no usable extension.
+        SourceError: when a paged source's `name` has no usable extension, or a `derived`
+            suffix is malformed or given for a web source.
         ValueError: when a web source's `name` has no letter or digit to slug.
         SecretRefused: when the content or the metadata looks like it carries a key; neither file
             is written.
@@ -134,6 +145,16 @@ def put_source(
     sidecar_text = dump_yaml(_META_ADAPTER.dump_python(dict(meta), mode="json"))
     guard(content)
     guard(sidecar_text)
+    derived_files = dict(derived or {})
+    if derived_files and kind not in PAGED_KINDS:
+        raise SourceError(f"a {kind} source has no derived files")
+    for suffix, derived_content in derived_files.items():
+        if not _DERIVED_SUFFIX.match(suffix):
+            raise SourceError(
+                f"{suffix!r} is not a derived-file suffix (dot-separated lowercase letters"
+                " and digits with at least one dot, e.g. p003.txt)"
+            )
+        guard(derived_content)
 
     if kind in PAGED_KINDS:
         extension = _extension_of(name)
@@ -148,16 +169,27 @@ def put_source(
 
     directory.mkdir(parents=True, exist_ok=True)
     sidecar_path = directory / f"{stem}{SIDECAR_SUFFIX}"
-    if isinstance(content, bytes):
-        write_bytes_atomic(content_path, content)
-    else:
-        write_text_atomic(content_path, content)
+    written: list[Path] = []
     try:
+        for path, data in (
+            (content_path, content),
+            *((directory / f"{stem}.{suffix}", data) for suffix, data in derived_files.items()),
+        ):
+            _write(path, data)
+            written.append(path)
         write_text_atomic(sidecar_path, sidecar_text)
     except BaseException:
-        content_path.unlink(missing_ok=True)
+        for path in written:
+            path.unlink(missing_ok=True)
         raise
     return content_path
+
+
+def _write(path: Path, data: bytes | str) -> None:
+    if isinstance(data, bytes):
+        write_bytes_atomic(path, data)
+    else:
+        write_text_atomic(path, data)
 
 
 def _extension_of(name: str) -> str:

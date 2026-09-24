@@ -61,6 +61,32 @@ Thin capture client (ADR-0001), Spanish UI:
 - Known gap: the backend's `GET /api/health` still answers `{status, version}`, not v1's
   `rest.health.response`, so the health check reports `InvalidResponse` until the server conforms.
 
+## Home: subjects, topics and sessions (#37)
+
+- **`home.HomeViewModel(client, store, sessions, clock)`** drives the home screen on the active
+  backend, exposing `HomeUiState`: `subjects` and the selected subject's `topics` as
+  `Loadable` (`Loading`/`Loaded`/`Failed(BackendResult.Failure)`), the create-topic dialog
+  (`CreateTopicDialog(saving, failure)`, null when closed), `session: SessionAction`
+  (`Idle`/`Opening(topicId)`/`Failed(topicId, SessionFailure)`) and `openedSession`, a one-shot
+  the screen consumes with `onSessionShown()` to navigate. `load()` runs every time the home is
+  shown (a switched backend resets the state; the selected subject is kept while it exists).
+- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?)`; `canContinue` is
+  `topic.open_session_id != null`. The date and doubts count are shown only when present, and
+  protocol v1's `rest.topics.list.response` carries neither yet, so today they are always null.
+- **Create topic** (`createTopic(subjectName, title)`): the dialog takes a subject name (typed, or
+  one tap on an existing one) and a title. A name matching an existing subject (trimmed, ignoring
+  case) reuses it; otherwise `POST /api/subjects` runs first. Then `POST .../topics`, the dialog
+  closes and that subject's topics are shown. Failures stay in the dialog.
+- **"Empezar sesión" / "Continuar"** (`startOrContinue(row)`): `POST /api/sessions` with the
+  clock's `client_time_ms`, or `POST /api/sessions/{open_session_id}/resume`. On success the
+  `session.OpenSession(backend, session, subjectName, topicName)` goes into
+  **`session.SessionHolder`** (in memory, `AppContainer.sessionHolder`) and the app opens
+  `Route.CAPTURE`. A 409 (another session open) is `SessionFailure.Conflict`; a 409 or 404 also
+  refreshes the topic list so the session that is really open shows "Continuar".
+- Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
+  paired backends); `Route.CAPTURE` shows `CapturePlaceholderScreen` (subject, topic, session id)
+  until the capture screen replaces it, reading the session from `SessionHolder`.
+
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes.
 

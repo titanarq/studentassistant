@@ -37,6 +37,7 @@ from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.pairing import PairingCodes, pairing_router
+from studentassistant.server.read_routes import read_router
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
@@ -108,6 +109,8 @@ def create_app(
     )
     # Bus `transcript.final` events -> each session's `transcript.jsonl` (started by the lifespan).
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
+    # Ending a session waits for the pipeline to write every final published before the end.
+    app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
 
     # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
     # then the bearer check.
@@ -139,6 +142,7 @@ def create_app(
     app.include_router(cost_router())
     app.include_router(ws_router())
     app.include_router(captures_router())
+    app.include_router(read_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
