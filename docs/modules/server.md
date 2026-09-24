@@ -86,6 +86,45 @@ Routes registered today:
   cannot be opened 503; every `detail` is Spanish. The vault and the caps come from `studentassistant.config`, read on every
   request. The server computes no cost itself. Needs the bearer check like every non-exempt route.
   A local endpoint, not part of protocol v1.
+- **The web's read API** (`server/read_routes.py`, `read_router()`), read-only, over the vault the
+  session service opened (`SessionService.open_vault()`) and only through the vault's public
+  readers (ADR-0002), each call in a worker thread. Every route needs the bearer check (none is in
+  `EXEMPT_ROUTES`); path ids and the `subject`/`topic` query ids follow the protocol's id pattern
+  (422 otherwise); a vault that cannot be opened is 503 (`"No se puede abrir la bóveda."`); an
+  unknown subject or topic is 404 (`"No existe ese tema en la bóveda."`). Bodies are Pydantic
+  models, so they appear in `GET /openapi.json`.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/summary` -> `TopicSummary`: `sources`
+    (counts of `notes`, `book`, `pdf`, `web` from `list_sources`), `sessions` (their number) and
+    `session_minutes` (ended sessions by `ended_at - started_at`, an unended one up to now; minutes
+    rounded to 0.1), `open_pending` (`len(open_pending())` of the observer's
+    `load_observer_snapshot`, which may write the refreshed snapshot back), `notes_version` (the
+    highest `version` of `GitSync.list_notes_tags(topic_id)`, `null` without tags) and `generated`
+    (`list_generated`: vault-relative paths; empty until a generator exists).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
+    `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
+    (`"Todavía no hay apuntes de este tema."`).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/sessions` -> `TopicSessions`: `sessions`, by
+    id, each `session_id`, `started_at`, `ended_at` (`null` while unended) and `minutes`.
+  - `GET /api/sessions/{session_id}/transcript?subject=..&topic=..&t=HH:MM:SS-HH:MM:SS` ->
+    `TranscriptSpan`: `ref` (`sessions/<id>#t=<span>`, ADR-0005's provenance form), `start_ms`,
+    `end_ms` and the `segments` (`seq`, `t_start`, `t_end` in session milliseconds, `text`) that
+    overlap the span (share some time with it; a point span `T-T` takes the segments spanning
+    `T`). A malformed or reversed span is 422 with a Spanish `detail`; a session the topic does not
+    list is 404 (`"No existe esa sesión en ese tema."`). Open sessions are readable too.
+  - `GET /api/sources/{vault_id:path}` -> the bytes of a source, `vault_id` being its
+    vault-relative path (`subjects/<s>/topics/<t>/sources/<kind>/<file>`, what `list_sources`
+    gives). Served with `X-Content-Type-Options: nosniff` and a `default-src 'none'; sandbox`
+    CSP; images (`jpeg`, `png`, `webp`, `gif`, `heic`/`heif`), `application/pdf`, `text/markdown`
+    and `text/plain` keep their media type (text with `charset=utf-8`), any other `text/*` goes out
+    as `text/plain` and everything else (HTML, SVG, YAML, unknown) as `application/octet-stream`,
+    so no source is ever rendered as a page of this origin.
+  - `GET /api/sources/{vault_id:path}/meta` -> `SourceMeta`: `vault_id`, `kind`, `media_type` (the
+    one the content route serves), `size`, `meta` (the parsed sidecar, `null` without one) and
+    `transcription` (the sidecar's `transcription` when it is text, else `null`).
+  - Both source routes go only through the vault's `read_source`: a path that is not a topic's
+    `sources/<kind>/<file>` (absolute, `..` or `%2e%2e`, backslash, NUL, a symlink out of its
+    directory) or names no file is 404 (`"No existe esa fuente en la bóveda."`); nothing outside
+    the vault's sources is ever served.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
@@ -182,6 +221,8 @@ another PC left open is seen.
   the bus, then forces a vault checkpoint (`GitSync.checkpoint("sesión <id> terminada")`) and a
   push (`push_now`). A failed commit or push is left in `GitSync.status()`, never raised.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
+- `await open_vault()` -> the `Vault`, opened (pulled and scanned) on first use like every other
+  call, or `VaultUnavailableError`: what the read routes read through.
 - For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
   (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
   `get_active(session_id)`, the active session only when it is that one.
