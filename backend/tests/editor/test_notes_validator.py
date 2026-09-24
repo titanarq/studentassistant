@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pymupdf
 import pytest
 from notes_samples import FIXTURE_SESSION, read_fixture
 
@@ -12,6 +13,7 @@ from studentassistant.editor.notes_format import (
     topic_source_resolver,
     validate,
 )
+from studentassistant.sources import PageRange, import_pdf
 from studentassistant.vault import (
     Vault,
     create_subject,
@@ -36,7 +38,7 @@ def stocked(tmp_vault: Vault, topic: tuple[str, str]) -> tuple[SourceExists, str
     put_source(tmp_vault, subject, slug, "notes", "foto1.jpg", JPEG, {"capture_id": "c1"})
     put_source(tmp_vault, subject, slug, "notes", "foto2.jpg", JPEG, {"capture_id": "c2"})
     put_source(tmp_vault, subject, slug, "book", "libro.jpg", JPEG, {})
-    put_source(tmp_vault, subject, slug, "pdf", "tema.pdf", b"%PDF-1.7\n", {})
+    put_source(tmp_vault, subject, slug, "pdf", "tema.pdf", b"%PDF-1.7\n", {"page_count": 3})
     put_source(
         tmp_vault, subject, slug, "web", "Máquina de vapor", "# Máquina de vapor\n", {"url": "x"}
     )
@@ -169,3 +171,25 @@ def test_the_validator_never_changes_the_notes(stocked: tuple[SourceExists, str]
 
     assert validate(notes, "estricto", source_exists)
     assert serialize(notes) == text
+
+
+def test_a_pdf_page_resolves_only_when_the_imported_pdf_has_it(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    subject, slug = topic
+    document = pymupdf.open()
+    for _ in range(10):
+        document.new_page()
+    import_pdf(tmp_vault, subject, slug, "tema.pdf", document.tobytes(), pages=PageRange(4, 6))
+    text = (
+        "## A {#a}\n\nUno.[^f1] Dos.[^f2] Tres.[^f3]\n\n"
+        "[^f1]: [PDF, página 4](../sources/pdf/page-001.pdf#page=1)\n"
+        "[^f2]: [PDF, página 6](../sources/pdf/page-001.pdf#page=3)\n"
+        "[^f3]: [PDF, página 7](../sources/pdf/page-001.pdf#page=4)\n"
+    )
+
+    errors = validate(text, "estricto", topic_source_resolver(tmp_vault, subject, slug))
+
+    assert errors == [
+        "Nota al pie [^f3]: la fuente sources/pdf/page-001.pdf#page=4 no existe en el tema."
+    ]
