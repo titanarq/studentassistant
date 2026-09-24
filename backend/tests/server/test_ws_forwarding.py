@@ -1,4 +1,4 @@
-"""Bus -> client: transcript, command and notice events of the session reach the socket."""
+"""Bus -> client: transcript, command, notice and capture events of the session reach the socket."""
 
 from __future__ import annotations
 
@@ -77,6 +77,17 @@ def test_other_kinds_and_unusable_payloads_are_not_forwarded(ws: WsHarness) -> N
         publish(socket, bus, ws.session_id, "command", "stt", {"command": "capture_now"})
         publish(
             socket, bus, ws.session_id, "notice", "observer", {"pending_count": -1}, persist=False
+        )
+        # A capture ack needs a persisted `capture.stored` naming a valid `capture_id`.
+        publish(socket, bus, ws.session_id, "capture.stored", "phone", {"trigger": "button"})
+        publish(
+            socket,
+            bus,
+            ws.session_id,
+            "capture.stored",
+            "phone",
+            {"capture_id": "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a60"},
+            persist=False,
         )
         publish(
             socket, bus, ws.session_id, "notice", "observer", {"pending_count": 1}, persist=False

@@ -95,18 +95,28 @@ Routes registered today:
     allow; the read stops at the first byte over.
   - The session must be the active one (`SessionService.require_active`): unknown 404, ended or
     unended-but-not-resumed 409, a vault that cannot be opened 503.
+  - Source context: a capture is stored under the session's current source context,
+    `captures.current_source_context(session)`: the `source` of the session's latest persisted
+    `button` event whose `button` is `switch_source` (as the WebSocket gateway publishes it),
+    mapped `notes` -> `notes`, `book` -> `book`, `pdf` -> `pdf`; `notes`
+    (`DEFAULT_SOURCE_KIND`) when there is none. It is read from `events.jsonl` on every upload
+    (with the stored captures, in one worker thread, under the per-session lock), so it survives
+    a backend restart.
   - Stored: until capture processing exists (the `sources` module) only `images[0]` is stored,
-    as it came, through `vault.put_source(vault, subject, topic, "notes", "capture.<ext>", bytes,
-    meta)` (`<ext>` from its content type: `.jpg`, `.png`, `.webp`; in a worker thread, followed
-    by `GitSync.note_change()`). The sidecar `meta`: `capture_id`, `session`, `captured_at`
-    (`images[0].client_time_ms` as ISO 8601 UTC), `trigger`, `command_id` (when present),
-    `image_count`, `width_px`, `height_px` (of `images[0]`), `source_context: notes`. The other
-    images are received, counted and validated, not stored. Then the persisted bus event
-    `capture.stored` (origin `phone`; `observer.CAPTURE_EVENT_KIND`, which the observer's fold
-    registers) is published with payload `capture_id`, `trigger`, `command_id` (when present),
-    `image_count`, `client_time_ms` and `source_path` (the stored file, relative to the vault
-    root). Answer: 201 `rest.sessions.captures.response`, `status: "stored"`, `image_count` the
-    images in the burst, `received_at_ms` the backend clock.
+    as it came, through `vault.put_source(vault, subject, topic, <source context>,
+    "capture.<ext>", bytes, meta)` (`<ext>` from its content type: `.jpg`, `.png`, `.webp`; in a
+    worker thread, followed by `GitSync.note_change()`), so under `sources/<source context>/`.
+    The sidecar `meta`: `capture_id`, `session`, `captured_at` (`images[0].client_time_ms` as
+    ISO 8601 UTC), `trigger`, `command_id` (when present), `image_count`, `width_px`,
+    `height_px` (of `images[0]`), `source_context`. The other images are received, counted and
+    validated, not stored. Then the persisted bus event `capture.stored` (origin `phone`;
+    `observer.CAPTURE_EVENT_KIND`, which the observer's fold registers) is published with payload
+    `capture_id`, `trigger`, `command_id` (when present), `image_count`, `client_time_ms`,
+    `source_path` (the stored file, relative to the vault root) and `source_context` (the same
+    value as the sidecar's). The WebSocket gateway acknowledges that event to the connected
+    client (see "Forwarded to the client" below). Answer: 201 `rest.sessions.captures.response`,
+    `status: "stored"`, `image_count` the images in the burst, `received_at_ms` the backend
+    clock.
   - Idempotent on `capture_id`: the stored ids of a session are its `capture.stored` events
     (`sessions.stored_captures(session)`, reading `events.jsonl`, so it survives a restart). A
     stored id is answered 200 `status: "duplicate"` with the stored `image_count`, storing and
@@ -291,11 +301,17 @@ replace all three.
     client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
     offset) and `t` = its session time.
 - **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
-  (`transcript.partial`, `transcript.final`, `command`, `notice`) before `hello.ack` and sends
-  each as the matching server message (`transcript.*` from the payload fields above;
-  `command` from `command_id`, `command`; `notice` from `pending_count`; `server_time_ms` from the
-  payload or the clock). A payload that makes no valid message is logged and skipped. The
-  subscription is closed when the socket ends, however it ends.
+  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`) before
+  `hello.ack` and sends each as the matching server message (`transcript.*` from the payload
+  fields above; `command` from `command_id`, `command`; `notice` from `pending_count`;
+  `server_time_ms` from the payload or the clock). A persisted `capture.stored` (the capture
+  upload stored a burst) becomes the capture `ack`: `ServerAck` with `capture_ids:
+  [payload.capture_id]` and `server_time_ms` from the clock, never with `audio_seq`; a
+  `capture.stored` notice is not acknowledged. A client connected when a capture is stored gets
+  exactly one ack for it; a duplicate upload publishes nothing, so it gets none. Past acks are
+  not replayed on (re)connect: a reconnecting client learns the stored captures from
+  `received_capture_ids` in the resume response. A payload that makes no valid message is logged
+  and skipped. The subscription is closed when the socket ends, however it ends.
 - **Backpressure**: vault appends run in worker threads through the bus, so nothing blocks the
   event loop; inbound messages are handled one at a time in order. Outbound traffic goes through
   the connection's bounded bus subscription, which drops the oldest notices (partials) when the
