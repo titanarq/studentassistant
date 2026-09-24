@@ -3,6 +3,11 @@
 **Lives in:** `web/`.
 
 ## Responsibility
+- **Web capture page** (`/capture`): the development capture client (ADR-0001, ADR-0008) --
+  laptop camera preview, high-resolution stills (burst), Web Speech API transcription (or audio
+  streaming in server STT mode), session buttons, live transcript; speaks protocol v1 exactly
+  like the Android app.
+
 Spanish review UI served by the backend (localhost trusted; other LAN clients use the pairing
 token):
 - Study desk: subjects/topics, per-topic card (sources, sessions, minutes, pending, materials).

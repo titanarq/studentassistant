@@ -1,0 +1,193 @@
+# agent OS host configuration for studentassistant. Shape and meaning of every key:
+# agent_os/config.example.yaml and agent_os/docs/AGENT_OS.md §4.2. Modeled on teachermovies'
+# config/agents.yaml. Nothing under agent_os/ is edited; this file is how the host extends it.
+project:
+  repo: titanarq/studentassistant
+  tracking_epic: 1                 # "Tracking: studentassistant agent OS"; status:agents-paused on it is the full stop
+  board_number: 3                  # https://github.com/orgs/titanarq/projects/3 (node id PVT_kwDOE5nIKc4Bki-i)
+  secrets_dir: .secrets/gh_apps    # <slug>.json + <slug>.pem per GitHub App identity
+  # The roedor-* Apps are installed org-wide on titanarq ("all repositories"), so they cover this
+  # repo too. Dedicated studentassistant-* Apps can replace them later by renaming these slugs.
+  planner_app: roedor-planner
+  guard_unit: studentassistant-guard
+  module_docs_dir: docs/modules
+  human_login: MatillaM
+  human_language: Spanish
+  notify_topic_file: .secrets/ntfy_topic
+  messages:
+    review_ready: "[studentassistant] Revisión pendiente: la incidencia #{issue} «{title}» está aprobada y solo falta que la fusiones — {url}"
+    quota_exhausted_no_fallback: "[studentassistant] Claude sin cupo y la incidencia #{issue} no admite Qwen de respaldo (clase «{task_class}», backend {backend}): no puede avanzar sin ti"
+    planner_run_cap_reached: "[studentassistant] El planificador ha agotado su tope diario de ejecuciones ({runs}/{cap}) y no despachará nada más hoy; {pending} evento(s) esperan a mañana: {context}"
+    backend_worktree_missing: "[studentassistant] Backend sin worktree: {backend} no tiene worktree en {worktree} y {issue_count} incidencia(s) lista(s) no pueden avanzar hasta que la crees"
+    unreviewed_pull_request: "[studentassistant] Revisión perdida: la PR #{pr} de la incidencia #{issue} no tiene revisión ni un {role} en marcha — puede haber muerto sin dejar rastro"
+  test_command: scripts/test.sh
+  prompt_extras:
+    worker: config/agent_prompts/worker.md
+    refiner: config/agent_prompts/refiner.md
+  # Names render into the worker prompt; values are exported to the backend process (no secrets here).
+  worker_environment:
+    ANDROID_HOME: /home/titan/Android/Sdk
+    ANDROID_SDK_ROOT: /home/titan/Android/Sdk
+  forbidden_paths:
+    - AGENTS.md
+    - CLAUDE.md
+    - docs/VISION.md
+    - docs/adr/*
+    - config/agents.yaml
+    - config/agent_prompts/*
+    - docs/PLAN.md
+    - "*.jks"
+    - "*.keystore"
+    - keystore.properties
+  merge_audit_exempt_paths:
+    - docs/adr/*
+  never_run:
+    - command: connectedAndroidTest
+      reason: needs a device or emulator the worker host does not have, and hangs waiting for one
+    - command: adb
+      reason: would act on whatever physical phone is attached to this machine
+    - command: sdkmanager
+      reason: installs or removes SDK packages machine-wide for every checkout, including other projects'
+    - command: "push --force"
+      reason: rewrites shared history other clones have already built work on top of
+    - command: "pytest -m integration"
+      reason: calls the real Claude API (spends the human's money) and needs the GPU the guard does not budget for
+    - command: "studentassistant setup"
+      reason: creates or clones the human's real vault repository on GitHub
+  backends:
+    qwen:
+      command: /home/titan/.nvm/versions/node/v22.22.0/bin/qwen
+      worktree: ../studentassistant-qwen
+      app: roedor-qwen
+      stream: qwen_jsonl
+      quota: none
+    claude:
+      command: /home/titan/.local/bin/claude
+      worktree: ../studentassistant-claude
+      app: roedor-claude
+      stream: claude_jsonl
+      quota: claude_rate_limit
+  executables:
+    gh: /home/linuxbrew/.linuxbrew/bin/gh
+  role_apps: {}
+  modules:
+    - infra
+    - protocol
+    - android
+    - server
+    - stt
+    - vault
+    - sources
+    - llm
+    - observer
+    - editor
+    - web
+    - generators
+  labels:
+    refine: status:refine
+    ready: status:ready
+    doing: status:doing
+    blocked_on_human: status:blocked-on-human
+    ai_completed: status:ai-completed
+    review: status:review
+    agents_paused: status:agents-paused
+    auto_ready: auto-ready
+    wake_planner: wake:planner
+  board_columns:
+    refine: Backlog
+    ready: Ready for AI
+    doing: In progress
+    blocked-on-human: null
+    ai-completed: AI completed
+    review: Review
+    done: Done
+
+mechanism:
+  own_paths:
+    - agent_os/*
+    - scripts/worker_task.sh
+    - scripts/agent_task.sh
+    - scripts/planner_task.sh
+    - scripts/worker_progress.sh
+    - scripts/notify.sh
+    - scripts/qwen_task.sh
+    - scripts/agent_guard.py
+    - scripts/agent_lib.py
+    - scripts/issues.py
+    - scripts/gh_app_token.py
+    - .claude/*
+  quota_verdict_ttl_minutes: 60
+
+planner:
+  idle_wake_minutes: 120
+  max_runs_per_day: 20
+  relaunch_cap: 3
+  max_parallel_issues: 1
+  reconcile_closed_lookback_days: 30
+  # The same mechanism version's refiner dry run was reviewed by the human on teachermovies
+  # (#29 -> #81-#83, 2026-09-24), and this backlog was written to be split/staged by it; set to
+  # false to go back to attended runs only
+  # (agent_os/docs/adr/2026-09-15-the-refiner-runs-unattended-only-after-a-human-reviewed-its-dry-run.md).
+  refiner_unattended: true
+
+classes:
+  mechanical-qwen:
+    backend: qwen
+    model: qwen3.8-max
+    max_context: 400000
+    max_cost_usd: 5.0
+    max_total_tokens: 80000000
+    commit_warn_turns: 25
+    commit_cut_turns: 90
+    qwen_fallback_eligible: false
+  complex-qwen:
+    backend: qwen
+    model: qwen3.8-max
+    max_context: 800000
+    max_cost_usd: 20.0
+    max_total_tokens: 150000000
+    commit_warn_turns: 25
+    commit_cut_turns: 90
+    qwen_fallback_eligible: false
+  planner:
+    role: planner
+    backend: claude
+    model: claude-opus-5
+    max_context: 40000
+    max_cost_usd: 2.0
+    max_total_tokens: 2000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]
+  validator:
+    role: validator
+    backend: claude
+    model: claude-opus-5
+    max_context: 200000
+    max_cost_usd: 5.0
+    max_total_tokens: 10000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]
+  refiner:
+    role: refiner
+    backend: claude
+    model: claude-opus-5
+    max_context: 200000
+    max_cost_usd: 5.0
+    max_total_tokens: 10000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]

@@ -42,14 +42,17 @@ Material:     ✓ Apuntes v3   ○ Esquema   ○ Quiz   ○ Flashcards   ○ Exa
 Cuaderno / libro / PDF / web
         │
         ▼
-MÓVIL (app Android «tonta»)
-  ├─ audio continuo ──────────────► transcripción local (Whisper en la GPU del PC)
+CLIENTE DE CAPTURA «tonto»
+  (en desarrollo: página web con la cámara y el micro del portátil; en paralelo: app Android)
+  ├─ transcripción en el propio cliente con Google (Web Speech API / SpeechRecognizer)
+  │    → envía segmentos de texto con marcas de tiempo
+  │    (o audio, si se configura un proveedor de transcripción en el servidor)
   ├─ fotos en alta resolución ────► sólo cuando lo pides («mira aquí», botón)
   └─ eventos (importante, libro/apuntes, terminar)
         │  WebSocket + HTTP en la LAN
         ▼
 BACKEND UBUNTU (toda la inteligencia)
-  ├─ STT + comandos de voz deterministas
+  ├─ transcripción enchufable + comandos de voz deterministas
   ├─ fuentes: selección de la foto más nítida, recorte, transcripción de la página
   ├─ OBSERVADOR (Claude Sonnet): memoria rápida, clasifica lo que le enseñas en vivo
   ├─ EDITOR-TUTOR (Claude Opus): construye contigo el apunte maestro
@@ -65,7 +68,9 @@ APUNTES DEFINITIVOS ──► esquema · quiz · flashcards · ejercicios/examen
 
 ## 4. Experiencia de una sesión (MVP)
 
-1. En el móvil: `Historia / Tema 4` → **Empezar sesión**. Móvil sobre la mesa apuntando al cuaderno.
+1. En el cliente de captura (la web en el portátil durante el desarrollo; el móvil después):
+   `Historia / Tema 4` → **Empezar sesión**. Cámara apuntando al cuaderno. Una sesión es siempre
+   de **un único tema de una asignatura**.
 2. Hablas con normalidad: «Esta es la primera página», «aquí el profesor explicó la diferencia
    entre absolutismo y liberalismo», «esta flecha conecta con esto», «esta palabra no sé qué pone,
    creo que es *soberanía*».
@@ -86,10 +91,14 @@ APUNTES DEFINITIVOS ──► esquema · quiz · flashcards · ejercicios/examen
 
 ## 5. Mejoras sobre la idea original
 
+Revisado con el estudiante el 2026-09-24: una sesión = un tema; mecanismo de purga; Opus 5.5 como
+editor; transcripción en el cliente con Google y proveedores enchufables; desarrollo con una web
+de captura en el portátil y la app Android en paralelo.
+
 Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
 
-1. **Sin streaming de vídeo al servidor.** El móvil sólo envía audio continuo y **fotos
-   puntuales en alta resolución** (CameraX), no fotogramas de vídeo. Más nitidez para leer
+1. **Sin streaming de vídeo al servidor.** El cliente sólo envía la transcripción (o el audio)
+   y **fotos puntuales en alta resolución**, no fotogramas de vídeo. Más nitidez para leer
    letra manuscrita, muchísimo menos ancho de banda y coste, y el backend no necesita decodificar
    vídeo. La vista de cámara sólo existe en la pantalla del móvil. (La captura automática por
    cambio de página queda para más adelante.)
@@ -103,10 +112,15 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
    página a Markdown conservando la estructura (flechas y esquemas como listas anidadas o
    diagramas), marca las palabras dudosas `[[?soberanía]]` y usa lo que dijiste alrededor de la
    foto como pista. Opus trabaja sobre ese texto y sólo vuelve a mirar la imagen cuando hace falta.
-5. **Sesión basada en eventos.** Todo lo que ocurre (segmentos de voz, capturas, comandos,
+5. **Una sesión = un tema de una asignatura, basada en eventos.** El contexto de los modelos es
+   sólo el de ese tema: nunca se mezclan temas. Todo lo que ocurre (segmentos de voz, capturas, comandos,
    operaciones del observador) es un registro *append-only*. El estado del observador es el
    plegado de esos eventos: reproducible, auditable y recuperable en otro PC. Eso es, en la
    práctica, «el estado de los LLM»: los modelos no guardan estado; lo guardamos nosotros.
+   **Purga**: el contexto vivo del observador se recicla (instantánea + resumen del tema) al
+   superar un umbral y al terminar cada sesión; y `studentassistant purge` aplica una política
+   de retención a la bóveda (originales de ráfagas, conversaciones ya purgadas, eventos ya
+   plegados…) sin tocar nunca lo que citan los apuntes.
 6. **Procedencia en cada párrafo.** El apunte maestro es Markdown con notas al pie que apuntan a
    la fuente exacta (página manuscrita, minuto de la conversación, página del libro, URL). Lo que
    la IA añade sin respaldo en tus fuentes queda marcado como «ampliado por la IA». Modo
@@ -151,8 +165,8 @@ sessions/<fecha>/events.jsonl
 | Rol | Modelo por defecto | Qué hace |
 |---|---|---|
 | Observador («memoria rápida») | Claude Sonnet (`claude-sonnet-5`) | En vivo: clasifica lo que enseñas en secciones, conceptos y fuentes; enlaza fotos con lo que dijiste; acumula dudas. Transcribe las páginas. |
-| Editor-tutor | Claude Opus (`claude-opus-5`; `claude-opus-5-5` configurable) | Bajo demanda: genera el apunte maestro, lo edita contigo, resuelve dudas, explica el porqué de cada párrafo, genera el material de estudio. |
-| Transcripción de voz | faster-whisper local (GPU del PC) | Voz → texto en español con marcas de tiempo, sin salir del PC. |
+| Editor-tutor | Claude Opus 5.5 (`claude-opus-5-5`) | Bajo demanda: genera el apunte maestro, lo edita contigo, resuelve dudas, explica el porqué de cada párrafo, genera el material de estudio. |
+| Transcripción de voz | Enchufable. Por defecto en el cliente con Google (Web Speech API en el navegador, SpeechRecognizer en Android). Opcionales en el servidor: faster-whisper local, APIs en la nube | Voz → texto en español con marcas de tiempo. |
 
 Los modelos se configuran por rol; no hay ningún identificador de modelo escrito en el código.
 
@@ -161,7 +175,7 @@ Los modelos se configuran por rol; no hay ningún identificador de modelo escrit
 | Fase | Objetivo | Resultado |
 |---|---|---|
 | 0. Fundaciones | Monorepo, CI, contrato móvil↔PC, bóveda | Esqueletos que compilan y se prueban |
-| 1. Esqueleto andante | Móvil emparejado, sesión, audio → transcripción en vivo, fotos a la bóveda, push a GitHub | Sesión completa **sin IA** |
+| 1. Esqueleto andante | Página web de captura en el portátil, sesión, transcripción en vivo, fotos a la bóveda, push a GitHub (la app Android avanza en paralelo) | Sesión completa **sin IA** |
 | 2. Observador | Sonnet mantiene el estado de la sesión, transcribe páginas, bandeja de dudas | La sesión «se entiende» |
 | 3. Editor + web | Opus genera y edita el apunte maestro con procedencia; web de revisión | **MVP: el objetivo de 20 minutos** |
 | 4. Más fuentes | Libro, PDF, búsqueda web | Apuntes enriquecidos |
@@ -179,8 +193,7 @@ El plan de desarrollo detallado está en `docs/PLAN.md` y el trabajo en el table
 
 ## 10. Preguntas abiertas (a resolver durante el refinamiento)
 
-- ¿Se guarda el audio en la bóveda (Opus ~10 MB/h, en Git LFS) o sólo la transcripción? Por
-  defecto: sólo transcripción; audio local opcional.
+- ¿Se guarda el audio en la bóveda? Por defecto no: sólo la transcripción.
 - Imágenes en git normal o Git LFS cuando la bóveda crezca (umbral a medir).
 - ¿Un perfil de estudiante o varios (p. ej. hermanos) en el mismo PC?
-- Opus 5 u Opus 5.5 como editor por defecto (coste/calidad a medir con sesiones reales).
+- Qué proveedor de transcripción en la nube se añade si Google en el cliente no basta.

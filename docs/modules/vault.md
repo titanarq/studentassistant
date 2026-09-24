@@ -39,6 +39,10 @@ of sessions are `YYYYMMDD-HHMMSS`.
 files (atomic, fsync), `put_source(...)`, `checkpoint(message)`, `sync()`; `VaultIndex` (SQLite,
 FTS5) with `rebuild()`.
 
+## Purge
+`studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);
+never removes what the current notes cite.
+
 ## Boundaries
 - Pure storage: no LLM, no HTTP. Refuses files that look like secrets.
 

@@ -6,8 +6,9 @@ Status: accepted (2026-09-24)
 - Only `studentassistant.llm` imports the `anthropic` SDK. Other modules ask for a **role**
   (`observer`, `transcriber`, `editor`, `generator`) and get a client configured from
   `config.toml` (`[llm.roles.<role>] model = ..., effort = ...`). Defaults: `claude-sonnet-5`
-  for observer and page transcription, `claude-opus-5` for editor and generators;
-  `claude-opus-5-5` is a supported value.
+  for observer and page transcription, `claude-opus-5-5` for editor and generators (better
+  and cheaper than Opus 5; its effort defaults to `medium`, so effort is always set explicitly,
+  and thinking cannot be disabled).
 - Structured outputs use **strict tools with `tool_choice: auto`** plus an instruction, or
   `output_config.format` -- never forced `tool_choice` (`any`/`tool`), which Opus 5.5 rejects.
   Every tool input is validated against its Pydantic model before it is applied.

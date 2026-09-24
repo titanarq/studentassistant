@@ -9,7 +9,9 @@ decisions are in `docs/adr/`.
 
 **Student Assistant** turns handwritten class notes (plus textbook pages, PDFs and web pages)
 into faithful digital study notes through a **multimodal conversation**: the student shows pages
-to an Android phone and talks about them; an Ubuntu PC backend transcribes the voice locally,
+to a capture client (a web page using the laptop's camera and microphone during development, an
+Android app in parallel) and talks about them; speech is transcribed by a pluggable provider
+(default: Google on the client, ADR-0008); an Ubuntu PC backend receives the transcript,
 stores every source, lets **Claude Sonnet** (the *observer*) understand and classify the session
 live, and lets **Claude Opus** (the *tutor-editor*) build and revise the master notes with the
 student. Quizzes, flashcards, exams and slides are generated from those notes later.
@@ -58,15 +60,15 @@ Each module maps 1:1 to a `module:<name>` label and `docs/modules/<name>.md`:
 |---|---|---|
 | infra | root, `scripts/`, `.github/` | monorepo tooling, CI, test wrapper, install/setup, agent OS config |
 | protocol | `protocol/`, `studentassistant.protocol`, `android/.../protocol` | phone<->backend wire contract (WebSocket + REST) |
-| android | `android/` | capture app: pairing, session screens, camera, mic streaming, offline spool |
+| android | `android/` | capture app: pairing, session screens, camera, SpeechRecognizer / audio streaming, offline spool |
 | server | `studentassistant.server` | FastAPI app: pairing/auth, session lifecycle, WebSocket gateway, REST for the web, replay |
-| stt | `studentassistant.stt` | local speech-to-text (faster-whisper), VAD segmentation, voice-command grammar |
+| stt | `studentassistant.stt` | pluggable STT: client segment ingestion, server-side providers (Whisper, cloud), voice-command grammar |
 | vault | `studentassistant.vault` | git-backed content store: layout, writers, commit/push/pull, setup, SQLite index |
 | sources | `studentassistant.sources` | source ingestion: capture processing, page transcription, textbook, PDF, web |
 | llm | `studentassistant.llm` | Claude client wrapper: model roles, caching, structured outputs, cost ledger, fakes |
 | observer | `studentassistant.observer` | Sonnet observer: event-sourced session state, pending-review queue, topic digest |
 | editor | `studentassistant.editor` | Opus tutor-editor: master notes with provenance, edit loop, doubts, "why" |
-| web | `web/` | review UI: study desk, notes viewer + sources panel, editor chat, pending panel |
+| web | `web/` | web capture page (laptop camera/mic, Web Speech API) and review UI: study desk, notes + sources, editor chat, pending |
 | generators | `studentassistant.generators` | outline, quiz, flashcards, exercises/exam, slides |
 
 Dependency direction inside the backend: `server` -> (`observer`, `editor`, `generators`,
@@ -89,7 +91,7 @@ functions listed in their module doc, never through each other's internals.
 - Vault files are written ONLY through `studentassistant.vault` (ADR-0002). No other module runs
   `git` or writes under the vault root directly.
 - Tests: pytest, no network, no GPU, no real Claude calls. Use `FakeClaude` (scripted responses),
-  `FakeTranscriber` and a temporary vault fixture (`tmp_vault`). Tests needing a GPU or network
+  `FakeProvider` (STT) and a temporary vault fixture (`tmp_vault`). Tests needing a GPU or network
   are marked `@pytest.mark.integration` and are not run by the test command.
 
 ## TypeScript conventions (web)

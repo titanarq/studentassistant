@@ -11,6 +11,8 @@
 - Pending-review queue: illegible word, mentioned-not-explained concept, incomplete information,
   possible error, contradiction between sources; deduplicated; count published to the phone.
 - Topic digest at session end, used to resume a topic and as editor input.
+- Context purge: roll the live conversation over to snapshot + digest + tail past a token
+  threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

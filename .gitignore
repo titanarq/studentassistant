@@ -3,7 +3,6 @@
 .secrets/
 .env
 .claude/worktrees/
-scratchpad/
 
 # Local launcher
 claudedontask.sh

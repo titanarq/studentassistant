@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Shim: this driver lives in `agent_os/bin/worker_task.sh` (`agent_os/docs/adr/2026-09-21-the-
+# mechanism-is-one-directory-extended-by-hosts-and-never-modified.md`). The path is kept because
+# the systemd unit, the `.claude/agents/*.md` prompts, `CLAUDE.md`, `docs/modules/workers.md` and
+# the memory notes all name it, and because the worker worktrees execute the MAIN checkout's copy
+# -- a rename with no shim breaks a run in flight. It adds no behaviour and no argument of its own.
+exec "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../agent_os/bin/worker_task.sh" "$@"

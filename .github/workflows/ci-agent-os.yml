@@ -1,0 +1,40 @@
+# The mechanism's own CI, copied as-is by `agent-os install` when the host has no
+# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 6). A host that already
+# runs its own tests job can instead fold these two steps into it, the way a host whose
+# `ci.yml` already exists does -- this file exists so a fresh host has something that works
+# without hand-writing it first.
+name: agent-os
+
+# Only when the mechanism (or this file) changes: no ruleset/branch protection can require this
+# check on a Free-plan private repo, so a path filter cannot leave a required check pending.
+on:
+  pull_request:
+    paths:
+      - "agent_os/**"
+      - ".github/workflows/ci-agent-os.yml"
+
+jobs:
+  tests:
+    # Self-hosted (see ci.yml). The machine's system python3 (3.12) bootstraps the venv.
+    runs-on: [self-hosted, teachermovies]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The mechanism carries its own interpreter (agent_os/docs/AGENT_OS.md §4.1): nothing below needs the
+      # host project's own virtualenv to exist.
+      - name: bootstrap the mechanism's own interpreter
+        run: bash agent_os/bootstrap.sh
+
+      # No database, no network, no real backend: the same subset `agent_os/tests/conftest.py`
+      # keeps separate from the host's own fixtures, and the run a second host can also make.
+      - name: the mechanism's own suite
+        # workaround titanarq/agent-os#17 — remove when fixed
+        # _the_projects_package() assumes the host root has exactly one top-level Python
+        # package; studentassistant (Python package under backend/src, no top-level package) has none, so
+        # these two pre-existing agent_os tests fail here regardless of the host PR's diff.
+        # Node ids below are relative to agent_os/'s own pyproject.toml (rootdir/testpaths),
+        # not to the invocation path -- i.e. "tests/..." not "agent_os/tests/...".
+        run: |
+          agent_os/.venv/bin/pytest agent_os/tests -q \
+            --deselect tests/test_agent_task.py::test_a_role_that_runs_tests_gets_a_worktree_of_its_own_and_pythonpath_at_it \
+            --deselect tests/test_agent_task.py::test_the_environment_the_driver_exports_resolves_the_worktrees_copy_and_not_the_main_checkouts
