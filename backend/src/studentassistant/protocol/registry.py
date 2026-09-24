@@ -29,6 +29,14 @@ from studentassistant.protocol.rest import (
     TopicCreateRequest,
     TopicsListResponse,
 )
+from studentassistant.protocol.server import (
+    Command,
+    HelloAck,
+    Notice,
+    ServerAck,
+    TranscriptFinal,
+    TranscriptPartial,
+)
 
 MODELS: dict[str, type[BaseModel]] = {
     "client.hello": ClientHello,
@@ -37,6 +45,12 @@ MODELS: dict[str, type[BaseModel]] = {
     "client.button": Button,
     "client.marker": Marker,
     "client.ack": ClientAck,
+    "server.hello.ack": HelloAck,
+    "server.transcript.partial": TranscriptPartial,
+    "server.transcript.final": TranscriptFinal,
+    "server.command": Command,
+    "server.notice": Notice,
+    "server.ack": ServerAck,
     "rest.pair.request": PairRequest,
     "rest.pair.response": PairResponse,
     "rest.health.response": HealthResponse,

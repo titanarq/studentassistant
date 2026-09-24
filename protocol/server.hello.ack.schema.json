@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/server.hello.ack.schema.json",
+  "title": "server.hello.ack",
+  "description": "Reply to the client hello: negotiated protocol_version, the STT mode the backend chose and the agreed clock offset. An incompatible MAJOR gets no hello.ack; the socket is closed with a message naming both versions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "protocol_version",
+    "stt_mode",
+    "clock_offset_ms",
+    "server_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "hello.ack"
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "The version both sides speak: the shared MAJOR with the lower MINOR."
+    },
+    "stt_mode": {
+      "enum": [
+        "client",
+        "server"
+      ],
+      "description": "client: send transcript.client.* segments; server: stream binary audio frames instead (ADR-0008)."
+    },
+    "audio_format": {
+      "type": "object",
+      "description": "The audio to stream; present exactly when stt_mode is server.",
+      "additionalProperties": false,
+      "required": [
+        "encoding",
+        "sample_rate_hz",
+        "channels"
+      ],
+      "properties": {
+        "encoding": {
+          "const": "pcm16"
+        },
+        "sample_rate_hz": {
+          "const": 16000
+        },
+        "channels": {
+          "const": 1
+        }
+      }
+    },
+    "clock_offset_ms": {
+      "type": "integer",
+      "description": "Backend clock minus the client_time_ms of hello; add it to a client time to get backend time. May be negative."
+    },
+    "server_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms, when the message was sent."
+    }
+  },
+  "if": {
+    "properties": {
+      "stt_mode": {
+        "const": "server"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "audio_format"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "audio_format"
+      ]
+    }
+  }
+}

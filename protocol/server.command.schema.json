@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/server.command.schema.json",
+  "title": "server.command",
+  "description": "A deterministic voice command asks the client to act (ADR-0006); the client answers with ack carrying command_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "command_id",
+    "command",
+    "server_time_ms"
+  ],
+  "properties": {
+    "type": {
+      "const": "command"
+    },
+    "command_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "description": "Echoed by the client ack and by the capture upload it triggers."
+    },
+    "command": {
+      "enum": [
+        "capture_now"
+      ],
+      "description": "capture_now: take a burst of stills and upload them with trigger command."
+    },
+    "server_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms, when the message was sent."
+    }
+  }
+}

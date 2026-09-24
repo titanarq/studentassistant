@@ -11,12 +11,13 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from studentassistant.protocol import MODELS, model_for, parse_client_event
+from studentassistant.protocol import MODELS, model_for, parse_client_event, parse_server_event
 
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "protocol"
 SCHEMA_SUFFIX = ".schema.json"
 SCHEMA_PATHS = sorted(PROTOCOL_DIR.glob(f"*{SCHEMA_SUFFIX}"))
 CLIENT_SCHEMA_PATHS = [path for path in SCHEMA_PATHS if path.name.startswith("client.")]
+SERVER_SCHEMA_PATHS = [path for path in SCHEMA_PATHS if path.name.startswith("server.")]
 
 
 def _name(schema_path: Path) -> str:
@@ -106,3 +107,70 @@ def test_transcript_segment_cannot_end_before_it_starts() -> None:
     assert isinstance(example, dict)
     with pytest.raises(ValidationError):
         parse_client_event({**example, "client_end_ms": example["client_start_ms"] - 1})
+
+
+@pytest.mark.parametrize("schema_path", SERVER_SCHEMA_PATHS, ids=_name)
+def test_server_event_union_dispatches_on_type(schema_path: Path) -> None:
+    name = _name(schema_path)
+    example = _load(PROTOCOL_DIR / "examples" / f"{name}.json")
+    event = parse_server_event(example)
+    assert type(event) is model_for(name)
+    assert event.model_dump(mode="json", by_alias=True, exclude_none=True) == example
+
+
+@pytest.mark.parametrize("bad", [{"type": "transcript.client.final"}, {"text": "sin tipo"}])
+def test_server_event_union_rejects_unknown_or_missing_type(bad: dict[str, object]) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        parse_server_event(bad)
+    assert excinfo.value.errors()[0]["type"] in {"union_tag_invalid", "union_tag_not_found"}
+
+
+def test_client_and_server_ack_are_different_messages() -> None:
+    client_ack = _load(PROTOCOL_DIR / "examples" / "client.ack.json")
+    server_ack = _load(PROTOCOL_DIR / "examples" / "server.ack.json")
+    with pytest.raises(ValidationError):
+        parse_server_event(client_ack)
+    with pytest.raises(ValidationError):
+        parse_client_event(server_ack)
+
+
+AUDIO_FORMAT = {"encoding": "pcm16", "sample_rate_hz": 16000, "channels": 1}
+
+
+@pytest.mark.parametrize(
+    ("stt_mode", "audio_format", "valid"),
+    [
+        ("server", AUDIO_FORMAT, True),
+        ("server", None, False),
+        ("client", AUDIO_FORMAT, False),
+    ],
+)
+def test_hello_ack_audio_format_goes_with_server_mode_only(
+    stt_mode: str, audio_format: dict[str, object] | None, valid: bool
+) -> None:
+    example = _load(PROTOCOL_DIR / "examples" / "server.hello.ack.json")
+    assert isinstance(example, dict)
+    event = {**example, "stt_mode": stt_mode}
+    if audio_format is not None:
+        event["audio_format"] = audio_format
+    schema = _load(PROTOCOL_DIR / "server.hello.ack.schema.json")
+    assert Draft202012Validator(schema).is_valid(event) is valid
+    if valid:
+        parse_server_event(event)
+    else:
+        with pytest.raises(ValidationError):
+            parse_server_event(event)
+
+
+def test_server_ack_must_acknowledge_something() -> None:
+    event = {"type": "ack", "server_time_ms": 1}
+    assert not Draft202012Validator(_load(PROTOCOL_DIR / "server.ack.schema.json")).is_valid(event)
+    with pytest.raises(ValidationError):
+        parse_server_event(event)
+
+
+def test_normalised_segment_cannot_end_before_it_starts() -> None:
+    example = _load(PROTOCOL_DIR / "examples" / "server.transcript.final.json")
+    assert isinstance(example, dict)
+    with pytest.raises(ValidationError):
+        parse_server_event({**example, "session_end_ms": example["session_start_ms"] - 1})
