@@ -1,0 +1,264 @@
+# The one file a host project writes to adopt the mechanism. Copy it to `config/agents.yaml` at
+# the host's root and fill it in: every value below belongs to ONE project, and nothing under
+# `agent_os/` reads a project literal from anywhere else
+# (agent_os/docs/adr/2026-09-14-the-agent-mechanism-is-project-agnostic-and-configured-not-coded.md,
+# agent_os/docs/adr/2026-09-21-the-mechanism-is-one-directory-extended-by-hosts-and-never-modified.md).
+#
+# `AGENTS_CONFIG_PATH` overrides the location; otherwise the mechanism reads `config/agents.yaml`
+# under the HOST's root (`$AGENT_OS_HOST_ROOT`, else the git checkout the cwd belongs to), never
+# under `agent_os/`. The commentary in the host's own copy is where the reasons for ITS values
+# belong; the reasons for the SHAPE of a key belong here.
+#
+# The project below is invented. Nothing in it names a real repository, identity or topic. It is
+# also what the mechanism's OWN test suite (`agent_os/tests -q`) loads instead of a host's real
+# config (`agent_os/tests/conftest.py`, #512) -- so every key below is filled with a value some
+# test needs, not left at its bare minimum, and a shape a helper patches (a block list, a single
+# line) is kept in the same shape a host's own file uses.
+
+project:
+  # owner/name on GitHub. Read after the `AGENT_OS_GH_REPO` environment variable and before
+  # `gh repo view` on the cwd.
+  repo: example-org/example-project
+  # The management epic whose `agents_paused` label is the full stop for every role.
+  tracking_epic: 1
+  # The GitHub Project (v2) number the board columns live on.
+  board_number: 1
+  # Where `<slug>.json` + `<slug>.pem` live, one pair per GitHub App identity. Relative to the
+  # host's root.
+  secrets_dir: .secrets/gh_apps
+  # The planner's own App slug, distinct from any worker's.
+  planner_app: example-planner
+  # The base name of the systemd --user units `agent_os.install` writes and `agent_os.doctor`
+  # checks: `<this>.service`, `<this>.timer`, `<this>.service.d/override.conf`. Empty refuses
+  # both commands rather than inventing a name from the repository's own.
+  guard_unit: example-guard
+  # Where this project's module docs live, one per `project.modules` entry -- the `__MODULE_DOCS__`
+  # token in the rendered `.claude/agents/*.md` prompts points here.
+  module_docs_dir: docs/modules
+  # The one human. Substituted into every `@<login>` a role writes.
+  human_login: example-login
+  # Language for anything addressed to the human. Code, identifiers, commits and repository
+  # documentation stay English regardless of this.
+  human_language: English
+  # Gitignored file holding the ntfy topic string, relative to the host's root.
+  notify_topic_file: .secrets/ntfy_topic
+  # One one-line template per page the mechanism can send, written in `human_language`. A key the
+  # mechanism asks for and this mapping does not carry is an error when the config loads, not when
+  # the page is due; so is a template `str.format` cannot parse. The placeholders each one may use
+  # are fixed by the call site -- these five are the whole set today.
+  messages:
+    review_ready: "Review pending: issue #{issue} «{title}» is approved and only needs merging - {url}"
+    quota_exhausted_no_fallback: "No quota left and issue #{issue} declares no fallback (class «{task_class}», backend {backend}): it cannot move without you"
+    planner_run_cap_reached: "The planner has spent its daily run cap ({runs}/{cap}) and will dispatch nothing more today; {pending} event(s) wait for tomorrow: {context}"
+    backend_worktree_missing: "Backend with no worktree: {backend} has no worktree at {worktree} and {issue_count} ready issue(s) cannot move until you create it"
+    unreviewed_pull_request: "Lost review: PR #{pr} for issue #{issue} has no review and no {role} running - it may have died leaving no trace"
+  # The project's own compact test wrapper, injected into the worker's RULES as `__TEST_COMMAND__`.
+  # A host with more than one test suite names the wrapper that runs the right one.
+  test_command: scripts/test.sh
+  # One file of YOUR OWN per role, appended verbatim at that role's `__PROJECT_EXTRAS__` point in
+  # `agent_os/prompts/<role>.md`: the place for a sentence only this project can write -- how its
+  # package resolves under test, which budget class a worker task belongs in. Paths relative to
+  # this repository's root, every key optional, and a role named here whose file is missing stops
+  # the render rather than silently losing the paragraph. Empty by default: a project that names
+  # none reads the mechanism's own templates and nothing else.
+  prompt_extras: {}
+  # Exported into every worker's backend process. The KEYS also render the worker's environment
+  # paragraph -- names, never values -- so no prompt ever spells a credential. Empty renders no
+  # such paragraph at all.
+  worker_environment:
+    DATABASE_URL: postgresql://app_ro:app_ro@localhost:5432/app
+  # The HOST project's protected paths: globs relative to the host's root, where a `*` crosses `/`
+  # (fnmatch semantics). These hold REGARDLESS of what a brief says, and a brief naming one is a
+  # defect in the brief. ONE list behind both halves of the rule: the audit regex a run's changed
+  # paths are matched against, and the "FILES YOU MUST NOT TOUCH" paragraph the worker reads.
+  forbidden_paths:
+    - docs/adr/*
+    - docker-compose.yml
+  # Subtracted from `forbidden_paths` to give the subset the MERGE gate audits (condition 3). It
+  # names the EXEMPTION, not the audited set, so a path added above is audited unless it is also
+  # listed here. For delivery directories: a diff that only ADDS a file under one of them changes
+  # nothing the protection exists for.
+  merge_audit_exempt_paths:
+    - docs/adr/*
+  # Commands no role may run, each with the one-line reason its prohibition rests on. Rendered
+  # into the worker's, the validator's and the refiner's RULES from this one list. Empty renders
+  # no such paragraph anywhere.
+  never_run:
+    - command: "--force-push"
+      reason: rewrites shared history other clones have already built work on top of
+    - command: drop-database
+      reason: destroys the shared database with no dry-run flag and no way back
+  # The absolute path of every external executable the mechanism's units call by bare name, by
+  # command name: the backend CLIs (`qwen`, `claude`) and the tracker CLI (`gh`) alike, for when
+  # the launcher's PATH is not the shell's (a systemd user unit does not carry nvm). A name with no
+  # entry resolves to itself, which is the bare-name PATH lookup the drivers did before.
+  # `agent-os-install` turns every value into a directory on the generated unit's
+  # `Environment=PATH=` (`executables_path_prefix()`), which is why a command that is not a
+  # backend, like `gh`, belongs here too -- e.g. `gh: /home/linuxbrew/.linuxbrew/bin/gh`.
+  executables: {}
+  # Every backend a worker or a role can run on, by name. Nothing in the mechanism compares a
+  # backend's name against a literal: what it can do is read off its entry, so a third CLI is one
+  # entry here (plus one parser under agent_os/streams/ only if its events are a new shape).
+  #   command:  what the drivers run -- an absolute path or a bare name. Omitted, the
+  #             `executables` entry of the same name, else the backend's own name. An absolute
+  #             command is added to `executables`, the PATH set the generated units carry.
+  #   worktree: its worktree, relative to the host's root. Nothing in the mechanism creates these.
+  #   app:      the GitHub App a worker on it signs as, so its commits and comments are
+  #             attributable to it and never to the human's account.
+  #   stream:   the registered parser its jsonl events are read with (claude_jsonl, qwen_jsonl);
+  #             it also picks the command line the drivers launch it with. Unknown fails at load.
+  #   quota:    the detector whose `exhausted` verdict cuts a live run (claude_rate_limit), or
+  #             `none` -- the verdict is recorded and nothing is cut on it.
+  # DEPRECATED, for one release: `worktrees:` + `worker_apps:` (+ `executables:` for the command)
+  # in place of this section still load, with one warning, and are ignored when this is present.
+  backends:
+    qwen:
+      worktree: ../example-qwen
+      app: example-qwen
+      stream: qwen_jsonl
+      quota: none
+    claude:
+      worktree: ../example-claude
+      app: example-claude
+      stream: claude_jsonl
+      quota: claude_rate_limit
+  # One App per non-worker role. A role missing here signs as `planner_app`.
+  role_apps: {}
+  # The host's own module names, one per module doc. They become the `module:<name>` half of the
+  # fixed label set the tracker CLI creates. An empty list creates no `module:` label.
+  modules:
+    - core
+  # The mechanical state vocabulary. Exactly one of the first six is ever set on an issue; the
+  # last three are not states. A host that spells its labels differently changes them here.
+  labels:
+    refine: status:refine
+    ready: status:ready
+    doing: status:doing
+    blocked_on_human: status:blocked-on-human
+    ai_completed: status:ai-completed
+    review: status:review
+    # Human-only: the full stop, on the tracking epic.
+    agents_paused: status:agents-paused
+    # Human-only: on a feature, its refined children may be promoted to `ready` mechanically.
+    auto_ready: auto-ready
+    # A one-shot request, not a state: the next tick removes it and wakes the planner.
+    wake_planner: wake:planner
+  # Where each state shows up on the board. The labels are the state; this is the mirror the human
+  # reads. `blocked-on-human` is null on purpose: being blocked says nothing about how far the work
+  # got, so the item keeps the column it is already in. These six names are the Project (v2) board
+  # columns §4.3 has every host create, not this project's own choice.
+  board_columns:
+    refine: Backlog
+    ready: Ready for AI
+    doing: In progress
+    blocked-on-human: null
+    ai-completed: AI completed
+    review: Review
+    done: Done
+
+# The mechanism's own files -- NOT the host's to configure. Copy this section unchanged: it names
+# the drivers, the library and the role prompts, so it travels with the mechanism. A worker's diff
+# may touch one of these ONLY when the issue body names that path as the target of the work, which
+# is what lets the mechanism develop itself without failing its own ownership audit.
+mechanism:
+  own_paths:
+    - agent_os/*
+    - .claude/*
+  # How long the guard's persisted verdict on a backend's quota stays believable, in minutes. Past
+  # it the verdict reads as UNKNOWN and a role launches on its own backend.
+  quota_verdict_ttl_minutes: 60
+
+# How often the planner may be woken, and by what.
+planner:
+  # Rate limit on the `idle_dispatchable`/`refine_pending` events. `pr_merged` and `nudged` are
+  # edges and bypass it.
+  idle_wake_minutes: 120
+  # Hard cap on planner runs per day, across every event kind.
+  max_runs_per_day: 12
+  # `WIP: cut by guard` commits since a branch's fork point at or above which a relaunch is
+  # refused: a run that has been cut this many times is not making progress.
+  relaunch_cap: 3
+  # How many issues may have a worker alive at once, across every backend. Enforced by the worker
+  # driver, not by the planner.
+  max_parallel_issues: 1
+  # How far back the tick looks for a closed issue still carrying a state label.
+  reconcile_closed_lookback_days: 30
+  # Whether the tick may ever write `refine_pending`, i.e. whether the planner may launch the
+  # refiner unattended. False until a human has reviewed one of its dry runs.
+  refiner_unattended: false
+
+# The budget classes. `max_context` applies per stage process, fresh at every stage;
+# `max_cost_usd` and `max_total_tokens` apply to the whole issue. Every issue body names one in a
+# `<!-- budget: <class> -->` line; a class with a `role:` field belongs to that role instead.
+# These numbers are a starting point, not a calibration: measure real runs and tune them.
+#
+# Two worker classes (a mechanical one and a less specified, more expensive one) and one class per
+# review role, each of the latter declaring a `fallback:` -- the backend its role runs on when the
+# guard's own persisted quota verdict on its own backend reads exhausted (`RoleFallback`,
+# `agent_lib.role_launch_plan`). A worker class declares none: the planner's own redispatch of a
+# worker onto Qwen (`qwen_fallback_eligible`) is the only route around an exhausted worker backend.
+classes:
+  mechanical-qwen:
+    backend: qwen
+    model: qwen3.8-max
+    max_context: 400000
+    max_cost_usd: 5.0
+    max_total_tokens: 80000000
+    commit_warn_turns: 25
+    commit_cut_turns: 90
+    qwen_fallback_eligible: false
+
+  complex-qwen:
+    backend: qwen
+    model: qwen3.8-max
+    max_context: 800000
+    max_cost_usd: 20.0
+    max_total_tokens: 150000000
+    commit_warn_turns: 25
+    commit_cut_turns: 90
+    qwen_fallback_eligible: false
+
+  planner:
+    role: planner
+    backend: claude
+    model: claude-opus-5
+    max_context: 40000
+    max_cost_usd: 2.0
+    max_total_tokens: 2000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]
+
+  validator:
+    role: validator
+    backend: claude
+    model: claude-opus-5
+    max_context: 200000
+    max_cost_usd: 5.0
+    max_total_tokens: 10000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]
+
+  refiner:
+    role: refiner
+    backend: claude
+    model: claude-opus-5
+    max_context: 200000
+    max_cost_usd: 5.0
+    max_total_tokens: 10000000
+    commit_warn_turns: 30
+    commit_cut_turns: 50
+    qwen_fallback_eligible: false
+    fallback:
+      backend: qwen
+      model: qwen3.8-max
+      ceilings: [max_context, max_total_tokens]
