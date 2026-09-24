@@ -12,10 +12,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from studentassistant import __version__
+from studentassistant.config import ServerSettings
 from studentassistant.server.app import STATIC_DIR, create_app
 
 INDEX_HTML = "<!doctype html><title>Student Assistant</title><div id='root'></div>"
 APP_JS = "console.log('hola');\n"
+
+
+LOOPBACK = ("127.0.0.1", 50000)
+"""The web UI is served to the PC itself: loopback, trusted without a token."""
+
+
+@pytest.fixture
+def server(tmp_path: Path) -> ServerSettings:
+    return ServerSettings(devices_path=tmp_path / "devices.json")
 
 
 @pytest.fixture
@@ -28,8 +38,8 @@ def built_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def built(built_dir: Path) -> TestClient:
-    return TestClient(create_app(static_dir=built_dir))
+def built(built_dir: Path, server: ServerSettings) -> TestClient:
+    return TestClient(create_app(static_dir=built_dir, server=server), client=LOOPBACK)
 
 
 def test_default_static_dir_is_the_package_static_directory() -> None:
@@ -38,8 +48,8 @@ def test_default_static_dir_is_the_package_static_directory() -> None:
     assert Path(app_module.__file__).parent / "static" == STATIC_DIR
 
 
-def test_hint_when_not_built(tmp_path: Path) -> None:
-    client = TestClient(create_app(static_dir=tmp_path / "missing"))
+def test_hint_when_not_built(tmp_path: Path, server: ServerSettings) -> None:
+    client = TestClient(create_app(static_dir=tmp_path / "missing", server=server), client=LOOPBACK)
 
     response = client.get("/")
     assert response.status_code == 200
