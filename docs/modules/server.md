@@ -20,11 +20,17 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
-clock). The app keeps both, and its `DeviceStore`, in `app.state.server` / `.codes` / `.devices`.
+clock). `vault` is the open `Vault` the session routes work on (tests pass `tmp_vault`); without
+one, the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on
+the first request that needs it, so building an app never touches a vault. `sync` is the vault's
+`GitSync` (default: one over that vault with `vault_settings.git`).
+
+`app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
+`SessionBus`) and `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -42,6 +48,23 @@ Routes registered today:
 - `POST /api/pair` (`rest.pair.request` -> `rest.pair.response`): redeems a code and returns a new
   `device_id` and bearer `token`. An unknown, expired or already redeemed code is 401 with the same
   body in all three cases. Codes live only in the serving process's memory.
+- Subjects, topics and the session lifecycle (`server/session_routes.py`), protocol v1 bodies in
+  and out, optional fields left out rather than `null`. Every one needs the bearer token (none is
+  in `EXEMPT_ROUTES`). Ids are vault slugs: `subject_id` is the subject's slug, `topic_id` the
+  topic's slug within its subject, `session_id` the vault's `YYYYMMDD-HHMMSS` id; a path id
+  outside the protocol's id pattern is 422.
+  - `GET /api/subjects` -> `rest.subjects.list.response`; `POST /api/subjects`
+    (`rest.subjects.create.request`) -> 201 `rest.subjects.create.response`.
+  - `GET /api/subjects/{subject_id}/topics` -> `rest.topics.list.response`, each topic with
+    `open_session_id` when it has an unended session; `POST /api/subjects/{subject_id}/topics`
+    (`rest.topics.create.request`) -> 201 `rest.topics.create.response`.
+  - `POST /api/sessions` (`rest.sessions.start.request`) -> 201 `rest.sessions.start.response`;
+    `POST /api/sessions/{id}/resume` (no body) -> `rest.sessions.resume.response`;
+    `POST /api/sessions/{id}/end` (`rest.sessions.end.request`) -> `rest.sessions.end.response`.
+    `received_capture_ids` is always `[]` until the capture upload endpoint exists.
+  - Errors, as `{"detail": "..."}`: an unknown subject, topic or session is 404; another session
+    active or unended (start, resume) is 409 with its id in `X-Open-Session-Id`; resuming or
+    ending an ended session is 409; a vault that cannot be opened is 503.
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
@@ -113,6 +136,69 @@ the process's log record factory. Every record, uvicorn's access and error logs 
 its message, string arguments and traceback redacted: `Bearer ...`, `token=...`, `sa_...`
 tokens, `XXXX-XXXX` codes, and the JSON fields `token` / `pairing_code`. A 422 validation error
 never echoes the request's `input` back.
+
+### Session lifecycle -- `server/sessions.py`
+
+`SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None)` (on
+`app.state.sessions`) owns subjects/topics listing and creation and the session state machine
+`active` -> `ended`, over the vault's public functions (every call in a worker thread; lifecycle
+changes serialised by one lock). On first use it opens the vault (lazily, when built without one)
+and scans it for unended sessions.
+
+- A session belongs to exactly one topic of one subject, fixed at start (ADR-0003). There is no
+  topic switch: switching topic is ending the session and starting another.
+- At most one active session per backend. `start` is refused (`ActiveSessionExistsError`, which
+  names the session in `.session_id`) while any session is unended -- the active one, or one an
+  earlier run left unended, which must be resumed or ended first; `resume` is refused while a
+  different session is active. Resuming the active session again (a client reconnect) is allowed.
+- `resume` continues the session's logs: the next event's `seq` is one past the last in its
+  `events.jsonl` (the vault's `resume_session`).
+- Lifecycle events are published on the bus as persisted events with origin `user`:
+  `session.started` (`subject_id`, `topic_id`, `client_time_ms`, `device_id`),
+  `session.resumed` (`device_id`) and `session.ended` (`client_time_ms`, `reason`, `device_id`);
+  `device_id` is `null` for a loopback client without a token. `LIFECYCLE_KINDS` lists them.
+- `end` publishes `session.ended`, records `ended_at` (`end_session`), detaches the session from
+  the bus, then forces a vault checkpoint (`GitSync.checkpoint("sesión <id> terminada")`) and a
+  push (`push_now`). A failed commit or push is left in `GitSync.status()`, never raised.
+- Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
+- For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
+  (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
+  `get_active(session_id)`, the active session only when it is that one.
+- Refusals are `LifecycleError`s: `UnknownSessionError`, `SessionConflictError` (with
+  `ActiveSessionExistsError` and `SessionAlreadyEndedError` under it) and
+  `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
+  `TopicNotFoundError`.
+
+### Session event bus -- `server/bus.py`
+
+`SessionBus(on_append=None, default_queue_size=256)` (on `app.state.bus`) is the in-process
+publish/subscribe every session event goes through; stt, sources, observer, editor and the
+WebSocket gateway publish and subscribe here.
+
+- `attach(session)` / `detach(session_id)` / `is_attached(session_id)`: the lifecycle service
+  attaches the vault `Session` handle of the active session; publishing for any other session is
+  refused (`SessionNotAttachedError`, a `BusError`).
+- `await publish(session_id, kind, origin, payload=None, *, persist=True, t=None) -> BusEvent`.
+  A persisted event is appended to the session's `events.jsonl` through the vault handle (never
+  written by the bus, ADR-0002; the write runs in a worker thread), gets the log's next `seq`, and
+  only then is delivered; a refused append (`SecretRefused`, `SessionEndedError`) delivers
+  nothing and leaves `seq` as it was. `persist=False` publishes a **notice** (a transcript
+  partial, a pending count): delivered, never written, `seq` `None`. `t` defaults to the session
+  time now (ms since `started_at`). Publishes are serialised, so every subscriber sees events in
+  `seq` order and notices in publish order among them.
+- `subscribe(*, name="", session_id=None, kinds=None, maxsize=None) -> Subscription`: every event
+  published from then on that matches the filter (one session, a set of kinds; `None` = all).
+  Read with `await sub.get()`, `sub.get_nowait()` or `async for event in sub`; `sub.close()` (or
+  leaving `with` / `async with`) releases it, and iteration ends once it is closed and drained.
+  `bus.close()` closes every subscription.
+- Slow subscribers never block publishers: delivery only appends to the subscription's bounded
+  queue. When it is full, the oldest queued notice is dropped (counted in `sub.dropped`; a notice
+  arriving at a queue that holds no notice is itself dropped). A persisted event is never dropped:
+  a queue holding only persisted events grows past its bound (`sub.overflowed`, one warning per
+  episode).
+- `BusEvent` (frozen): `session_id`, `subject_id`, `topic_id`, `kind`, `origin` (`phone`, `stt`,
+  `observer`, `editor`, `user`), `t`, `payload` (shared by every subscriber: never mutate it),
+  `seq` (`None` for a notice), `schema_version`, and `persisted`.
 
 ### CLI
 
