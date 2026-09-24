@@ -1,5 +1,32 @@
 """Git-backed content store: layout, writers, commit/push/pull, setup, SQLite index."""
 
+from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
+from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secret
+from studentassistant.vault.session_models import (
+    EVENT_SCHEMA_VERSION,
+    Event,
+    SessionMeta,
+    TranscriptSegment,
+    TranscriptWord,
+)
+from studentassistant.vault.sessions import (
+    NoOpenSessionError,
+    Session,
+    SessionEndedError,
+    SessionError,
+    SessionFileError,
+    end_session,
+    resume_session,
+    sessions_directory,
+    start_session,
+)
+from studentassistant.vault.sources import (
+    SOURCE_KINDS,
+    SourceError,
+    UnknownSourceKindError,
+    put_source,
+    sources_directory,
+)
 from studentassistant.vault.subjects import (
     StoredSubject,
     SubjectError,
@@ -30,6 +57,18 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "EVENT_SCHEMA_VERSION",
+    "SOURCE_KINDS",
+    "Event",
+    "JsonlError",
+    "NoOpenSessionError",
+    "SecretRefused",
+    "Session",
+    "SessionEndedError",
+    "SessionError",
+    "SessionFileError",
+    "SessionMeta",
+    "SourceError",
     "StoredSubject",
     "StoredTopic",
     "SubjectError",
@@ -38,17 +77,31 @@ __all__ = [
     "TopicError",
     "TopicFileError",
     "TopicNotFoundError",
+    "TranscriptSegment",
+    "TranscriptWord",
+    "UnknownSourceKindError",
     "Vault",
     "VaultError",
     "VaultFormatError",
     "VaultMetaError",
     "VaultNotFoundError",
+    "append_jsonl",
     "create_subject",
     "create_topic",
+    "end_session",
     "get_subject",
     "get_topic",
+    "guard",
+    "last_seq",
     "list_subjects",
     "list_topics",
+    "looks_like_secret",
+    "put_source",
+    "read_jsonl",
+    "resume_session",
+    "sessions_directory",
+    "sources_directory",
+    "start_session",
     "subject_directory",
     "topic_directory",
     "topics_directory",

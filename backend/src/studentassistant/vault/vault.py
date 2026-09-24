@@ -21,6 +21,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from yaml import YAMLError
 
+from studentassistant.vault.errors import VaultError
 from studentassistant.vault.files import read_yaml, write_text_atomic, write_yaml_atomic
 from studentassistant.vault.models import FORMAT_VERSION, VaultMeta
 
@@ -29,10 +30,6 @@ GITATTRIBUTES_NAME = ".gitattributes"
 MAIN_BRANCH = "main"
 
 GITATTRIBUTES_CONTENT = "*.jsonl merge=union\n"
-
-
-class VaultError(Exception):
-    """A vault this backend refuses to create or to use; the message says why."""
 
 
 class VaultNotFoundError(VaultError):
