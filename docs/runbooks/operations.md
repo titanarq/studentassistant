@@ -201,7 +201,16 @@ A split leaves the original open with no status label, and every other task's `B
 still points at it, so that chain never unblocks. After each split: rewrite each dependent's line to
 the child(ren) it really needs (`issues.py update N --body-file F --comment ...`), then close the
 original `--reason "not planned"` as superseded. Done so far: #15 -> #84/#85 (dependents #17, #18,
-#45), #18 -> #86/#87/#88 (dependents #27, #33, #40), #27 -> #89/#90 (dependents #32, #33; #27 kept open in blocked-on-human for its doubt about #90).
+#45), #18 -> #86/#87/#88 (dependents #27, #33, #40), #27 -> #89/#90 (dependents #32, #33 -> #89; #27 closed after its doubt was answered: #90 moved to p2/M3).
+
+## Worker routing (Claude + Qwen)
+
+Since 2026-09-24 `planner.max_parallel_issues` is 2 and the class `complex-claude` (backend
+claude, `qwen_fallback_eligible: true`) carries the harder critical-path backend tasks: every open
+`complex-qwen` task in modules server, observer, editor, llm and protocol was retagged to it.
+Everything else stays on `mechanical-qwen`/`complex-qwen`. The refiner's extras
+(`config/agent_prompts/refiner.md`, human-owned) still say every worker task goes to Qwen, so a
+task it writes or splits in those modules comes back as `complex-qwen` until that file is updated.
 
 ## Starting the agents
 
