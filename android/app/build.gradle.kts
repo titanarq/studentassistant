@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -24,6 +25,15 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets {
+        // The shared protocol fixtures (the contract test, docs/modules/protocol.md) reach the JVM
+        // unit tests straight from the repository's own protocol/ directory -- never a copy under
+        // android/. They land on the test classpath as `examples/<name>.json`.
+        getByName("test") {
+            resources.srcDir(rootProject.file("../protocol"))
+        }
+    }
 }
 
 kotlin {
@@ -38,6 +48,9 @@ dependencies {
 
     // `ComponentActivity` + `setContent` for the launcher activity.
     implementation(libs.androidx.activity.compose)
+
+    // The v1 wire contract (`protocol` package): @Serializable classes and their JSON codec.
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
 }
