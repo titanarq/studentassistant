@@ -42,6 +42,7 @@ from studentassistant.observer.live import ObserverLoop, default_client_factory
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
+from studentassistant.server.book_routes import book_router
 from studentassistant.server.bus import SessionBus
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
@@ -242,6 +243,7 @@ def create_app(
     app.include_router(captures_router())
     app.include_router(read_router())
     app.include_router(pdf_upload_router())
+    app.include_router(book_router())
     app.include_router(search_router())
     app.include_router(vault_status_router())
     app.include_router(notes_router())

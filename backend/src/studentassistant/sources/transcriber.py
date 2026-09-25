@@ -83,6 +83,7 @@ from studentassistant.sources.catchup import (
     read_owed,
 )
 from studentassistant.sources.transcription import (
+    BOOK_KIND,
     PageInput,
     PageTranscription,
     find_uncertain,
@@ -536,12 +537,18 @@ class PageTranscriber:
             result.text,
             result.path,
             source_kind=input_.source_kind,
+            book_page=result.book_page.number if result.book_page is not None else None,
             extra={
                 "original_sent": input_.original_image is not None,
                 "hint_segments": len(input_.hints),
                 "model": result.response.model,
                 "prompt_hash": result.prompt_hash,
                 "attempts": attempts,
+                **(
+                    {"book_page_from": result.book_page.number_from}
+                    if result.book_page is not None
+                    else {}
+                ),
             },
         )
 
@@ -573,6 +580,7 @@ class PageTranscriber:
         source_kind: str | None = None,
         extra: Mapping[str, Any] | None = None,
         recovered: bool = False,
+        book_page: int | None = None,
     ) -> None:
         """Publish a transcription's `add_pending` ops, then `page.transcribed`, to `_target`.
 
@@ -581,6 +589,12 @@ class PageTranscriber:
         """
         kind = source_kind or ref.source_kind or PurePosixPath(ref.source_path).parent.name
         number = page_number(ref.source_path)
+        book_meta: dict[str, Any] = {}
+        if kind == BOOK_KIND:
+            if book_page is None and recovered:
+                book_meta = await asyncio.to_thread(_book_page_meta, pages.vault, ref.source_path)
+                book_page = book_meta.get("book_page")
+            book_meta["book_page"] = book_page
         uncertain = find_uncertain(text)
         ops = pending_ops(
             uncertain,
@@ -588,6 +602,7 @@ class PageTranscriber:
             capture_id=ref.capture_id,
             source_kind=kind,
             page_number=number,
+            book_page=book_page,
         )
         target = self._target(pages)
         if target is None:
@@ -613,6 +628,7 @@ class PageTranscriber:
             "pending_ids": [op.pending_id for op in ops],
             "recovered": recovered,
         }
+        payload.update(book_meta)
         payload.update(extra or {})
         try:
             for op in ops:
@@ -731,6 +747,19 @@ def _window_end(vault: Vault, source_path: str) -> int | None:
     if isinstance(window, Mapping) and isinstance(window.get("t_end"), int):
         return int(window["t_end"])
     return None
+
+
+def _book_page_meta(vault: Vault, source_path: str) -> dict[str, Any]:
+    """`book_page` and `book_page_from` of a textbook page's sidecar (a page recorded again)."""
+    try:
+        meta = read_source(vault, source_path).meta or {}
+    except (VaultError, OSError):
+        return {}
+    number = meta.get("book_page")
+    found: dict[str, Any] = {"book_page": number if isinstance(number, int) else None}
+    if isinstance(meta.get("book_page_from"), str):
+        found["book_page_from"] = meta["book_page_from"]
+    return found
 
 
 def _recorded_content(

@@ -50,6 +50,7 @@ from studentassistant.vault import (
     SourceError,
     StoredSource,
     Vault,
+    get_book,
     get_subject,
     get_topic,
     list_sources,
@@ -386,16 +387,39 @@ def _definition(text: str, source_id: str, path: str) -> str:
     return definition
 
 
+def _link_safe(text: str) -> str:
+    """`text` without what would end a Markdown link's text early (brackets, line breaks)."""
+    return " ".join(text.replace("[", "(").replace("]", ")").split())
+
+
+def page_citation_text(
+    kind: str, number: int | None, meta: dict[str, Any] | None, book_title: str | None = None
+) -> str:
+    """How a notes or book page is cited: `Apuntes, página 3`; a textbook page by the page
+    number printed on it (or said), found by its transcription (`book_page` in the sidecar, #58),
+    and the topic's book title when set: `Libro «Biología 2», página 83`."""
+    label = PAGE_KIND_TEXT.get(kind, kind)
+    if kind == "book":
+        if book_title:
+            label += f" «{_link_safe(book_title)}»"
+        book_page = (meta or {}).get("book_page")
+        if isinstance(book_page, int) and not isinstance(book_page, bool) and book_page > 0:
+            number = book_page
+    return f"{label}, página {number}" if number is not None else label
+
+
 def _add_pages(
     vault: Vault,
     builder: _Builder,
     catalogue: list[CitableSource],
     pages: list[tuple[StoredSource, str]],
+    book_title: str | None = None,
 ) -> None:
     for source, source_id in pages:
         number = _page_number(source_id)
-        label = PAGE_KIND_TEXT.get(source.kind, source.kind)
-        text = f"{label}, página {number}" if number is not None else f"{label}, {source_id}"
+        text = page_citation_text(source.kind, number, source.meta, book_title)
+        if number is None:  # not a `page-NNN` name: never listed as a page, kept for safety
+            text = f"{text}, {source_id}"
         catalogue.append(
             CitableSource(source_id, source.kind, _definition(text, source_id, source_id))
         )
@@ -525,6 +549,9 @@ def assemble_input(
     catalogue: list[CitableSource] = []
 
     stored = list_sources(vault, subject_slug, topic_slug)
+    book = (
+        get_book(vault, subject_slug, topic_slug) if any(s.kind == "book" for s in stored) else None
+    )
     sources = [(source, _topic_relative(source, prefix)) for source in stored]
     body_start = len(builder.content)
     builder.text("## Fuentes del tema\n")
@@ -532,8 +559,10 @@ def assemble_input(
         pages = [(s, sid) for s, sid in sources if s.kind == kind]
         if pages:
             heading = "Páginas de los apuntes" if kind == "notes" else "Páginas del libro"
+            if kind == "book" and book is not None:
+                heading += f" «{_link_safe(book.title)}»"
             builder.text(f"## {heading}\n")
-            _add_pages(vault, builder, catalogue, pages)
+            _add_pages(vault, builder, catalogue, pages, book.title if book else None)
     for source, source_id in sources:
         if source.kind == "pdf":
             _add_pdf(vault, subject_slug, topic_slug, builder, catalogue, source, source_id)

@@ -16,8 +16,8 @@
 
 ## Public surface (`from studentassistant.sources import ...`)
 
-What exists today, after issues #34, #44 and #50: PDF import, capture processing and page
-transcription.
+What exists today, after issues #34, #44, #50 and #58: PDF import, capture processing, page
+transcription and textbook pages.
 
 ### Capture processing -- `captures.py`
 - `store_capture(vault, subject_slug, topic_slug, kind, stills, meta, session_t_ms, settings)
@@ -110,6 +110,32 @@ submodules.
   `SessionService.add_before_ended` before the observer's, so the observer sees the
   transcriptions before `session.ended`. `catch_up_vault` is registered with
   `SessionService.add_on_open` for the server-start catch-up below.
+
+### Textbook pages -- `transcription.py` (#58)
+- A capture taken while the session's source context is `book` (the `switch_source` button, or
+  the voice command once #47 maps it to the same event) is stored under `sources/book/` by
+  `store_capture`, like a notes page. Its transcription differs in three ways:
+  1. Prompt `prompts/page_transcription_book.md` (`prompt_name(kind)`: `BOOK_PROMPT_NAME` for
+     `book`, `PROMPT_NAME` otherwise): printed text -- headings without the running header and
+     footer, paragraphs, bold/italics, panels as `> **Título:** ...`, exercises as numbered lists,
+     figures with their caption --, the same `[[?word]]`/`[[?]]` marks, and a last line
+     `<!-- página impresa: 83 -->` (`ninguna` when no number is printed or readable; the page
+     filling most of the photo when two show). The request names the topic's book title
+     (`vault.get_book`) and calls the stored number a photo number, not a page.
+  2. The page number: `split_printed_page(text) -> (text, printed | None)` takes that line off
+     the Markdown (only for `book`); `spoken_page_number(hints, session_t_ms)` reads "página 83",
+     "pág. 83", "página número 7", "la página ochenta y tres" (Spanish number words up to 9999)
+     from the hint segments -- the segment nearest the capture time, the last page it names.
+     `BookPage(printed, spoken)` keeps the printed one first (`number_from` `image`), else the
+     spoken one (`speech`). `transcribe_page` writes `book_page`, `book_page_from`,
+     `book_page_printed`, `book_page_spoken` to the page's sidecar (`vault.update_page_meta`)
+     after the Markdown and returns it as `PageTranscription.book_page`.
+  3. Events and citations: `page.transcribed` of a book page adds `book_page` and
+     `book_page_from` (a recorded-again page reads them from the sidecar); its pending items name
+     `la página 83 del libro` (`pending_ops(..., book_page=)`), `la foto N del libro` when the
+     number is unknown. The editor cites it as `Libro «<título>», página 83` (`editor.md`).
+- The book title per topic: `vault.set_book` / `get_book` (`sources/book/book.yaml`), set from
+  the web with `PUT /api/subjects/{s}/topics/{t}/book` (`server.md`).
 
 ### Catch-up of owed pages -- `catchup.py` (#181)
 - A page is *owed* when a session of the topic stored it (`capture.stored`) and no

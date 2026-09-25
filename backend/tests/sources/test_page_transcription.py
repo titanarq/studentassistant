@@ -185,7 +185,7 @@ def test_each_uncertain_word_becomes_an_illegible_pending_item_of_the_capture() 
         source_kind="book",
         page_number=None,
     )
-    assert "una página (libro)" in long[0].text
+    assert "una página del libro" in long[0].text
     assert len(long[0].text) < 250
 
 

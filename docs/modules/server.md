@@ -220,6 +220,12 @@ Routes registered today:
     `sources/<kind>/<file>` (absolute, `..` or `%2e%2e`, backslash, NUL, a symlink out of its
     directory) or names no file is 404 (`"No existe esa fuente en la bóveda."`); nothing outside
     the vault's sources is ever served.
+- `GET`/`PUT /api/subjects/{subject_id}/topics/{topic_id}/book` (`server/book_routes.py`,
+  `book_router()`, #58): the topic's textbook title (`vault.get_book`/`set_book`). `GET` answers
+  `BookResponse` (`subject_id`, `topic_id`, `title`, `null` when none was set); `PUT
+  {"title": "..."}` (at most 200 characters) records it and calls `SessionService.note_change()`.
+  Unknown subject or topic 404 (`"No existe ese tema en la bóveda."`), empty title or one that
+  looks like a key 422, an unopenable vault 503. No session needed.
 - `POST /api/subjects/{subject_id}/topics/{topic_id}/sources/pdf` (`server/pdf_upload.py`,
   `pdf_upload_router()`): the web's PDF import, what `studentassistant import-pdf` does from the
   CLI. Body: `multipart/form-data` with one `file` part (the PDF; its `filename` names it,
