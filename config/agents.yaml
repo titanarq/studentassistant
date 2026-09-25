@@ -131,8 +131,9 @@ planner:
   max_runs_per_day: 20
   relaunch_cap: 3
   # 2026-09-24: one Qwen and one Claude worker at a time (orchestrator, delegated by the human).
-  # 2026-09-25: every worker class runs on the ONE claude backend (worktree), which holds one run
-  # at a time, so in practice this is one Claude worker plus, at most, one Qwen quota fallback.
+  # 2026-09-25 (evening, the human: "puedes usar qwen y opus para los workers ya"): both worker
+  # backends take work again -- mechanical-qwen on Qwen, the complex classes on Claude Opus -- so
+  # this is one Qwen and one Claude worker at a time.
   max_parallel_issues: 2
   reconcile_closed_lookback_days: 30
   # The same mechanism version's refiner dry run was reviewed by the human on teachermovies
@@ -142,19 +143,20 @@ planner:
   refiner_unattended: true
 
 classes:
-  # 2026-09-25, the human's request: Opus under the session quota is faster and better than Qwen,
-  # so the two "-qwen" classes now run on Claude Opus with Qwen only as the quota fallback, exactly
-  # like complex-claude (same ceilings). The class NAMES are kept because issue bodies reference
-  # them in their `<!-- budget: <class> -->` line; read them as "mechanical"/"complex".
+  # 2026-09-25 (evening, the human): both worker backends in use. mechanical-qwen runs on Qwen
+  # again (its original ceilings) and is also the first worker class on the qwen backend, so it
+  # names the model a Qwen quota fallback launches with (`agent_os.lib backend-model qwen`).
+  # complex-qwen stays on Claude Opus with Qwen as the quota fallback, like complex-claude. The
+  # class NAMES are kept because issue bodies reference them in their `<!-- budget: <class> -->`.
   mechanical-qwen:
-    backend: claude
-    model: claude-opus-5-5
-    max_context: 800000
-    max_cost_usd: 20.0
-    max_total_tokens: 150000000
+    backend: qwen
+    model: qwen3.8-max
+    max_context: 400000
+    max_cost_usd: 5.0
+    max_total_tokens: 80000000
     commit_warn_turns: 25
     commit_cut_turns: 90
-    qwen_fallback_eligible: true
+    qwen_fallback_eligible: false
   complex-qwen:
     backend: claude
     model: claude-opus-5-5
@@ -164,22 +166,9 @@ classes:
     commit_warn_turns: 25
     commit_cut_turns: 90
     qwen_fallback_eligible: true
-  # No issue names this class. It exists so the qwen backend still has a worker class, because
-  # worker_task.sh takes a backend's model from the first worker class on that backend
-  # (`agent_os.lib backend-model`): without it a quota fallback onto Qwen would refuse to launch
-  # with "no model to launch backend 'qwen'". Do not put it in an issue's budget line.
-  qwen-fallback:
-    backend: qwen
-    model: qwen3.8-max
-    max_context: 800000
-    max_cost_usd: 20.0
-    max_total_tokens: 150000000
-    commit_warn_turns: 25
-    commit_cut_turns: 90
-    qwen_fallback_eligible: false
   # Claude as a worker (2026-09-24, orchestrator on the human's delegation): the harder,
   # critical-path backend tasks (modules server, observer, editor, llm, protocol) carry this class;
-  # everything else was on the two Qwen classes (on Claude too since 2026-09-25). On a Claude quota cut the planner redispatches
+  # complex-qwen runs on Claude too, mechanical-qwen on Qwen. On a Claude quota cut the planner redispatches
   # it on Qwen (qwen_fallback_eligible), so a spent window never stalls the critical path.
   complex-claude:
     backend: claude
