@@ -34,4 +34,11 @@ jobs:
       # No database, no network, no real backend: the same subset `agent_os/tests/conftest.py`
       # keeps separate from the host's own fixtures, and the run a second host can also make.
       - name: the mechanism's own suite
-        run: agent_os/.venv/bin/pytest agent_os/tests -q
+        # workaround titanarq/agent-os#82 -- remove when fixed: in a git-subtree host agent_os/ has
+        # no .git of its own, so these two tests raise "no .git under .../agent_os". Node ids are
+        # relative to agent_os/'s own pyproject.toml rootdir. `agent-os-install --force` rewrites
+        # this file from its template and drops these lines: re-apply them until #82 is fixed.
+        run: |
+          agent_os/.venv/bin/pytest agent_os/tests -q \
+            --deselect tests/test_no_host_literals.py::test_no_host_literal_anywhere_under_agent_os \
+            --deselect tests/test_no_host_literals.py::test_every_exclusion_still_applies
