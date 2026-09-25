@@ -182,7 +182,7 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `baseUrl + ws_path` with `Authorization: Bearer <token>` on its own OkHttp client (no read
   timeout, 10 s pings); tests use a scripted fake.
 - **`ClientTranscriber`** (ADR-0008's client-side interface: `providerId`, `language`,
-  `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
+  `vocabularyHints`, `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
   scope)`**, the default: continuous recognition by chaining one-utterance rounds of a
   `RecognizerEngine`, restarted at once after a result or silence and after 0.25/0.5/1/2/5 s when
   the recognizer fails; `Partial`s and one `Final` per utterance with client timestamps (start at
@@ -193,6 +193,15 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `es-ES`, free-form, partial results, `EXTRA_PREFER_OFFLINE`, main thread only. The manifest
   declares `RECORD_AUDIO` and a `<queries>` entry for `android.speech.RecognitionService`
   (package visibility on Android 11+).
+- **Vocabulary hints** (protocol 1.4, #228): `CaptureViewModel.vocabularyHints` keeps the
+  session's latest list -- the one `hello.ack` brings (carried by `ConnectionState.Connected`, so
+  it is known before the microphone starts), replaced whenever a `notice` carries
+  `vocabulary_hints`; a missing list keeps the current one. It is set on every new transcriber
+  and on the running one, which passes it to `RecognizerEngine.startListening(language,
+  vocabularyHints, listener)` from its next round (a round in progress is not interrupted).
+  `AndroidSpeechRecognizerEngine` puts them in `RecognizerIntent.EXTRA_BIASING_STRINGS` on API
+  33+ (`biasingStrings(hints, sdkInt)`); older devices, and recognizers that do not support
+  biasing, ignore them.
 - **`AudioStreamer(source, clock, dispatcher)`** (server STT mode): reads an `AudioSource` in 100
   ms frames (1600 samples) off the main thread and hands each to `SessionConnection.sendAudio`
   with the client time of its first sample (the wall clock at the first frame plus the samples

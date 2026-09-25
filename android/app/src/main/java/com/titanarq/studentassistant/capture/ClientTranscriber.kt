@@ -53,6 +53,13 @@ interface ClientTranscriber {
     /** BCP 47 language, e.g. `es-ES`. */
     val language: String
 
+    /**
+     * The session's domain terms (protocol 1.4 `vocabulary_hints`, most important first) the
+     * recognizer is biased towards where the platform supports it; a change applies from the next
+     * listening round. Empty: no biasing.
+     */
+    var vocabularyHints: List<String>
+
     /** Callbacks arrive on the thread the transcriber was built for (the main thread on Android). */
     fun start(onTranscript: (ClientTranscript) -> Unit, onError: (TranscriberError) -> Unit)
 
@@ -92,7 +99,11 @@ enum class RecognizerError {
  * behind [AndroidSpeechRecognizerEngine]); [SpeechRecognizerTranscriber] chains the rounds.
  */
 interface RecognizerEngine {
-    fun startListening(language: String, listener: RecognizerListener)
+    /**
+     * Starts a round in [language], biased towards [vocabularyHints] where the platform supports
+     * it (ignored otherwise).
+     */
+    fun startListening(language: String, vocabularyHints: List<String>, listener: RecognizerListener)
 
     /** Abandons the current round. */
     fun cancel()
@@ -120,6 +131,8 @@ class SpeechRecognizerTranscriber(
     private val segmentPrefix: String = "and-" + UUID.randomUUID().toString().take(8),
     private val retryDelaysMs: List<Long> = listOf(250, 500, 1_000, 2_000, 5_000),
 ) : ClientTranscriber {
+    override var vocabularyHints: List<String> = emptyList()
+
     private var onTranscript: ((ClientTranscript) -> Unit)? = null
     private var onError: ((TranscriberError) -> Unit)? = null
     private var running = false
@@ -158,6 +171,7 @@ class SpeechRecognizerTranscriber(
         val current = ++round
         engine.startListening(
             language,
+            vocabularyHints,
             object : RecognizerListener {
                 override fun onSpeechStart() {
                     if (current == round && utteranceStart == null) utteranceStart = clock.nowMillis()

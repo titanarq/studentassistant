@@ -339,6 +339,48 @@ class CaptureViewModelTest {
     }
 
     @Test
+    fun `the vocabulary hints of hello_ack reach the transcriber and a notice replaces them`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        viewModel.start()
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.5", SttMode.CLIENT, null, 0, clock.now, listOf("Historia", "El feudalismo")))
+        runCurrent()
+        assertEquals(listOf("Historia", "El feudalismo"), transcriber.hintsAtStart)
+        assertEquals(listOf("Historia", "El feudalismo"), viewModel.vocabularyHints)
+
+        // A notice without a list keeps the current one.
+        sockets.last.receive(Notice(2, clock.now))
+        runCurrent()
+        assertEquals(listOf("Historia", "El feudalismo"), transcriber.vocabularyHints)
+
+        val replaced = listOf("Historia", "El feudalismo", "vasallaje")
+        sockets.last.receive(Notice(2, clock.now, replaced))
+        runCurrent()
+        assertEquals(replaced, transcriber.vocabularyHints)
+        assertEquals(replaced, viewModel.vocabularyHints)
+
+        // A restarted microphone starts with the latest list, not the one of hello.ack.
+        viewModel.onBackground()
+        viewModel.onForeground()
+        runCurrent()
+        assertEquals(2, transcriber.starts)
+        assertEquals(replaced, transcriber.hintsAtStart)
+
+        // A reconnect's hello.ack brings the backend's list again; one without hints keeps ours.
+        sockets.last.drop()
+        advanceTimeBy(100)
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.5", SttMode.CLIENT, null, 0, clock.now))
+        runCurrent()
+        assertEquals(replaced, transcriber.vocabularyHints)
+        viewModel.leave()
+    }
+
+    @Test
     fun `ON_START without a preceding ON_STOP changes nothing`() = runTest(main.dispatcher) {
         val viewModel = viewModel()
         viewModel.onForeground() // the observer's first ON_START
