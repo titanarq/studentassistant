@@ -72,6 +72,19 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   `finish()` drains the queue, flushes `inner` and returns the rest; `close()` stops the task.
   `buffered_provider_from_settings(settings.stt)` wraps `provider_from_settings`; the app's
   gateway builds its server-mode providers with it.
+- `FasterWhisperProvider` (`stt/faster_whisper.py`, entry point `faster-whisper`; needs the
+  `whisper` extra, `uv sync --extra whisper`, imported only when the model is first used) -- local
+  faster-whisper. Every `partial_interval_seconds` of fed audio it runs Silero VAD over the audio
+  not yet committed, in a worker thread: each speech span followed by `min_silence_ms` of silence
+  is transcribed and yielded as finals (and its audio dropped), the speech still going on as one
+  partial covering it; an utterance past `max_utterance_seconds` is committed anyway; `finish`
+  commits the rest. A gap in the stream up to 2 s is filled with silence, a longer one commits what
+  came before. Only 16 kHz PCM16 is accepted. The model loads lazily (first chunk, in the worker
+  thread); `device = "auto"` picks CUDA (`int8_float16`) when CTranslate2 sees a device and CPU
+  (`int8`) otherwise, and falls back to the CPU once when the first CUDA transcription fails (a
+  missing cuBLAS/cuDNN). `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe`;
+  blocking) for tests. `studentassistant stt download` fetches the configured model (as `setup`
+  does).
 - Fakes: `FakeProvider` (registered as `fake`; `segments=` or `options["segments"]`, each
   scripted segment is yielded once the fed audio reaches its `end`, the rest on `finish`) and
   `ScriptedClientSource(segments)` (`play_into(sink)`).
@@ -85,7 +98,16 @@ language = "es"
 max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
 
 [stt.options.faster-whisper]  # free-form table per provider name, passed to its constructor
-model = "large-v3"
+model = "large-v3-turbo"        # the default
+device = "auto"                 # auto | cuda | cpu
+# download_root = "~/models"    # unset: the Hugging Face cache
+# compute_type = "int8_float16" # default: int8_float16 on CUDA, int8 on CPU
+# beam_size = 5
+# initial_prompt = "derivadas, integrales"  # vocabulary hints
+# partial_interval_seconds = 1.0
+# min_silence_ms = 600          # silence that ends an utterance
+# max_utterance_seconds = 20.0
+# vad_threshold = 0.5
 ```
 Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
 `SA_STT__MAX_BACKLOG_SECONDS`.
@@ -111,5 +133,7 @@ A client-side recognizer needs no backend code: its name is just `stt.provider` 
 stamped on every segment by the `TranscriptSink`.
 
 ## Tests
-Pipeline and grammar tested with `FakeProvider` and scripted segments; real-model tests are
-`integration`.
+Pipeline and grammar tested with `FakeProvider` and scripted segments; `FasterWhisperProvider`
+with a scripted `WhisperBackend` and a stand-in `faster_whisper` module. Real-model tests are
+`integration`: `SA_TEST_SPANISH_WAV=<16 kHz mono PCM16 WAV> [SA_TEST_SPANISH_WORDS="..."]
+uv run pytest -m integration -k spanish` (needs the `whisper` extra).

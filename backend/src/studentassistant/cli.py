@@ -446,6 +446,29 @@ def index_rebuild() -> None:
     typer.echo(_index_summary(report))
 
 
+stt_cli = typer.Typer(help="Speech-to-text on this PC (server mode, ADR-0008).")
+cli.add_typer(stt_cli, name="stt")
+
+
+@stt_cli.command("download")
+def stt_download() -> None:
+    """Download the faster-whisper model of `[stt.options.faster-whisper]` into its cache."""
+    stt = Settings().stt
+    if not whisper.uses_whisper(stt):
+        typer.echo(
+            f"Aviso: la voz usa ahora el modo {stt.mode} con {stt.provider}; el modelo solo se usa"
+            " con stt.mode = server y stt.provider = faster-whisper."
+        )
+    options = whisper.whisper_options(stt)
+    typer.echo(f"Descargando el modelo de Whisper {options.model} (puede tardar un rato)...")
+    try:
+        path = whisper.download(options)
+    except whisper.WhisperError as error:
+        typer.echo(f"No se pudo descargar el modelo: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(f"Modelo de Whisper {options.model} listo en {path}.")
+
+
 class SetupMode(StrEnum):
     """What `setup` does with the GitHub repository (the values are the Spanish prompt answers)."""
 
