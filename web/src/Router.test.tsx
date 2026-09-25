@@ -90,3 +90,13 @@ it("renders the live session view at /live, subscribed to the live stream", () =
   expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
   expect(opened).toEqual(["/api/live"]);
 });
+
+it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/style-guide" />);
+
+  expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
+});
