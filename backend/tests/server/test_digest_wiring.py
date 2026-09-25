@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from generate_topic import make_topic, valid_notes
 from studentassistant.config import ObserverSettings, ServerSettings, Settings
 from studentassistant.llm import FakeClaude
 from studentassistant.observer import DigestOnEnd, topic_digest
+from studentassistant.observer.digest import session_date
 from studentassistant.server.app import create_app
 from studentassistant.server.bus import SessionBus
 from studentassistant.server.pairing import PairingCodes
@@ -89,6 +91,27 @@ def test_the_end_hook_regenerates_the_ending_sessions_digest(tmp_vault: Vault) -
 
     text = asyncio.run(asyncio.wait_for(main(), 10))
     assert text is not None and "# Resumen del tema: Cinemática" in text
+
+
+def test_the_app_dates_the_digest_in_the_configured_timezone(
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+) -> None:
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=server,
+        codes=codes,
+        vault=tmp_vault,
+        llm_transport=FakeClaude(),
+        llm_settings=Settings(
+            observer=ObserverSettings(enabled=False, digest_timezone="Europe/Madrid")
+        ),
+    )
+    hooks = [hook for hook in app.state.sessions._before_close if isinstance(hook, DigestOnEnd)]
+    assert [hook.timezone for hook in hooks] == [ZoneInfo("Europe/Madrid")]
+    with TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 50000)) as local:
+        session_id = _run_session(local)
+    stored = read_topic_digest(tmp_vault, "fisica", "cinematica") or ""
+    assert f"### Sesión 1 — {session_date(session_id, ZoneInfo('Europe/Madrid'))}" in stored
 
 
 def test_the_end_hook_skips_a_session_it_cannot_find() -> None:

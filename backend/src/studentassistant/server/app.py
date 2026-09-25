@@ -171,8 +171,10 @@ def create_app(
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
-    # Then the topic digest (`state/digest.md`) is regenerated from the log, `session.ended` in it.
-    app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached))
+    # Then the topic digest (`state/digest.md`) is regenerated from the log, `session.ended` in it,
+    # its dates in `[observer] digest_timezone`.
+    digest_zone = (llm_settings or Settings()).observer.digest_zone()
+    app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     app.state.observer = None
     app.state.transcriber = None
     app.state.notes = None

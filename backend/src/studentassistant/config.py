@@ -11,8 +11,10 @@ from __future__ import annotations
 import os
 import re
 import stat
+from datetime import UTC, tzinfo
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -407,6 +409,42 @@ class ObserverSettings(BaseModel):
     context_max_tokens: int = Field(default=DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS, ge=1)
     # How many of the newest answered segments the rolled-over conversation repeats.
     context_tail_segments: int = Field(default=DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS, ge=0)
+    # The IANA zone (`Europe/Madrid`) the topic digest dates its sessions in; unset (or empty),
+    # the PC's local zone.
+    digest_timezone: str | None = None
+
+    @field_validator("digest_timezone")
+    @classmethod
+    def check_digest_timezone(cls, name: str | None) -> str | None:
+        if not name:
+            return None
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(
+                f"unknown timezone {name!r}: use an IANA name such as Europe/Madrid"
+            ) from error
+        return name
+
+    def digest_zone(self) -> tzinfo:
+        """The zone of `digest_timezone`, or the PC's local zone (`local_timezone`) when unset."""
+        return ZoneInfo(self.digest_timezone) if self.digest_timezone else local_timezone()
+
+
+def local_timezone() -> tzinfo:
+    """The PC's local zone, with its DST rules: `TZ` when it names a known zone, else
+    `/etc/localtime`, else UTC."""
+    name = os.environ.get("TZ", "").lstrip(":")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    try:
+        with open("/etc/localtime", "rb") as file:
+            return ZoneInfo.from_file(file, key="localtime")
+    except (OSError, ValueError):
+        return UTC
 
 
 def config_toml_path() -> Path:

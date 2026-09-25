@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -130,6 +131,28 @@ def test_session_dates_come_from_the_session_ids() -> None:
     assert session_date("not-an-id") == "not-an-id"
 
 
+def test_session_dates_are_shown_in_the_given_timezone() -> None:
+    madrid = ZoneInfo("Europe/Madrid")
+    assert session_date("20260925-230000", madrid) == "26/09/2026"
+    assert session_date("20260925-230000", UTC) == "25/09/2026"
+    assert session_date("20260925-215959", madrid) == "25/09/2026"
+    assert session_date("20260925-230000-b", madrid) == "20260925-230000-b"
+    assert session_date("not-an-id", madrid) == "not-an-id"
+
+
+def test_the_digest_dates_its_sessions_in_the_timezone(topic_events: list[TopicEvent]) -> None:
+    state = fold(topic_events)
+    utc = render_digest("Matemáticas II", "Derivadas", topic_events, state, timezone=UTC)
+    assert utc == _render(topic_events)  # UTC keeps the dates the ids hold
+
+    late = [(f"{session_id[:9]}230000", event) for session_id, event in topic_events]
+    tokyo = ZoneInfo("Asia/Tokyo")
+    text = render_digest("Matemáticas II", "Derivadas", late, fold(late), timezone=tokyo)
+    assert "### Sesión 1 — 25/09/2026" in text and "### Sesión 2 — 26/09/2026" in text
+    assert "la última, el 26/09/2026" in text
+    assert text == render_digest("Matemáticas II", "Derivadas", late, fold(late), timezone=tokyo)
+
+
 # -- the vault ---------------------------------------------------------------------------------
 
 
@@ -161,6 +184,27 @@ def test_regenerating_writes_the_digest_once_for_the_same_log(
     end_session(session, ended_at=datetime(2026, 9, 26, tzinfo=UTC))
     assert regenerate_topic_digest(tmp_vault, *topic) is True
     assert "(terminada," in (read_topic_digest(tmp_vault, *topic) or "")
+
+
+def test_regenerating_dates_the_sessions_in_the_timezone(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    session = _record(tmp_vault, topic, [("phone", "session.started", {}), segment("s-1")])
+    utc_day = session_date(session.id)
+    assert regenerate_topic_digest(tmp_vault, *topic) is True
+    assert f"### Sesión 1 — {utc_day}" in (read_topic_digest(tmp_vault, *topic) or "")
+
+    zone = other_day_zone(session.id)
+    local_day = session_date(session.id, zone)
+    assert local_day != utc_day
+    assert regenerate_topic_digest(tmp_vault, *topic, timezone=zone) is True
+    assert f"### Sesión 1 — {local_day}" in (read_topic_digest(tmp_vault, *topic) or "")
+    assert regenerate_topic_digest(tmp_vault, *topic, timezone=zone) is False
+
+
+def other_day_zone(session_id: str) -> ZoneInfo:
+    """A zone whose date of the session start is never the UTC one (12 h west or 14 h east)."""
+    return ZoneInfo("Etc/GMT+12" if int(session_id[9:11]) < 12 else "Pacific/Kiritimati")
 
 
 def test_the_vault_digest_file_round_trips_and_refuses_an_unknown_topic(
