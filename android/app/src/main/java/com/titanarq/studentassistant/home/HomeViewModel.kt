@@ -34,14 +34,16 @@ sealed interface Loadable<out T> {
 }
 
 /**
- * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1)
- * and are shown only when the backend reports them; a 1.0 backend sends neither. [ending] is true
+ * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1),
+ * [digestExcerpt] (where the topic was left, protocol 1.3) too; each is shown only when the
+ * backend reports it, and an older backend leaves the newer ones out. [ending] is true
  * while the phone is still completing the end of the topic's open session («Terminando sesión…»).
  */
 data class TopicRow(
     val topic: Topic,
     val lastSessionAtMs: Long? = null,
     val pendingCount: Int? = null,
+    val digestExcerpt: String? = null,
     val ending: Boolean = false,
 ) {
     /** True when the topic has an unended session: the row offers "Continuar", not "Empezar". */
@@ -274,7 +276,15 @@ class HomeViewModel(
         topicsJob = viewModelScope.launch {
             val topics = client.listTopics(credentials, subject.subjectId).toLoadable { response ->
                 val pending = pendingEnds.pending.value
-                response.topics.map { TopicRow(it, it.lastSessionAtMs, it.pendingCount, ending = it.openSessionId in pending) }
+                response.topics.map {
+                    TopicRow(
+                        it,
+                        it.lastSessionAtMs,
+                        it.pendingCount,
+                        it.digestExcerpt,
+                        ending = it.openSessionId in pending,
+                    )
+                }
             }
             _state.update {
                 if (it.selectedSubject?.subjectId != subject.subjectId) {

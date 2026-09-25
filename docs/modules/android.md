@@ -72,10 +72,12 @@ Thin capture client (ADR-0001), Spanish UI:
   (`Idle`/`Opening(topicId)`/`Failed(topicId, SessionFailure)`) and `openedSession`, a one-shot
   the screen consumes with `onSessionShown()` to navigate. `load()` runs every time the home is
   shown (a switched backend resets the state; the selected subject is kept while it exists).
-- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?)`; `canContinue` is
-  `topic.open_session_id != null`. `lastSessionAtMs` / `pendingCount` are the topic's
-  `last_session_at_ms` / `pending_count` (protocol 1.1), and the date and doubts count are shown
-  only when present (a 1.0 backend sends neither).
+- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?, digestExcerpt?)`;
+  `canContinue` is `topic.open_session_id != null`. `lastSessionAtMs` / `pendingCount` are the
+  topic's `last_session_at_ms` / `pending_count` (protocol 1.1) and `digestExcerpt` its
+  `digest_excerpt` (1.3, the topic digest's summary: where the topic was left). The excerpt is
+  shown under the topic name (at most three lines), the date and doubts count below; each only
+  when present (an older backend leaves the newer ones out).
 - **Create topic** (`createTopic(subjectName, title)`): the dialog takes a subject name (typed, or
   one tap on an existing one) and a title. A name matching an existing subject (trimmed, ignoring
   case) reuses it; otherwise `POST /api/subjects` runs first. Then `POST .../topics`, the dialog

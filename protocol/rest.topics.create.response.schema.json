@@ -38,6 +38,12 @@
       "type": "integer",
       "minimum": 0,
       "description": "Open pending-review items (doubts awaiting the student) of the topic; absent when unknown. Since protocol 1.1."
+    },
+    "digest_excerpt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "description": "The summary paragraph of the topic digest (where the topic was left), at most 400 characters; absent before the topic's first ended session, when unknown, and in a just-created topic. Since protocol 1.3."
     }
   }
 }

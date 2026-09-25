@@ -73,6 +73,7 @@ class HomeViewModelTest {
         openSessionId = "20260924-101500",
         lastSessionAtMs = 1_790_244_900_000,
         pendingCount = 2,
+        digestExcerpt = "1 sesión con contenido; la última, el 24/09/2026: Covadonga. 2 dudas abiertas.",
     )
 
     @After
@@ -146,9 +147,10 @@ class HomeViewModelTest {
         val rows = (state.topics as Loadable.Loaded).value
         assertEquals(listOf(feudalismo, reconquista), rows.map { it.topic })
         assertEquals(listOf(false, true), rows.map { it.canContinue })
-        // The last session date and pending count are mapped when sent and null when left out.
+        // The last session date, pending count and digest excerpt are mapped when sent, else null.
         assertEquals(listOf(null, 1_790_244_900_000), rows.map { it.lastSessionAtMs })
         assertEquals(listOf(null, 2), rows.map { it.pendingCount })
+        assertEquals(listOf(null, reconquista.digestExcerpt), rows.map { it.digestExcerpt })
         assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
     }
 

@@ -87,7 +87,7 @@ class OkHttpBackendClientTest {
 
         val result = client.pair(baseUrl, PairRequest("C", "Pixel", ClientKind.ANDROID, "1.0"))
 
-        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = "1.1"), result)
+        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = "1.3"), result)
     }
 
     @Test
@@ -184,7 +184,7 @@ class OkHttpBackendClientTest {
     fun `a session on another MAJOR version is refused`() = runTest {
         enqueue(sessionJson.replace("\"1.0\"", "\"2.1\""))
 
-        assertEquals(BackendResult.IncompatibleVersion("2.1", "1.1"), client.resumeSession(backend, "s1"))
+        assertEquals(BackendResult.IncompatibleVersion("2.1", "1.3"), client.resumeSession(backend, "s1"))
     }
 
     @Test

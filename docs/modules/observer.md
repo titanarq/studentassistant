@@ -253,7 +253,8 @@ the folded state, without the status, length and sources only its events held.
   session of the topic or a resume puts it in the cached prefix (`render_topic`), and to the
   editor's `generate_notes(digest=...)`.
 - `digest_excerpt(text, limit=400) -> str | None`: the summary paragraph, for the web summary
-  (`digest_excerpt`) and `GET .../digest` (server module).
+  (`digest_excerpt`), `GET .../digest` and the phone's topic list (`Topic.digest_excerpt`,
+  protocol 1.3, #192) (server module).
 
 ## Boundaries
 - Never writes notes; that is the editor's job.
