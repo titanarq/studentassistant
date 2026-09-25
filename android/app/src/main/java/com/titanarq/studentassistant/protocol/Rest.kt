@@ -137,6 +137,8 @@ enum class SessionEndReason {
 data class SessionEndRequest(
     @SerialName("client_time_ms") val clientTimeMs: Long,
     val reason: SessionEndReason,
+    /** Since 1.6: once the session has ended, prepare the topic's notes in the background. */
+    @SerialName("prepare_notes") val prepareNotes: Boolean? = null,
 )
 
 @Serializable
@@ -150,6 +152,63 @@ data class SessionEndResponse(
     @SerialName("session_id") val sessionId: String,
     val status: SessionEndedStatus,
     @SerialName("ended_at_ms") val endedAtMs: Long,
+    /** Since 1.6, only when the request said `prepare_notes`. */
+    @SerialName("notes_generation") val notesGeneration: NotesGenerationStart? = null,
+)
+
+/** Since 1.6, what became of [SessionEndRequest.prepareNotes]. */
+@Serializable
+enum class NotesGenerationStart {
+    /** A background generation of the topic's notes began. */
+    @SerialName("started")
+    STARTED,
+
+    /** One of that topic was already running; it was not duplicated. */
+    @SerialName("running")
+    RUNNING,
+
+    /** The backend does not use Claude. */
+    @SerialName("unavailable")
+    UNAVAILABLE,
+}
+
+// GET /api/subjects/{s}/topics/{t}/notes/generation (since 1.6)
+
+@Serializable
+enum class NotesGenerationState {
+    @SerialName("idle")
+    IDLE,
+
+    @SerialName("running")
+    RUNNING,
+
+    @SerialName("done")
+    DONE,
+
+    @SerialName("failed")
+    FAILED,
+
+    /** A cost cap is reached and nothing was spent: confirm through `POST .../notes/generate`. */
+    @SerialName("needs_confirmation")
+    NEEDS_CONFIRMATION,
+}
+
+/**
+ * The topic's latest notes generation since the backend started ([NotesGenerationState.IDLE]:
+ * none). `done` carries the [version] written (null for a [draft]) and an optional Spanish
+ * [warning]; `failed` and `needs_confirmation` a Spanish [detail].
+ */
+@Serializable
+data class NotesGenerationStatus(
+    @SerialName("subject_id") val subjectId: String,
+    @SerialName("topic_id") val topicId: String,
+    val status: NotesGenerationState,
+    @SerialName("started_at_ms") val startedAtMs: Long? = null,
+    @SerialName("finished_at_ms") val finishedAtMs: Long? = null,
+    val version: Int? = null,
+    val draft: Boolean? = null,
+    val warning: String? = null,
+    val detail: String? = null,
 )
 
 // POST /api/sessions/{id}/captures (multipart/form-data)

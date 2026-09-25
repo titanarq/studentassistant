@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.topics.notes.generation.response.schema.json",
+  "title": "rest.topics.notes.generation.response",
+  "description": "GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation response (since 1.6): the topic's latest notes generation since the backend started.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_id",
+    "topic_id",
+    "status"
+  ],
+  "properties": {
+    "subject_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "topic_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "status": {
+      "enum": [
+        "idle",
+        "running",
+        "done",
+        "failed",
+        "needs_confirmation"
+      ],
+      "description": "idle: none since the backend started; needs_confirmation: a cost cap is reached and nothing was spent (confirm with POST .../notes/generate and confirm_over_cap)."
+    },
+    "started_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms; absent when idle."
+    },
+    "finished_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Backend clock, Unix epoch ms; absent while idle or running."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "done: the N of apuntes-vN written; absent for a draft."
+    },
+    "draft": {
+      "type": "boolean",
+      "description": "done: true when the notes did not pass the provenance validator."
+    },
+    "warning": {
+      "type": "string",
+      "description": "done: a Spanish warning for the student."
+    },
+    "detail": {
+      "type": "string",
+      "description": "failed / needs_confirmation: a Spanish sentence for the student."
+    }
+  }
+}

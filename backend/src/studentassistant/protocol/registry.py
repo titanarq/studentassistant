@@ -16,6 +16,7 @@ from studentassistant.protocol.rest import (
     CaptureUploadRequest,
     CaptureUploadResponse,
     HealthResponse,
+    NotesGenerationStatus,
     PairRequest,
     PairResponse,
     SearchResponse,
@@ -75,6 +76,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "rest.search.response": SearchResponse,
     "rest.topics.web_pages.create.request": WebPageAddRequest,
     "rest.topics.web_pages.create.response": WebPageAddResponse,
+    "rest.topics.notes.generation.response": NotesGenerationStatus,
 }
 
 

@@ -70,6 +70,7 @@ val MESSAGE_CODECS: Map<String, MessageCodec> = mapOf(
     "rest.search.response" to rest<SearchResponse>(),
     "rest.topics.web_pages.create.request" to rest<WebPageAddRequest>(),
     "rest.topics.web_pages.create.response" to rest<WebPageAddResponse>(),
+    "rest.topics.notes.generation.response" to rest<NotesGenerationStatus>(),
 )
 
 /** The codec for a message name such as `client.hello`; [NoSuchElementException] if none. */

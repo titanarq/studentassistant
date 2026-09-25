@@ -18,6 +18,7 @@ import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.protocol.SttStatus
 import com.titanarq.studentassistant.protocol.Session
@@ -99,7 +100,7 @@ class CaptureViewModelTest {
         assertEquals("http://192.168.1.20:8000/ws/sessions/s1", socket.url)
         assertEquals("sa_tok", socket.token)
         assertEquals(
-            Hello("1.5", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
+            Hello(PROTOCOL_VERSION, ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
             socket.sent.first(),
         )
         assertEquals(CapturePhase.RUNNING, viewModel.state.value.phase)

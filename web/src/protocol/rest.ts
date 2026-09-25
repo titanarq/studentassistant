@@ -112,12 +112,43 @@ export interface Session {
 export interface SessionEndRequest {
   client_time_ms: number;
   reason: "button" | "command";
+  /** Since 1.6: once the session has ended, prepare the topic's notes in the background. */
+  prepare_notes?: boolean;
 }
+
+/**
+ * Since 1.6, what became of `prepare_notes`: a background generation `started`, one of the topic
+ * was already `running` (not duplicated), or the backend does not use Claude (`unavailable`).
+ */
+export type NotesGenerationStart = "started" | "running" | "unavailable";
 
 export interface SessionEndResponse {
   session_id: string;
   status: "ended";
   ended_at_ms: number;
+  /** Since 1.6, only when the request said `prepare_notes: true`. */
+  notes_generation?: NotesGenerationStart;
+}
+
+// GET /api/subjects/{s}/topics/{t}/notes/generation (since 1.6)
+
+export type NotesGenerationState = "idle" | "running" | "done" | "failed" | "needs_confirmation";
+
+/**
+ * The topic's latest notes generation since the backend started (`idle`: none). `done` carries
+ * the `version` written (absent for a `draft`) and an optional Spanish `warning`; `failed` and
+ * `needs_confirmation` (a reached cost cap, nothing spent) a Spanish `detail`.
+ */
+export interface NotesGenerationStatus {
+  subject_id: string;
+  topic_id: string;
+  status: NotesGenerationState;
+  started_at_ms?: number;
+  finished_at_ms?: number;
+  version?: number;
+  draft?: boolean;
+  warning?: string;
+  detail?: string;
 }
 
 // POST /api/sessions/{id}/captures (multipart/form-data)
@@ -267,16 +298,38 @@ export const decodeSession: Decoder<Session> = object(
   { received_capture_ids: array(captureId) },
 );
 
-export const decodeSessionEndRequest: Decoder<SessionEndRequest> = object({
-  client_time_ms: epochMs,
-  reason: literal("button", "command"),
-});
+export const decodeSessionEndRequest: Decoder<SessionEndRequest> = object(
+  {
+    client_time_ms: epochMs,
+    reason: literal("button", "command"),
+  },
+  { prepare_notes: bool() },
+);
 
-export const decodeSessionEndResponse: Decoder<SessionEndResponse> = object({
-  session_id: id,
-  status: literal("ended"),
-  ended_at_ms: epochMs,
-});
+export const decodeSessionEndResponse: Decoder<SessionEndResponse> = object(
+  {
+    session_id: id,
+    status: literal("ended"),
+    ended_at_ms: epochMs,
+  },
+  { notes_generation: literal("started", "running", "unavailable") },
+);
+
+export const decodeNotesGenerationStatus: Decoder<NotesGenerationStatus> = object(
+  {
+    subject_id: id,
+    topic_id: id,
+    status: literal("idle", "running", "done", "failed", "needs_confirmation"),
+  },
+  {
+    started_at_ms: epochMs,
+    finished_at_ms: epochMs,
+    version: int({ min: 1 }),
+    draft: bool(),
+    warning: str(),
+    detail: str(),
+  },
+);
 
 export const decodeCaptureImage: Decoder<CaptureImage> = object({
   part: str({ pattern: /^image_[0-9]+$/ }),
