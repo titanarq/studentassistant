@@ -118,3 +118,32 @@ it("keeps the other subjects when one topic list fails", async () => {
     "No se pudieron cargar los temas: El servidor respondió con un error (503).",
   );
 });
+
+it("shows today's spend and asks for the open session's once the topics say one is open", async () => {
+  const fetchMock = stubApi({
+    "/api/subjects": jsonResponse({ subjects: [{ subject_id: "historia", name: "Historia" }] }),
+    "/api/subjects/historia/topics": jsonResponse({
+      subject_id: "historia",
+      topics: [
+        { topic_id: "imperio-romano", subject_id: "historia", name: "El Imperio romano", open_session_id: "s-1" },
+      ],
+    }),
+    "/api/cost?subject=historia&topic=imperio-romano&session=s-1": jsonResponse({
+      session_usd: 0.1,
+      day_usd: 0.3,
+      max_usd_per_session: 1,
+      max_usd_per_day: 5,
+      observer_paused: false,
+      editor_needs_confirmation: false,
+      unpriced_session_calls: 0,
+      unpriced_day_calls: 0,
+      unpriced_models: [],
+    }),
+  });
+
+  render(<App />);
+
+  const cost = screen.getByRole("region", { name: "Gasto de hoy" });
+  expect(await within(cost).findByText(/Sesión abierta/)).toHaveTextContent("Sesión abierta: 0,1000 USD de 1,0000 USD");
+  expect(fetchMock).toHaveBeenCalledWith("/api/cost");
+});

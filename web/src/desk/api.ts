@@ -71,7 +71,7 @@ export function topicPath(subjectId: string, topicId: string): string {
   return `/subjects/${segment(subjectId)}/topics/${segment(topicId)}`;
 }
 
-async function getJson<T>(path: string, decode: Decoder<T>): Promise<ReadResult<T>> {
+export async function getJson<T>(path: string, decode: Decoder<T>): Promise<ReadResult<T>> {
   let response: Response;
   try {
     response = await fetch(path);
