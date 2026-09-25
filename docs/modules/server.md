@@ -395,7 +395,7 @@ Routes registered today:
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only
   reads the notes, so it does **not** take the notes lock (it answers while "prepárame el tema" or
   a chat turn runs); one question per topic runs at a time (its own lock). Used by the web capture
-  page's tutor; the phone follows in #248.
+  page's tutor and the Android app's (#248).
   - `POST /api/subjects/{subject_id}/topics/{topic_id}/tutor`, body `{"question": "¿Qué era la
     derivada?", "confirm_over_cap": false}` (`question` 1-1000 characters) -> the same
     Server-Sent Events stream as `notes/why`: `reply.delta` `{"text", "attempt": 1}`, then

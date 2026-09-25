@@ -17,6 +17,13 @@ import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
 import com.titanarq.studentassistant.session.OpenSession
+import com.titanarq.studentassistant.capture.FakeRecognizerEngine
+import com.titanarq.studentassistant.tutor.FakeSpeechOutput
+import com.titanarq.studentassistant.tutor.FakeTutorClient
+import com.titanarq.studentassistant.tutor.NoSpeechOutput
+import com.titanarq.studentassistant.tutor.OkHttpTutorClient
+import com.titanarq.studentassistant.tutor.TutorTopic
+import com.titanarq.studentassistant.tutor.TutorViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -57,6 +64,30 @@ class AppContainerTest {
         assertSame(SystemClock, container.clock)
         assertTrue(container.backendClient is OkHttpBackendClient)
         assertEquals("Android", container.deviceName)
+        assertTrue(container.tutorClient is OkHttpTutorClient)
+        assertSame(NoSpeechOutput, container.speechOutput)
+    }
+
+    @Test
+    fun `the tutor view-model factory builds one view model per topic over the app's one voice`() {
+        val speech = FakeSpeechOutput()
+        val engines = mutableListOf<FakeRecognizerEngine>()
+        val container = AppContainer(
+            filesDir = folder.root,
+            backendStoreFactory = { dir -> BackendStore.create(File(dir, BackendStore.FILE_NAME), scope) },
+            tutorClientFactory = { FakeTutorClient() },
+            recognizerEngineFactory = { FakeRecognizerEngine().also { engines += it } },
+            speechOutputFactory = { speech },
+        )
+        val topic = TutorTopic("calculo", "derivadas", "Derivadas")
+
+        val first = container.tutorViewModelFactory(topic).make(TutorViewModel::class.java)
+        val second = container.tutorViewModelFactory(topic).make(TutorViewModel::class.java)
+
+        assertEquals(topic, first.topic)
+        assertTrue(first !== second)
+        assertEquals(2, engines.size)
+        assertSame(speech, container.speechOutput)
     }
 
     @Test

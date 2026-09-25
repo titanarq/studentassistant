@@ -15,6 +15,8 @@ Thin capture client (ADR-0001), Spanish UI:
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
 - Study desk (#83): a topic's notes and the editor chat, the backend's web UI in a WebView.
+- Voice tutor (#248): «Preguntar al tutor» on a topic, a spoken or typed question answered from the
+  notes and sources by the backend, read aloud with `TextToSpeech`.
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
   disconnected, resent in order on reconnect; an end while offline is completed later (see
   "Offline spool (#53)").
@@ -161,6 +163,75 @@ web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes 
   shows while a page loads; a failure covers the page with its Spanish message.
 - Known gaps: the web layout is the desktop one (it wraps below 80rem, the chat under the notes);
   no file chooser (PDF upload), downloads or microphone inside the WebView; nothing offline.
+
+## Voice tutor on the phone (#248)
+
+Package `tutor`. The phone side of the backend's voice tutor (#82, `server/tutor_routes.py`,
+docs/modules/server.md and editor.md "The voice tutor"): the backend answers, grounded in the
+topic's notes and sources; the app only carries the question and shows / reads the answer
+(ADR-0001). It is the web capture page's tutor (docs/modules/web.md) in native Compose.
+
+- **«Preguntar al tutor»** on every topic card of the home screen opens `Route.TUTOR` for that
+  `TutorTopic(subjectId, topicId, topicName)` (kept by `MainActivity` across recreation).
+- **`TutorClient`** (`history`, `ask`) over the active backend's `BackendCredentials` (bearer
+  token); **`OkHttpTutorClient`** is the real one (read timeout `TUTOR_READ_TIMEOUT_SECONDS`, 180 s,
+  since Claude reads before the first delta; cancelled with the coroutine; nothing logged). Not part
+  of the capture protocol: bodies are read leniently (`TutorJson`, unknown fields ignored).
+  - `GET /api/subjects/{s}/topics/{t}/tutor` -> the `turns` (`TutorTurn`: `time`, `question`,
+    `reply`, `refs`, `warning`), oldest first.
+  - `POST .../tutor` `{"question", "confirm_over_cap"}` with `Accept: text/event-stream`: the
+    stream is read by **`readTutorStream(source, onProgress)`** over **`SseParser`** (event name +
+    joined `data:` lines; comments, `id:`, `retry:` ignored): `reply.delta` -> `TutorProgress.Delta`,
+    `reply.restart` -> `TutorProgress.Restart`, `result` -> the `TutorAnswer` (`question`, `reply`,
+    `refs` `{label, kind, text, source_id, path}`, `warning`), `error` -> a refusal with the event's
+    own status.
+  - Every call returns a `TutorResult`: `Success`, `Refused(status, detail, code)` (an HTTP error
+    before the stream or an `error` event; `detail` only when it is a string; `overCap` when `code`
+    is `cost_cap_reached`), `Unreachable(reason)`, `Interrupted` (the stream ended or broke before
+    `result`/`error`) or `InvalidResponse(reason)`.
+- **`VoiceQuestion(engine)`**: one listening round of the capture screen's `RecognizerEngine`
+  (`AndroidSpeechRecognizerEngine`, `es-ES`, one per tutor screen), not continuous: `onInterim`
+  while the student speaks, then exactly one `onFinal(text)` or `onProblem(VoiceProblem)`
+  (`NO_SPEECH`, `PERMISSION_DENIED`, `UNAVAILABLE`, `FAILED`). A round that ends in an empty
+  result or an error after partials keeps the last partial; `stop()` («Ya he terminado») ends it
+  with what was heard; `cancel()` / `release()` report nothing (`release` also destroys the
+  recognizer, recreated on the next round).
+- **`SpeechOutput`** (`available`, `speak(text, onDone)`, `stop()`, `shutdown()`):
+  **`AndroidSpeechOutput`** is `TextToSpeech` in `es-ES` (one per app, `AppContainer.speechOutput`;
+  a text asked for before the engine is ready waits for it; no engine or no Spanish makes
+  `available` false; texts over the engine's input limit go as several utterances,
+  `speechChunks`). `NoSpeechOutput` is the container default. The manifest's `<queries>` lists
+  `android.intent.action.TTS_SERVICE` (package visibility on Android 11+).
+- **`shownText(reply)`** shows each `[^label]` as `[label]` (matching «Fuentes:»);
+  **`spokenText(reply)`** drops the marks, `[[?..]]` brackets and Markdown symbols -- the web's
+  `speech.ts` rules.
+- **`TutorViewModel(client, store, topic, voice, speech)`**
+  (`AppContainer.tutorViewModelFactory(topic)`, keyed `tutor-<subject>/<topic>`) exposes
+  `TutorUiState`: `setup` (`Loading`/`NoBackend`/`Ready(backendName)`), `history`
+  (`Loading`/`Loaded`/`Failed(failure)`, «Reintentar» -> `retryHistory()`), `turns`, `draft`
+  (capped at `MAX_QUESTION_CHARS`, 1000, the backend's), `listening`/`heard`/`voiceProblem`,
+  `pending` (`PendingQuestion(question, partial)`, the answer streamed so far), `failure`
+  (`AskFailure(question, failure)`), `readAloud` (on by default), `speaking`, `speechAvailable`.
+  One question at a time (`canAsk`). `askDraft()` («Preguntar»), `startVoice()` («Preguntar por
+  voz»: the recognised question is asked at once), `stopVoice()`; an answer is appended to
+  `turns` and, with `readAloud`, read aloud (`spokenText`); `readAgain(turn)` («Leer otra vez»),
+  `stopSpeaking()` («Parar de leer»), `setReadAloud(false)` stops the reading. A failure keeps
+  its question: `confirmOverCap()` («Continuar igualmente», only for a reached cost cap) asks it
+  again with `confirm_over_cap`, `retryFailed()` («Reintentar») without. `onBackground()` stops
+  listening (releasing the recognizer) and reading.
+- **`TutorScreen`**: «Volver» and «Tutor: <tema>», the earlier turns (question, answer, a
+  warning, «Fuentes:» `[label] text`), the question being answered («El tutor está pensando…»
+  until the first delta), the failure card, then the controls («Preguntar por voz» / «Lo que te
+  oigo: …» + «Ya he terminado», the typed field + «Preguntar», the «Leer las respuestas en voz
+  alta» switch with «Parar de leer»). `RECORD_AUDIO` is asked for on the first spoken question; a
+  refusal says typing still works. Leaving the screen or `ON_STOP` (not a rotation) calls
+  `onBackground()`.
+- Messages: `ui.tutorFailureMessage` -- 401 the re-pair message, otherwise the backend's Spanish
+  `detail` when it gave one (no notes yet, another question running, cost cap, Claude failed,
+  ...), else 404 / 503 / the HTTP status; unreachable, interrupted and invalid answers have their
+  own. Each `VoiceProblem` has its Spanish sentence.
+- Known gaps: the answer's sources are listed, not opened (the study desk shows them); nothing
+  offline.
 
 ## Capture screen (#42)
 
@@ -364,6 +435,9 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
+tutor tests use `tutor/Fakes.kt` (`FakeTutorClient`, whose questions the test answers through a
+`CompletableDeferred`, and `FakeSpeechOutput`) with the capture tests' `FakeRecognizerEngine`, and
+MockWebServer for `OkHttpTutorClient`. The
 spool tests (`spool/AudioSpoolTest`, `spool/CaptureSpoolTest`, `capture/SpooledUploadQueueTest`,
 `capture/SessionFinisherTest`, `capture/CaptureViewModelOfflineTest`) use a JUnit
 `TemporaryFolder`, never `filesDir`. The
