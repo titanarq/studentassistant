@@ -67,3 +67,28 @@ En `<path>/runs/<fecha>/`:
 
 Todas las puntuaciones van de 0 a 100 %, más es mejor. Son medidas léxicas y deterministas: una
 bajada señala dónde mirar, no un veredicto; lee las ideas que faltan o sobran antes de concluir.
+
+## 5. Comparar con la ejecución anterior
+
+Cada informe termina con la sección **«Comparación con la ejecución anterior»**: se compara con
+la ejecución más reciente de `runs/` que sea anterior a esta. Por caso y por puntuación (páginas
+por caracteres y por palabras, acuerdo y cobertura de secciones, conservado, con fuente y
+global) muestra el valor anterior, el nuevo y la diferencia en puntos. Una bajada de más de
+`[eval] regression_margin` (por defecto `0.05`, es decir, 5 puntos) se marca como
+**regresión**. También se listan los casos nuevos y los que ya no están. Si un informe anterior
+no se puede leer, se avisa y se usa el anterior a él. Las regresiones se informan, pero no hacen
+fallar el comando.
+
+```toml
+[eval]
+regression_margin = 0.05
+```
+
+Para comparar dos ejecuciones cualesquiera ya hechas, sin llamar a Claude:
+
+```sh
+studentassistant eval compare 20260901-101500 20260925-093000
+```
+
+Cada ejecución es el nombre de su carpeta en `runs/` o una ruta a ella; la primera es la
+anterior y la segunda la nueva.

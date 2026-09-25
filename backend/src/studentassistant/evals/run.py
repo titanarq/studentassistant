@@ -10,6 +10,9 @@ tema" over REST. What the pipeline produced is then read back from that vault on
     <[eval] path>/runs/<UTC time>/
       report.md        the Spanish report (`render_report`)
       report.json      the same, as `EvalReport` JSON: what a later run is compared with
+
+The report carries the comparison with the most recent earlier run of the same eval set
+(`compare.py`): per case and per score the previous value, the new one and the delta.
       <case>/vault/    the vault the case produced, kept to look into (it has no remote)
 
 Nothing here touches the student's vault, index or paired devices: every path the app could
@@ -29,6 +32,13 @@ from pydantic import BaseModel, computed_field
 
 from studentassistant.config import ServerSettings, Settings, SttSettings, VaultSettings
 from studentassistant.evals.cases import RUNS_DIR_NAME, EvalCase
+from studentassistant.evals.compare import (
+    REPORT_JSON,
+    RunComparison,
+    compare_reports,
+    previous_report,
+    render_comparison,
+)
 from studentassistant.evals.estimate import CaseEstimate, estimate_case
 from studentassistant.evals.scoring import (
     NotesFidelity,
@@ -63,7 +73,6 @@ Sleep = Callable[[float], Awaitable[None]]
 
 EVAL_STUDENT = "Evaluación"
 REPORT_MARKDOWN = "report.md"
-REPORT_JSON = "report.json"
 CASE_VAULT_DIR = "vault"
 TRANSCRIPT_FILE = "transcript.jsonl"
 # Bounds that only keep a stuck run from hanging: the replay gets its paced duration on top.
@@ -135,6 +144,11 @@ class EvalReport(BaseModel):
     finished_at: datetime
     models: dict[str, str]
     cases: list[CaseResult]
+    # Against the most recent earlier run of the eval set; `None` when there was none (and in
+    # reports written before comparisons existed).
+    comparison: RunComparison | None = None
+    # Earlier reports that could not be read, and were skipped.
+    comparison_warnings: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -328,8 +342,13 @@ async def run_eval(
     sleep: Sleep = asyncio.sleep,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     on_case: Callable[[CaseResult], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> EvalReport:
-    """Run every case, one after another, into `directory`, and return the report."""
+    """Run every case, one after another, into `directory`, and return the report.
+
+    The report is compared with the most recent earlier readable run next to `directory`; an
+    unreadable earlier report is logged, passed to `on_warning` and skipped.
+    """
     started = clock()
     results: list[CaseResult] = []
     for case in cases:
@@ -340,7 +359,15 @@ async def run_eval(
         if on_case is not None:
             on_case(result)
     roles = settings.llm.roles
-    return EvalReport(
+    warnings: list[str] = []
+
+    def warn(message: str) -> None:
+        logger.warning("%s", message)
+        warnings.append(message)
+        if on_warning is not None:
+            on_warning(message)
+
+    report = EvalReport(
         started_at=started,
         finished_at=clock(),
         models={
@@ -350,6 +377,14 @@ async def run_eval(
         },
         cases=results,
     )
+    previous = previous_report(directory, warn=warn)
+    comparison = None
+    if previous is not None:
+        name, earlier = previous
+        comparison = compare_reports(
+            earlier, report, margin=settings.eval.regression_margin, previous_run=name
+        )
+    return report.model_copy(update={"comparison": comparison, "comparison_warnings": warnings})
 
 
 def _pct(value: float | None) -> str:
@@ -421,6 +456,7 @@ def render_report(report: EvalReport) -> str:
             if n.unsupported:
                 lines.append("- Ideas generadas sin apoyo en las fuentes:")
                 lines += [f"  - {unit}" for unit in n.unsupported]
+    lines += ["", render_comparison(report.comparison, report.comparison_warnings).rstrip("\n")]
     return "\n".join(lines) + "\n"
 
 
