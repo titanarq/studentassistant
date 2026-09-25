@@ -10,16 +10,19 @@ resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro" -- a
    (`EditsOutput`) once: the edit ops of `edits.py` (`replace_block`, `insert_after`,
    `delete_block`, `replace_section`, `move_section`) and the footnotes they need, a one-sentence
    `summary`, and the standing instructions the student gave -- the topic's `fidelity_mode` ("no
-   inventes nada" -> `estricto`) or `style_rules` for the subject's style guide when the student
-   says a preference is general. A turn with no tool call is a chat-only answer.
+   inventes nada" -> `estricto`) --, plus `proposed_style_rules` when an instruction looks general
+   ("me gustan las tablas para comparar", "siempre un ejemplo": a rule for the subject's style
+   guide, `style_guide.py`, written only once the student confirms it) and
+   `confirmed_style_rules` when the student confirms in the chat a rule proposed in an earlier
+   turn. A turn with no tool call is a chat-only answer.
 
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
 turn leaves. A failing change is sent back with the Spanish errors (a `tool_result` error), at most
 `MAX_REASKS` times, and the reply starts again (`on_reply("reply.restart", ...)`); past that nothing
 is applied and the result carries a warning. A valid change is written through the vault
-(`write_notes`, `set_fidelity_mode`, `set_style_guide`) and committed at once with a Spanish
-message (`Apuntes de <s>/<t> revisados: <summary>`); the result carries a unified diff of
+(`write_notes`, `set_fidelity_mode`, `style_guide.append_rules`) and committed at once with a
+Spanish message (`Apuntes de <s>/<t> revisados: <summary>`); the result carries a unified diff of
 `apuntes.md`, the sections touched and the paths the commit changed, and a `notes.edited` event
 goes to `on_event` (the server publishes it on the bus).
 
@@ -62,6 +65,13 @@ from studentassistant.editor.inputs import (
     assemble_input,
 )
 from studentassistant.editor.notes_format import FidelityMode, topic_source_resolver, validate
+from studentassistant.editor.style_guide import (
+    append_rules,
+    new_rules,
+    normalize_rule,
+    read_style_guide,
+    rule_errors,
+)
 from studentassistant.llm import (
     LLMClient,
     LLMResponse,
@@ -75,12 +85,10 @@ from studentassistant.vault import (
     RevertConflictError,
     Vault,
     append_conversation_record,
-    get_subject,
     notes_path,
     read_conversation,
     read_notes,
     set_fidelity_mode,
-    set_style_guide,
     subject_directory,
     topic_directory,
     write_notes,
@@ -104,7 +112,7 @@ MAX_MESSAGE_CHARS = 4000
 HISTORY_TURNS = 12
 """How many earlier turns of the conversation the editor is given."""
 MAX_STYLE_RULES = 5
-MAX_STYLE_RULE_CHARS = 300
+"""The most style rules one turn may propose (or confirm)."""
 
 Clock = Callable[[], datetime]
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -160,9 +168,15 @@ class EditsOutput(_Strict):
     fidelity_mode: Literal["estricto", "ampliado"] | None = Field(
         default=None, description="Only when the student sets the topic's fidelity mode."
     )
-    style_rules: list[str] = Field(
+    proposed_style_rules: list[str] = Field(
         default_factory=list,
-        description="Only general preferences for the whole subject, one Spanish sentence each.",
+        description="Rules proposed for the subject's style guide when an instruction looks"
+        " general, one Spanish sentence each; the student confirms them later.",
+    )
+    confirmed_style_rules: list[str] = Field(
+        default_factory=list,
+        description="Rules proposed in an earlier turn that the student now confirms, copied"
+        " exactly.",
     )
 
 
@@ -181,7 +195,13 @@ class RevisionResult(_Strict):
         default=None, description="The topic's new fidelity mode, when the turn changed it."
     )
     style_rules: list[str] = Field(
-        default_factory=list, description="The rules added to the subject's style guide."
+        default_factory=list,
+        description="The rules this turn added to the subject's style guide (confirmed ones).",
+    )
+    proposed_style_rules: list[str] = Field(
+        default_factory=list,
+        description="Rules the editor proposes for the subject's style guide, not written until"
+        " the student confirms them.",
     )
     notes_changed: bool = False
     changed_sections: list[str] = Field(default_factory=list)
@@ -237,6 +257,10 @@ class ChatTurn(_Strict):
     undone: bool = False
     warning: str | None = None
     refs: list[ChatRef] = Field(default_factory=list)
+    proposed_style_rules: list[str] = Field(
+        default_factory=list,
+        description="The turn's proposed style rules the subject's guide does not have yet.",
+    )
 
 
 class _ExplanationView(BaseModel):
@@ -284,6 +308,7 @@ class _Conversation:
 def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[ChatTurn]:
     turns: list[ChatTurn] = []
     undone: set[str] = set()
+    guide = read_style_guide(vault, subject_slug).rules
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
         if record.kind == NOTES_UNDONE_KIND and record.detail:
             commit = record.detail.get("undone_commit")
@@ -327,6 +352,7 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[ChatTu
                 changed_sections=result.changed_sections,
                 commit=result.commit,
                 warning=result.warning,
+                proposed_style_rules=new_rules(guide, result.proposed_style_rules),
             )
         )
     return [
@@ -395,6 +421,9 @@ def _history_text(turns: list[ChatTurn]) -> str:
             lines.append(f"[Cambio aplicado: {turn.summary or 'sin resumen'}{state}]")
         elif turn.warning and turn.kind == "revise":
             lines.append("[No se aplicó ningún cambio: no pasó la validación.]")
+        if turn.proposed_style_rules:
+            rules = "; ".join(f"«{rule}»" for rule in turn.proposed_style_rules)
+            lines.append(f"[Propuesto para la guía de estilo, sin confirmar aún: {rules}]")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -443,23 +472,40 @@ def _parse_call(response: LLMResponse) -> tuple[EditsOutput | None, list[str]]:
     return value, []
 
 
-def _rules(value: EditsOutput) -> list[str]:
-    return [" ".join(rule.split()) for rule in value.style_rules if rule.strip()]
+def _rules(rules: list[str]) -> list[str]:
+    return [rule for rule in (normalize_rule(rule) for rule in rules) if rule]
+
+
+def _pending_rules(turns: list[ChatTurn]) -> list[str]:
+    """Rules proposed in earlier turns and still not in the guide: what may be confirmed."""
+    return new_rules([], [rule for turn in turns for rule in turn.proposed_style_rules])
 
 
 def _check(
-    value: EditsOutput, notes: str, assembled: EditorInput, vault: Vault
+    value: EditsOutput,
+    notes: str,
+    assembled: EditorInput,
+    vault: Vault,
+    pending: list[str],
 ) -> tuple[list[str], str | None]:
     """`(errors, edited notes)` of a change."""
     errors: list[str] = []
-    if not value.summary.strip():
+    changes = value.ops or value.fidelity_mode is not None or value.confirmed_style_rules
+    if changes and not value.summary.strip():
         errors.append("Falta el resumen (`summary`) del cambio.")
-    rules = _rules(value)
-    if len(rules) > MAX_STYLE_RULES:
-        errors.append(f"Da como mucho {MAX_STYLE_RULES} reglas de estilo.")
-    for rule in rules:
-        if len(rule) > MAX_STYLE_RULE_CHARS:
-            errors.append(f"La regla de estilo «{rule[:40]}…» es demasiado larga: resúmela.")
+    for field in ("proposed_style_rules", "confirmed_style_rules"):
+        rules = _rules(getattr(value, field))
+        if len(rules) > MAX_STYLE_RULES:
+            errors.append(f"Da como mucho {MAX_STYLE_RULES} reglas en `{field}`.")
+        errors.extend(rule_errors(rules))
+    known = {rule.casefold() for rule in pending}
+    for rule in _rules(value.confirmed_style_rules):
+        if rule.casefold() not in known:
+            errors.append(
+                f"«{rule[:60]}» no es una regla propuesta antes y sin confirmar: en"
+                " `confirmed_style_rules` copia exactamente una regla que propusiste en un turno"
+                " anterior; una regla nueva va en `proposed_style_rules`."
+            )
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -485,16 +531,6 @@ def _changed_sections(ops: list[EditOp]) -> list[str]:
     return list(dict.fromkeys(op.section.strip().removeprefix("#") for op in ops))
 
 
-def _style_guide(current: str | None, rules: list[str]) -> str | None:
-    lines = (current or "").rstrip().splitlines()
-    known = (current or "").casefold()
-    added = [rule for rule in rules if rule.casefold() not in known]
-    if not added:
-        return None
-    lines.extend(f"- {rule}" for rule in added)
-    return "\n".join(lines).strip() + "\n"
-
-
 def _apply(
     vault: Vault,
     sync: GitSync,
@@ -518,17 +554,10 @@ def _apply(
         new_mode = value.fidelity_mode
         topic_file = topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME
         paths.append(topic_file.relative_to(root).as_posix())
-    added: list[str] = []
-    rules = _rules(value)
-    if rules:
-        subject = get_subject(vault, subject_slug).subject
-        guide = _style_guide(subject.style_guide, rules)
-        if guide is not None:
-            set_style_guide(vault, subject_slug, guide)
-            known = (subject.style_guide or "").casefold()
-            added = [rule for rule in rules if rule.casefold() not in known]
-            subject_file = subject_directory(vault, subject_slug) / SUBJECT_FILE_NAME
-            paths.append(subject_file.relative_to(root).as_posix())
+    added = append_rules(vault, subject_slug, _rules(value.confirmed_style_rules))
+    if added:
+        subject_file = subject_directory(vault, subject_slug) / SUBJECT_FILE_NAME
+        paths.append(subject_file.relative_to(root).as_posix())
     if not paths:
         return [], None, None, []
     sync.note_change()
@@ -647,7 +676,9 @@ async def revise_notes(
         reply = response.text.strip()
         value, errors = _parse_call(response)
         if value is not None:
-            errors, edited = await asyncio.to_thread(_check, value, notes, assembled, vault)
+            errors, edited = await asyncio.to_thread(
+                _check, value, notes, assembled, vault, _pending_rules(turns)
+            )
         await conversation.record("validation", detail={"attempt": attempt, "errors": errors})
         if not errors or attempt > MAX_REASKS:
             break
@@ -685,15 +716,17 @@ async def revise_notes(
             current_mode=assembled.fidelity_mode,
         )
         changed = edited != notes
+        guide = await asyncio.to_thread(read_style_guide, vault, subject_slug)
         result = result.model_copy(
             update={
                 "reply": reply or value.summary.strip(),
                 "applied": bool(paths),
-                "summary": value.summary.strip(),
+                "summary": value.summary.strip() or None,
                 "ops": value.ops,
                 "footnotes": value.footnotes,
                 "fidelity_mode": new_mode,
                 "style_rules": added,
+                "proposed_style_rules": new_rules(guide.rules, _rules(value.proposed_style_rules)),
                 "notes_changed": changed,
                 "changed_sections": _changed_sections(value.ops) if changed else [],
                 "diff": _diff(notes, edited) if changed else "",

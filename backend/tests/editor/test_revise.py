@@ -281,29 +281,75 @@ def test_no_inventes_in_strict_mode_keeping_an_ai_block_is_sent_back(
     assert (REPLY_RESTART, {"attempt": 2}) in replies.items
 
 
-def test_a_general_preference_goes_to_the_subject_style_guide(
-    topic: ReviseTopic, sync: GitSync
-) -> None:
+def test_a_general_instruction_is_proposed_not_written(topic: ReviseTopic, sync: GitSync) -> None:
     fake = _edit(
         FakeClaude(),
-        "Apuntado para toda la asignatura.",
+        "Pongo una tabla. ¿Quieres que use tablas para comparar en toda la asignatura?",
+        summary="",
+        proposed_style_rules=[
+            "Usa tablas para comparar conceptos.",
+            "Pon las definiciones en negrita.",
+        ],
+    )
+    before = get_subject(topic.vault, topic.subject).subject.style_guide
+
+    result = _revise(topic, sync, fake, "Me gustan las tablas para comparar")
+
+    assert not result.applied and result.commit is None and result.style_rules == []
+    # A rule the guide already has is not proposed again.
+    assert result.proposed_style_rules == ["Usa tablas para comparar conceptos."]
+    assert get_subject(topic.vault, topic.subject).subject.style_guide == before
+    (turn,) = chat_history(topic.vault, topic.subject, topic.topic).turns
+    assert turn.proposed_style_rules == ["Usa tablas para comparar conceptos."]
+
+
+def test_a_proposal_confirmed_in_the_chat_goes_to_the_style_guide(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    rule = "Pon siempre un ejemplo en cada sección."
+    _revise(
+        topic,
+        sync,
+        _edit(FakeClaude(), "¿Lo guardo?", proposed_style_rules=[rule]),
+        "Siempre un ejemplo",
+    )
+    fake = _edit(
+        FakeClaude(),
+        "Guardado para toda la asignatura.",
         summary="Nueva regla de estilo de la asignatura",
-        style_rules=["Pon los ejemplos en cursiva."],
+        confirmed_style_rules=[rule],
     )
 
-    result = _revise(
-        topic, sync, fake, "A partir de ahora, en toda la asignatura, pon los ejemplos en cursiva"
-    )
+    result = _revise(topic, sync, fake, "Sí, guárdalo")
 
-    assert result.applied and not result.notes_changed and result.diff == ""
-    assert result.style_rules == ["Pon los ejemplos en cursiva."]
+    assert "sin confirmar aún: «Pon siempre un ejemplo" in _last_text(fake.requests[0])
+    assert result.applied and not result.notes_changed and result.style_rules == [rule]
     guide = get_subject(topic.vault, topic.subject).subject.style_guide
-    assert guide == "Pon las definiciones en negrita.\n- Pon los ejemplos en cursiva.\n"
+    assert guide == f"Pon las definiciones en negrita.\n- {rule}\n"
     assert result.paths == [f"subjects/{topic.subject}/subject.yaml"]
-    # The same rule again changes nothing.
-    fake = _edit(FakeClaude(), "Ya lo tenía.", style_rules=["Pon los ejemplos en cursiva."])
-    again = _revise(topic, sync, fake, "Recuerda: ejemplos en cursiva en toda la asignatura")
-    assert not again.applied and again.commit is None
+    turns = chat_history(topic.vault, topic.subject, topic.topic).turns
+    assert [turn.proposed_style_rules for turn in turns] == [[], []]
+
+
+def test_confirming_a_rule_never_proposed_is_sent_back(topic: ReviseTopic, sync: GitSync) -> None:
+    bad = {"summary": "Regla", "confirmed_style_rules": ["Todo en mayúsculas."]}
+    fake = (
+        FakeClaude()
+        .reply_tool(EDIT_TOOL, bad, text="Guardado.")
+        .reply_tool(
+            EDIT_TOOL,
+            {"summary": "", "proposed_style_rules": ["Todo en mayúsculas."]},
+            text="¿Lo guardo?",
+        )
+    )
+
+    result = _revise(topic, sync, fake, "Pon todo en mayúsculas siempre")
+
+    assert result.attempts == 2 and not result.applied
+    assert result.proposed_style_rules == ["Todo en mayúsculas."]
+    reask = fake.requests[1].messages[-1]["content"][-1]["text"]
+    assert "«Todo en mayúsculas.» no es una regla propuesta antes" in reask
+    assert "mayúsculas" not in (get_subject(topic.vault, topic.subject).subject.style_guide or "")
 
 
 # -- the loop ------------------------------------------------------------------------------------

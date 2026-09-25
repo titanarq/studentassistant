@@ -16,15 +16,16 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30, #61, #68, #63, #64 and #69: the master notes format of
-ADR-0005, in
+What exists today, after issues #30, #61, #68, #63, #64, #69 and #70: the master notes format
+of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
 ops in `studentassistant.editor.edits`, the doubts resolution in
 `studentassistant.editor.doubts`, the conversational revision of the notes in
-`studentassistant.editor.revise`, the notes versions in `studentassistant.editor.versions` and
-"¿Por qué pusiste esto?" in `studentassistant.editor.explain`.
+`studentassistant.editor.revise`, the notes versions in `studentassistant.editor.versions`,
+"¿Por qué pusiste esto?" in `studentassistant.editor.explain` and the subject style guide in
+`studentassistant.editor.style_guide`.
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -278,13 +279,16 @@ mode, and the student's message.
   to `on_reply("reply.delta", {"text", "attempt"})` -- and then, if anything changes, calls the
   strict tool `apply_edits` once (`EditsOutput`: `ops` (the `EditOp`s above), `footnotes`,
   `summary` (one Spanish sentence), `fidelity_mode` (`estricto`/`ampliado`, only when the student
-  sets it: recorded in `topic.yaml` with `vault.set_fidelity_mode`), `style_rules` (general
-  preferences the student states for the whole subject: appended as `- rule` lines to the
-  subject's `style_guide` with `vault.set_style_guide`, skipping a rule already there)). No tool
-  call: a chat-only turn, nothing written but the conversation.
+  sets it: recorded in `topic.yaml` with `vault.set_fidelity_mode`), `proposed_style_rules` (when
+  an instruction looks general -- "me gustan las tablas para comparar", "siempre un ejemplo" --:
+  rules proposed for the subject's style guide, **not written**; the reply asks the student) and
+  `confirmed_style_rules` (a rule proposed in an earlier turn and still pending that the student
+  confirms in the chat: appended with `style_guide.append_rules`)). No tool call: a chat-only
+  turn, nothing written but the conversation.
 - **Checks**: the ops must apply (`apply_edits`) and the edited notes must pass `validate` in the
   mode the turn leaves (so "no inventes" must also remove every `[^ia]` block); a `summary` is
-  required, at most 5 style rules of 300 characters. A failure is sent back as a `tool_result`
+  required when something is applied, at most 5 proposed and 5 confirmed style rules of 300
+  characters, and a confirmed rule must be a pending proposal of an earlier turn. A failure is sent back as a `tool_result`
   error with the Spanish list, at most `MAX_REASKS` (2) times, and `on_reply("reply.restart",
   {"attempt"})` tells the caller to drop the reply streamed so far. Past the re-asks nothing is
   applied and the result has `errors` and a Spanish `warning`.
@@ -292,7 +296,8 @@ mode, and the student's message.
   `GitSync.checkpoint("Apuntes de <s>/<t> revisados: <summary>")` at once; no notes tag.
   `on_event("notes.edited", payload)` gets the result without the `notes` text.
 - `RevisionResult`: `subject`, `topic`, `message`, `reply`, `applied`, `summary`, `ops`,
-  `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added), `notes_changed`,
+  `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added to the guide:
+  the confirmed ones), `proposed_style_rules` (proposed, minus those the guide has), `notes_changed`,
   `changed_sections` (anchors the ops touched), `diff` (unified diff of `apuntes.md`), `notes` (the
   new text when changed), `paths` (vault-relative files the commit changed), `commit`,
   `attempts`, `errors`, `warning`, `model`.
@@ -304,8 +309,10 @@ mode, and the student's message.
   `notes_changed`, `diff`, `notes`, `paths`. No Claude call.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
   (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `message`,
-  `reply`, `applied`, `summary`, `changed_sections`, `commit`, `undone`, `warning`, `refs`) and
-  `can_undo`. The explanations are also in the conversation the editor is given on a turn.
+  `reply`, `applied`, `summary`, `changed_sections`, `commit`, `undone`, `warning`, `refs`,
+  `proposed_style_rules` -- the turn's proposals the subject's guide does not have yet, also shown
+  to the editor in the conversation so far) and `can_undo`. The explanations are also in the
+  conversation the editor is given on a turn.
 - **Conversation** `conversations/editor.jsonl`: `context` (reason `revise`), `user`, `assistant`,
   `validation` per call, then one `revision` record per turn (the `RevisionResult`) and one
   `notes.undone` per undo (the `UndoResult`) -- what `chat_history` and the undo read.
@@ -385,3 +392,26 @@ The editor explains one block of the notes from the sources it cites, looked at 
   the call kept, no `explanation`), `CostConfirmationRequiredError` and the llm errors as in
   `generate_notes`.
 - Entry point: the server's `POST .../notes/why` (SSE, `docs/modules/server.md`).
+
+### The subject style guide -- `style_guide.py`
+The student's general preferences for a subject, kept in `subjects/<s>/subject.yaml`
+(`style_guide`, free text) and given to the editor in the topic block of `assemble_input` for
+every topic of the subject (generation, revision, doubts). Blocking functions; every write goes
+through `vault.set_style_guide` and is committed at once.
+- Rules: `parse_rules(text)` -- one per non-blank line, a leading `- `/`* `/`• ` dropped, spaces
+  collapsed (`normalize_rule`); `format_rules(rules)` -- `- <rule>` lines, or `None`.
+- `read_style_guide(vault, subject) -> StyleGuide` (`subject`, `rules`, `added`, `commit`).
+- `add_style_rules(vault, subject, rules, *, sync) -> StyleGuide`: the student confirms proposed
+  rules; each new one (ignoring case) is appended as a `- rule` line after the text as it was, and
+  committed as `Guía de estilo de <s>: «rule»; ...`; nothing new, nothing written.
+  `append_rules(vault, subject, rules) -> added` is the same without the checks or the commit
+  (the revision turn commits it with the notes).
+- `replace_style_rules(vault, subject, rules, *, sync) -> StyleGuide`: the whole list (edit,
+  delete, reorder; `[]` clears), written as `- rule` lines and committed as `Guía de estilo de <s>
+  editada`; the same rules as now write nothing, so a free-text guide is not reformatted.
+- Errors: `InvalidStyleRuleError` (`StyleGuideError`, Spanish): an empty rule, one over
+  `MAX_RULE_CHARS` (300), or more than `MAX_RULES` (50) in the guide; nothing written. The vault's
+  `SubjectNotFoundError` for an unknown subject.
+- Entry points: the server's `GET/PUT /api/subjects/{s}/style-guide` and `POST
+  /api/subjects/{s}/style-guide/rules` (`docs/modules/server.md`); a confirmation said in the chat
+  goes through `revise_notes` instead.
