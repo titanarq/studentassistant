@@ -183,6 +183,8 @@ def create_app(
                 client_factory=transcriber_client_factory(llm_settings, llm_transport),
                 on_write=app.state.sessions.note_change,
             )
+            # Server start: the untranscribed pages of every topic's last sessions (#181).
+            app.state.sessions.add_on_open(app.state.transcriber.catch_up_vault)
             # Before the observer's flush, so the observer sees the last pages' transcriptions.
             app.state.sessions.add_before_ended(app.state.transcriber.flush)
         observer_settings: ObserverSettings = llm_settings.observer

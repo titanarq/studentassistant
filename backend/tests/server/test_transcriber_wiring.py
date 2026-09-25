@@ -20,13 +20,25 @@ from studentassistant.config import (
     SttSettings,
 )
 from studentassistant.llm import FakeClaude
-from studentassistant.observer import STATE_OP_EVENT_KIND
+from studentassistant.observer import CAPTURE_EVENT_KIND, STATE_OP_EVENT_KIND
+from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.recording import read_recording
 from studentassistant.server.replay import AsgiTransport, ReplayResult, replay
+from studentassistant.sources.catchup import transcription_path
 from studentassistant.sources.transcriber import PAGE_TRANSCRIBED_KIND
-from studentassistant.vault import Event, Vault, read_jsonl, read_ledger
+from studentassistant.vault import (
+    Event,
+    Vault,
+    create_subject,
+    create_topic,
+    end_session,
+    put_source,
+    read_jsonl,
+    read_ledger,
+    start_session,
+)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sessions" / "sample"
 STT = SttSettings(mode="client", provider="web-speech", language="es")
@@ -101,3 +113,34 @@ def test_the_replayed_capture_is_transcribed_before_the_session_ends(
     assert {entry.role for entry in read_ledger(tmp_vault, "biologia", "la-celula")} == {
         "transcriber"
     }
+
+
+def test_at_server_start_an_untranscribed_page_of_the_last_session_is_transcribed(
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+) -> None:
+    # A session the previous run ended while its only page was still waiting for Claude.
+    subject = create_subject(tmp_vault, "Biología").slug
+    topic = create_topic(tmp_vault, subject, "La célula").slug
+    session = start_session(tmp_vault, subject, topic, "pc", PROTOCOL_VERSION)
+    stored = put_source(tmp_vault, subject, topic, "notes", "foto.jpg", b"\xff\xd8 not decoded", {})
+    source_path = stored.relative_to(tmp_vault.path).as_posix()
+    session.append_event(
+        CAPTURE_EVENT_KIND, "phone", {"capture_id": "cap-1", "source_path": source_path}
+    )
+    end_session(session)
+
+    fake = FakeClaude().reply_text("# La célula")
+    app = _app(server, codes, tmp_path, tmp_vault, llm_transport=fake, llm_settings=NO_OBSERVER)
+
+    async def main() -> None:
+        async with app.router.lifespan_context(app):
+            transcriber = app.state.transcriber
+            await app.state.sessions.open_vault()  # the first request that needs the vault
+            await asyncio.wait_for(transcriber.wait_startup(), 10)
+            await asyncio.wait_for(transcriber.wait_idle(session.id), 10)
+
+    asyncio.run(main())
+
+    [request] = fake.requests
+    assert request.role == "transcriber"
+    assert (tmp_vault.path / transcription_path(source_path)).is_file()
