@@ -83,6 +83,10 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
   decoded as `null` and omitted on encode.
 - Registry: `MESSAGE_CODECS`, mapping each `protocol/<name>.schema.json` name to a `MessageCodec`
   (declared class + decode/encode), and `codecFor(name)`.
+- Binary audio frames: `AudioFrame(seq, clientTimeMs, samples: ShortArray)` with `encode()` and
+  `AudioFrame.decode(bytes)` (wrong magic, short or odd-sized payload -> `IllegalArgumentException`;
+  another MAJOR -> `IncompatibleProtocolVersionException`), `HEADER_SIZE`, `MAGIC`, `MAX_SEQ`
+  (u32). Tested in `AudioFrameTest.kt` against hand-written header bytes.
 
 ## Tests
 - `backend/tests/protocol/test_examples.py` walks `protocol/*.schema.json`: each schema needs a
