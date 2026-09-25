@@ -191,7 +191,7 @@ def test_doctor_reports_one_line_per_check_and_exits_0(
     assert result.exit_code == 0, result.output
     lines = result.output.strip().splitlines()
     assert lines[0].startswith("[ok] Configuración: ")
-    assert len(lines) == 10
+    assert len(lines) == 11
     assert all(line.startswith("[ok] ") for line in lines), result.output
     assert KEY not in result.output
 
