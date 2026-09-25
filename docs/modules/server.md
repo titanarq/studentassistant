@@ -66,7 +66,10 @@ Routes registered today:
   - `GET /api/subjects` -> `rest.subjects.list.response`; `POST /api/subjects`
     (`rest.subjects.create.request`) -> 201 `rest.subjects.create.response`.
   - `GET /api/subjects/{subject_id}/topics` -> `rest.topics.list.response`, each topic with
-    `open_session_id` when it has an unended session; `POST /api/subjects/{subject_id}/topics`
+    `open_session_id` when it has an unended session, `last_session_at_ms` (its latest
+    session's start, from `vault.list_sessions`) when it has any session, and `pending_count`
+    (open items of `observer.load_observer_snapshot(..., write_back=False)`, so listing writes nothing); either is left out, with a warning logged,
+    when the vault or observer state cannot be read. `POST /api/subjects/{subject_id}/topics`
     (`rest.topics.create.request`) -> 201 `rest.topics.create.response`.
   - `POST /api/sessions` (`rest.sessions.start.request`) -> 201 `rest.sessions.start.response`;
     `POST /api/sessions/{id}/resume` (no body) -> `rest.sessions.resume.response`;

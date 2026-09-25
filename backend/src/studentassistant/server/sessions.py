@@ -48,7 +48,12 @@ from typing import Any, Literal, TypeVar
 
 from studentassistant import protocol
 from studentassistant.config import VaultSettings
-from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
+from studentassistant.observer import (
+    CAPTURE_EVENT_KIND,
+    CAPTURE_ID_KEY,
+    ObserverStateError,
+    load_observer_snapshot,
+)
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
@@ -63,6 +68,7 @@ from studentassistant.vault import (
     create_subject,
     create_topic,
     end_session,
+    list_sessions,
     list_subjects,
     list_topics,
     resume_session,
@@ -291,9 +297,15 @@ class SessionService:
     async def list_topics(self, subject_id: str) -> protocol.TopicsListResponse:
         vault = await self._ready()
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
+        activity = await asyncio.to_thread(
+            lambda: [_topic_activity(vault, subject_id, t.slug) for t in stored]
+        )
         return protocol.TopicsListResponse(
             subject_id=subject_id,
-            topics=[self._topic(subject_id, t.slug, t.topic.title) for t in stored],
+            topics=[
+                self._topic(subject_id, t.slug, t.topic.title, last, pending)
+                for t, (last, pending) in zip(stored, activity, strict=True)
+            ],
         )
 
     async def create_topic(self, subject_id: str, name: str) -> protocol.Topic:
@@ -549,13 +561,46 @@ class SessionService:
         if self._sync is not None:
             self._sync.note_change()
 
-    def _topic(self, subject_id: str, topic_id: str, title: str) -> protocol.Topic:
+    def _topic(
+        self,
+        subject_id: str,
+        topic_id: str,
+        title: str,
+        last_session_at_ms: int | None = None,
+        pending_count: int | None = None,
+    ) -> protocol.Topic:
         return protocol.Topic(
             topic_id=topic_id,
             subject_id=subject_id,
             name=title,
             open_session_id=self._open.get((subject_id, topic_id)),
+            last_session_at_ms=last_session_at_ms,
+            pending_count=pending_count,
         )
+
+
+def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int | None, int | None]:
+    """The topic's latest session start (epoch ms) and open pending count, `None` when unknown.
+
+    Each is read on its own through the vault's and the observer's public functions; one that
+    cannot be read is logged and left out, so a damaged session never hides the topic list.
+    """
+    last: int | None = None
+    try:
+        sessions = list_sessions(vault, subject_id, topic_id)
+    except VaultError as error:
+        logger.warning("topic %s/%s: sessions unreadable: %s", subject_id, topic_id, error)
+    else:
+        if sessions:
+            last = _epoch_ms(max(meta.started_at for meta in sessions))
+    pending: int | None = None
+    try:
+        snapshot = load_observer_snapshot(vault, subject_id, topic_id, write_back=False)
+    except (VaultError, ObserverStateError) as error:
+        logger.warning("topic %s/%s: observer state unreadable: %s", subject_id, topic_id, error)
+    else:
+        pending = len(snapshot.state.open_pending())
+    return last, pending
 
 
 def _scan_open_sessions(vault: Vault) -> dict[tuple[str, str], str]:

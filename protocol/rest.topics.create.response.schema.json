@@ -28,6 +28,16 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
       "description": "The session still open on this topic, if any; the client resumes it instead of starting one."
+    },
+    "last_session_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Start of the topic's latest session, backend clock, Unix epoch ms; absent when the topic has no session or it is unknown. Since protocol 1.1."
+    },
+    "pending_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Open pending-review items (doubts awaiting the student) of the topic; absent when unknown. Since protocol 1.1."
     }
   }
 }
