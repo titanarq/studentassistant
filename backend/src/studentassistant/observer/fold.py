@@ -18,6 +18,11 @@ Three event kinds matter to the fold; every other kind is ignored:
 
 An op is validated against the state before it is applied (`validate_op`); an op that references
 an unknown id is never skipped silently: `fold` raises the typed error.
+
+Pending items: an `add_pending` that duplicates an open item (`pending.find_duplicate`) is merged
+into it (refs joined, its id recorded in `merged_ids` and `pending_aliases`, so a later
+`resolve_pending` of either id closes the one item). `created_by` is the event's origin; a
+`resolve_pending` without a `status` is `auto_resolved` from the observer, `resolved` otherwise.
 """
 
 from __future__ import annotations
@@ -41,17 +46,19 @@ from studentassistant.observer.ops import (
     StateOp,
     parse_op,
 )
+from studentassistant.observer.pending import find_duplicate
 from studentassistant.observer.state import (
     STATE_VERSION,
     Concept,
     EventRef,
     ObserverNote,
     PendingItem,
+    PendingRefs,
     Section,
     SourceContext,
     TopicState,
 )
-from studentassistant.vault import Event
+from studentassistant.vault import Event, Origin
 
 SEGMENT_EVENT_KIND = "transcript.final"
 SEGMENT_ID_KEY = "segment_id"
@@ -97,10 +104,10 @@ class DuplicateIdError(ObserverStateError):
 
 
 class PendingAlreadyResolvedError(ObserverStateError):
-    """`resolve_pending` on an item that was already resolved."""
+    """`resolve_pending` on an item that was already closed (resolved, auto-resolved, dismissed)."""
 
     def __init__(self, id: str) -> None:
-        super().__init__(f"resolve_pending: pending item {id!r} is already resolved")
+        super().__init__(f"resolve_pending: pending item {id!r} is already closed")
         self.id = id
 
 
@@ -149,13 +156,15 @@ def validate_op(state: TopicState, op: StateOp) -> None:
         case SetSourceContext():
             pass
         case AddPending():
-            if op.pending_id in state.pending:
+            if op.pending_id in state.pending or op.pending_id in state.pending_aliases:
                 raise DuplicateIdError(op.op, "pending item", op.pending_id)
             _require(state.segments, op.op, "segment", op.segment_ids)
             _require(state.captures, op.op, "capture", op.capture_ids)
         case ResolvePending():
-            _require(state.pending, op.op, "pending item", [op.pending_id])
-            if not state.pending[op.pending_id].is_open:
+            item = state.pending_item(op.pending_id)
+            if item is None:
+                raise UnknownIdError(op.op, "pending item", op.pending_id)
+            if not item.is_open:
                 raise PendingAlreadyResolvedError(op.pending_id)
         case Note():
             _require(state.segments, op.op, "segment", op.segment_ids)
@@ -167,7 +176,7 @@ def _unique(ids: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def _apply_in_place(state: TopicState, op: StateOp, at: EventRef) -> None:
+def _apply_in_place(state: TopicState, op: StateOp, at: EventRef, origin: Origin) -> None:
     """Apply a validated `op` to `state`, mutating it; only the fold's own copy is passed."""
     match op:
         case AddSection():
@@ -193,16 +202,37 @@ def _apply_in_place(state: TopicState, op: StateOp, at: EventRef) -> None:
         case SetSourceContext():
             state.source_context = SourceContext(kind=op.kind, reference=op.reference, set_at=at)
         case AddPending():
-            state.pending[op.pending_id] = PendingItem(
-                id=op.pending_id,
-                category=op.category,
-                description=op.description,
-                segment_ids=_unique(op.segment_ids),
-                capture_ids=_unique(op.capture_ids),
-                added_at=at,
+            refs = PendingRefs(
+                pages=_unique(op.capture_ids),
+                segments=_unique(op.segment_ids),
+                sources=_unique(op.source_refs),
             )
+            duplicate = find_duplicate(state, op.kind, op.text, refs)
+            if duplicate is None:
+                state.pending[op.pending_id] = PendingItem(
+                    id=op.pending_id,
+                    kind=op.kind,
+                    text=op.text,
+                    refs=refs,
+                    created_by=origin,
+                    added_at=at,
+                )
+            else:
+                item = state.pending[duplicate]
+                item.refs = PendingRefs(
+                    pages=_unique([*item.refs.pages, *refs.pages]),
+                    segments=_unique([*item.refs.segments, *refs.segments]),
+                    sources=_unique([*item.refs.sources, *refs.sources]),
+                )
+                item.merged_ids.append(op.pending_id)
+                state.pending_aliases[op.pending_id] = duplicate
         case ResolvePending():
-            item = state.pending[op.pending_id]
+            item = state.pending_item(op.pending_id)
+            assert item is not None  # validated
+            if op.status is not None:
+                item.status = op.status
+            else:
+                item.status = "auto_resolved" if origin == "observer" else "resolved"
             item.resolution = op.resolution
             item.resolved_at = at
         case Note():
@@ -213,15 +243,17 @@ def _apply_in_place(state: TopicState, op: StateOp, at: EventRef) -> None:
             assert_never(op)
 
 
-def apply_op(state: TopicState, op: StateOp, at: EventRef) -> TopicState:
-    """The state after `op`, emitted by the event `at`; `state` itself is left unchanged.
+def apply_op(
+    state: TopicState, op: StateOp, at: EventRef, origin: Origin = "observer"
+) -> TopicState:
+    """The state after `op`, emitted by the event `at` of `origin`; `state` is left unchanged.
 
     Raises:
         ObserverStateError: the error `validate_op` raises; nothing is applied.
     """
     validate_op(state, op)
     new_state = state.model_copy(deep=True)
-    _apply_in_place(new_state, op, at)
+    _apply_in_place(new_state, op, at, origin)
     return new_state
 
 
@@ -264,7 +296,7 @@ def _step(state: TopicState, session_id: str, event: Event) -> None:
         except ObserverStateError as error:
             error.at = at
             raise
-        _apply_in_place(state, op, at)
+        _apply_in_place(state, op, at, event.origin)
 
 
 def fold_into(

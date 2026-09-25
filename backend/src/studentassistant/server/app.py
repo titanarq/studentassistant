@@ -29,12 +29,15 @@ from pydantic import BaseModel
 
 from studentassistant import __version__
 from studentassistant.config import (
+    ObserverSettings,
     ServerSettings,
     Settings,
     SourcesSettings,
     SttSettings,
     VaultSettings,
 )
+from studentassistant.llm import Transport
+from studentassistant.observer.live import ObserverLoop, default_client_factory
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
@@ -43,6 +46,7 @@ from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
+from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
 from studentassistant.server.read_routes import read_router
@@ -53,6 +57,10 @@ from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.ws import SessionGateway, ws_router
+from studentassistant.sources.transcriber import PageTranscriber
+from studentassistant.sources.transcriber import (
+    default_client_factory as transcriber_client_factory,
+)
 from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
 from studentassistant.vault import GitSync, Vault
 
@@ -83,6 +91,8 @@ def create_app(
     stt: SttSettings | None = None,
     sources: SourcesSettings | None = None,
     recorder: SessionRecorder | None = None,
+    llm_transport: Transport | None = None,
+    llm_settings: Settings | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app with every route this backend serves.
 
@@ -106,6 +116,15 @@ def create_app(
     gateway and the capture upload; each recording is finished when its session ends (or the app
     shuts down). Without one nothing is recorded. A recorder whose directory is inside the vault is
     refused with `ValueError`: a recording is never vault content.
+
+    `llm_transport` turns the live observer on (`observer/live.py`): with one, and `[observer]
+    enabled` in `llm_settings` (default: the configured settings, which also give the observer
+    role's model, the cost caps and the prices), every session is observed through that transport
+    -- `serve` passes the real Anthropic one, tests a `FakeClaude`. Without one no Claude call is
+    ever made, so an app built by a test never reaches the network. The same transport gives
+    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client, and
+    drives the page transcriber (`sources/transcriber.py`, `[sources] transcription_enabled`),
+    which transcribes every stored capture.
     """
     install_log_redaction()
     if (
@@ -148,6 +167,33 @@ def create_app(
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
+    app.state.observer = None
+    app.state.transcriber = None
+    app.state.notes = None
+    if llm_transport is not None:
+        llm_settings = llm_settings or Settings()
+        # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
+        app.state.notes = NotesGenerator(llm_settings, llm_transport)
+        if sources.transcription_enabled:
+            app.state.transcriber = PageTranscriber(
+                app.state.bus,
+                app.state.bus.attached,
+                settings=sources,
+                client_factory=transcriber_client_factory(llm_settings, llm_transport),
+                on_write=app.state.sessions.note_change,
+            )
+            # Before the observer's flush, so the observer sees the last pages' transcriptions.
+            app.state.sessions.add_before_ended(app.state.transcriber.flush)
+        observer_settings: ObserverSettings = llm_settings.observer
+        if observer_settings.enabled:
+            app.state.observer = ObserverLoop(
+                app.state.bus,
+                app.state.bus.attached,
+                settings=observer_settings,
+                client_factory=default_client_factory(llm_settings, llm_transport),
+            )
+            # Registered after the gateway's STT flush, so the observer sees the last finals.
+            app.state.sessions.add_before_ended(app.state.observer.flush)
     if recorder is not None:
         app.state.sessions.add_before_close(
             lambda session_id: asyncio.to_thread(recorder.close, session_id)
@@ -187,6 +233,7 @@ def create_app(
     app.include_router(pdf_upload_router())
     app.include_router(search_router())
     app.include_router(vault_status_router())
+    app.include_router(notes_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
@@ -197,12 +244,22 @@ def create_app(
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessions: SessionService = app.state.sessions
     transcripts: TranscriptPipeline = app.state.transcripts
+    observer: ObserverLoop | None = app.state.observer
+    transcriber: PageTranscriber | None = app.state.transcriber
     transcripts.start()
+    if observer is not None:
+        observer.start()
+    if transcriber is not None:
+        transcriber.start()
     await sessions.startup()
     try:
         yield
     finally:
         await transcripts.stop()
+        if transcriber is not None:
+            await transcriber.stop()
+        if observer is not None:
+            await observer.stop()
         await sessions.shutdown()
         recorder: SessionRecorder | None = app.state.recorder
         if recorder is not None:

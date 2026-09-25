@@ -13,6 +13,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.titanarq.studentassistant.backend.ConnectionTestScreen
+import com.titanarq.studentassistant.capture.CaptureScreen
+import com.titanarq.studentassistant.capture.CaptureViewModel
 import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.PairedBackendsScreen
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
@@ -20,7 +22,6 @@ import com.titanarq.studentassistant.home.HomeScreen
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingScreen
 import com.titanarq.studentassistant.pairing.PairingViewModel
-import com.titanarq.studentassistant.session.CapturePlaceholderScreen
 import com.titanarq.studentassistant.ui.PlaceholderScreen
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.StudentAssistantTheme
@@ -74,10 +75,23 @@ private fun App(container: AppContainer) {
             onSessionOpened = { route = Route.CAPTURE },
             onBackends = { route = Route.BACKENDS },
         )
-        Route.CAPTURE -> CapturePlaceholderScreen(
-            sessions = container.sessionHolder,
-            onBack = { route = Route.HOME },
-        )
+        Route.CAPTURE -> {
+            val open by container.sessionHolder.current.collectAsStateWithLifecycle()
+            val session = open
+            if (session == null) {
+                LaunchedEffect(Unit) { route = Route.HOME }
+            } else {
+                // One view model per session: "Continuar" on the same session keeps its transcript.
+                CaptureScreen(
+                    viewModel = viewModel<CaptureViewModel>(
+                        key = "capture-${session.session.sessionId}",
+                        factory = container.captureViewModelFactory(session),
+                    ),
+                    onLeave = { route = Route.HOME },
+                    onEnded = { route = Route.HOME },
+                )
+            }
+        }
         Route.BACKENDS -> PairedBackendsScreen(
             viewModel = backendsViewModel,
             onPairNew = { route = Route.PAIRING },

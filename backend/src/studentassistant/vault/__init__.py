@@ -9,6 +9,14 @@ from studentassistant.vault.active import (
     read_active_host,
     release_active_host,
 )
+from studentassistant.vault.conversations import (
+    ConversationError,
+    ConversationRecord,
+    append_conversation_record,
+    conversation_path,
+    conversations_directory,
+    read_conversation,
+)
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.ledger import (
@@ -23,13 +31,18 @@ from studentassistant.vault.notes import (
     NotesError,
     generated_directory,
     list_generated,
+    notes_draft_path,
     notes_path,
     read_notes,
+    read_notes_draft,
+    write_notes,
+    write_notes_draft,
 )
 from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secret
 from studentassistant.vault.session_models import (
     EVENT_SCHEMA_VERSION,
     Event,
+    Origin,
     SessionMeta,
     TranscriptSegment,
     TranscriptWord,
@@ -60,6 +73,7 @@ from studentassistant.vault.sources import (
     StoredSource,
     UnknownSourceKindError,
     list_sources,
+    put_page_transcription,
     put_source,
     read_source,
     sources_directory,
@@ -67,8 +81,10 @@ from studentassistant.vault.sources import (
 from studentassistant.vault.state import (
     SnapshotFileError,
     StateError,
+    pending_review_path,
     read_observer_snapshot,
     write_observer_snapshot,
+    write_pending_review,
 )
 from studentassistant.vault.subjects import (
     StoredSubject,
@@ -113,6 +129,12 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "ConversationError",
+    "ConversationRecord",
+    "append_conversation_record",
+    "conversation_path",
+    "conversations_directory",
+    "read_conversation",
     "EVENT_SCHEMA_VERSION",
     "SOURCE_KINDS",
     "ActiveHost",
@@ -130,6 +152,7 @@ __all__ = [
     "LedgerEntry",
     "LedgerError",
     "NoOpenSessionError",
+    "Origin",
     "NotesError",
     "NotesTag",
     "PushFailure",
@@ -188,14 +211,18 @@ __all__ = [
     "list_subjects",
     "list_topics",
     "looks_like_secret",
+    "notes_draft_path",
     "notes_path",
     "notes_tag_name",
+    "pending_review_path",
+    "put_page_transcription",
     "put_source",
     "read_active_host",
     "read_all_ledgers",
     "read_jsonl",
     "read_ledger",
     "read_notes",
+    "read_notes_draft",
     "read_observer_snapshot",
     "read_session_transcript",
     "read_source",
@@ -209,5 +236,8 @@ __all__ = [
     "subject_directory",
     "topic_directory",
     "topics_directory",
+    "write_notes",
+    "write_notes_draft",
     "write_observer_snapshot",
+    "write_pending_review",
 ]

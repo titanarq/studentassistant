@@ -54,6 +54,7 @@ from studentassistant.install.apikey import (
     store_api_key,
 )
 from studentassistant.install.doctor import DoctorProbes, run_doctor
+from studentassistant.llm import AnthropicTransport
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.observer import (
     COMPACTED_EVENT_KIND,
@@ -131,7 +132,14 @@ def serve(
     export_api_key(settings.llm.api_key_path())
     recorder = SessionRecorder(server.recordings_dir) if record else None
     try:
-        app = create_app(server=server, recorder=recorder)
+        # The live observer calls Claude through the real transport ([observer] enabled = false
+        # turns it off).
+        app = create_app(
+            server=server,
+            recorder=recorder,
+            llm_transport=AnthropicTransport(),
+            llm_settings=settings,
+        )
     except ValueError as error:
         typer.echo(f"Cannot record: {error}", err=True)
         raise typer.Exit(code=1) from error

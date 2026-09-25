@@ -15,10 +15,12 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29 and #31: the knowledge-state model, its ops, the pure fold,
-the snapshot, the vault-backed loader and the compaction the vault purge writes. The live loop, the pending queue's deduplication, the
-digest and the purge are not written yet. Everything below is re-exported by
-`studentassistant.observer`.
+What exists today, after issues #29, #31, #51, #55 and #176: the knowledge-state model, its ops,
+the pure fold, the snapshot, the vault-backed loader, the live loop, the pending-review queue and
+the compaction the vault purge (#31) writes. The digest (#56) and the context purge (#60) are not written yet. Everything below except the live loop is
+re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
+(its batch rendering `studentassistant.observer.context`), kept out of the package root so that
+importing the state model never imports the llm module.
 
 ### Event kinds the fold reads -- `ops.py`, `fold.py`
 - `STATE_OP_EVENT_KIND = "observer.state_op"`: the one event kind that carries a state op; its
@@ -44,17 +46,25 @@ Frozen Pydantic v2 models (`extra="forbid"`) in the discriminated union `StateOp
 `rename_section` (`section_id`, `title`), `assign_segments` (`section_id`, `segment_ids`; the last
 assignment of a segment wins), `add_concept` (`concept_id`, `name`, `section_id?`, `segment_ids`),
 `link_capture` (`capture_id`, `segment_ids`; links accumulate), `set_source_context` (`kind` in
-`notes`/`book`/`pdf`/`web`, `reference?`), `add_pending` (`pending_id`, `category` in
-`illegible`/`unexplained_concept`/`incomplete`/`possible_error`/`contradiction`, `description`,
-`segment_ids`, `capture_ids`), `resolve_pending` (`pending_id`, `resolution`), `note` (`text`,
-`segment_ids`). A malformed payload is a `pydantic.ValidationError`.
+`notes`/`book`/`pdf`/`web`, `reference?`), `add_pending` (`pending_id`, `kind` in
+`PENDING_KINDS` -- `illegible`/`unexplained_concept`/`incomplete`/`possible_error`/`contradiction`
+--, `text` (Spanish), `segment_ids`, `capture_ids`, `source_refs`; a payload written before #55
+with `category`/`description` is read as `kind`/`text`), `resolve_pending` (`pending_id`,
+`resolution?`, `status?` in `resolved`/`auto_resolved`/`dismissed`; only a dismissal may go
+without a resolution), `note` (`text`, `segment_ids`). A malformed payload is a
+`pydantic.ValidationError`.
 
 ### Topic state -- `state.py`
 `TopicState`: `sections` (the outline, by id in the order added; `outline(parent_id)`),
 `segments` and `captures` (registered ids -> the `EventRef` that stored them), `assignments`
 (segment -> section; `segments_of(section_id)`), `concepts`, `capture_links` (capture -> segments),
-`source_context` (`SourceContext` or `None`), `pending` (`PendingItem`s open and resolved;
-`open_pending()`, `resolved_pending()`) and `notes` (`ObserverNote`). Every item keeps the
+`source_context` (`SourceContext` or `None`), `pending` (`PendingItem`s open and closed;
+`open_pending()`, `resolved_pending()` for the closed ones), `pending_aliases` (a merged
+`add_pending` id -> the item it joined; `pending_item(id)` follows it) and `notes`
+(`ObserverNote`). A `PendingItem` is `id`, `kind`, `text`, `refs` (`PendingRefs`: `pages` --
+capture ids --, `segments`, `sources`), `created_by` (the origin of the event that added it),
+`status` (`PendingStatus`: `open`/`auto_resolved`/`resolved`/`dismissed`), `resolution`,
+`added_at`, `resolved_at` and `merged_ids`. Every item keeps the
 `EventRef` (`session_id`, `seq`) of the event that made it, because `seq` restarts per session.
 
 ### Fold -- `fold.py`
@@ -63,8 +73,11 @@ of a topic in `(session_id, seq)` order, as `vault.read_topic_events` yields the
 deterministic: no I/O, input never mutated, equal input gives an equal state (and equal JSON).
 `validate_op(state, op)` checks an op before it is applied and raises an `ObserverStateError`
 (a `ValueError`): `UnknownIdError` (`op`, `entity` -- section, segment, capture or pending
-item -- and `id`), `DuplicateIdError`, `PendingAlreadyResolvedError`. `apply_op(state, op, at)`
-returns the new state. `fold` never skips an op: it raises the error with `at` set to the event;
+item -- and `id`), `DuplicateIdError` (a merged pending id counts as taken),
+`PendingAlreadyResolvedError` (the item is closed). `apply_op(state, op, at, origin="observer")`
+returns the new state. `created_by` is the event's origin; a `resolve_pending` without `status`
+is `auto_resolved` from the observer and `resolved` from anyone else. An `add_pending` that
+duplicates an open item is merged into it (see the pending-review queue). `fold` never skips an op: it raises the error with `at` set to the event;
 `InvalidEventError` is a read kind with a malformed payload and `EventOrderError` events out of
 order.
 
@@ -80,18 +93,109 @@ the snapshot's cursor): the fold of the compacted log equals the fold of the ori
 `STATE_VERSION` lives in `state.py` (the fold checks compaction payloads against it) and is still
 re-exported from here.
 
+### Pending-review queue -- `pending.py`
+Doubts accumulate without interrupting the student; only a counter reaches the phone.
+- **Deduplication** (in the fold, so a replay always merges the same way):
+  `find_duplicate(state, kind, text, refs)` is the first open item of the same `kind` whose text
+  is very similar (`text_similarity >= STRONG_SIMILARITY`, 0.85) or whose refs overlap (a shared
+  page, segment or source) with a text somewhat similar (`>= OVERLAP_SIMILARITY`, 0.5). Texts
+  naming different numbers are never the same doubt; closed items are never merged into.
+  `text_similarity` compares without case, accents or punctuation (best of a character ratio and
+  a word Jaccard). A merge joins the refs, keeps the first text and records the id.
+- **Review file**: `pending_review(state) -> PendingReview` (`format_version`, `open_count`,
+  `items`: open ones first) is `review/pending.yaml`, written through
+  `vault.write_pending_review` by the live loop after each change and by the loader.
+- **Prompt**: the `observer` prompt describes each kind with a Spanish example and asks not to
+  re-add an open doubt, and to close one (`resolve_pending`) only when the session settled it.
+- **Web**: `GET /api/subjects/{subject_id}/topics/{topic_id}/pending` (server module).
+- The topic list's `pending_count` (#147) and the summary's `open_pending` are
+  `len(open_pending())` of this same fold, so they count merged doubts once.
+
 ### Loader -- `loader.py`
 `load_observer_snapshot(vault, subject_slug, topic_slug, *, write_back=True) -> ObserverSnapshot`
 reads the events (`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds
 only the tail after it and writes the result back (`write_observer_snapshot`) when it changed and
-`write_back` is true (a read-only caller such as the topic list passes `False`). The stored snapshot is
+`write_back` is true (a read-only caller such as the topic list passes `False`); when the pending
+items changed too (from the stored snapshot's, none when it was not usable) it regenerates
+`review/pending.yaml` (`write_pending_review`). The stored snapshot is
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
-folded raises and nothing is written. The purge reads the snapshot it compacts to with
+folded raises and nothing is written. The vault purge reads the snapshot it compacts to with
 `write_back=False`. Nothing in `studentassistant.observer` opens a file, runs
-git, imports `studentassistant.llm`/`anthropic` or imports a vault submodule: only the
-`studentassistant.vault` root (checked by `tests/observer/test_boundaries.py`).
+git, imports `anthropic`, `studentassistant.server` or a vault submodule (only the
+`studentassistant.vault` root), and only `live.py` imports `studentassistant.llm` (checked by
+`tests/observer/test_boundaries.py`).
+
+### Live loop -- `live.py`, `context.py`
+`ObserverLoop(bus, lookup, *, settings=ObserverSettings(), client_factory=None, digest=..., clock=...)`
+subscribes to the session bus (`start()`; `stop()` folds what was delivered and waits for the
+calls in flight). `lookup(session_id)` gives an attached session's vault handle
+(`SessionBus.attached`); `client_factory(LedgerBinding)` builds the session's `observer` client
+(`default_client_factory(settings, transport)`: `get_client("observer", ...)` bound to the
+session's ledger, so every call is capped and recorded); `digest(vault, subject, topic)` reads the
+topic digest (none until #56). The server builds one when `create_app` gets an `llm_transport`
+(`serve` passes the real one) and `[observer] enabled`.
+
+- **Input** (`OBSERVER_KINDS`): `transcript.final`, `capture.stored`, `page.transcribed`
+  (`PAGE_TRANSCRIPTION_KIND`: the page transcription, #50, MUST publish it with
+  `payload.capture_id` and `payload.text`), `button`, `marker`, `command`, `observer.state_op` of
+  any origin but `observer` (shown as `student op`), and the lifecycle events. Each becomes one line
+  of the pending batch (`context.batch_item`).
+- **Scope**: the first event of a session loads its topic's snapshot (`load_observer_snapshot`)
+  and builds a fresh conversation: system = the `observer` prompt + the topic block (subject,
+  title, digest); first user turn = the folded state (`render_state`: outline, concepts, captures,
+  source context, open pending items, recent notes -- ids, never the earlier segments' text) and
+  the first batch. Nothing of another topic is ever read. A resumed session, or a new session of
+  the topic, is always rebuilt this way, never from the full history.
+- **Triggers** (`[observer]`, `SA_OBSERVER__*`): `batch_segments` final segments (default 6) or
+  `batch_speech_seconds` of speech (default 30) waiting, or at once for a capture, a page
+  transcription or a `switch_source` button. One call per session is in flight; what arrives
+  meanwhile coalesces into the next batch, which also waits until the ops just published are
+  folded. The consumer never waits for Claude and the bus never waits for the consumer.
+- **Answer**: the strict tool `apply_state_ops` (`ApplyStateOps`: `ops: list[StateOp]`, each
+  op's `op` a required enum; `state_ops_tool()`), `tool_choice: auto`. Each op is parsed and
+  validated in order against the current state; valid ones are published as
+  `observer.state_op` (origin `observer`). Malformed or inapplicable ops, or no tool call, are
+  re-asked once (the errors go back as an `is_error` tool result); what is still invalid is
+  logged and dropped. Every `tool_use` gets its `tool_result` at the start of the next user turn.
+- **Caching**: tools + system are the cached prefix; each request also marks the newest block of
+  the conversation, which grows append-only by one user turn and one answer per call.
+- **Conversation file**: `conversations/observer-<session-id>.jsonl` through
+  `append_conversation_record`: a `context` record (reason `start`/`resume`, the snapshot's
+  `event_count` and `cursor`, model, prompt hash), then each `user` turn and `assistant` answer
+  (model, prompt hash, usage), and `status` changes.
+- **Cost caps**: a reached cap (`CostCapReachedError`, nothing sent) pauses the observer: the batch
+  is kept, `status(session_id)` is `paused` and one `observer.status` event (`status: paused`,
+  `reason`, `cap`, `limit_usd`, `total_usd`) is published; the next new item tries again, and a
+  successful call publishes `status: running`. Any other Claude failure keeps the batch the same
+  way with `status: error`. A failed call is never retried until something new arrives.
+- **Pending notice**: when a folded event changes the pending items (a new item, a merge, a close
+  of any origin), the loop publishes a transient `notice` (`NOTICE_EVENT_KIND`, `persist=False`,
+  `payload.pending_count` = the open count; the gateway forwards it to the phone as the protocol
+  `notice`) and regenerates `review/pending.yaml`. The count is also published when a session is
+  first observed.
+- **Ending**: `flush(session_id)` is registered with `SessionService.add_before_ended` (after the
+  gateway's STT flush, so it sees the last finals): it waits for the call in flight and sends what
+  is still waiting, so its ops land before `session.ended` (bounded by the end hook timeout; a call
+  is shielded, never cancelled). `wait_idle(session_id)` waits without sending; `session.ended`
+  forgets the session.
+- **Catch-up, no batch is lost** (#176, `catchup.py`): every answered batch (valid ops or not,
+  after the re-ask) is acknowledged with a persisted `observer.ack` event (`ACK_EVENT_KIND`,
+  origin `observer`, after the batch's ops; `payload.through` = the `EventRef` of the newest
+  stored event the batch carried; the fold ignores it). When the loop opens a session (the first
+  event of a start or resume, or a restart), `unanswered(events, session_id, before)` returns the
+  topic's batch-kind events after the newest acknowledgement and before the opening event (which,
+  with what follows, comes on the bus; the observer's own ops are never returned). They are sent
+  first, as one batch headed `catch-up: N events of session ...`, at once, newest
+  `[observer] catch_up_max_items` kept (default 200; the rest are logged). So the last batch of a
+  session whose call outlives the end hook's timeout (its ops and ack are refused by the ended
+  session) is answered at the start of the topic's next session; the waiting items of a session
+  the backend stopped without ending, or of a resumed one, at its resume. The guarantee is at
+  least once: a crash between a batch's ops and its ack sends the batch again, and duplicate ids
+  are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
+  open writes a baseline ack (`through` = the newest event before it, `null` for none). The
+  `context` record carries the `catch_up` count.
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

@@ -1,8 +1,10 @@
-import type { TopicSummary } from "../desk/api";
+import { type TopicSummary, topicPath } from "../desk/api";
 
 /**
  * The topic card of docs/VISION.md §2: sources by kind, sessions and minutes of conversation,
  * doubts pending review, and the notes version and generated material (✓ present, ○ not yet).
+ * The notes item, once a version exists, links to the notes viewer (`<topic path>/notes`), and
+ * the pending item to the pending-doubts panel (`<topic path>/pending`).
  */
 
 /** Generated material in the card's order, recognised by the file name under `generated/`. */
@@ -42,10 +44,7 @@ function formatMinutes(minutes: number): string {
 
 export default function TopicCard({ summary }: { summary: TopicSummary }) {
   const { sessions, session_minutes, open_pending, notes_version, generated } = summary;
-  const materials = [
-    notes_version !== null ? `✓ Apuntes v${notes_version}` : "○ Apuntes",
-    ...MATERIALS.map(({ label, stem }) => `${mark(hasMaterial(generated, stem))} ${label}`),
-  ];
+  const materials = MATERIALS.map(({ label, stem }) => `${mark(hasMaterial(generated, stem))} ${label}`);
   return (
     <section aria-label="Resumen del tema">
       <dl>
@@ -59,12 +58,23 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
         </dd>
         <dt>Pendiente</dt>
         <dd>
-          {open_pending === 0
-            ? "Nada por revisar"
-            : plural(open_pending, "duda por revisar", "dudas por revisar")}
+          <a href={`${topicPath(summary.subject_id, summary.topic_id)}/pending`}>
+            {open_pending === 0
+              ? "Nada por revisar"
+              : plural(open_pending, "duda por revisar", "dudas por revisar")}
+          </a>
         </dd>
         <dt>Material</dt>
-        <dd>{materials.join("  ")}</dd>
+        <dd>
+          {notes_version !== null ? (
+            <>
+              ✓ <a href={`${topicPath(summary.subject_id, summary.topic_id)}/notes`}>Apuntes v{notes_version}</a>
+            </>
+          ) : (
+            "○ Apuntes"
+          )}
+          {`  ${materials.join("  ")}`}
+        </dd>
       </dl>
     </section>
   );

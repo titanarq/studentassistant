@@ -31,6 +31,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   conversations/observer-<session-id>.jsonl  observer role conversation
   conversations/editor.jsonl                 editor role conversation
   notes/apuntes.md                           master notes (ADR-0005)
+  notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
   ledger.jsonl                               LLM usage and cost per call
 ```
@@ -114,6 +115,10 @@ returns `None` when none was written. The vault never imports the observer: the 
 the model. An unreadable snapshot (not UTF-8, not JSON, not the model) is a `SnapshotFileError`
 (a `StateError`); a missing topic is a `TopicNotFoundError`. `observer_snapshot_path(...)` and
 `state_directory(...)` (imported from `state.py`) give the paths.
+`write_pending_review(vault, subject_slug, topic_slug, review)` writes the observer's pending
+queue model as deterministic YAML (`dump_yaml` of `model_dump(mode="json")`, atomic, secret guard)
+to `review/pending.yaml`, creating `review/`, and returns the path; `pending_review_path(...)`
+gives it. The observer regenerates it from its fold after every change (#55); the index reads it.
 
 ### JSONL logs -- `jsonl.py`
 `append_jsonl(path, obj)` writes one compact JSON object per line with a single write, flush and
@@ -136,6 +141,19 @@ returns the entries in file order (empty without a file, a torn last line ignore
 `ledger_path(...)` gives the path. Pricing and caps are the llm module's; this module never
 imports it and runs no git.
 
+### Conversations -- `conversations.py`
+An LLM role's conversation (ADR-0003) is `conversations/<name>.jsonl` under its topic, `name` being
+lowercase letters, digits and hyphens (`observer-<session-id>`, `editor`); anything else is a
+`ConversationError`. `ConversationRecord` is one line: `time` (timezone-aware, kept in UTC), `kind`
+(the role's choice; the observer writes `context`, `user`, `assistant`, `status`), `message?` (the
+API message it carries), `model?`, `prompt_hash?`, `usage?` (token counts) and `detail?`.
+`append_conversation_record(vault, subject_slug, topic_slug, name, record)` appends it through
+`append_jsonl` (secret guard included), creating `conversations/` on first use;
+`read_conversation(...)` returns the records in file order (empty without a file);
+`conversation_path(...)` and `conversations_directory(...)` give the paths. An unknown subject or
+topic is the usual `SubjectNotFoundError`/`TopicNotFoundError`. The vault knows nothing about
+Claude: it stores what the role hands it.
+
 ### Sources -- `sources.py`
 `put_source(vault, subject_slug, topic_slug, kind, name, content, meta, derived=None)` stores
 bytes or text under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the
@@ -155,6 +173,11 @@ while the server runs, say): the active-host record below is about PCs, not proc
 cross-process safety on one PC is #165. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
+`put_page_transcription(vault, vault_relative_path, text) -> Path` writes a page's Markdown
+transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf`
+(`vault_relative_path` is the page or any file derived from it, checked like `read_source`'s),
+atomically, guarded, under the directory's lock, replacing an earlier one; `SourcePathError` for
+anything else, `SourceNotFoundError` when the page's sidecar is not there.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
 content's vault-relative POSIX path --, `meta` -- the parsed sidecar, or `None`) per stored source,
 ordered by kind (`SOURCE_KINDS` order) then number; sidecars, derived files (`page-NNN.md` beside
@@ -174,8 +197,13 @@ when it has not been written yet (a symlink or non-UTF-8 file is a `NotesError`,
 `list_generated(vault, subject_slug, topic_slug)` returns the sorted vault-relative POSIX paths of
 every file under `generated/`, subdirectories included and symlinks skipped; an empty list when
 the directory does not exist. `notes_path(...)` and `generated_directory(...)` give the paths.
-Nothing here writes or runs git; writing notes and generated material belongs to the editor and
-generators tasks.
+`write_notes(vault, subject_slug, topic_slug, text)` writes `notes/apuntes.md` atomically
+(creating `notes/`, secret guard included) and removes a leftover draft;
+`write_notes_draft(...)` writes `notes/borrador.md` (a generation the editor's validator
+rejected), leaving `apuntes.md` untouched; `read_notes_draft(...)` and `notes_draft_path(...)`
+mirror the notes ones. Both writers return the path, refuse an unknown topic like the readers and
+a symlinked `notes/` or file with `NotesError`. Nothing here runs git (the editor commits and
+tags through `GitSync`); writing generated material belongs to the generators tasks.
 
 ### Reading with ids from outside
 Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `list_generated`)
@@ -425,13 +453,11 @@ from their own module (`studentassistant.vault.github`, `studentassistant.vault.
 `studentassistant.vault.index`).
 
 ### Not written yet
-As of issues #21, #117, #119 and #135 no code reads or writes these parts of the layout:
-- **notes** -- writing `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005
-  (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
+As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md`, `review/pending.yaml` (the index reads it when present) and
-  `conversations/`; and the retention `purge` described below.
+- Also unwritten: `state/digest.md`;
+  and the retention `purge` described below. (`conversations/` is written since #51.)
 
 ## Purge -- `purge.py`
 `studentassistant purge [--topic <subject>/<topic>] [--dry-run] [--hard] [--yes]` applies a

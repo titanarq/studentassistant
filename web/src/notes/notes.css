@@ -1,0 +1,168 @@
+/* The notes viewer and its sources panel. The panel is fixed to the viewport edge so opening it
+   never rewraps nor scrolls the notes (the reading position stays put); on a wide screen the
+   column slides left, at its same width, to stay clear of it; at phone width it is a bottom
+   sheet. */
+
+.notes-page main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.notes-meta {
+  color: #555;
+}
+
+.notes-anchor {
+  font-size: 0.8em;
+  color: #999;
+  text-decoration: none;
+}
+
+.notes-ref a {
+  padding: 0 0.1em;
+  text-decoration: none;
+}
+
+.notes-ref a[aria-current="true"] {
+  outline: 2px solid #1a5fb4;
+  border-radius: 2px;
+}
+
+.notes-ia {
+  background: #fff3c4;
+  border-left: 4px solid #e5a50a;
+  padding-left: 0.5rem;
+}
+
+.notes-uncertain {
+  text-decoration: underline wavy #c01c28;
+}
+
+.notes-table {
+  overflow-x: auto;
+}
+
+.notes-table table {
+  border-collapse: collapse;
+}
+
+.notes-table th,
+.notes-table td {
+  border: 1px solid #ccc;
+  padding: 0.25rem 0.5rem;
+}
+
+.notes-code,
+.source-text {
+  white-space: pre-wrap;
+  background: #f6f6f6;
+  padding: 0.5rem;
+  overflow-x: auto;
+}
+
+.notes-footnotes ol {
+  list-style: none;
+  padding-left: 0;
+}
+
+.source-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(32rem, 45vw);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-left: 1px solid #ccc;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+/* Leave room for the panel only where the notes are not already centred clear of it. */
+@media (min-width: 72rem) {
+  .notes-page-with-panel main {
+    margin-left: max(1rem, calc((100vw - min(32rem, 45vw) - 46rem) / 2));
+  }
+}
+
+.source-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #ddd;
+}
+
+.source-panel-header h2 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.source-panel-body {
+  overflow-y: auto;
+  padding: 0.5rem 1rem 1rem;
+}
+
+.source-zoom-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.source-image-frame {
+  overflow: auto;
+  max-height: 60vh;
+  border: 1px solid #ddd;
+}
+
+.source-image-frame img {
+  display: block;
+  max-width: none;
+}
+
+.source-figure {
+  margin: 0;
+}
+
+.source-transcript {
+  list-style: none;
+  padding-left: 0;
+}
+
+.source-transcript time {
+  font-variant-numeric: tabular-nums;
+  color: #555;
+}
+
+button,
+.notes-ref a,
+.notes-footnotes a {
+  min-height: 1.5rem;
+}
+
+@media (max-width: 40rem) {
+  .source-panel {
+    top: auto;
+    left: 0;
+    width: auto;
+    height: 70vh;
+    border-left: 0;
+    border-top: 1px solid #ccc;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+  }
+
+  .notes-page-with-panel main {
+    padding-bottom: 72vh;
+  }
+
+  .source-image-frame {
+    max-height: 45vh;
+  }
+}

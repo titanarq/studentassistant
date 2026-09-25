@@ -20,7 +20,7 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None, recorder=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None, recorder=None, llm_transport=None, llm_settings=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
@@ -32,7 +32,12 @@ the first request that needs it, so building an app never touches a vault. `sync
 `[sources]` section (`SourcesSettings`, default: the configured one) the PDF upload follows.
 `recorder` is the `SessionRecorder` of `serve --record` (see "Recording and replay" below);
 without one nothing is recorded, and one whose directory is inside the vault is refused with
-`ValueError`.
+`ValueError`. `llm_transport` turns the live observer on (`observer.live.ObserverLoop`,
+`docs/modules/observer.md`): with one and `[observer] enabled` in `llm_settings` (a full
+`Settings`, default: the configured one; it also gives the observer role, caps and prices), the
+lifespan starts and stops the loop and its `flush` is an `add_before_ended` hook. `serve` passes
+the real Anthropic transport; without one (every other caller, tests included) no Claude call is
+made.
 
 The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
 the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
@@ -43,8 +48,9 @@ is no background loop.
 
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
-`gateway` (the `SessionGateway` of the session WebSocket) and `recorder` (`None` unless one was
-given).
+`gateway` (the `SessionGateway` of the session WebSocket), `recorder` (`None` unless one was
+given), `observer` (the `ObserverLoop`, `None` without an `llm_transport`) and `notes` (the
+`NotesGenerator` of the notes generation route, `None` without an `llm_transport`).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -178,6 +184,12 @@ Routes registered today:
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
     (`"Todavía no hay apuntes de este tema."`).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/pending?status=all|open|closed` ->
+    `TopicPending`: `open_count` (of the whole queue) and `items`, the observer's `PendingItem`s
+    (`id`, `kind`, `text`, `refs` {`pages`, `segments`, `sources`}, `created_by`, `status`,
+    `resolution`, `added_at`, `resolved_at`, `merged_ids`), open first, filtered by `status`
+    (default `all`; `closed` = resolved, auto-resolved or dismissed). Read from the fold
+    (`load_observer_snapshot(write_back=False)`), so it writes nothing.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/sessions` -> `TopicSessions`: `sessions`, by
     id, each `session_id`, `started_at`, `ended_at` (`null` while unended) and `minutes`.
   - `GET /api/sessions/{session_id}/transcript?subject=..&topic=..&t=HH:MM:SS-HH:MM:SS` ->
@@ -230,6 +242,21 @@ Routes registered today:
   between `\x02` and `\x03`. A vault that cannot be opened is 503 (`"No se puede abrir la
   bóveda."`), an index that could not be opened 503 (`"El índice de búsqueda no está
   disponible."`). Needs the bearer check like every non-exempt route.
+- `POST /api/subjects/{subject_id}/topics/{topic_id}/notes/generate` (`server/notes_routes.py`,
+  `notes_router()`): "prepárame el tema", web-only, not phone protocol. Optional JSON body
+  `{"confirm_over_cap": false}`. Opens the vault through the `SessionService`, builds
+  `get_client("editor", ...)` over the app's `llm_transport` and `llm_settings` bound to the
+  topic's ledger (`LedgerBinding(vault, subject, topic)`), and awaits
+  `editor.generate.generate_notes` with the session service's `GitSync`; answers 200 with its
+  `GenerationResult` (`docs/modules/editor.md`: valid notes committed and tagged
+  `<subject>/<topic>/apuntes-vN`, or a draft with `warning` and `errors`). The `notes.generated`
+  event is published on the bus (persisted, origin `editor`) when the topic's session is the
+  active one (else it is only in `conversations/editor.jsonl`). One generation per topic at a
+  time. Errors, Spanish `detail`: no `llm_transport` 503 (`"La generación de apuntes no está
+  disponible: ..."`), an unknown topic 404, a generation of the topic already running 409, a
+  reached cost cap 409 (`"Se ha alcanzado el límite de gasto ... Confirma ..."`) until the body
+  says `confirm_over_cap`, a Claude refusal or failure 502, a vault that cannot be opened 503.
+  Needs the bearer check like every non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
@@ -342,6 +369,10 @@ another PC left open is seen.
   provider, #136), and `add_before_close(hook)` after it is published and before `end_session`.
   Each is bounded by `end_hook_timeout`; a hook that fails or times out is logged and the session
   ends anyway. A hook must not call back into the `SessionService` lifecycle (its lock is held).
+  A hook cut off by the timeout keeps nothing it could still publish: the session is ended and
+  detached, so its later events are refused. The observer's flush does not depend on the timeout
+  for correctness: a batch it could not land is caught up in the next session of the topic (or
+  the resume), see `docs/modules/observer.md` (catch-up, #176).
   The app adds `TranscriptPipeline.drain()` as a before-close hook, so every `transcript.final`
   published before `session.ended` is in `transcript.jsonl` before the session is marked ended.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
