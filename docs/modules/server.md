@@ -519,6 +519,16 @@ Routes registered today:
     (`built_at` differs), 422 an answer or asked id unknown, one twice, or an answer to a
     question not asked.
   - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
+- **Exam correction** (`server/exam_routes.py`, #283): thin over
+  `studentassistant.generators.exam_results`; generating the exam is `POST .../generated/examen`.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/exam` -> `StoredExam` (`exam` from
+    `examen.yaml`, `built_at`, `notes_version`, `warnings`, `stale`, `stale_reason`); 404 when
+    there is no exam to correct yet.
+  - `POST .../exam/results`, body `ExamAttempt` (`built_at`, `questions`: `question`, `awarded`
+    per criterion) -> `ExamResult` (score, total, percentage computed by the backend), appended to
+    `study/exam-results.jsonl` and committed. 404 no exam, 409 the exam was generated again
+    (`built_at` differs), 422 an unknown question, one twice or points out of range.
+  - `GET .../exam/results` -> `[ExamResult]`, oldest first.
 - **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
     (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `suspended`, `warnings`);

@@ -20,8 +20,8 @@ import "./materials.css";
  * "Desactualizado" badge with the backend's reason when the notes changed since. Each registered
  * kind has "Generar" ("Generar de nuevo" once generated), with default options, that posts
  * `POST .../generated/<kind>`; past the cost cap it offers "Generar igualmente". Its Markdown files
- * link to the preview page ("Ver ..."), the quiz to its page, and the Anki deck, CSV, PDF and
- * PowerPoint files are download links. After a generation the section is read again and
+ * link to the preview page ("Ver ..."), the quiz and the exam ("Corregir examen") to their pages,
+ * and the Anki deck, CSV, PDF and PowerPoint files are download links. After a generation the section is read again and
  * `onGenerated` lets the page reload the topic card.
  */
 
@@ -32,7 +32,10 @@ export const STUDY_ORDER = ["esquema", "quiz", "flashcards", "examen", "diaposit
 const DOWNLOADS: Record<string, string> = { apkg: "Anki", csv: "CSV", pdf: "PDF", pptx: "PowerPoint" };
 
 /** Extra pages for a kind, beside its files. */
-const PAGES: Record<string, { path: string; label: string }> = { quiz: { path: "quiz", label: "Hacer el quiz" } };
+const PAGES: Record<string, { path: string; label: string }> = {
+  quiz: { path: "quiz", label: "Hacer el quiz" },
+  examen: { path: "exam", label: "Corregir examen" },
+};
 
 function extension(name: string): string {
   const dot = name.lastIndexOf(".");

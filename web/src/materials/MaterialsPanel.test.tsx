@@ -30,6 +30,7 @@ it("lists every material in the order of study, with its state and description",
         artifact("diapositivas", "Diapositivas"),
         artifact("esquema", "Esquema", ["esquema.md"]),
         artifact("quiz", "Quiz", ["quiz.yaml"]),
+        artifact("examen", "Ejercicios y examen", ["examen.yaml", "examen.md"]),
         artifact("viejo", null, ["viejo.md"]),
       ]),
     ),
@@ -41,6 +42,7 @@ it("lists every material in the order of study, with its state and description",
   expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
     "Esquema",
     "Quiz",
+    "Ejercicios y examen",
     "Diapositivas",
     "viejo",
   ]);
@@ -49,6 +51,11 @@ it("lists every material in the order of study, with its state and description",
   expect(item("Esquema").getByRole("link", { name: "Ver esquema" })).toHaveAttribute("href", `${PAGE}/material/esquema.md`);
   expect(item("Esquema").getByRole("button", { name: "Generar de nuevo" })).toBeEnabled();
   expect(item("Quiz").getByRole("link", { name: "Hacer el quiz" })).toHaveAttribute("href", `${PAGE}/quiz`);
+  expect(item("Ejercicios y examen").getByRole("link", { name: "Corregir examen" })).toHaveAttribute(
+    "href",
+    `${PAGE}/exam`,
+  );
+  expect(item("Diapositivas").queryByRole("link", { name: "Corregir examen" })).toBeNull();
   expect(item("Diapositivas").getByText("○ Sin generar")).toBeInTheDocument();
   expect(item("Diapositivas").getByRole("button", { name: "Generar" })).toBeEnabled();
   // A kind no longer registered is shown, but cannot be generated.

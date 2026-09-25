@@ -110,6 +110,14 @@ it("renders the quiz page at <topic>/quiz", () => {
   expect(screen.getByRole("heading", { name: "Quiz de revolucion-industrial" })).toBeInTheDocument();
 });
 
+it("renders the exam correction page at <topic>/exam", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/exam" />);
+
+  expect(screen.getByRole("heading", { name: "Corregir examen de revolucion-industrial" })).toBeInTheDocument();
+});
+
 it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
   const fetchMock = stubFetch();
 

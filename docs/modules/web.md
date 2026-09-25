@@ -122,7 +122,7 @@ token):
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../practice` -> `PracticePage`,
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../exam` -> `ExamPage`, `.../practice` -> `PracticePage`,
   `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
@@ -539,6 +539,18 @@ token):
   "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
   the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->
   `ActionResult` (read leniently: `readStoredQuiz`, `readResult(s)`).
+- `src/exam/` (#283): `ExamPage` at `<topic path>/exam` ("Corregir examen" in the materials panel
+  links to it once the exam exists; `← Tema <name>`, heading "Corregir examen de <name>", "<n>
+  preguntas · <p> puntos · <d> minutos · de los apuntes v<N>", a `note` when stale). Each question
+  is a group "Pregunta <n>" with its points and statement; "Ver solución y criterios" reveals the
+  worked solution, "En los apuntes:" links and a points input per rubric criterion ("<criterio>
+  (máx. <p>)", decimal comma accepted, empty is 0; out of range it is `aria-invalid` with "Entre 0
+  y <p>."), and the question's "<x> de <p>". "Total: <x> de <y> (<z> %)" adds up as the student
+  types; "Guardar corrección" (disabled while a value is invalid) posts it and the `status` says
+  "Corrección guardada: …"; a refusal (the exam regenerated meanwhile) is an `alert`. Without an
+  exam it says so and links to the topic's study materials. "Correcciones anteriores" lists the
+  latest ten. `api.ts`: `fetchExam`, `fetchExamResults`, `saveExamResult` -> `ActionResult` (read
+  leniently: `readStoredExam`, `readResult(s)`), `formatNumber`.
 - `src/practice/` (#81): `PracticePage` at `<topic path>/practice` (the topic card's "Práctica" ->
   "Practicar con repetición espaciada" links to it; heading "Practicar <name>", "<d> para repasar
   · <n> nuevas · <l> de <t> ya vistas", the backend's warnings as `note`s). One `article` at a
@@ -563,6 +575,7 @@ token):
   examen, diapositivas, then any other alphabetically), named by its Spanish title: "○ Sin
   generar" or "✓ Generado el <fecha y hora> · de los apuntes v<N>", a "Desactualizado" badge with
   the backend's `stale_reason` when stale, then its links -- "Hacer el quiz" (the quiz page),
+  "Corregir examen" (the exam correction page),
   "Ver <nombre>" per top-level `.md` file (the preview page), a `download` link per
   `.apkg`/`.csv`/`.pdf`/`.pptx` ("flashcards (Anki)", "diapositivas (PowerPoint)"...) -- and
   "Generar" / "Generar de nuevo" ("Generando…" while it runs), which posts `POST

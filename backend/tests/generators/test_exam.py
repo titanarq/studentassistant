@@ -10,12 +10,14 @@ from typing import Any
 
 import pymupdf
 import pytest
+import yaml
 
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.generators import (
     GenerateResult,
     GeneratorRegistry,
     InvalidOptionsError,
+    artifact_status,
     default_registry,
     read_artifact_meta,
     run_generator,
@@ -23,10 +25,12 @@ from studentassistant.generators import (
 from studentassistant.generators.exam import (
     EXAM_MD,
     EXAM_PDF,
+    EXAM_YAML,
     KIND,
     SOLUTIONS_MD,
     SOLUTIONS_PDF,
     TOOL_NAME,
+    ExamFile,
     ExamGenerator,
     format_points,
     inline_html,
@@ -162,7 +166,7 @@ def test_it_writes_the_statements_and_the_solutions_apart(
     result = _generate(topic, fake)
 
     names = [path.rsplit("/", 1)[-1] for path in result.files]
-    assert sorted(names[:-1]) == sorted([EXAM_MD, SOLUTIONS_MD, EXAM_PDF, SOLUTIONS_PDF])
+    assert sorted(names[:-1]) == sorted([EXAM_YAML, EXAM_MD, SOLUTIONS_MD, EXAM_PDF, SOLUTIONS_PDF])
     assert names[-1] == f"{KIND}.meta.yaml"
     # Worked solutions (their computed numbers) are not checked, only statements and rubrics.
     assert result.ungrounded == []
@@ -189,6 +193,38 @@ def test_it_writes_the_statements_and_the_solutions_apart(
     assert "| Escribe el cociente incremental | 2 puntos |" in solutions
     assert "*Apuntes: 1. Definición*" in solutions
     assert "*Apuntes: 2. Próximo día*" in solutions
+
+
+def test_it_writes_the_machine_readable_exam(topic: ReviseTopic, fake: FakeClaude) -> None:
+    _generate(topic, fake)
+
+    data = yaml.safe_load(_text(topic, EXAM_YAML))
+    exam = ExamFile.model_validate(data)
+    assert (exam.duration_minutes, exam.total_points) == (60, 10)
+    assert exam.instructions == INSTRUCTIONS
+    assert [q.id for q in exam.exercises] == ["e1"]
+    assert [(q.id, q.number, q.points) for q in exam.questions] == [("p1", 1, 4), ("p2", 2, 6)]
+    first = exam.questions[0]
+    assert first.statement == QUESTIONS[0]["statement"]
+    assert first.solution == QUESTIONS[0]["solution"]
+    assert [(c.criterion, c.points) for c in first.rubric] == [
+        ("Escribe el cociente incremental", 2),
+        ("Toma el límite cuando h → 0", 2),
+    ]
+    assert exam.questions[1].anchors == ["proximo-dia"]
+    assert "Escribe el cociente incremental" in _text(topic, EXAM_YAML)  # readable, not escaped
+
+
+def test_an_exam_from_version_1_shows_as_stale(topic: ReviseTopic, fake: FakeClaude) -> None:
+    _generate(topic, fake)
+    assert ExamGenerator.version == 2
+    path = generated_directory(topic.vault, topic.subject, topic.topic) / f"{KIND}.meta.yaml"
+    meta = yaml.safe_load(path.read_text(encoding="utf-8"))
+    meta["generator_version"] = 1
+    path.write_text(yaml.safe_dump(meta, allow_unicode=True), encoding="utf-8")
+
+    status = artifact_status(topic.vault, topic.subject, topic.topic, KIND, registry=_registry())
+    assert status.stale and status.stale_reason
 
 
 def test_the_pdfs_are_printable_and_keep_the_solutions_out_of_the_exam(

@@ -1,0 +1,75 @@
+/* The exam correction page: questions, their solution and rubric, points and the total. */
+
+.exam-page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.exam-meta,
+.exam-points,
+.exam-sources,
+.exam-subtotal {
+  color: #555;
+}
+
+.exam-warning {
+  color: #8a4b00;
+}
+
+.exam-questions {
+  padding-left: 0;
+  list-style: none;
+}
+
+.exam-question fieldset {
+  border: 1px solid #ccc;
+  border-radius: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0.5rem 1rem 1rem;
+}
+
+.exam-statement {
+  font-weight: 600;
+  white-space: pre-line;
+}
+
+.exam-reveal {
+  border-top: 1px solid #eee;
+  margin-top: 0.75rem;
+}
+
+.exam-reveal h3 {
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.exam-solution {
+  white-space: pre-line;
+}
+
+.exam-criteria {
+  padding-left: 1rem;
+}
+
+.exam-criteria li {
+  margin: 0.35rem 0;
+}
+
+.exam-criteria input {
+  width: 4rem;
+}
+
+.exam-criteria input[aria-invalid="true"],
+.exam-invalid {
+  color: #a3261b;
+  border-color: #a3261b;
+}
+
+.exam-score {
+  margin-top: 1.5rem;
+  border-top: 1px solid #ccc;
+  font-weight: 600;
+}
