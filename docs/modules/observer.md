@@ -72,9 +72,10 @@ event at or before the cursor is an `EventOrderError`); `fold_from(snapshot, tai
 equals `fold` over all the events for every split point; `snapshot_of(events)` folds from scratch.
 
 ### Loader -- `loader.py`
-`load_observer_snapshot(vault, subject_slug, topic_slug) -> ObserverSnapshot` reads the events
-(`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds only the tail after
-it and writes the result back (`write_observer_snapshot`) when it changed. The stored snapshot is
+`load_observer_snapshot(vault, subject_slug, topic_slug, *, write_back=True) -> ObserverSnapshot`
+reads the events (`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds
+only the tail after it and writes the result back (`write_observer_snapshot`) when it changed and
+`write_back` is true (a read-only caller such as the topic list passes `False`). The stored snapshot is
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be

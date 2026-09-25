@@ -76,6 +76,10 @@ data class Topic(
     val name: String,
     /** The session still open on this topic, if any: resume it instead of starting one. */
     @SerialName("open_session_id") val openSessionId: String? = null,
+    /** Since 1.1: start of the topic's latest session, backend clock, epoch ms; null when unknown. */
+    @SerialName("last_session_at_ms") val lastSessionAtMs: Long? = null,
+    /** Since 1.1: open pending-review items (doubts awaiting the student); null when unknown. */
+    @SerialName("pending_count") val pendingCount: Int? = null,
 )
 
 @Serializable

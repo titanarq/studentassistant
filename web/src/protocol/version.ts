@@ -2,7 +2,7 @@
 // Peers with the same MAJOR interoperate and speak the lower of the two MINORs; a different
 // MAJOR is refused with a message naming both versions.
 
-export const PROTOCOL_VERSION = "1.0";
+export const PROTOCOL_VERSION = "1.1";
 
 export const VERSION_PATTERN = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 

@@ -5,7 +5,9 @@
       "topic_id": "la-celula",
       "subject_id": "biologia",
       "name": "La célula",
-      "open_session_id": "s-20260924-1805"
+      "open_session_id": "s-20260924-1805",
+      "last_session_at_ms": 1790273100000,
+      "pending_count": 2
     },
     {
       "topic_id": "fotosintesis",
