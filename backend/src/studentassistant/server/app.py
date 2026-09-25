@@ -37,6 +37,7 @@ from studentassistant.config import (
     VaultSettings,
 )
 from studentassistant.llm import Transport
+from studentassistant.observer import DigestOnEnd, topic_digest
 from studentassistant.observer.live import ObserverLoop, default_client_factory
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
@@ -168,6 +169,8 @@ def create_app(
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
+    # Then the topic digest (`state/digest.md`) is regenerated from the log, `session.ended` in it.
+    app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached))
     app.state.observer = None
     app.state.transcriber = None
     app.state.notes = None
@@ -194,6 +197,7 @@ def create_app(
                 app.state.bus.attached,
                 settings=observer_settings,
                 client_factory=default_client_factory(llm_settings, llm_transport),
+                digest=topic_digest,
             )
             # Registered after the gateway's STT flush, so the observer sees the last finals.
             app.state.sessions.add_before_ended(app.state.observer.flush)

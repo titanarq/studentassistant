@@ -131,7 +131,7 @@ async def generate_notes(
     """Write the topic's notes with the editor, validate, save, commit and tag them.
 
     `client` is an `editor` client (`get_client("editor", ledger=LedgerBinding(...))`; tests use
-    `FakeClaude`); `sync` the vault's `GitSync`; `digest` reads the topic digest (none until #56);
+    `FakeClaude`); `sync` the vault's `GitSync`; `digest` reads the topic digest (#56);
     `on_event(kind, payload)` receives the `notes.generated` event.
 
     Raises:

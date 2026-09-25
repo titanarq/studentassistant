@@ -119,6 +119,10 @@ the model. An unreadable snapshot (not UTF-8, not JSON, not the model) is a `Sna
 queue model as deterministic YAML (`dump_yaml` of `model_dump(mode="json")`, atomic, secret guard)
 to `review/pending.yaml`, creating `review/`, and returns the path; `pending_review_path(...)`
 gives it. The observer regenerates it from its fold after every change (#55); the index reads it.
+`write_topic_digest(vault, subject_slug, topic_slug, text)` writes the observer's topic digest
+(Markdown text, atomic, secret guard) to `state/digest.md`, creating `state/`, and returns the
+path; `read_topic_digest(...)` returns it, or `None` when none was written (an unreadable file is
+a `DigestFileError`, a `StateError`); `topic_digest_path(...)` gives it (#56).
 
 ### JSONL logs -- `jsonl.py`
 `append_jsonl(path, obj)` writes one compact JSON object per line with a single write, flush and
@@ -456,8 +460,7 @@ from their own module (`studentassistant.vault.github`, `studentassistant.vault.
 As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md`;
-  and the retention `purge` described below. (`conversations/` is written since #51.)
+- Also unwritten: the retention `purge` described below. (`conversations/` is written since #51.)
 
 ## Purge -- `purge.py`
 `studentassistant purge [--topic <subject>/<topic>] [--dry-run] [--hard] [--yes]` applies a

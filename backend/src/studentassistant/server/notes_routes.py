@@ -33,6 +33,7 @@ from studentassistant.llm import (
     Transport,
     get_client,
 )
+from studentassistant.observer import topic_digest
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, get_topic
@@ -132,6 +133,7 @@ def notes_router() -> APIRouter:
                 topic_id,
                 client=client,
                 sync=sync,
+                digest=topic_digest,
                 on_event=publish,
                 confirm_over_cap=bool(body and body.confirm_over_cap),
             )
