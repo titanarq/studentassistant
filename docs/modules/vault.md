@@ -517,7 +517,11 @@ the tags are (so two subjects' `introduccion` never share a sequence).
 never FTS5 syntax: every word must appear, as a prefix; a query without a word matches nothing.
 `kinds` narrows to `DOC_KINDS`: `notes` (`notes/apuntes.md`), `page` (a page transcription
 `sources/{notes,book,pdf}/page-NNN.md`), `pdf` (the extracted text `sources/pdf/page-NNN.pKKK.txt`
-of page K of a stored PDF), `web` (`sources/web/NNN-<slug>.md`) and `transcript` (one final
+of page K of a stored PDF; for a scanned page, whose `.txt` is empty, its Claude vision
+transcription `page-NNN.pKKK.md` instead when that is stored and not empty -- same kind and
+`source`, `path` naming the `.md`; a page with text keeps its `.txt`; the `.md` lives in the
+same `sources/pdf/` unit, so a transcription written after the import is picked up by `update()`
+as well as by `rebuild()`), `web` (`sources/web/NNN-<slug>.md`) and `transcript` (one final
 segment). Ranked by BM25, ties by path then `seq`, so the same vault always gives the
 same list. A hit has `kind`, `path` (the vault-relative file), `source` (for a page, its original
 `page-NNN.<ext>`, which the web opens; for a PDF page, `sources/pdf/page-NNN.pdf#page=K` as

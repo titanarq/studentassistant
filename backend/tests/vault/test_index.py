@@ -6,17 +6,20 @@ import asyncio
 import os
 from pathlib import Path
 
+import pymupdf
 import pytest
 from git_helpers import git
 from typer.testing import CliRunner
 
 from studentassistant.cli import cli
+from studentassistant.sources.pdf import import_pdf
 from studentassistant.vault import (
     GitSync,
     Vault,
     create_subject,
     create_topic,
     end_session,
+    put_page_transcription,
     put_source,
     sources_directory,
     start_session,
@@ -175,6 +178,61 @@ def test_pdf_page_text_is_searchable_and_cites_its_page(
         assert hit.kind == DOC_PDF
         assert hit.source == f"{pdf.relative_to(tmp_vault.path).as_posix()}#page=2"
         assert index.search("pauling", kinds=[DOC_PAGE]) == []
+
+
+def _text_and_scanned_pdf() -> bytes:
+    """Page 1 reads «Electronegatividad de Pauling»; page 2 is a picture only (a scanned page)."""
+    document = pymupdf.open()
+    try:
+        document.new_page().insert_text((72, 72), "Electronegatividad de Pauling", fontsize=14)
+        picture = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+        picture.clear_with(200)
+        document.new_page().insert_image(pymupdf.Rect(72, 72, 272, 272), pixmap=picture)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def test_a_scanned_pdf_page_is_searched_by_its_vision_transcription(
+    tmp_vault: Vault, content: dict[str, str], index_path: Path
+) -> None:
+    imported = import_pdf(
+        tmp_vault, content["chemistry"], content["bonds"], "Tema 2.pdf", _text_and_scanned_pdf()
+    )
+    assert [page.has_text for page in imported.pages] == [True, False]
+    pdf = imported.path.relative_to(tmp_vault.path).as_posix()
+    stem = pdf.removesuffix(".pdf")
+    with VaultIndex.open(tmp_vault, index_path) as index:
+        assert index.search("hibridación") == []  # nothing transcribed yet
+        [text_hit] = index.search("pauling")
+        assert (text_hit.kind, text_hit.path, text_hit.source) == (
+            DOC_PDF,
+            f"{stem}.p001.txt",
+            f"{pdf}#page=1",
+        )
+
+        # The vision transcription lands after the import: the incremental refresh sees it.
+        put_page_transcription(tmp_vault, pdf, "# Tema 2\n\nLa hibridación sp3.", page=2)
+        assert index.update().units_indexed == 1
+        [scanned_hit] = index.search("hibridación")
+        assert (scanned_hit.kind, scanned_hit.path, scanned_hit.source) == (
+            DOC_PDF,
+            f"{stem}.p002.md",
+            f"{pdf}#page=2",
+        )
+        assert index.search("hibridación", kinds=[DOC_PAGE]) == []
+        assert [h.path for h in index.search("pauling")] == [f"{stem}.p001.txt"]
+        # A transcription of a page with text changes nothing: its `.txt` is what is searched.
+        put_page_transcription(tmp_vault, pdf, "Texto alternativo", page=1)
+        index.update()
+        assert index.search("alternativo") == []
+        before = _answers(index)
+
+    index_path.unlink()
+    rebuild_index(tmp_vault, index_path)
+    with VaultIndex.open(tmp_vault, index_path) as index:
+        assert [h.path for h in index.search("hibridación")] == [f"{stem}.p002.md"]
+        assert _answers(index) == before
 
 
 def test_search_filters_and_never_takes_fts_syntax(

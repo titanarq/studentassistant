@@ -63,6 +63,7 @@ from studentassistant.vault.sources import (
     PAGED_KINDS,
     SOURCE_KINDS,
     SOURCES_DIRNAME,
+    TRANSCRIPTION_SUFFIX,
     _read_sidecar,
     _sidecar_of,
     _source_entries,
@@ -91,7 +92,9 @@ SNIPPET_TOKENS = 16
 DOC_NOTES = "notes"  # notes/apuntes.md
 DOC_PAGE = "page"  # sources/{notes,book,pdf}/page-NNN.md: a page transcription
 DOC_WEB = "web"  # sources/web/NNN-<slug>.md
-DOC_PDF = "pdf"  # sources/pdf/page-NNN.pKKK.txt: the extracted text of page K of a stored PDF
+# sources/pdf/page-NNN.pKKK.txt: the extracted text of page K of a stored PDF; for a scanned page
+# (empty text) its Claude vision transcription `page-NNN.pKKK.md` instead, when stored.
+DOC_PDF = "pdf"
 DOC_TRANSCRIPT = "transcript"  # one final segment of sessions/<id>/transcript.jsonl
 DOC_KINDS: tuple[str, ...] = (DOC_NOTES, DOC_PAGE, DOC_PDF, DOC_WEB, DOC_TRANSCRIPT)
 
@@ -878,9 +881,15 @@ def _index_sources(root: Path, directory: Path, subject: str, topic: str, rows: 
             # Cited the way provenance cites a PDF page: `sources/pdf/page-NNN.pdf#page=K`.
             original = originals.get(stem)
             source = f"{original}#page={int(pdf_page[2])}" if original else None
-            rows.docs.append(
-                (_text(entry), DOC_PDF, relative, source, subject, topic, None, None, None)
-            )
+            text = _text(entry)
+            if not text.strip():
+                # A scanned page (no text layer): search its vision transcription, if stored.
+                transcription = entry.with_suffix(TRANSCRIPTION_SUFFIX)
+                if not transcription.is_symlink() and transcription.is_file():
+                    transcribed = _text(transcription)
+                    if transcribed.strip():
+                        text, relative = transcribed, _rel(root, transcription)
+            rows.docs.append((text, DOC_PDF, relative, source, subject, topic, None, None, None))
 
 
 def _pending_items(path: Path) -> list[Any]:
