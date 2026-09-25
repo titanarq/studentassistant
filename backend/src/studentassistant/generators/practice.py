@@ -53,7 +53,14 @@ from studentassistant.generators.quiz import (
 )
 from studentassistant.generators.registry import default_registry
 from studentassistant.generators.run import GenerationError, artifact_status
-from studentassistant.vault import GitSync, Vault, read_generated
+from studentassistant.vault import (
+    GitSync,
+    Vault,
+    VaultError,
+    list_subjects,
+    list_topics,
+    read_generated,
+)
 from studentassistant.vault.study import append_study_record, read_study_records
 
 PRACTICE_LOG = "practice"
@@ -456,6 +463,98 @@ def _suspended(items: list[PracticeItem], aside: dict[str, datetime]) -> list[Su
         if item.key in aside
     ]
     return sorted(listed, key=lambda entry: entry.suspended_at, reverse=True)
+
+
+# -- the summary across topics (#280) --------------------------------------------------------------
+
+
+class TopicPracticeSummary(_Strict):
+    """How much practice one topic offers now, as `practice_queue` would give it."""
+
+    subject_id: str
+    subject_name: str
+    topic_id: str
+    topic_title: str
+    due: int = Field(description="Reviewed items due now (suspended ones excluded).")
+    new: int = Field(description="Never-seen items offered now, within the daily limit.")
+    next_due: datetime | None = Field(
+        default=None, description="The earliest due time after `now` of a reviewed item."
+    )
+
+
+class PracticeTotals(_Strict):
+    due: int = 0
+    new: int = 0
+    topics: int = Field(default=0, description="Topics listed (with practice material).")
+
+
+class PracticeSummary(_Strict):
+    """The practice waiting now across every topic: the most due first."""
+
+    now: datetime
+    topics: list[TopicPracticeSummary] = Field(default_factory=list)
+    totals: PracticeTotals = Field(default_factory=PracticeTotals)
+    warnings: list[str] = Field(default_factory=list)
+
+
+_UNREADABLE = (ValueError, VaultError, OSError)  # GenerationError is a ValueError
+
+
+def practice_summary(
+    vault: Vault,
+    *,
+    now: datetime | None = None,
+    new_limit: int = DEFAULT_NEW_LIMIT,
+    tz: tzinfo | None = None,
+) -> PracticeSummary:
+    """Every topic's `practice_queue` counts at `now`, sorted by due (desc), then new (desc).
+
+    A topic with no practice item (neither flashcards nor a quiz) is left out. A subject or topic
+    that cannot be read is skipped and named in the Spanish `warnings`; it never fails the call.
+    """
+    moment = now or _utc_now()
+    warnings: list[str] = []
+    topics: list[TopicPracticeSummary] = []
+    try:
+        subjects = list_subjects(vault)
+    except _UNREADABLE:
+        return PracticeSummary(now=moment, warnings=["No se pueden leer las asignaturas."])
+    for subject in subjects:
+        name = subject.subject.name
+        try:
+            stored_topics = list_topics(vault, subject.slug)
+        except _UNREADABLE:
+            warnings.append(f"No se pueden leer los temas de «{name}»: se omiten.")
+            continue
+        for stored in stored_topics:
+            title = stored.topic.title
+            try:
+                queue = practice_queue(
+                    vault, subject.slug, stored.slug, now=moment, new_limit=new_limit, tz=tz
+                )
+            except _UNREADABLE:
+                warnings.append(
+                    f"No se puede leer el material de práctica de «{title}» ({name}): se omite."
+                )
+                continue
+            if queue.counts.total == 0:
+                continue
+            topics.append(
+                TopicPracticeSummary(
+                    subject_id=subject.slug,
+                    subject_name=name,
+                    topic_id=stored.slug,
+                    topic_title=title,
+                    due=queue.counts.due,
+                    new=queue.counts.new,
+                    next_due=queue.next_due,
+                )
+            )
+    topics.sort(key=lambda t: (-t.due, -t.new, t.subject_id, t.topic_id))
+    totals = PracticeTotals(
+        due=sum(t.due for t in topics), new=sum(t.new for t in topics), topics=len(topics)
+    )
+    return PracticeSummary(now=moment, topics=topics, totals=totals, warnings=warnings)
 
 
 def suspended_items(vault: Vault, subject: str, topic: str) -> list[SuspendedItem]:

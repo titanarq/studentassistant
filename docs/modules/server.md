@@ -532,6 +532,15 @@ Routes registered today:
     nothing, `changed: false`). `key` must look like `flashcards:<id>` or `quiz:<hash>` (else
     422); 404 an item no longer in the material or an unknown topic. The items set aside come
     in the queue response (`suspended`).
+- **Practice summary** (`server/practice_summary_routes.py`, #280): thin over
+  `generators.practice.practice_summary`, run in a worker thread.
+  - `GET /api/practice/summary[?new_limit=n]` -> `PracticeSummary` (`now`, `topics`, `totals`,
+    `warnings`): per topic with practice material (`subject_id`, `subject_name`, `topic_id`,
+    `topic_title`, `due`, `new`, `next_due`, what `practice_queue` offers now with `new_limit`,
+    0-100, default 10; suspended items count as neither), the most due first (then most new);
+    `totals` sums `due`/`new` and counts `topics`. Topics with neither flashcards nor a quiz are
+    omitted; a subject or topic that cannot be read is skipped and named in `warnings` (Spanish),
+    never failing the call. 503 when the vault cannot be opened. Bearer auth like every `/api`.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
