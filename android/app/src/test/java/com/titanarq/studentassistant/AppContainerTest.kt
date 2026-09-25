@@ -11,7 +11,7 @@ import com.titanarq.studentassistant.backend.OkHttpBackendClient
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
 import com.titanarq.studentassistant.capture.CaptureViewModel
 import com.titanarq.studentassistant.capture.FakeSessionSocketFactory
-import com.titanarq.studentassistant.capture.NoStillCapture
+import com.titanarq.studentassistant.capture.NoStillCamera
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.protocol.Session
@@ -117,6 +117,7 @@ class AppContainerTest {
             backendClientFactory = { FakeBackendClient() },
             sessionSocketFactoryFactory = { sockets },
             backendStoreFactory = { dir -> BackendStore.create(File(dir, BackendStore.FILE_NAME), scope) },
+            uploadScope = scope,
         )
         val open = OpenSession(
             backend = BackendCredentials("http://pc:8000", "sa_tok"),
@@ -127,6 +128,6 @@ class AppContainerTest {
         val viewModel = container.captureViewModelFactory(open).make(CaptureViewModel::class.java)
         assertEquals("El feudalismo", viewModel.state.value.topicName)
         assertSame(sockets, container.sessionSocketFactory)
-        assertTrue(container.stillCapture is NoStillCapture)
+        assertSame(NoStillCamera, container.stillCamera)
     }
 }

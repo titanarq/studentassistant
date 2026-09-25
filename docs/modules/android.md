@@ -11,7 +11,7 @@ Thin capture client (ADR-0001), Spanish UI:
   segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar), live transcript,
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
-  sound; upload with retries; thumbnail strip.
+  sound; upload with retries; thumbnail strip (see "Still capture (#46)").
 - Offline resilience: local spool of audio and photos while disconnected, resumed by `seq`.
 
 ## Boundaries
@@ -117,8 +117,9 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `command_id`, then answers `ack`. `end()` sends `button end_session`, then `POST
   /api/sessions/{id}/end` (`reason: button`); success, 404 or 409 clear the `SessionHolder` and end
   the screen, any other failure keeps the session running with `endFailure` shown.
-- **`StillCapture`** (`fun interface`, `capture(trigger, commandId)`) is the hook for android
-  still capture (#46); `AppContainer.stillCapture` defaults to `NoStillCapture`, which does nothing.
+- **`StillCapture`** (`shots: Flow<List<CaptureShot>>`, `capture(trigger, commandId)`,
+  `retry(captureId)`) is what the view model calls; it exposes the strip as
+  `CaptureViewModel.shots` and `retryShot(captureId)`. See "Still capture" below.
 - **`SessionConnection(scope, socketFactory, url, token, clock, capabilities, resume)`**: the
   protocol v1 socket client. Sends `hello` (`stt: client`, `stt_provider: android-speech`,
   `audio_format` pcm16/16 kHz/mono, since the app can stream), waits for `hello.ack` and exposes
@@ -165,6 +166,40 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). The camera preview is
   bound to the same lifecycle through CameraX, which closes the camera on `ON_STOP`.
 - Known gap: nothing here is spooled to disk (android-offline).
+
+## Still capture (#46)
+
+- **`BurstStillCapture(backend, sessionId, camera, feedback, uploads, clock, scope)`**, built per
+  session by `AppContainer.captureViewModelFactory`: on "Capturar" or `capture_now` it calls
+  `CaptureFeedback.shutter()` and adds a `CaptureShot` (fresh lowercase UUID `capture_id`, the
+  phone time of the trigger, status `CAPTURING`) to the strip at once, then takes a burst of
+  `BURST_SIZE` (3) stills with the `StillCamera` and hands it to the `CaptureUploadQueue`. A
+  camera that takes nothing marks the shot `CAMERA_FAILED`.
+- **`StillCamera`** (`suspend takeBurst(count): Burst`; `Burst(stills, thumbnail)`, `Still(bytes,
+  contentType, widthPx, heightPx, clientTimeMs)`, `StillCameraException`) and **`CaptureFeedback`**
+  are the seams; `NoStillCamera` / `NoCaptureFeedback` are the container defaults.
+  **`CameraXStillCamera(clock)`** (owned by `StudentAssistantApp`, `AppContainer.stillCamera`)
+  holds a CameraX `ImageCapture` (`CAPTURE_MODE_MAXIMIZE_QUALITY`, `HIGHEST_AVAILABLE_STRATEGY`,
+  flash off) that `CaptureScreen(imageCapture = ...)` binds next to its preview; each still is a
+  CameraX-written JPEG with its EXIF orientation, reported with its displayed size; bursts never
+  interleave; the thumbnail is the first still at ~256 px. A burst keeps the stills it got when a
+  later one fails. **`AndroidCaptureFeedback`**: a 40 ms vibration (`VIBRATE` permission) and
+  `MediaActionSound.SHUTTER_CLICK`.
+- **`CaptureUploadQueue(scope, client, retryDelaysMs, maxConflictAttempts)`**
+  (`AppContainer.captureUploads`, on the container's app-wide `uploadScope`, so uploads go on when
+  the capture screen is left): `begin` / `submit` / `cameraFailed` / `retry`, `all` and
+  `shots(sessionId)`. Each burst is one `uploadCapture` (parts `image_0..`, the request's
+  `client_time_ms` the trigger time, each image its own); uploads run one at a time; the
+  `capture_id` never changes, so retries are idempotent (`duplicate` counts as uploaded). Transient
+  failures (unreachable, 408/425/429/5xx, an unreadable 2xx, and 409 at most 10 times, since the
+  session may be resuming) are retried after 1/2/5/10/30 s (30 s repeats); any other refusal is
+  `FAILED`, and a tap on its thumbnail retries it. Statuses: `CAPTURING`, `PENDING`, `UPLOADING`,
+  `UPLOADED`, `FAILED`, `CAMERA_FAILED`; full-size stills are dropped once uploaded.
+- **Thumbnail strip** (`CaptureScreen`): a row above the transcript, one 64 dp tile per capture
+  with a badge (spinner while capturing/uploading, «↑» pending, «✓» sent, «!» failed) and a Spanish
+  content description.
+- Known gaps: the queue is in memory (a process restart loses unsent captures; the disk spool is
+  #53); the server's WebSocket `ack` of `capture_ids` is not used, the upload's answer is.
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The

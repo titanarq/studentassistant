@@ -10,12 +10,16 @@ import com.titanarq.studentassistant.backend.OkHttpBackendClient
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
 import com.titanarq.studentassistant.capture.AudioSource
 import com.titanarq.studentassistant.capture.AudioStreamer
+import com.titanarq.studentassistant.capture.BurstStillCapture
+import com.titanarq.studentassistant.capture.CaptureFeedback
+import com.titanarq.studentassistant.capture.CaptureUploadQueue
 import com.titanarq.studentassistant.capture.CaptureViewModel
 import com.titanarq.studentassistant.capture.ClientTranscriber
-import com.titanarq.studentassistant.capture.NoStillCapture
+import com.titanarq.studentassistant.capture.NoCaptureFeedback
+import com.titanarq.studentassistant.capture.NoStillCamera
 import com.titanarq.studentassistant.capture.OkHttpSessionSocketFactory
 import com.titanarq.studentassistant.capture.SessionSocketFactory
-import com.titanarq.studentassistant.capture.StillCapture
+import com.titanarq.studentassistant.capture.StillCamera
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.session.OpenSession
@@ -23,6 +27,7 @@ import com.titanarq.studentassistant.session.SessionHolder
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /** Wall-clock time source, so time-dependent logic can be tested with a fake. */
 fun interface Clock {
@@ -46,6 +51,9 @@ object SystemClock : Clock {
  *   `SpeechRecognizer` on a device, built by [StudentAssistantApp] with a `Context`), given the
  *   view model's scope.
  * @param audioSourceFactory the microphone for server STT mode (`AudioRecord` on a device).
+ * @param stillCameraFactory the camera of still capture (CameraX `ImageCapture` on a device).
+ * @param captureFeedbackFactory vibration + shutter sound on a capture trigger.
+ * @param uploadScope the app-wide scope capture uploads run on, so they outlive the capture screen.
  */
 class AppContainer(
     private val filesDir: File,
@@ -57,8 +65,9 @@ class AppContainer(
     private val clientTranscriberFactory: (CoroutineScope) -> ClientTranscriber =
         { error("no speech recognizer configured") },
     private val audioSourceFactory: () -> AudioSource = { error("no microphone configured") },
-    /** Still capture (burst + upload), #46; nothing until then. */
-    val stillCapture: StillCapture = NoStillCapture,
+    stillCameraFactory: () -> StillCamera = { NoStillCamera },
+    captureFeedbackFactory: () -> CaptureFeedback = { NoCaptureFeedback },
+    private val uploadScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     /** The app-wide clock, created on first access and shared afterwards. */
     val clock: Clock by lazy(clockFactory)
@@ -92,6 +101,15 @@ class AppContainer(
         viewModelFactory { initializer { HomeViewModel(backendClient, backendStore, sessionHolder, clock) } }
     }
 
+    /** The camera every capture burst is taken with. */
+    val stillCamera: StillCamera by lazy(stillCameraFactory)
+
+    /** The capture trigger's vibration and shutter sound. */
+    val captureFeedback: CaptureFeedback by lazy(captureFeedbackFactory)
+
+    /** Uploads every capture burst, with retries, on [uploadScope]. */
+    val captureUploads: CaptureUploadQueue by lazy { CaptureUploadQueue(uploadScope, backendClient) }
+
     /** Opens the session WebSockets of the capture screen. */
     val sessionSocketFactory: SessionSocketFactory by lazy(sessionSocketFactoryFactory)
 
@@ -106,7 +124,15 @@ class AppContainer(
                 socketFactory = sessionSocketFactory,
                 transcriberFactory = clientTranscriberFactory,
                 audioStreamerFactory = { AudioStreamer(audioSourceFactory(), clock, Dispatchers.IO) },
-                stillCapture = stillCapture,
+                stillCapture = BurstStillCapture(
+                    backend = session.backend,
+                    sessionId = session.session.sessionId,
+                    camera = stillCamera,
+                    feedback = captureFeedback,
+                    uploads = captureUploads,
+                    clock = clock,
+                    scope = uploadScope,
+                ),
             )
         }
     }

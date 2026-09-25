@@ -504,8 +504,12 @@ def assemble_input(
     digest: DigestReader | None = None,
     max_page_images: int = MAX_PAGE_IMAGES,
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
+    instruction: str | None = None,
 ) -> EditorInput:
     """Everything the editor gets to write the topic's notes (see the module docstring).
+
+    `instruction` replaces the closing request (write the whole `notes/apuntes.md`) for another
+    task over the same input, such as the doubts resolution (`doubts.py`).
 
     Blocking (reads the vault): async callers run it in a worker thread.
 
@@ -568,7 +572,8 @@ def assemble_input(
             f" existiendo.\n\n{previous}"
         )
     builder.text(
-        f"Escribe ahora `notes/apuntes.md` del tema «{topic.title}» en modo de fidelidad"
+        instruction
+        or f"Escribe ahora `notes/apuntes.md` del tema «{topic.title}» en modo de fidelidad"
         f" «{mode}»: el documento Markdown completo y nada más."
     )
     builder.mark_cache()
