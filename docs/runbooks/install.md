@@ -93,6 +93,7 @@ Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, term
 | Subida al vault | `git push --dry-run`: que puedas subir cambios | `gh auth login` o un token con escritura |
 | Puerto | que `server.port` (8765) esté libre o lo use el propio backend | cambia `server.port` |
 | Servicio | que `studentassistant.service` esté activo | `setup`, o mira `journalctl --user -u studentassistant` |
+| Marp CLI (diapositivas) | que `generators.marp_command` (`marp`) esté en el `PATH` y responda a `--version`; si no, solo es un aviso: las diapositivas se generan pero sin PDF ni PPTX | `npm install -g @marp-team/marp-cli` (necesita Node.js y Chrome o Chromium) |
 
 ## Whisper en el PC (opcional)
 

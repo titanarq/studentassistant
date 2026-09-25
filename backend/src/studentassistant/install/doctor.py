@@ -3,7 +3,8 @@
 The checks, in order: the Python dependencies, the configured STT mode and provider (and, only
 when faster-whisper is selected, faster-whisper itself, CUDA and the downloaded model), the
 Anthropic API key (present; with `api_call` also accepted by the API, through one free call),
-the vault (opens, has an `origin`, may be pushed to), the server port, and the systemd service.
+the vault (opens, has an `origin`, may be pushed to), the server port, the systemd service, and
+Marp CLI (the slides generator's PDF/PPTX export; missing is only an `aviso`).
 A check is `ok`, `aviso` (works, but worse than it could) or `fallo`; any `fallo` makes the
 command exit 1. Everything the student reads is Spanish, and no check ever prints a secret.
 
@@ -16,13 +17,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import socket
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import metadata
 from typing import Literal
 
-from studentassistant.config import ServerSettings, Settings, SttSettings
+from studentassistant.config import GeneratorsSettings, ServerSettings, Settings, SttSettings
 from studentassistant.install import service, whisper
 from studentassistant.install.apikey import API_KEY_ENV_VAR, file_is_private, read_api_key
 from studentassistant.llm import LLMAPIError, LLMError, check_api_key, find_ant_profile
@@ -34,6 +37,12 @@ from studentassistant.vault.setup import SetupError, check_remote_access
 Status = Literal["ok", "aviso", "fallo"]
 _LABELS: dict[Status, str] = {"ok": "ok", "aviso": "aviso", "fallo": "FALLO"}
 DISTRIBUTION = "studentassistant"
+# How long `marp --version` may take (an `npx` command may first download the package).
+MARP_VERSION_TIMEOUT_SECONDS = 30.0
+MARP_INSTALL_HINT = (
+    "instálalo con `npm install -g @marp-team/marp-cli` (necesita Node.js y Chrome o Chromium)"
+    " o configura `generators.marp_command`"
+)
 
 
 @dataclass(frozen=True)
@@ -249,6 +258,40 @@ def check_service() -> Check:
     return Check(name, "fallo", detail)
 
 
+def check_marp(generators: GeneratorsSettings, probes: DoctorProbes) -> Check:
+    """Whether `generators.marp_command` is on the probes' `PATH`, and its `--version`."""
+    name = "Marp CLI (diapositivas)"
+    command = generators.marp_command
+    path = probes.environ.get("PATH", "")
+    executable = shutil.which(command[0], path=path)
+    if executable is None:
+        detail = (
+            f"no se encuentra `{command[0]}`: no se exportarán PDF ni PPTX; {MARP_INSTALL_HINT}"
+        )
+        return Check(name, "aviso", detail)
+    try:
+        completed = subprocess.run(
+            [executable, *command[1:], "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=MARP_VERSION_TIMEOUT_SECONDS,
+            env={**probes.environ, "PATH": path},
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        detail = f"`{command[0]} --version` no terminó en {MARP_VERSION_TIMEOUT_SECONDS:g} s"
+        return Check(name, "aviso", detail)
+    except OSError as error:
+        return Check(name, "aviso", f"no se puede ejecutar {executable}: {error}")
+    output = completed.stdout.decode("utf-8", "replace").strip()
+    if completed.returncode != 0 or not output:
+        detail = (
+            f"`{command[0]} --version` falló (código {completed.returncode}); {MARP_INSTALL_HINT}"
+        )
+        return Check(name, "aviso", detail)
+    return Check(name, "ok", f"{output.splitlines()[0]} ({executable})")
+
+
 def run_doctor(
     settings: Settings, *, api_call: bool = False, probes: DoctorProbes | None = None
 ) -> list[Check]:
@@ -261,4 +304,5 @@ def run_doctor(
         *check_vault(settings, probes),
         check_port(settings.server, probes),
         check_service(),
+        check_marp(settings.generators, probes),
     ]
