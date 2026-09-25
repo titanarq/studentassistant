@@ -126,6 +126,40 @@ Refusals (`GenerationError`, Spanish): `QuizNotFoundError`, `QuizChangedError` (
 generated again since `built_at`), `InvalidAttemptError`. `quiz_results(vault, s, t)` reads the
 history. REST: `server/quiz_routes.py` (`docs/modules/server.md`); web: `src/quiz/`.
 
+### Practice with spaced repetition -- `practice.py` (#81)
+
+Not a generator: it practises the topic's current flashcards and quiz questions. Items
+(`practice_items(vault, s, t) -> (items, warnings)`) are `PracticeItem` (`key`, `source`
+`flashcards|quiz`, `prompt`, `answer`, `question_type`, `options`, `explanation`, `anchors`), keyed
+stably: `flashcards:<card id>` and `quiz:<first 12 hex of sha256(normalize_answer(question))>`
+(`quiz_item_key`), so a regenerated quiz asking the same question keeps its history; an item that
+leaves the material is no longer offered. Warnings (Spanish): no flashcards nor quiz, a stale
+material.
+
+- History: every review is a `PracticeReview` (`time`, `item`, `source`, `rating`, and for a
+  question `given`, `correct`, `graded_by`; `anchors`) appended to `study/practice.jsonl`
+  (`vault.study`, merges by union). `practice_history(...)` reads it. The schedule is never
+  stored: `replay(reviews)` recomputes each item's `ItemState` (`reviews`, `repetitions`,
+  `lapses`, `ease`, `interval_days`, `first_review`, `last_review`, `last_rating`, `due`) in time
+  order, so two PCs' logs give the same schedule.
+- `schedule(state, rating, now)` (pure), SM-2 variant, ratings `again|hard|good|easy`: ease starts
+  at 2.5, never under 1.3 nor over 3.5; `again` -0.2 ease, repetitions to 0 (a lapse when it was
+  learned), due in 10 minutes; `hard` -0.15 ease, 1 day first, else interval × 1.2; `good` 1 day,
+  then 6, then interval × ease; `easy` +0.15 ease, 4 days first, else interval × ease × 1.3;
+  intervals capped at 365 days.
+- `practice_queue(vault, s, t, *, now=None, new_limit=10, tz=None) -> PracticeQueue`: `queue` of
+  `QueuedItem` (`item`, `state` or none) -- the items due (oldest due first), then never-seen items
+  up to `new_limit` minus those first reviewed on the day of `now` (in `tz`, local by default) --,
+  `counts` (`total`, `due`, `new`, `unseen`, `learned`, `new_today`), `next_due`, `warnings`.
+- `record_practice_review(vault, s, t, answer, *, sync, clock) -> ReviewOutcome` (`review`,
+  `state`): `PracticeAnswer` (`item`, `rating`, `given`, `self_assessed`). A flashcard needs a
+  `rating` (`InvalidReviewError`); a question is graded by `quiz.grade` -- wrong is `again`, right
+  is `good` unless the rating says `hard` or `easy`. An unknown key is
+  `PracticeItemNotFoundError`. One commit per review (`Repaso de s/t: <key> (<rating>)`).
+
+Full quiz attempts (`quiz-results.jsonl`) do not feed the schedule. REST:
+`server/practice_routes.py` (`docs/modules/server.md`); web: `src/practice/`.
+
 ### CLI and API
 
 - `studentassistant generate <kind> --topic <subject>/<topic> [-o key=value ...]

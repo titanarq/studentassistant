@@ -448,6 +448,13 @@ Routes registered today:
     `study/quiz-results.jsonl` and committed. 404 no quiz, 409 the quiz was generated again
     (`built_at` differs), 422 an answer to an unknown question or one twice.
   - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
+- **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
+    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `warnings`); `new_limit` 0-100,
+    default 10 new items a day. 500 when a material cannot be read.
+  - `POST .../practice/reviews`, body `PracticeAnswer` (`item`, `rating`, `given`,
+    `self_assessed`) -> `ReviewOutcome` (`review`, `state`), appended to `study/practice.jsonl`
+    and committed. 404 an item no longer in the material, 422 a flashcard review without a rating.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).

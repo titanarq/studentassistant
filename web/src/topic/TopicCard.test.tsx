@@ -130,3 +130,12 @@ it("marks the flashcards present and leaves their downloads to the materials sec
   expect(screen.queryByText("Descargas", { selector: "dt" })).toBeNull();
   expect(screen.queryByRole("link", { name: /Anki/ })).toBeNull();
 });
+
+it("links the spaced-repetition practice", () => {
+  render(<TopicCard summary={summary()} />);
+
+  expect(screen.getByRole("link", { name: "Practicar con repetición espaciada" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/practice",
+  );
+});

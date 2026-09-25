@@ -8,7 +8,8 @@ import { type TopicSummary, topicPath } from "../desk/api";
  * "versiones" links to the notes version history (`<topic path>/versions`); "Quiz" links to the
  * quiz page (`<topic path>/quiz`), where it can be generated and taken. Generating, previewing
  * and downloading each material is the "Material de estudio" section below the card
- * (`materials/MaterialsPanel`, #79).
+ * (`materials/MaterialsPanel`, #79). "Práctica" links to the spaced-repetition practice over the
+ * flashcards and the quiz (`<topic path>/practice`, #81).
  */
 
 /** Generated material in the card's order, recognised by the file name under `generated/`. */
@@ -85,6 +86,10 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
             "○ Apuntes"
           )}
           {materials}
+        </dd>
+        <dt>Práctica</dt>
+        <dd>
+          <a href={`${base}/practice`}>Practicar con repetición espaciada</a>
         </dd>
       </dl>
     </section>
