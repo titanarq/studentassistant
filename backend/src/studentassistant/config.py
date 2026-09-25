@@ -312,6 +312,10 @@ DEFAULT_MAX_PDF_PAGES = 100
 DEFAULT_MAX_STORED_PDF_BYTES = 20 * 1024 * 1024
 DEFAULT_PDF_THUMBNAIL_LONG_EDGE = 1200
 DEFAULT_PDF_THUMBNAIL_QUALITY = 85
+DEFAULT_CAPTURE_LONG_EDGE = 2400
+DEFAULT_CAPTURE_JPEG_QUALITY = 85
+DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
+DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS = 10.0
 
 
 class SourcesSettings(BaseModel):
@@ -327,6 +331,15 @@ class SourcesSettings(BaseModel):
     # Page thumbnails: long edge in pixels and JPEG quality.
     pdf_thumbnail_long_edge: int = Field(default=DEFAULT_PDF_THUMBNAIL_LONG_EDGE, ge=16)
     pdf_thumbnail_quality: int = Field(default=DEFAULT_PDF_THUMBNAIL_QUALITY, ge=1, le=100)
+    # Captured pages: the kept still and its page image are downscaled to this long edge (px)
+    # and stored as JPEG at this quality.
+    capture_long_edge: int = Field(default=DEFAULT_CAPTURE_LONG_EDGE, ge=16)
+    capture_jpeg_quality: int = Field(default=DEFAULT_CAPTURE_JPEG_QUALITY, ge=1, le=100)
+    # The transcript window a capture is linked to: this long before it to this long after it.
+    capture_window_before_seconds: float = Field(
+        default=DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS, ge=0
+    )
+    capture_window_after_seconds: float = Field(default=DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS, ge=0)
 
 
 def config_toml_path() -> Path:
