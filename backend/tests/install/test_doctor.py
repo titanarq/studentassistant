@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from github_fakes import LocalHost
+from marp_fakes import MARP_VERSION, fake_marp_path
 from studentassistant.config import Settings
 from studentassistant.install.apikey import API_KEY_ENV_VAR, store_api_key
 from studentassistant.install.doctor import Check, DoctorProbes, run_doctor
@@ -72,7 +73,12 @@ def test_a_ready_pc_passes_every_check(vault_ready: Path, host: LocalHost) -> No
     store_api_key(settings.llm.api_key_path(), KEY)
     seen: list[str] = []
 
-    checks = run_doctor(settings, api_call=True, probes=probes(host, api_key_check=seen.append))
+    marp_path = fake_marp_path(vault_ready.parent / "bin")
+    checks = run_doctor(
+        settings,
+        api_call=True,
+        probes=probes(host, api_key_check=seen.append, environ={"PATH": marp_path}),
+    )
 
     assert [check.status for check in checks] == ["ok"] * len(checks), [c.line() for c in checks]
     assert list(by_name(checks)) == [
@@ -84,6 +90,7 @@ def test_a_ready_pc_passes_every_check(vault_ready: Path, host: LocalHost) -> No
         "Subida al vault",
         "Puerto",
         "Servicio",
+        "Marp CLI (diapositivas)",
     ]
     assert seen == [KEY]
     assert all(KEY not in check.line() for check in checks)
@@ -338,3 +345,51 @@ def test_faster_whisper_not_installed(
 
     assert checks["faster-whisper"].failed
     assert "Modelo de Whisper" not in checks
+
+
+def test_marp_on_the_path_reports_its_version(env: Path, host: LocalHost) -> None:
+    marp_path = fake_marp_path(env / "bin")
+
+    check = by_name(run_doctor(Settings(), probes=probes(host, environ={"PATH": marp_path})))[
+        "Marp CLI (diapositivas)"
+    ]
+
+    assert check.status == "ok"
+    assert check.detail == f"{MARP_VERSION} ({env / 'bin' / 'marp'})"
+
+
+def test_marp_missing_is_a_warning_with_the_install_hint(env: Path, host: LocalHost) -> None:
+    (env / "empty").mkdir()
+
+    check = by_name(
+        run_doctor(Settings(), probes=probes(host, environ={"PATH": str(env / "empty")}))
+    )["Marp CLI (diapositivas)"]
+
+    assert check.status == "aviso"
+    assert "no se encuentra `marp`" in check.detail
+    assert "npm install -g @marp-team/marp-cli" in check.detail
+
+
+def test_marp_that_fails_to_answer_is_a_warning(env: Path, host: LocalHost) -> None:
+    marp_path = fake_marp_path(env / "bin", version="boom", exit_code=3)
+
+    check = by_name(run_doctor(Settings(), probes=probes(host, environ={"PATH": marp_path})))[
+        "Marp CLI (diapositivas)"
+    ]
+
+    assert check.status == "aviso"
+    assert "falló (código 3)" in check.detail
+
+
+def test_the_configured_marp_command_is_the_one_checked(
+    env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SA_GENERATORS__MARP_COMMAND", '["npx", "--yes", "@marp-team/marp-cli"]')
+    marp_path = fake_marp_path(env / "bin")  # a `marp`, but no `npx`
+
+    check = by_name(run_doctor(Settings(), probes=probes(host, environ={"PATH": marp_path})))[
+        "Marp CLI (diapositivas)"
+    ]
+
+    assert check.status == "aviso"
+    assert "no se encuentra `npx`" in check.detail

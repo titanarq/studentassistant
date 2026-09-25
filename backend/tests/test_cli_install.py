@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 import studentassistant.cli as cli_module
 from github_fakes import LocalHost
+from marp_fakes import fake_marp_path
 from studentassistant.cli import cli
 from studentassistant.install import service
 from studentassistant.install.apikey import API_KEY_ENV_VAR, read_api_key, store_api_key
@@ -180,14 +181,17 @@ def test_doctor_reports_one_line_per_check_and_exits_0(
     runner: CliRunner, env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner.invoke(cli, unattended(env, "--api-key-stdin"), input=KEY + "\n")
-    monkeypatch.setattr(cli_module, "_doctor_probes", lambda server: fake_probes(host))
+    marp_path = fake_marp_path(env / "bin")
+    monkeypatch.setattr(
+        cli_module, "_doctor_probes", lambda server: fake_probes(host, environ={"PATH": marp_path})
+    )
 
     result = runner.invoke(cli, ["doctor", "--api-call"])
 
     assert result.exit_code == 0, result.output
     lines = result.output.strip().splitlines()
     assert lines[0].startswith("[ok] Configuración: ")
-    assert len(lines) == 9
+    assert len(lines) == 10
     assert all(line.startswith("[ok] ") for line in lines), result.output
     assert KEY not in result.output
 
