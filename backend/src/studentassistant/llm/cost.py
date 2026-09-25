@@ -46,10 +46,17 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def estimate_usd(usage: Usage, model: str, prices: Mapping[str, LlmPrice]) -> float | None:
+def estimate_usd(
+    usage: Usage,
+    model: str,
+    prices: Mapping[str, LlmPrice],
+    *,
+    web_search_usd_per_thousand: float = 0.0,
+) -> float | None:
     """USD of one call's `usage` on `model`; `None` (warned once per model) when it has no price.
 
     `input_tokens` are the uncached ones: cache writes and reads are reported and priced apart.
+    Each server-side web search adds `web_search_usd_per_thousand / 1000` (`[llm]`).
     """
     price = prices.get(model)
     if price is None:
@@ -66,7 +73,7 @@ def estimate_usd(usage: Usage, model: str, prices: Mapping[str, LlmPrice]) -> fl
         + usage.output_tokens * price.output_per_mtok
         + usage.cache_creation_input_tokens * price.cache_write_per_mtok
         + usage.cache_read_input_tokens * price.cache_read_per_mtok
-    ) / _TOKENS_PER_MTOK
+    ) / _TOKENS_PER_MTOK + usage.web_search_requests * web_search_usd_per_thousand / 1000
 
 
 @dataclass(frozen=True)
@@ -171,6 +178,7 @@ def record_call(
     prices: Mapping[str, LlmPrice],
     *,
     now: datetime,
+    web_search_usd_per_thousand: float = 0.0,
 ) -> LedgerEntry:
     """Append the ledger entry of one successful call and return it."""
     model = response.model or request.model
@@ -184,7 +192,9 @@ def record_call(
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_input_tokens,
         cache_write_tokens=usage.cache_creation_input_tokens,
-        estimated_usd=estimate_usd(usage, model, prices),
+        estimated_usd=estimate_usd(
+            usage, model, prices, web_search_usd_per_thousand=web_search_usd_per_thousand
+        ),
         subject=binding.subject,
         topic=binding.topic,
         session=binding.session,

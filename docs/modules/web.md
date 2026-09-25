@@ -3,10 +3,28 @@
 **Lives in:** `web/`.
 
 ## Responsibility
-- **Web capture page** (`/capture`): the development capture client (ADR-0001, ADR-0008) --
-  laptop camera preview, high-resolution stills (burst), Web Speech API transcription (or audio
-  streaming in server STT mode), session buttons, live transcript; speaks protocol v1 exactly
-  like the Android app.
+- **Web capture page** (`/capture`, `src/capture/`): the development capture client (ADR-0001,
+  ADR-0008) -- the laptop's own camera and microphone, speaking capture protocol v1 exactly like
+  the Android app. Two steps: the student picks a subject and a topic (creating either one if it
+  is missing), and the page resumes that topic's `open_session_id` or starts a new session; from
+  then on the capture screen runs it -- camera preview, bursts of 3 high-resolution stills
+  uploaded as one multipart `POST /api/sessions/{id}/captures`, the **Capturar** / **Importante**
+  / **Libro** / **Apuntes** / **Terminar** buttons, a thumbnail strip with each burst's upload
+  state (subiendo / guardada / duplicada / error, a duplicate counting as stored), the transcript
+  the backend normalises (partials grey, finals black, a final replacing the partials that share
+  its `segment_id`) and the pending-doubts counter. It opens the session socket with `hello`
+  first, keeps `hello.ack.clock_offset_ms`, and lets `hello.ack.stt_mode` choose the recognizer:
+  the Web Speech API (`es-ES`) in `client` mode, microphone audio streamed as PCM16 frames in
+  `server` mode. In `client` mode it biases the recognizer towards the session's vocabulary
+  hints (protocol 1.4, #227): the list of `hello.ack.vocabulary_hints`, replaced by every
+  `notice` that carries one, becomes the `phrases` of each recognition it (re)starts where the
+  browser has contextual biasing (`SpeechRecognitionPhrase`); a browser without it, or whose
+  service answers `phrases-not-supported`, recognizes without them and shows nothing. A server `capture_now` command takes a burst with that `command_id` and is
+  answered with an `ack`. Denied or missing camera/microphone, a browser without
+  `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
+  Spanish explanation. The page runs on the PC itself under loopback trust
+  (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
+  state, no offline spool (the Android app owns the spool).
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -39,11 +57,83 @@ token):
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
+  `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, anything else
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`,
+  `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
+- `src/capture/` is the capture page. Nothing outside the directory imports it except
+  `src/Router.tsx`, and inside it only `api.ts` and `sessionSocket.ts` reach the network:
+  - `CapturePage.tsx`: `CapturePage` -- shows `SessionPicker` until a session is open, then
+    `CaptureScreen` keyed by `session_id`, so a second session in the same visit is a new
+    component and not the old one with new props. That state is all the page remembers: nothing
+    of a session survives a reload.
+  - `SessionPicker.tsx`: `SessionPicker({onSession?, now?})` -- subject and topic lists with
+    their create forms; for the chosen topic it resumes `open_session_id` or starts a new
+    session, and reports the result as `OpenedSession {session, subjectName, topicName}`.
+  - `CaptureScreen.tsx`: `CaptureScreen({session, subjectName, topicName, onEnded?, now?,
+    playShutter?, flashMs?})` -- the running session, where socket, transcriber and camera meet:
+    it builds the transcriber `hello.ack.stt_mode` asks for, uploads each burst, renders the
+    buttons, the thumbnails, the transcript and the pending counter, and owns every Spanish
+    message of the page. Also exports `captureCapabilities()` (which omits `audio_format` when
+    `audioStreamSupported()` is false, so the backend cannot pick a `server` mode the client
+    could not obey), `shutterClick()` and `FLASH_MS`.
+  - `api.ts`: the REST client -- `listSubjects()`, `createSubject(name)`, `listTopics(id)`,
+    `createTopic(id, name)`, `startSession(subjectId, topicId, clientTimeMs)`,
+    `resumeSession(id)`, `endSession(id, reason, clientTimeMs)` and
+    `uploadCaptures(id, metadata, images)` (multipart: the `METADATA_PART` part plus one
+    `image_N` part per still). Every call decodes its answer with the `src/protocol/` decoders
+    and returns `ApiResult<T>` = `{kind: "ok", value} | {kind: "refused", status, detail} |
+    {kind: "error", status} | {kind: "unexpected", status, expected, problem} | {kind:
+    "unreachable"}`; `refused` carries the backend's own Spanish `detail` and `unexpected` is a
+    2xx body that is not the message the endpoint promises, which is reported and never used.
+    `failures.ts`: `describeFailure(prefix, failure)` turns one into a Spanish sentence.
+  - `sessionSocket.ts`: `SessionSocket({wsPath, clientTimeMs, capabilities?, onEvent?})` --
+    dials the `ws_path` of the start/resume answer (`socketUrl()`), sends `hello` first and
+    exposes the handshake as `handshake: Promise<HandshakeResult>` plus the getters
+    `protocolVersion`, `sttMode`, `clockOffsetMs` and `audioFormat`; sends
+    `sendTranscript(segment, kind)`, `sendButton(button, clientTimeMs, source?)`,
+    `sendAck(commandId, clientTimeMs)` and `sendAudio(frame)`, and `close()`. Decoded server
+    events arrive through `onEvent` as `SessionSocketEvent` (`transcript`, `command`, `notice`,
+    `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
+    (pcm16 / 16 kHz / mono) and `WEB_SPEECH_PROVIDER` are the `hello` defaults.
+  - `transcriber.ts`: the seam a provider is swapped at (ADR-0008) --
+    `ClientTranscriber {readonly provider: string; start(): Promise<void>; stop(): void;
+    setVocabularyHints?(hints)}` (the latest hints replace the previous ones and apply from the
+    next recognition on; a transcriber that has nothing to bias leaves it out), given
+    `TranscriberCallbacks {onSegment(segment, kind), onProblem?(problem)}` at construction. A
+    failure is a `TranscriberProblem {code, detail, recoverable}` whose `code` is a
+    `TranscriberProblemCode` (`unsupported`, `permission-denied`, `network`, `unavailable`);
+    `start()` rejects with a `TranscriberError` carrying it. The two implementations:
+    `webSpeechTranscriber.ts` (`WebSpeechTranscriber`, `SpeechRecognition` /
+    `webkitSpeechRecognition` at `WEB_SPEECH_LANGUAGE = "es-ES"`, continuous with interim
+    results, restarting itself on `end` and on recoverable errors, `webSpeechSupported()` to ask
+    first; `vocabularyHints` option / `setVocabularyHints()` set each recognition's `phrases` at
+    `VOCABULARY_HINT_BOOST` (2.0) where `speechRecognitionPhraseConstructor()` finds the API, and
+    stop doing so for the session after `phrases-not-supported`; `SpeechGrammarList` is not used,
+    since the specification dropped grammars and no engine applies them) and `audioStreamTranscriber.ts` (`AudioStreamTranscriber`, `audioStreamSupported()`),
+    which sends audio to an `AudioFrameSink` -- `SessionSocket.sendAudio` -- and calls
+    `onSegment` never, because the transcript comes back as server `transcript.*` events.
+  - `audioFrames.ts` + `pcmWorklet.ts`: the binary audio of protocol v1, and no browser API in
+    the first. `encodeAudioFrame({seq, clientTimeMs, pcm})` writes `AUDIO_MAGIC` (`"SAAF"`), the
+    MAJOR/MINOR version bytes, a big-endian u32 `seq` and a big-endian u64 client time in an
+    `AUDIO_HEADER_SIZE` (18) byte header, followed by whole PCM16 little-endian samples; an
+    out-of-range field throws `AudioFrameError`. `downmixToMono()`, `pcm16Bytes()` and
+    `AudioResampler` (to `PCM_SAMPLE_RATE_HZ` = 16000) do the arithmetic. `pcmWorklet.ts` is the
+    processor the audio thread runs (`PCM_WORKLET_PROCESSOR`, `PCM_WORKLET_CHUNK_MS` = 100);
+    the main thread imports only its name and the `PcmWorkletChunk` shape.
+  - `camera.ts`: `Camera({onLost?})` -- `start(preview?)` opens the track asking for
+    `MAX_STILL_EDGE_PX` as an `ideal` edge (a wish, so a smaller camera is not refused for it),
+    `takePhoto()` grabs one still (`ImageCapture.takePhoto()` where the browser has it, a canvas
+    grab at the track's real `getSettings()` size where it does not), `takeBurst(trigger)`
+    returns a `CapturedBurst {metadata, images}` of `BURST_LENGTH` (3) stills with a fresh
+    lowercase UUID `capture_id` and one `image_N` entry per still (`imagePartName()`), and
+    `stop()` releases everything. A failure is a `CameraError` with a `CameraProblemCode`
+    (`unsupported`, `permission-denied`, `missing-device`, `in-use`, `lost`, `unavailable`).
+  - The device and protocol modules report codes and an English `detail` for the log; the page
+    owns the Spanish, one message per code.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
 - `src/desk/api.ts`: the study desk's read client. `fetchSubjects()`, `fetchTopics(subjectId)`
@@ -58,22 +148,50 @@ token):
   does), and a topic without them shows only its name.
 - `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
   after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
-  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them. Empty states: no
+  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them ("Sesión abierta" is a
+  link to the live session view, `/live`); under each subject's name a "Guía de estilo" link to
+  its style guide page. Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer) shows `TopicCard` and `PdfUploadForm`; an
-  unknown topic (404) shows the backend's Spanish detail and no upload form, and a successful
-  upload (`onImported`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
+  <subject name>", the ids until the lists answer) shows `TopicCard`, `PdfUploadForm` and
+  `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
+  and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
-  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`),
+  and, when there are any, Descargas: a `download` link per generated `.apkg`/`.csv`/`.pdf`/`.pptx`
+  (`flashcards (Anki)`, `flashcards (CSV)`...) to `GET /api/.../generated/files/<name>`.
   `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  `WebSearchPanel` (#59, section "Buscar en Internet"): a "Qué buscar" search box and "Buscar"
+  button (an empty query says "Escribe qué quieres buscar." without calling), then the topic's
+  searches ("Búsquedas del tema", newest first, the ones asked by voice too): "«<query>» (pedida
+  en voz | pedida aquí | pedida por el editor) — Buscando… | <n> páginas | No se encontró nada
+  útil. | No se pudo buscar: <message>", each offered page a link (new tab) with its host, "·
+  recomendada" (`relevant`), "· sin confirmar en la búsqueda" (`found_in_search` false), its
+  summary and "Guardar como fuente" -- once kept, "Guardada como fuente externa (<source_id>)";
+  a refused keep shows "No se ha guardado: <detail>" under the page. While a search is `queued`
+  the list is read again every `pollMs` (2 s). A list that cannot be read is reported as plain
+  text (no `alert`). `webSearchApi.ts`: `fetchWebSearches(s, t)` (`GET .../web-searches` ->
+  `WebSearch[]`: `search_id`, `query`, `requested_by`, `session_id`, `queued_at`, `status`,
+  `results` of `WebResult` `url`/`title`/`summary`/`relevant`/`found_in_search`, `reason`,
+  `message`, `kept` of `KeptResult` `index`/`url`/`source_id`/`kept_by`), `queueWebSearch(s, t,
+  query)` (`POST`, the new `search_id`), `keepWebResult(s, t, searchId, index)` (`POST
+  .../{search_id}/results/{index}/keep` -> `KeptSource` `source_id`/`vault_id`/`title`/`url`), all
+  `ApiResult` (`ok` | `refused` with the Spanish `detail` | `error` | `unreachable`), and
+  `describeApiFailure(result)`; `addWebPage(s, t, url)` (`POST .../web-pages` `{url, via: "url"}`
+  -> protocol `WebPageAddResponse`, checked with `decodeWebPageAddResponse`).
+  `WebPageForm` (#62, section "Añadir una página web", after the search panel): a «Dirección de
+  la página» URL box and «Guardar como fuente» («Descargando…» while the backend fetches it). An
+  address that is not `http(s)://...` is refused without calling («Pega la dirección completa de
+  la página...»); then «Página «<título>» guardada como fuente externa (<source_id>).», «Esa
+  página ya era una fuente del tema: «<título>».» (`already_kept`, the card is not reloaded) or
+  «No se ha guardado la página: <detail>». A stored page reloads the topic card (`onAdded`).
   The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, followed by
   "(versiones)", a link to the notes version history, and its
   Pendiente item always links to the pending-doubts panel.
@@ -91,13 +209,16 @@ token):
   - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
     its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
     sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
-    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word.
+    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word. Web
+    snapshots are external sources (#59): their references get `notes-ref-web` (green, dotted)
+    and the aria label "Fuente externa (web): <text>" (other sources "Fuente: <text>"), and their
+    definition under "Fuentes" gets `notes-footnote-external` and "· fuente externa".
   - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
     flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
     Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
     `transcription`, else `page-NNN.md`); a PDF page shows `page-NNN.pKKK.jpg` and `.txt`,
     "PDF «<original_name>», página <original page>" and an "Abrir el PDF" link; a web snapshot its
-    text and sidecar `url`; a transcript span its segments with `MM:SS` timestamps
+    text and "Fuente externa: copia de <url> (<fetched_at>)" from its sidecar; a transcript span its segments with `MM:SS` timestamps
     (`GET /api/sessions/{id}/transcript`). Focus moves to the panel title; Escape or "Cerrar"
     closes it and returns the focus to the reference. The panel is fixed to the viewport edge
     (a bottom sheet under 40rem), so it never scrolls or rewraps the notes.
@@ -157,6 +278,28 @@ token):
     4000 characters), "Enviar" and "Deshacer el último cambio" (enabled when `canUndo` and idle),
     and "Continuar igualmente" after a reached cost cap. An entry with `refs` lists "Fuentes:",
     each a button ("Ver la fuente: <text>") that opens it in the sources panel (`onOpenSource`).
+  - Proposed style rules (#216): a turn's `proposed_style_rules` (the `result` event and the
+    history turns, which carry only those the subject's guide does not have yet) become the
+    entry's `proposedRules`, shown in a group "Propuesta para la guía de estilo", each «rule»
+    with "Guardar para toda la asignatura" (named "Guardar para toda la asignatura: <rule>").
+    `useEditorChat`'s `confirmRule(rule)` posts it alone to `POST
+    /api/subjects/{s}/style-guide/rules` (one at a time, `confirming`); once saved, that rule and
+    any other already in the answered guide (`sameRule`) leave every entry, and `ruleNotice`
+    says "Guardado en la guía de estilo de la asignatura: «rule»." (or that the guide already
+    had it, or why it failed) with a "Ver la guía de estilo" link (`styleGuidePath`).
+- `src/styleGuide/` (#216): the subject's style guide over the API of #70
+  (docs/modules/server.md). `StyleGuidePage` (`/subjects/<s>/style-guide`: `← Mesa de estudio`,
+  "Guía de estilo de <subject name>") lists the rules ("Reglas de la guía de estilo"), each with
+  "Editar" (a "Regla <n>" text box, "Guardar"/"Cancelar") and "Borrar", and a "Nueva regla" box
+  with "Añadir" (disabled at `MAX_RULES`, 50; up to `MAX_RULE_CHARS`, 300, characters). Every
+  change writes the whole list (`PUT .../style-guide`) and shows the list the backend answers;
+  a rule already in the guide (`sameRule`: list marker dropped, spaces collapsed, case ignored)
+  is refused on the page; a refusal (422 invalid rule, 404 unknown subject, 503) shows its
+  Spanish `detail`. An unknown subject shows the backend's detail and no form.
+  - `api.ts`: `fetchStyleGuide(s) -> ReadResult<StyleGuide>` (`subject`, `rules`, `added`,
+    `commit`; `readStyleGuide`, lenient), `confirmStyleRules(s, rules)` (POST `.../rules`) and
+    `saveStyleGuide(s, rules)` (PUT) -> `ActionResult<StyleGuide>` (a FastAPI validation list as
+    `detail` is a plain `error`), `sameRule`, `styleGuidePagePath(s)`.
 - `src/pending/` (#80): the pending-doubts panel and the doubts-resolution flow. `PendingPage`
   (`← Tema <name>` link, "Dudas pendientes", "<N> dudas por revisar" in a polite live region, a
   "Por revisar / Cerradas / Todas" filter applied on the page, `applyFilter`) reads the editor's
@@ -217,6 +360,28 @@ token):
     footnote labels under "Fuentes citadas"; identical versions say so.
   - `api.ts`: `fetchVersions`, `fetchVersionDiff(s, t, from, to | null)`, `restoreVersion(s, t,
     n)` -> `ActionResult` (bodies read leniently: `readVersions`, `readDiff`, `readRestore`).
+- `src/live/` (#57): the live session view, `/live` (`← Mesa de estudio`, "Sesión en directo"),
+  read-only, over the backend's `GET /api/live` stream (docs/modules/server.md).
+  - `live.ts`: `subscribeLive(onEvent, onConnection, factory = defaultSource)` opens an
+    `EventSource` on `LIVE_URL` (tests hand a `LiveSourceFactory`, `src/live/testLive.ts`'s
+    `fakeSources()`), reads each event leniently (`parseLiveEvent(name, data)`: an unusable one is
+    dropped) and returns the close function; `onConnection(false)` on an error (the source
+    reconnects by itself), `true` when it opens again. `reduceLive(state, event)` folds the events
+    into a `LiveState` (`phase` `connecting`/`idle`/`live`/`ended`, `session`, `segments`,
+    `partial`, `captures`, `outline`, `openPending`): a snapshot replaces everything, except that a
+    snapshot without a session keeps the last session shown and marks it ended; a final replaces
+    the partial of its segment and a late partial is ignored; captures are updated by id.
+    `outlineTree(sections)` nests the outline (an orphan stays at the top), `contextLabel`,
+    `statusLabel`.
+  - `LivePage`: a `status` region (connecting, "No hay ninguna sesión en marcha...", "La sesión ha
+    terminado.", a lost connection), then "Tema <name>" (a link to the topic page; the name from
+    `fetchTopics`, the id until it answers) with "en marcha" while live; "Transcripción" (a
+    polite `log` of the finals with `MM:SS`, the current partial in italics below), "Esquema"
+    ("<n> dudas por revisar" and the nested sections with "<n> fragmentos"), "Páginas capturadas"
+    (one `article` per capture, "Apuntes, página 3" or "<Apuntes|Libro|PDF|Web|Página> <n>", its
+    time, the `page_path` image through `sourceUrl`, "Transcribiendo…"/"Transcrita"/"No se pudo
+    transcribir: <message>" and the transcription in a `details`). The stream is closed when the
+    page goes away.
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
@@ -226,8 +391,28 @@ token):
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
+- The capture page adds one thing to that surface: the session WebSocket at the `ws_path` the
+  start/resume answer returned. It is the only socket `web/` opens, and `src/capture/` modules
+  reach the wire only through `api.ts` (REST) and `sessionSocket.ts` (WebSocket) -- the
+  transcribers and the camera never call `fetch` or open a socket themselves.
+- Every JSON body, in and out, is encoded and decoded by the TypeScript bindings of
+  `src/protocol/`; the capture page adds no message type and no schema of its own. The one wire
+  format it does implement itself is the binary audio frame, in `audioFrames.ts`, because the
+  bindings carry no binary layout -- module:protocol owns that definition (`protocol/README.md`).
 
 ## Tests
 vitest + Testing Library with a mocked API (`src/test/mockApi.ts`: `stubApi({path: response})`
 stubs `fetch` by method and path; `sseResponse(events)` is a complete event stream and
 `streamResponse()` one the test feeds event by event with `push`, `close` and `fail`).
+`src/capture/testing/` holds the fakes the capture
+tests run on, because jsdom has none of these APIs: `installCaptureFakes()` installs the media
+devices / stream / track, `ImageCapture`, `SpeechRecognition`, `WebSocket` and
+`AudioContext`/`AudioWorklet` fakes at once (`installMediaFakes()`,
+`installSpeechRecognitionFake()`, `installWebSocketFake()` and `installAudioFakes()` install one
+family each, `installCanvasFakes()` and `fakePreview()` cover the canvas fallback and the preview
+element), and every installer returns a `restore()`. `installSpeechRecognitionFake(globals,
+{phrases: true})` (or `installCaptureFakes({speechPhrases: true})`) is a browser with contextual
+biasing: `FakeBiasingSpeechRecognition` records the `phrases` each `start()` found in
+`phrasesAtStart`, and `FakeSpeechRecognitionPhrase` sits on the `SpeechRecognitionPhrase` global. Tests drive them -- a fake recognition emits
+results, ends and errors, a fake socket records what was sent and lets a test push server events
+in -- so no test touches a real camera, microphone, network or backend.

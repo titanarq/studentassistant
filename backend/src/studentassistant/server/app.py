@@ -51,6 +51,7 @@ from studentassistant.server.devices import DeviceStore
 from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.errors import install_error_handler
 from studentassistant.server.generators_routes import MaterialGenerators, generators_router
+from studentassistant.server.live_routes import live_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
@@ -65,10 +66,15 @@ from studentassistant.server.sessions import SessionService
 from studentassistant.server.style_guide_routes import style_guide_router
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
+from studentassistant.server.web_search_routes import web_search_router
 from studentassistant.server.ws import SessionGateway, ws_router
 from studentassistant.sources.transcriber import PageTranscriber
 from studentassistant.sources.transcriber import (
     default_client_factory as transcriber_client_factory,
+)
+from studentassistant.sources.web_searcher import WebSearcher
+from studentassistant.sources.web_searcher import (
+    default_client_factory as web_search_client_factory,
 )
 from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
 from studentassistant.vault import GitSync, Vault
@@ -186,6 +192,7 @@ def create_app(
     app.state.notes = None
     app.state.generators = default_registry
     app.state.materials = None
+    app.state.web_searcher = None
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
@@ -204,6 +211,15 @@ def create_app(
             app.state.sessions.add_on_open(app.state.transcriber.catch_up_vault)
             # Before the observer's flush, so the observer sees the last pages' transcriptions.
             app.state.sessions.add_before_ended(app.state.transcriber.flush)
+        if sources.web_search_enabled:
+            # "Busca esto en Internet": voice commands and the web UI (`web_search_routes.py`).
+            app.state.web_searcher = WebSearcher(
+                app.state.bus,
+                app.state.bus.attached,
+                settings=sources,
+                client_factory=web_search_client_factory(llm_settings, llm_transport),
+                on_write=app.state.sessions.note_change,
+            )
         observer_settings: ObserverSettings = llm_settings.observer
         if observer_settings.enabled:
             app.state.observer = ObserverLoop(
@@ -255,6 +271,7 @@ def create_app(
     app.include_router(read_router())
     app.include_router(pdf_upload_router())
     app.include_router(book_router())
+    app.include_router(web_search_router())
     app.include_router(search_router())
     app.include_router(vault_status_router())
     app.include_router(notes_router())
@@ -263,6 +280,7 @@ def create_app(
     app.include_router(versions_router())
     app.include_router(style_guide_router())
     app.include_router(generators_router())
+    app.include_router(live_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
@@ -275,11 +293,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     transcripts: TranscriptPipeline = app.state.transcripts
     observer: ObserverLoop | None = app.state.observer
     transcriber: PageTranscriber | None = app.state.transcriber
+    web_searcher: WebSearcher | None = app.state.web_searcher
     transcripts.start()
     if observer is not None:
         observer.start()
     if transcriber is not None:
         transcriber.start()
+    if web_searcher is not None:
+        web_searcher.start()
     await sessions.startup()
     try:
         yield
@@ -287,6 +308,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await transcripts.stop()
         if transcriber is not None:
             await transcriber.stop()
+        if web_searcher is not None:
+            await web_searcher.stop()
         if observer is not None:
             await observer.stop()
         await sessions.shutdown()

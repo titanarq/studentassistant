@@ -229,6 +229,25 @@ Routes registered today:
   {"title": "..."}` (at most 200 characters) records it and calls `SessionService.note_change()`.
   Unknown subject or topic 404 (`"No existe ese tema en la bóveda."`), empty title or one that
   looks like a key 422, an unopenable vault 503. No session needed.
+- `GET /api/live` (`server/live_routes.py`, `live_router()`, #57): the web's live session view,
+  a read-only Server-Sent Events stream (`text/event-stream`, `Cache-Control: no-cache`) of the
+  **active** session; web-only, not phone protocol. It opens with `retry: 3000`, then a
+  `snapshot` (`LiveSnapshot`: `session` {`session_id`, `subject_id`, `topic_id`,
+  `started_at_ms`} or `null`, `segments` -- the final transcript segments so far, `{segment_id,
+  t_start, t_end, text}` in session ms --, `captures`, `outline`, `open_pending`). Without an
+  active session the stream ends after that snapshot, so the browser's `EventSource` asks again
+  three seconds later. Otherwise it subscribes to the session on the bus (before reading the log,
+  skipping by `seq` what the log already held) and sends `segment` (a `transcript.final`),
+  `partial` (a `transcript.partial` of a segment not final yet), `capture` (`LiveCapture`:
+  `capture_id`, `t`, `page_path`, `source_path`, `source_context`, `status`
+  `pending`/`transcribed`/`failed`, `text`, `page_number`, `message`; sent on `capture.stored`,
+  `page.transcribed` and `page.transcription_failed`), `outline` (after each
+  `observer.state_op`: the whole outline -- `{section_id, title, parent_id, segment_count}` in
+  reading order, each section followed by its subsections -- and `open_pending`, from the
+  observer's fold `load_observer_snapshot(write_back=False)` of the topic) and finally `ended`
+  (`{session_id}`) on `session.ended`, where the stream ends. A `: keep-alive` comment goes out
+  after 15 s of silence; a closed bus (shutdown) ends the stream. Writes nothing. Needs the bearer
+  check like every non-exempt route.
 - `POST /api/subjects/{subject_id}/topics/{topic_id}/sources/pdf` (`server/pdf_upload.py`,
   `pdf_upload_router()`): the web's PDF import, what `studentassistant import-pdf` does from the
   CLI. Body: `multipart/form-data` with one `file` part (the PDF; its `filename` names it,
@@ -245,6 +264,25 @@ Routes registered today:
   a key, a body that is not multipart, a missing/empty/repeated `file`, or any other part 422; an
   unknown subject or topic 404 (checked before the body is read); a vault that cannot be opened
   503. No active session is needed. Needs the bearer check like every non-exempt route.
+- Web search (`server/web_search_routes.py`, `web_search_router()`, #59), through
+  `app.state.web_searcher` (`sources.web_searcher.WebSearcher`, built with an `llm_transport` and
+  `[sources] web_search_enabled`, started and stopped by the lifespan):
+  `GET /api/subjects/{s}/topics/{t}/web-searches` -> `{"searches": [WebSearchRecord...]}` newest
+  first (works without a transport); `POST` the same path with `{"query"}` (at most 500
+  characters) -> 202 `{"search_id", "status": "queued"}`, the search running in the background
+  (bound to the active session when it is of that topic); `POST
+  .../web-searches/{search_id}/results/{index}/keep` -> 201 `KeptResponse` (`source_id`,
+  `vault_id`, `title`, `url`) once the page is stored as `sources/web/NNN-<slug>.md`. Refusals in
+  Spanish: unknown topic, search or result 404; no results yet or a reached cost cap 409; empty
+  query, or a page that cannot be kept (a PDF, an error, a key) 422; Claude failure or refusal
+  502; no transport, web search disabled, or no vault 503. See `docs/modules/sources.md`.
+  The same router has `POST /api/subjects/{s}/topics/{t}/web-pages` (#62, a URL pasted in the web
+  UI or shared to the phone): protocol `rest.topics.web_pages.create.request` (`url`, `via`?
+  `url` | `share`) -> 201 `rest.topics.web_pages.create.response` (`source_id`, `vault_id`,
+  `title`, `url`, `already_kept: false`), or 200 with `already_kept: true` when the topic already
+  has that address (nothing fetched); `WebSearcher.keep_url`, bound to the topic's active session
+  like a search. Refusals as for keeping a result (the cost cap with `code:
+  cost_cap_reached`); a body that is not an http(s) `url` 422.
 - `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
   `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
   `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a
@@ -394,6 +432,10 @@ Routes registered today:
   - `POST .../generated/{kind}`, optional body `{"options": {...}, "confirm_over_cap": false}` ->
     `GenerateResult`. Needs `llm_transport` (503 otherwise; `MaterialGenerators`, one run per
     topic and kind); a `generator` client bound to the topic's ledger.
+  - `GET .../generated/files/{name}` -> the bytes of `generated/<name>` (subdirectories allowed)
+    as a download: `Content-Disposition: attachment; filename="<topic>-<file>"`, the media type
+    by extension (`.apkg` octet-stream, `.csv` `text/csv; charset=utf-8`...); 404 when there is
+    no such file or the name is not one (`vault.read_generated`). The web's download links.
   - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
     the same generation running 409, a reached cap 409 `cost_cap_reached` until
     `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.
@@ -553,12 +595,15 @@ another PC left open is seen.
 ### Session WebSocket -- `server/ws.py`
 
 `WS /ws/sessions/{session_id}`, protocol v1 (`protocol/README.md`), served by the
-`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...)` on
+`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...,
+terms_loader=...)` on
 `app.state.gateway` (`ws_router()` mounts it). `sink_factory(stt, clock_offset_s)` builds each
 connection's `TranscriptSink` (default `InMemoryTranscriptSink`, whose `clock_offset` is the
 client-clock reading at session start in seconds); `provider_factory(stt)` builds a session's
-server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms. Tests
-replace all three.
+server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms;
+`terms_loader(open_session)` reads the topic's terms for the vocabulary hints (default: the vault
+through `sessions.open_vault()` and `server.vocabulary.load_topic_terms`, never raising). Tests
+replace them.
 
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
   `authenticate_websocket` (1008 without a valid token or loopback trust).
@@ -576,6 +621,20 @@ replace all three.
   (re)connection takes a new offset from its own `hello`. In `server` mode, a session that
   already received audio also gets an `ack` with its highest contiguous `audio_seq` right after
   `hello.ack`, so a reconnecting client knows where to resume.
+- **Vocabulary hints** (#54, `server/vocabulary.py`): before `hello.ack` the connection reads the
+  topic's terms (`load_topic_terms`: the subject's name, the topic's title, the observer's
+  concepts from `load_observer_snapshot(write_back=False)` and the open pending count; a part that
+  cannot be read is logged and left empty) and builds the hints with
+  `stt.vocabulary_hints_from_settings` (`[stt] vocabulary_max_terms` / `vocabulary_max_chars`).
+  In server mode the session's provider gets them (`set_vocabulary`) at every handshake, whatever
+  the client's version; a client that negotiated 1.4+ gets them in `hello.ack.vocabulary_hints`
+  (left out when empty). The connection also subscribes to `observer.state_op` (`SUBSCRIBED_KINDS`
+  = `FORWARDED_KINDS` + it, never forwarded as such): an `add_concept` whose name changes the
+  hints (`SessionVocabulary.apply_state_op`) hands the new list to the provider and, to a 1.4+
+  client, sends a `notice` with `vocabulary_hints` and the last `pending_count` the connection
+  knows (from the terms or the last forwarded notice). While that count is unknown, the new hints
+  ride on the next forwarded observer `notice`; a forwarded notice carries hints only when they
+  changed since the last ones sent.
 - **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
   missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
   binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a

@@ -25,6 +25,8 @@ export interface RevisionResult {
   diff: string;
   fidelity_mode: string | null;
   style_rules: string[];
+  /** Rules the editor proposes for the subject's style guide; written only once confirmed. */
+  proposed_style_rules: string[];
   commit: string | null;
   warning: string | null;
 }
@@ -66,6 +68,8 @@ export interface ChatTurn {
   undone: boolean;
   warning: string | null;
   refs: ChatRef[];
+  /** The turn's proposed style rules the subject's guide does not have yet. */
+  proposed_style_rules: string[];
 }
 
 export interface ChatHistory {
@@ -114,6 +118,7 @@ export function readRevision(body: unknown): RevisionResult | null {
     diff: text(body.diff),
     fidelity_mode: optionalText(body.fidelity_mode),
     style_rules: strings(body.style_rules),
+    proposed_style_rules: strings(body.proposed_style_rules),
     commit: optionalText(body.commit),
     warning: optionalText(body.warning),
   };
@@ -145,6 +150,7 @@ function readTurn(body: unknown): ChatTurn | null {
     undone: flag(body.undone),
     warning: optionalText(body.warning),
     refs: readRefs(body.refs),
+    proposed_style_rules: strings(body.proposed_style_rules),
   };
 }
 

@@ -1,0 +1,70 @@
+/* The live session view: transcript and outline side by side from 60rem, captured pages below. */
+
+.live-page {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  overflow-wrap: anywhere;
+}
+
+.live-columns {
+  display: grid;
+  gap: 1.5rem;
+}
+
+@media (min-width: 60rem) {
+  .live-columns {
+    grid-template-columns: 2fr 1fr;
+  }
+}
+
+.live-transcript ol {
+  list-style: none;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.live-transcript li {
+  margin: 0 0 0.35rem;
+}
+
+.live-muted {
+  color: #666;
+  font-size: 0.9em;
+}
+
+.live-partial {
+  font-style: italic;
+  color: #555;
+}
+
+.live-captures {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+}
+
+.live-capture article {
+  border: 1px solid #ccc;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+}
+
+.live-capture img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0.5rem 0;
+}
+
+.live-capture-failed .live-capture-status {
+  color: #a40000;
+}
+
+.live-capture pre {
+  white-space: pre-wrap;
+  font-family: inherit;
+}

@@ -29,6 +29,17 @@ it("renders the study desk at /", () => {
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
 });
 
+it.each(["/capture", "/capture/"])("renders the capture page at %s", (pathname) => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname={pathname} />);
+
+  expect(
+    screen.getByRole("heading", { name: "Capturar una sesión de estudio" }),
+  ).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects", { method: "GET" });
+});
+
 it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/topics/revolucion-industrial/"])(
   "renders the topic page at %s",
   (pathname) => {
@@ -69,4 +80,34 @@ it("renders the notes versions page at the topic's /versions path", () => {
 
   expect(screen.getByRole("heading", { name: "Versiones de los apuntes de revolucion-industrial" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/topics/revolucion-industrial/notes/versions");
+});
+
+it("renders the live session view at /live, subscribed to the live stream", () => {
+  stubFetch();
+  const opened: string[] = [];
+  class FakeEventSource {
+    onopen = null;
+    onerror = null;
+    constructor(url: string) {
+      opened.push(url);
+    }
+    addEventListener() {}
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+
+  render(<Router pathname="/live" />);
+
+  expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
+  expect(opened).toEqual(["/api/live"]);
+});
+
+it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/style-guide" />);
+
+  expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
 });

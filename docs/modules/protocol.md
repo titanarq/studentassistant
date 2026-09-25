@@ -8,11 +8,14 @@
 The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), documented in `protocol/README.md`:
 - REST: `POST /api/pair`, `GET /api/health`, subjects/topics listing and creation, session
   start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`),
-  `GET /api/search` (the web's search over the vault index).
+  `GET /api/search` (the web's search over the vault index), `POST .../topics/{t}/web-pages`
+  (a web page by URL, #62).
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
-  `capture_now`, `notice` e.g. pending count, `ack` of audio seq / captures).
+  `capture_now`, `notice` e.g. pending count, `ack` of audio seq / captures). Since 1.4
+  `hello.ack` and `notice` carry the optional `vocabulary_hints` (`protocol/README.md`
+  "Vocabulary hints").
 - REST error bodies `{"detail", "code"?}` (`code` since 1.2: `cost_cap_reached`,
   `doubt_closed`, `session_open`; `protocol/README.md` "REST errors"). Not a schema'd message:
   clients read error bodies leniently.
@@ -28,7 +31,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.3"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.4"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -37,12 +40,15 @@ Everything below is re-exported from the package root; other modules import only
   discriminated union `ClientEvent`, its `CLIENT_EVENT_ADAPTER` and `parse_client_event`.
 - Server WS events: `HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`, `Notice`,
   `ServerAck`; the union `ServerEvent`, `SERVER_EVENT_ADAPTER` and `parse_server_event`. Both parse
-  functions raise `pydantic.ValidationError` on an unknown or missing `type`.
+  functions raise `pydantic.ValidationError` on an unknown or missing `type`. `HelloAck` and
+  `Notice` carry the optional `vocabulary_hints` (1.4): 1 to `VOCABULARY_HINTS_MAX_ITEMS` (50)
+  terms of 1 to `VOCABULARY_HINT_MAX_CHARS` (100) characters; `VOCABULARY_HINTS_SINCE` is `(1, 4)`.
 - REST bodies: `PairRequest`, `PairResponse`, `HealthResponse`, `Subject`, `SubjectsListResponse`,
   `SubjectCreateRequest`, `Topic`, `TopicsListResponse`, `TopicCreateRequest`,
   `SessionStartRequest`, `Session` (start and resume response), `SessionEndRequest`,
   `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`,
-  `SearchResponse` (with `SearchHit`). `Topic` carries the optional `last_session_at_ms`,
+  `SearchResponse` (with `SearchHit`), `WebPageAddRequest`, `WebPageAddResponse` (#62).
+  `Topic` carries the optional `last_session_at_ms`,
   `pending_count` (1.1) and `digest_excerpt` (1.3, at most `DIGEST_EXCERPT_MAX` = 400 chars).
 - REST error codes: `ErrorCode` (a `StrEnum`: `COST_CAP_REACHED`, `DOUBT_CLOSED`,
   `SESSION_OPEN`) and `ERROR_CODE_SINCE` (`(1, 2)`); the server's `server.errors` puts them in
@@ -57,14 +63,16 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.3"`), `parseVersion`, `checkCompatible` (throws
+- Version: `PROTOCOL_VERSION` (`"1.4"`: the capture page biases the browser recognizer towards
+  the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union
   `ClientEvent` discriminated on `type`, and `parseClientEvent`.
 - Server WS events: `HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`, `Notice`,
   `ServerAck`; the union `ServerEvent` discriminated on `type`, and `parseServerEvent`. Both parse
-  functions throw on an unknown or missing `type`.
+  functions throw on an unknown or missing `type`. `HelloAck` / `Notice` decode the 1.4
+  `vocabulary_hints` (bounded by `VOCABULARY_HINTS_MAX_ITEMS` / `VOCABULARY_HINT_MAX_CHARS`).
 - REST bodies: the same names as the Python list above (`PairRequest` ... `CaptureUploadResponse`),
   each with a `decode<Name>` decoder.
 - REST error codes: `ErrorCode`, `ERROR_CODES`, `isErrorCode` and `errorCode(body)` (the known
@@ -77,7 +85,9 @@ Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
 - Version: `PROTOCOL_VERSION` (`"1.3"`, for the topic's `digest_excerpt`; the 1.2 error `code`
-  needs nothing from the app, which decodes no error body, only the HTTP status),
+  needs nothing from the app, which decodes no error body, only the HTTP status; the 1.4
+  `vocabulary_hints` are decoded, as `HelloAck.vocabularyHints` / `Notice.vocabularyHints`, but
+  the app does not use them yet, so it keeps speaking 1.3),
   `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
   `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
   with the same message as the backend's) and `negotiate`.

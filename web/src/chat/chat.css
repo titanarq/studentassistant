@@ -102,3 +102,19 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+.chat-rules {
+  border-left: 3px solid #6b8fc9;
+  padding: 0.2rem 0 0.2rem 0.6rem;
+  margin: 0.4rem 0;
+  font-size: 0.9rem;
+}
+
+.chat-rules p,
+.chat-rules ul {
+  margin: 0.2rem 0;
+}
+
+.chat-rules ul {
+  padding-left: 1rem;
+}

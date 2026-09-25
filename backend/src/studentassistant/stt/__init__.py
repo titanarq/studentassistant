@@ -17,6 +17,11 @@ from studentassistant.stt.registry import (
 )
 from studentassistant.stt.sink import InMemoryTranscriptSink, TranscriptSink
 from studentassistant.stt.transcript import TranscriptAssembler
+from studentassistant.stt.vocabulary import (
+    hotwords_text,
+    vocabulary_hints,
+    vocabulary_hints_from_settings,
+)
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -35,9 +40,12 @@ __all__ = [
     "UnknownProviderError",
     "buffered_provider_from_settings",
     "get_provider",
+    "hotwords_text",
     "provider_class",
     "provider_from_settings",
     "register_provider",
     "registered_providers",
     "unregister_provider",
+    "vocabulary_hints",
+    "vocabulary_hints_from_settings",
 ]

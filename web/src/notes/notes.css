@@ -26,6 +26,21 @@
   text-decoration: none;
 }
 
+/* External sources (web snapshots, #59): green and dotted, apart from the student's own. */
+.notes-ref-web a {
+  color: #26a269;
+  text-decoration: underline dotted;
+}
+
+.notes-footnote-external a {
+  color: #26a269;
+}
+
+.notes-external-tag {
+  font-size: 0.85em;
+  color: #26a269;
+}
+
 .notes-ref a[aria-current="true"] {
   outline: 2px solid #1a5fb4;
   border-radius: 2px;

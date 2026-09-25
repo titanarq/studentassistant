@@ -19,6 +19,8 @@ import {
   PROTOCOL_VERSION,
   ProtocolDecodeError,
   type ServerEvent,
+  VOCABULARY_HINT_MAX_CHARS,
+  VOCABULARY_HINTS_MAX_ITEMS,
 } from "./index";
 
 const examples = sharedExamples();
@@ -111,17 +113,33 @@ describe("topic digest excerpt", () => {
   });
 });
 
+describe("vocabulary hints", () => {
+  const notice = { type: "notice", pending_count: 0, server_time_ms: 1 };
+
+  it("are optional and bounded in count and length", () => {
+    expect(parseMessage("server.notice", notice)).toStrictEqual(notice);
+    const hints = Array.from({ length: VOCABULARY_HINTS_MAX_ITEMS }, (_, i) => `t${i}`);
+    expect(parseMessage("server.notice", { ...notice, vocabulary_hints: hints })).toStrictEqual({
+      ...notice,
+      vocabulary_hints: hints,
+    });
+    for (const bad of [[], [...hints, "x"], [""], ["x".repeat(VOCABULARY_HINT_MAX_CHARS + 1)]]) {
+      expect(() => parseMessage("server.notice", { ...notice, vocabulary_hints: bad })).toThrow(/vocabulary_hints/);
+    }
+  });
+});
+
 describe("protocol_version", () => {
-  it("is 1.3", () => {
-    expect(PROTOCOL_VERSION).toBe("1.3");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 3]);
+  it("is 1.4", () => {
+    expect(PROTOCOL_VERSION).toBe("1.4");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 4]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.4; update the older side so both share MAJOR version 1",
     );
   });
 

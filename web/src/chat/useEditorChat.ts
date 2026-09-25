@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { describeFailure } from "../desk/api";
 import { describeActionFailure } from "../pending/doubts";
+import { confirmStyleRules, sameRule, styleGuidePagePath } from "../styleGuide/api";
 import {
   askWhy,
   type ChatHistory,
@@ -34,6 +35,15 @@ export interface ChatEntry {
   failure: string | null;
   /** The sources a "¿Por qué?" answer points to. */
   refs: ChatRef[];
+  /** Style rules the editor proposed in this turn and the subject's guide does not have yet. */
+  proposedRules: string[];
+}
+
+/** The last line about confirming a proposed style rule, in Spanish. */
+export interface RuleNotice {
+  text: string;
+  /** The rule was saved (or was already in the guide); `false` when the confirmation failed. */
+  saved: boolean;
 }
 
 /** What one turn asks: a chat message, or "¿Por qué pusiste esto?" on a block. */
@@ -55,6 +65,13 @@ export interface EditorChat {
   ask: (anchor: WhyAnchor, message: string) => void;
   retry: () => void;
   undo: () => void;
+  /** The proposed rule being saved to the subject's style guide, if any. */
+  confirming: string | null;
+  ruleNotice: RuleNotice | null;
+  /** "Guardar para toda la asignatura": `POST .../style-guide/rules` with this one rule. */
+  confirmRule: (rule: string) => void;
+  /** The page of the subject's style guide. */
+  styleGuidePath: string;
 }
 
 function fromHistory(history: ChatHistory, diffs: Map<string, string>): ChatEntry[] {
@@ -73,6 +90,7 @@ function fromHistory(history: ChatHistory, diffs: Map<string, string>): ChatEntr
     warning: turn.warning,
     failure: null,
     refs: turn.refs,
+    proposedRules: turn.proposed_style_rules,
   }));
 }
 
@@ -101,6 +119,9 @@ export function useEditorChat(
   const changed = useRef(onNotesChanged);
   changed.current = onNotesChanged;
   const mounted = useRef(true);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [ruleNotice, setRuleNotice] = useState<RuleNotice | null>(null);
+  const savingRule = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -151,6 +172,7 @@ export function useEditorChat(
         warning: null,
         failure: null,
         refs: [],
+        proposedRules: [],
       };
       setEntries((current) => [...current.filter((entry) => entry.key !== replace), fresh]);
       let attempt = 1;
@@ -200,6 +222,7 @@ export function useEditorChat(
           diff: value.diff !== "" ? value.diff : null,
           commit: value.commit,
           warning: value.warning,
+          proposedRules: value.proposed_style_rules,
         }));
         if (value.applied && value.commit !== null) setCanUndo(true);
         if (value.notes_changed) changed.current(value.changed_sections);
@@ -257,6 +280,40 @@ export function useEditorChat(
     await loadHistory();
   }, [subjectId, topicId, loadHistory]);
 
+  const confirmRule = useCallback(
+    async (rule: string) => {
+      if (savingRule.current) return;
+      savingRule.current = true;
+      setConfirming(rule);
+      setRuleNotice(null);
+      const result = await confirmStyleRules(subjectId, [rule]);
+      savingRule.current = false;
+      if (!mounted.current) return;
+      setConfirming(null);
+      if (result.kind !== "ok") {
+        setRuleNotice({ text: `No se pudo guardar la regla: ${describeActionFailure(result)}`, saved: false });
+        return;
+      }
+      const guide = result.value.rules;
+      const inGuide = (candidate: string) => sameRule(candidate, rule) || guide.some((kept) => sameRule(kept, candidate));
+      setEntries((current) =>
+        current.map((entry) =>
+          entry.proposedRules.some(inGuide)
+            ? { ...entry, proposedRules: entry.proposedRules.filter((candidate) => !inGuide(candidate)) }
+            : entry,
+        ),
+      );
+      setRuleNotice({
+        text:
+          result.value.added.length > 0
+            ? `Guardado en la guía de estilo de la asignatura: «${rule}».`
+            : `La guía de estilo de la asignatura ya tenía esa regla: «${rule}».`,
+        saved: true,
+      });
+    },
+    [subjectId],
+  );
+
   return {
     entries,
     canUndo,
@@ -268,5 +325,9 @@ export function useEditorChat(
     ask,
     retry,
     undo: () => void undo(),
+    confirming,
+    ruleNotice,
+    confirmRule: (rule: string) => void confirmRule(rule),
+    styleGuidePath: styleGuidePagePath(subjectId),
   };
 }

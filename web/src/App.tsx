@@ -8,6 +8,7 @@ import {
   topicPath,
 } from "./desk/api";
 import type { Subject, Topic } from "./protocol";
+import { styleGuidePagePath } from "./styleGuide/api";
 
 /**
  * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
@@ -26,7 +27,6 @@ function pendingText(count: number): string {
 
 function TopicRow({ topic }: { topic: Topic }) {
   const details: string[] = [];
-  if (topic.open_session_id !== undefined) details.push("Sesión abierta");
   if (topic.last_session_at_ms !== undefined) {
     details.push(`Última sesión: ${formatDate(topic.last_session_at_ms)}`);
   }
@@ -36,6 +36,12 @@ function TopicRow({ topic }: { topic: Topic }) {
   return (
     <li>
       <a href={topicPath(topic.subject_id, topic.topic_id)}>{topic.name}</a>
+      {topic.open_session_id !== undefined && (
+        <>
+          {" · "}
+          <a href="/live">Sesión abierta</a>
+        </>
+      )}
       {details.length > 0 && <> · {details.join(" · ")}</>}
     </li>
   );
@@ -45,6 +51,9 @@ function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadRes
   return (
     <section aria-label={subject.name}>
       <h2>{subject.name}</h2>
+      <p>
+        <a href={styleGuidePagePath(subject.subject_id)}>Guía de estilo</a>
+      </p>
       {topics.kind !== "ok" && (
         <p role="alert">No se pudieron cargar los temas: {describeFailure(topics)}</p>
       )}

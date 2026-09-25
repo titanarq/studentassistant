@@ -11,7 +11,9 @@ Decision: ADR-0008.
 - Pipeline: client times -> session time, dedupe/merge, partial and final `NormalisedSegment`s;
   finals appended to the transcript via `vault` and published on the bus.
 - Voice-command grammar (ADR-0006): YAML phrases -> command events, debounced.
-- Vocabulary hints (topic names, concepts) passed as initial prompt / hotwords.
+- Vocabulary hints (subject and topic names, observer concepts) assembled and capped here, applied
+  by server-side providers (Whisper `hotwords`); the server sends the same list to the capture
+  client (protocol 1.4 `vocabulary_hints`).
 
 ## Boundaries
 - Never calls an LLM. Runs model inference off the event loop. No module outside `stt`
@@ -64,6 +66,20 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   `SessionService.end` awaits `drain()` (a before-close end hook the app adds) after publishing
   `session.ended` and before the vault ends the session, so every final published before the end
   is written.
+- Vocabulary hints (`stt/vocabulary.py`, pure logic, #54):
+  `vocabulary_hints(*, subject, topic, concepts, max_terms, max_chars) -> list[str]` -- the
+  subject's name, the topic's name, then `concepts` (given oldest first) newest first; whitespace
+  collapsed; blank terms, terms over 100 characters and repeats (case and accents ignored)
+  skipped; at most `max_terms` (never more than the protocol's 50) and, joined with `", "`, at
+  most `max_chars` characters (a term that does not fit is skipped, a shorter later one may still
+  be taken); `max_terms <= 0` gives `[]`. `vocabulary_hints_from_settings(settings.stt, ...)`
+  takes the caps from `[stt]`; `hotwords_text(hints)` joins them (`None` when empty). `stt` only
+  assembles: the server gathers the terms (vault + observer) and never lets `stt` import them.
+- `SpeechToTextProvider.set_vocabulary(hints)` -- replace the session's hints at any time (before
+  the first chunk or between chunks); the latest list is in `vocabulary` (a tuple, `()` at first).
+  The default only stores them; a provider that can bias recognition applies them from its next
+  inference on. `BufferedProvider` passes them straight to the wrapped provider. The gateway calls
+  it at every handshake and whenever the observer adds a concept.
 - `BufferedProvider(inner, *, max_backlog_seconds=...)` (`stt/buffered.py`) -- a
   `SpeechToTextProvider` wrapping another one so the gateway never waits for inference: `feed`
   enqueues the chunk and returns what `inner` produced since the previous call; one background
@@ -82,19 +98,25 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   came before. Only 16 kHz PCM16 is accepted. The model loads lazily (first chunk, in the worker
   thread); `device = "auto"` picks CUDA (`int8_float16`) when CTranslate2 sees a device and CPU
   (`int8`) otherwise, and falls back to the CPU once when the first CUDA transcription fails (a
-  missing cuBLAS/cuDNN). Before choosing a device it calls `cuda.preload()`.
+  missing cuBLAS/cuDNN). Before choosing a device it calls `cuda.preload()`. The session's
+  vocabulary hints go to Whisper as `hotwords` (after the configured `hotwords`, if any; the
+  configured `initial_prompt` is passed unchanged); `hotwords` shows what the next transcription
+  gets.
 - `stt/cuda.py`: the `whisper` extra also pulls the `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`
   (cuDNN 9) wheels on Linux; `preload()` loads `libcublasLt.so.12`, `libcublas.so.12` and
   `libcudnn.so.9` from their site-packages `lib/` directories with `RTLD_GLOBAL` (once, never
   raises, a no-op without the wheels), so CTranslate2's later lookup by name finds them without
   `LD_LIBRARY_PATH`. `check() -> str | None` opens both by name and creates/destroys a cuBLAS and
   a cuDNN handle; `None` when they work, else a Spanish reason (used by `doctor`).
-- `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe`;
+- `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe(audio, *, hotwords=None)`;
   blocking) for tests. `studentassistant stt download` fetches the configured model (as `setup`
   does).
 - `GoogleCloudSpeechProvider` (`stt/google_cloud.py`, entry point `google-cloud`; needs the
   `google-cloud` extra, `uv sync --extra google-cloud`, imported only when the first stream
-  opens) -- Google Cloud Speech-to-Text v1 streaming with interim results. `feed` queues the chunk
+  opens) -- Google Cloud Speech-to-Text v1 streaming with interim results. The session's
+  vocabulary hints (`set_vocabulary`) join the configured `phrases` as phrase hints
+  (`SpeechContext`) from the next gRPC stream on (a running stream keeps its config; streams
+  rotate at `stream_limit_seconds`); a custom client without `set_vocabulary` ignores them. `feed` queues the chunk
   on a gRPC stream a worker thread drives and returns the partials/finals that arrived since the
   previous call (never waits for the network); a segment starts where the stream's previous final
   ended and ends at the result's `result_end_time`, clamped to the audio the stream consumed. A
@@ -120,6 +142,8 @@ mode = "client"          # client | server
 provider = "web-speech"  # web-speech | android-speech (client); faster-whisper, a cloud id, fake (server)
 language = "es"
 max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
+vocabulary_max_terms = 30   # vocabulary hints: most terms (0 = off; at most 50)
+vocabulary_max_chars = 500  # vocabulary hints: most characters, joined with ", "
 
 [stt.options.faster-whisper]  # free-form table per provider name, passed to its constructor
 model = "large-v3-turbo"        # the default
@@ -127,7 +151,8 @@ device = "auto"                 # auto | cuda | cpu
 # download_root = "~/models"    # unset: the Hugging Face cache
 # compute_type = "int8_float16" # default: int8_float16 on CUDA, int8 on CPU
 # beam_size = 5
-# initial_prompt = "derivadas, integrales"  # vocabulary hints
+# initial_prompt = "Clase de cálculo."     # a fixed prompt
+# hotwords = "derivadas, integrales"        # fixed hint phrases, before the session's hints
 # partial_interval_seconds = 1.0
 # min_silence_ms = 600          # silence that ends an utterance
 # max_utterance_seconds = 20.0
@@ -138,14 +163,14 @@ device = "auto"                 # auto | cuda | cpu
 # credentials_file = "~/.config/studentassistant/google-stt.json"  # unset: Application Default Credentials
 # language_code = "es-ES"       # default: from stt.language (es -> es-ES)
 model = "latest_long"           # the default
-# phrases = ["derivada", "integral"]  # vocabulary hints
+# phrases = ["derivada", "integral"]  # fixed phrase hints, before the session's hints
 # automatic_punctuation = true
 # stream_limit_seconds = 240.0  # audio per stream before a new one opens
 # retry_seconds = 5.0           # after a failed stream, audio dropped before reconnecting
 # finish_timeout_seconds = 10.0
 ```
 Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
-`SA_STT__MAX_BACKLOG_SECONDS`.
+`SA_STT__MAX_BACKLOG_SECONDS`, `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`.
 
 ## How to add a server-side provider
 1. One module, e.g. `studentassistant/stt/faster_whisper.py`, with a subclass of
@@ -168,7 +193,9 @@ A client-side recognizer needs no backend code: its name is just `stt.provider` 
 stamped on every segment by the `TranscriptSink`.
 
 ## Tests
-Pipeline and grammar tested with `FakeProvider` and scripted segments; `FasterWhisperProvider`
+Pipeline and grammar tested with `FakeProvider` and scripted segments; hint assembly in
+`test_stt_vocabulary.py`, the gateway's hints (hello.ack, notice, provider) in
+`tests/server/test_ws_vocabulary_hints.py`; `FasterWhisperProvider`
 with a scripted `WhisperBackend` and a stand-in `faster_whisper` module. `GoogleCloudSpeechProvider`
 with a scripted `SpeechStreamClient` and a stand-in `google.cloud.speech` module. Real-model tests are
 `integration`: `SA_TEST_SPANISH_WAV=<16 kHz mono PCM16 WAV> [SA_TEST_SPANISH_WORDS="..."]
