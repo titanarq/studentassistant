@@ -270,4 +270,110 @@ class CaptureViewModelTest {
         assertEquals(MicProblem.PERMISSION_DENIED, viewModel.state.value.micProblem)
         viewModel.leave()
     }
+
+    @Test
+    fun `going to the background stops the transcriber and coming back restarts it`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel)
+        assertEquals(1, transcriber.starts)
+
+        viewModel.onBackground()
+        runCurrent()
+        assertFalse(transcriber.running)
+        assertTrue(viewModel.state.value.micPaused)
+        assertFalse(sockets.last.closed) // the session socket stays open
+
+        viewModel.onForeground()
+        runCurrent()
+        assertTrue(transcriber.running)
+        assertEquals(2, transcriber.starts)
+        assertTrue(viewModel.state.value.micPaused) // «Micrófono en pausa» is shown on return...
+        advanceTimeBy(CaptureViewModel.PAUSE_NOTICE_MS)
+        runCurrent()
+        assertFalse(viewModel.state.value.micPaused) // ...for a few seconds
+        assertEquals(1, sockets.sockets.size)
+        viewModel.leave()
+    }
+
+    @Test
+    fun `ON_START without a preceding ON_STOP changes nothing`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        viewModel.onForeground() // the observer's first ON_START
+        connect(viewModel)
+        viewModel.onForeground()
+        runCurrent()
+        assertEquals(1, transcriber.starts)
+        assertFalse(viewModel.state.value.micPaused)
+        viewModel.leave()
+    }
+
+    @Test
+    fun `an utterance in progress is sent once when pausing, and new ones continue after`() = runTest(main.dispatcher) {
+        val engine = FakeRecognizerEngine()
+        var created = 0
+        val viewModel = CaptureViewModel(
+            open = open,
+            backendClient = backend,
+            sessionHolder = holder,
+            clock = clock,
+            socketFactory = sockets,
+            transcriberFactory = { scope -> SpeechRecognizerTranscriber(engine, clock, scope, segmentPrefix = "and-${created++}") },
+            audioStreamerFactory = { AudioStreamer(audioSource, clock, main.dispatcher) },
+            reconnectDelaysMs = listOf(100),
+        )
+        connect(viewModel)
+        engine.listener.onSpeechStart()
+        engine.listener.onPartial("el feudo")
+        viewModel.onBackground()
+        runCurrent()
+
+        viewModel.onForeground()
+        runCurrent()
+        engine.listener.onSpeechStart()
+        engine.listener.onResult("era la tierra", 0.9)
+        runCurrent()
+
+        val finals = sockets.last.sent.filterIsInstance<TranscriptClientFinal>()
+        assertEquals(listOf("and-0-0" to "el feudo", "and-1-0" to "era la tierra"), finals.map { it.segmentId to it.text })
+        viewModel.leave()
+    }
+
+    @Test
+    fun `a reconnect while in the background does not restart the microphone`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.onBackground()
+        sockets.last.drop()
+        advanceTimeBy(100)
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.1", SttMode.CLIENT, null, 0, clock.now))
+        runCurrent()
+        assertFalse(transcriber.running)
+        assertEquals(1, transcriber.starts)
+
+        viewModel.onForeground()
+        runCurrent()
+        assertTrue(transcriber.running)
+        viewModel.leave()
+    }
+
+    @Test
+    fun `server mode stops streaming in the background and resumes the frame sequence after`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel, SttMode.SERVER)
+        runCurrent()
+        val first = audioSource
+        viewModel.onBackground()
+        runCurrent()
+        assertTrue(first.closed)
+
+        audioSource = FakeAudioSource(totalSamples = 1600 * 2)
+        viewModel.onForeground()
+        runCurrent()
+        assertTrue(audioSource.opened)
+        assertEquals(listOf(0L, 1L, 2L, 3L), sockets.last.frames.map { it.seq })
+        viewModel.leave()
+    }
 }

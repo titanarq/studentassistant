@@ -108,6 +108,7 @@
     <string name="capture_no_camera">Cámara sin permiso</string>
     <string name="camera_unavailable_capture">No se pudo abrir la cámara.</string>
     <string name="capture_mic_denied">El micrófono no tiene permiso: no se está transcribiendo.</string>
+    <string name="capture_mic_paused">Micrófono en pausa</string>
     <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
     <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
     <string name="capture_button_capture">Capturar</string>

@@ -2,6 +2,9 @@ package com.titanarq.studentassistant.capture
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
@@ -83,6 +88,7 @@ fun CaptureScreen(
     }
 
     KeepScreenOn()
+    PauseInBackground(viewModel)
     LaunchedEffect(micGranted) { if (micGranted) viewModel.start() }
     LaunchedEffect(state.phase) { if (state.phase == CapturePhase.ENDED) onEnded() }
     val leave = {
@@ -104,6 +110,9 @@ fun CaptureScreen(
                 } else {
                     Text(stringResource(R.string.capture_no_camera), modifier = Modifier.align(Alignment.Center))
                 }
+            }
+            if (state.micPaused) {
+                Text(stringResource(R.string.capture_mic_paused), color = MaterialTheme.colorScheme.primary)
             }
             state.micProblem?.let {
                 Text(
@@ -155,6 +164,34 @@ private fun KeepScreenOn() {
         view.keepScreenOn = true
         onDispose { view.keepScreenOn = false }
     }
+}
+
+/**
+ * Stops the microphone on `ON_STOP` and restarts it on `ON_START` (the camera preview follows the
+ * same lifecycle through CameraX). A rotation is not a trip to the background: the view model
+ * outlives it and the microphone keeps running.
+ */
+@Composable
+private fun PauseInBackground(viewModel: CaptureViewModel) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activity = LocalContext.current.findActivity()
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> if (activity?.isChangingConfigurations != true) viewModel.onBackground()
+                Lifecycle.Event.ON_START -> viewModel.onForeground()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
