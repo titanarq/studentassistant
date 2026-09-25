@@ -25,7 +25,9 @@ Decision: ADR-0004.
 | `max_tokens` | `16000` | `64000` |
 
 `[llm] max_attempts = 4`: attempts per call (first one included) before a 429/5xx/connection error
-surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile).
+surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile);
+`studentassistant serve` exports it from the key file `setup` stores (`llm.api_key_file`, see
+`docs/modules/infra.md`) when the environment has none.
 
 Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
 `SA_LLM__PRICES__claude-sonnet-5__INPUT_PER_MTOK=2`):
@@ -64,6 +66,10 @@ No price or cap lives anywhere but these config defaults.
   (`strict_tool`) with `tool_choice: auto` and the `structured-output` prompt as instruction;
   the input is parsed with `json` and validated with Pydantic; one re-ask carrying the error,
   then `StructuredOutputError`. `RefusalError` on `stop_reason: refusal`.
+- `check_api_key(api_key=None, *, timeout=15.0, sdk=None)` -- one free, unretried
+  `GET /v1/models?limit=1` (no tokens, no ledger, no cap) proving a key works, for
+  `studentassistant doctor --api-call`; raises `LLMAPIError` (401/403 = refused) or
+  `LLMTransientError`/`LLMError` like any call. `sdk` replaces the `anthropic.Anthropic` client.
 - Cost ledger: `LedgerBinding(vault, subject, topic, session=None)` passed as `ledger=` to
   `get_client` / `FakeClaude.client` makes every successful `create` append a `LedgerEntry`
   through `studentassistant.vault.append_ledger_entry` (time from `clock`, role, model, prompt

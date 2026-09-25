@@ -28,7 +28,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from studentassistant import __version__
-from studentassistant.config import ServerSettings, Settings, SttSettings, VaultSettings
+from studentassistant.config import (
+    ServerSettings,
+    Settings,
+    SourcesSettings,
+    SttSettings,
+    VaultSettings,
+)
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
@@ -38,6 +44,7 @@ from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.pairing import PairingCodes, pairing_router
+from studentassistant.server.pdf_upload import pdf_upload_router
 from studentassistant.server.read_routes import read_router
 from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.redaction import install_log_redaction
@@ -72,6 +79,7 @@ def create_app(
     sync: GitSync | None = None,
     vault_settings: VaultSettings | None = None,
     stt: SttSettings | None = None,
+    sources: SourcesSettings | None = None,
     recorder: SessionRecorder | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app with every route this backend serves.
@@ -85,7 +93,8 @@ def create_app(
     the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on the
     first request that needs it, so creating an app never touches a vault. `sync` defaults to a
     `GitSync` of that vault. `stt` is the `[stt]` section the session WebSocket follows (default:
-    the configured one).
+    the configured one). `sources` is the `[sources]` section the PDF upload follows (default: the
+    configured one).
 
     The app's lifespan drives that sync: while the app serves, an open vault gets the background
     commit/push loop (`SessionService.startup`), and shutdown stops it and flushes what is pending
@@ -97,10 +106,16 @@ def create_app(
     refused with `ValueError`: a recording is never vault content.
     """
     install_log_redaction()
-    if server is None or stt is None or (vault is None and vault_settings is None):
+    if (
+        server is None
+        or stt is None
+        or sources is None
+        or (vault is None and vault_settings is None)
+    ):
         settings = Settings()
         server = settings.server if server is None else server
         stt = settings.stt if stt is None else stt
+        sources = settings.sources if sources is None else sources
         vault_settings = settings.vault if vault_settings is None else vault_settings
     if recorder is not None:
         vault_root = vault.path if vault is not None else vault_settings.path  # type: ignore[union-attr]
@@ -111,6 +126,7 @@ def create_app(
     devices = DeviceStore(server.devices_path)
     app = FastAPI(title="Student Assistant", version=__version__, lifespan=_lifespan)
     app.state.server = server
+    app.state.sources = sources
     app.state.devices = devices
     app.state.codes = PairingCodes() if codes is None else codes
     app.state.bus = SessionBus()
@@ -166,6 +182,7 @@ def create_app(
     app.include_router(ws_router())
     app.include_router(captures_router())
     app.include_router(read_router())
+    app.include_router(pdf_upload_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

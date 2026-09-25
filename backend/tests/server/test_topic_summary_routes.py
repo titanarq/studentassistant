@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from read_api_fixtures import ReadVault
 
-from studentassistant.vault import GitSync, notes_path
+from studentassistant.vault import GitSync, create_subject, create_topic, notes_path
 from studentassistant.vault.files import write_text_atomic
 
 NOTES = "# Cinemática\n\nLa velocidad es la derivada de la posición.[^1]\n"
@@ -53,12 +53,25 @@ def test_the_summary_reports_the_highest_notes_tag(
 ) -> None:
     write_notes(read_vault)
     sync = GitSync(read_vault.vault)
-    sync.create_notes_tag(read_vault.topic)
+    sync.create_notes_tag(read_vault.subject, read_vault.topic)
     write_notes(read_vault, NOTES + "\nMás.\n")
-    sync.create_notes_tag(read_vault.topic)
+    sync.create_notes_tag(read_vault.subject, read_vault.topic)
 
     assert summary_of(reader, read_vault)["notes_version"] == 2
     assert summary_of(reader, read_vault, read_vault.empty_topic)["notes_version"] is None
+
+
+def test_another_subjects_topic_of_the_same_slug_keeps_its_own_version(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    other = create_subject(read_vault.vault, "Química").slug
+    assert create_topic(read_vault.vault, other, "Cinemática").slug == read_vault.topic
+    sync = GitSync(read_vault.vault)
+    sync.create_notes_tag(other, read_vault.topic)
+
+    assert summary_of(reader, read_vault)["notes_version"] is None
+    sync.create_notes_tag(read_vault.subject, read_vault.topic)
+    assert summary_of(reader, read_vault)["notes_version"] == 1
 
 
 def test_the_summary_of_an_unknown_topic_is_404(read_vault: ReadVault, reader: TestClient) -> None:
@@ -91,7 +104,7 @@ def test_notes_return_the_text_and_version(read_vault: ReadVault, reader: TestCl
         "version": None,
     }
 
-    GitSync(read_vault.vault).create_notes_tag(read_vault.topic)
+    GitSync(read_vault.vault).create_notes_tag(read_vault.subject, read_vault.topic)
     assert reader.get(path).json()["version"] == 1
 
 

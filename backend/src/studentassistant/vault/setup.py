@@ -262,3 +262,52 @@ def clone_vault(
     verify_push_access(_runner(path, host, identity, timeout))
     post_clone(vault)
     return SetupResult(vault=vault, repo=repo, action="cloned")
+
+
+@dataclass(frozen=True)
+class RemoteAccess:
+    """What `check_remote_access` found about the vault's `origin`.
+
+    `url` is redacted; `repo_matches` says whether it is the configured repository (`None` when
+    there was none to compare with); `push_error` is `None` when `git push --dry-run` succeeded,
+    otherwise a Spanish, redacted account of why it did not.
+    """
+
+    url: str
+    repo_matches: bool | None
+    push_error: str | None
+
+
+def check_remote_access(
+    path: Path,
+    host: GitHubHost | None,
+    repo: str | None = None,
+    author_email: str = DEFAULT_VAULT_AUTHOR_EMAIL,
+    timeout: float = DEFAULT_SETUP_TIMEOUT_SECONDS,
+) -> RemoteAccess:
+    """Look at the vault's `origin` for `studentassistant doctor`: which it is, may we push to it.
+
+    `host` supplies how git authenticates (none: git's own configuration, e.g. SSH) and how
+    `repo` (`owner/name`) is written as a URL. Nothing is written: the push is a dry run.
+
+    Raises:
+        SetupError: `path` is no git repository or has no `origin` (Spanish message).
+    """
+    path = path.expanduser().absolute()
+    if not (path / ".git").exists():
+        raise SetupError(f"{path} no es un repositorio git: lanza `studentassistant setup`")
+    identity = _identity("Student Assistant", author_email)
+    environment = host.git_environment() if host is not None else {}
+    runner = GitRunner(path, identity, timeout=timeout, environment=environment)
+    result = runner.run("remote", "get-url", REMOTE)
+    if not result.ok or not result.stdout.strip():
+        raise SetupError("el vault no tiene `origin`: lanza `studentassistant setup`")
+    url = result.stdout.strip()
+    matches: bool | None = None
+    if repo is not None and host is not None:
+        matches = _normalize_url(url) == _normalize_url(host.remote_url(repo))
+    try:
+        verify_push_access(runner)
+    except SetupError as error:
+        return RemoteAccess(url=url, repo_matches=matches, push_error=str(error))
+    return RemoteAccess(url=url, repo_matches=matches, push_error=None)

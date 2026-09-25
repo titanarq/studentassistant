@@ -28,6 +28,11 @@ provider) lives in the gateway, not in the socket, so a client that reconnects a
 the last acknowledged audio `seq`, or resends transcript segments, produces no gap and no
 duplicate.
 
+Ending: the gateway registers `end_session` as a `SessionService.add_before_ended` hook. Before
+`session.ended` is published it flushes the session's server-side provider (`finish()`), publishes
+the segments still buffered there, and drops the session's receive state; a socket of the session
+still open gets no further message handled (it is closed as not active).
+
 Backpressure: nothing here blocks the event loop (vault writes run in worker threads through the
 bus). Outbound messages go through the connection's bounded bus subscription, which drops the
 oldest notices (partials) first and never a persisted event; out-of-order audio is buffered up to
@@ -158,6 +163,8 @@ class ReceiveState:
     segment_counter: int = 0
     open_segment_id: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Set (under `lock`) once the session is ending: nothing more is fed or published.
+    ended: bool = False
 
     @property
     def last_contiguous_seq(self) -> int | None:
@@ -181,6 +188,8 @@ class SessionGateway:
     (default: `InMemoryTranscriptSink`), `provider_factory` a session's server-side provider
     (default: `provider_from_settings`), `clock` gives backend epoch ms. Tests replace them.
     `recorder`, when given, records every session's client inputs (`serve --record`).
+
+    It registers `end_session` on `sessions` as a before-`session.ended` hook.
     """
 
     def __init__(
@@ -202,6 +211,14 @@ class SessionGateway:
         self.clock = clock
         self.recorder = recorder
         self._states: dict[str, ReceiveState] = {}
+        # The session `end_session` last ran for: it is never served again (ended sessions are
+        # never resumed), even while `SessionService.end` still has it attached.
+        self._ended: str | None = None
+        sessions.add_before_ended(self.end_session)
+
+    def has_ended(self, session_id: str) -> bool:
+        """True once `end_session` ran for `session_id`."""
+        return self._ended == session_id
 
     def state_for(self, session_id: str) -> ReceiveState:
         """The session's receive state; states of any other session are forgotten (at most one
@@ -211,6 +228,87 @@ class SessionGateway:
             self._states = {}
             state = self._states[session_id] = ReceiveState(session_id)
         return state
+
+    async def end_session(self, session_id: str) -> None:
+        """Flush the session's server-side provider onto the bus and drop its receive state.
+
+        The `add_before_ended` hook: it runs while the session is still attached to the bus and
+        the session lock is held, so it only publishes (never calls back into `SessionService`).
+        The segments `finish()` returns are published as `transcript.final` /
+        `transcript.partial` like the ones audio produced. The state is dropped even if the flush
+        fails or times out (the hook runner logs that).
+        """
+        self._ended = session_id
+        state = self._states.get(session_id)
+        if state is None:
+            return
+        try:
+            async with state.lock:
+                state.ended = True
+                provider, state.provider = state.provider, None
+                if provider is not None:
+                    for segment in await provider.finish():
+                        await self.publish_segment(
+                            state,
+                            state.server_segment_id(segment.is_final),
+                            segment,
+                            provider.language,
+                        )
+        finally:
+            if self._states.get(session_id) is state:
+                del self._states[session_id]
+
+    async def publish_segment(
+        self,
+        state: ReceiveState,
+        segment_id: str,
+        segment: NormalisedSegment,
+        language: str,
+    ) -> None:
+        """Publish one normalised segment of `state`'s session (the caller holds `state.lock`).
+
+        Raises:
+            SessionNotAttachedError: the session is no longer on the bus.
+        """
+        start_ms = round(segment.start * 1000)
+        payload: dict[str, Any] = {
+            "segment_id": segment_id,
+            "session_start_ms": start_ms,
+            "session_end_ms": max(start_ms, round(segment.end * 1000)),
+            "text": segment.text,
+            "language": language,
+            "provider": segment.provider,
+        }
+        if segment.confidence is not None:
+            payload["confidence"] = segment.confidence
+        if segment.is_final:
+            await self.publish(state.session_id, TRANSCRIPT_FINAL, "stt", payload, t=start_ms)
+            # Also a refused (secret-looking) final is settled: a resend must not retry it.
+            state.finals_seen.add(segment_id)
+        else:
+            await self.publish(
+                state.session_id, TRANSCRIPT_PARTIAL, "stt", payload, t=start_ms, persist=False
+            )
+
+    async def publish(
+        self,
+        session_id: str,
+        kind: str,
+        origin: Literal["phone", "stt"],
+        payload: Mapping[str, Any],
+        *,
+        t: int,
+        persist: bool = True,
+    ) -> None:
+        """Publish on the bus; an event the vault refuses as secret-looking is only logged.
+
+        Raises:
+            SessionNotAttachedError: the session is no longer on the bus.
+        """
+        try:
+            await self.bus.publish(session_id, kind, origin, payload, persist=persist, t=t)
+        except SecretRefused:
+            logger.warning("a %s event of session %s was refused as secret", kind, session_id)
 
     async def serve(self, websocket: WebSocket, session_id: str) -> None:
         """Run one socket to its end; the caller has not accepted it yet."""
@@ -278,7 +376,11 @@ class _Connection:
 
     async def run(self) -> None:
         session = self.gateway.sessions.get_active(self.session_id)
-        if session is None or not self.bus.is_attached(self.session_id):
+        if (
+            session is None
+            or not self.bus.is_attached(self.session_id)
+            or self.gateway.has_ended(self.session_id)
+        ):
             raise _RefusedError(
                 f"session {self.session_id} is not active: start or resume it first",
                 CLOSE_UNKNOWN_SESSION,
@@ -428,6 +530,7 @@ class _Connection:
         assert self.state is not None and self.sink is not None
         final = isinstance(event, TranscriptClientFinal)
         async with self.state.lock:
+            self._check_not_ended()
             if event.segment_id in self.state.finals_seen:
                 return  # a resent final, or a partial overtaken by its final
             normalised = await self.sink.ingest(
@@ -453,8 +556,10 @@ class _Connection:
         except AudioFrameError as error:
             raise _RefusedError(str(error)) from None
         state = self.state
-        assert state is not None and state.provider is not None
+        assert state is not None
         async with state.lock:
+            self._check_not_ended()
+            assert state.provider is not None
             if frame.seq >= state.next_seq and frame.seq not in state.pending:
                 if frame.seq - state.next_seq >= MAX_PENDING_FRAMES:
                     raise _RefusedError(
@@ -483,28 +588,21 @@ class _Connection:
 
     # -- publishing ----------------------------------------------------------------------------
 
+    def _check_not_ended(self) -> None:
+        """Refuse to handle more once the session is ending (the caller holds the state lock)."""
+        assert self.state is not None
+        if self.state.ended:
+            raise self._not_active()
+
     async def _publish_segment(
         self, segment_id: str, segment: NormalisedSegment, language: str
     ) -> None:
         """Publish one normalised segment (the caller holds the state lock)."""
         assert self.state is not None
-        start_ms = round(segment.start * 1000)
-        payload: dict[str, Any] = {
-            "segment_id": segment_id,
-            "session_start_ms": start_ms,
-            "session_end_ms": max(start_ms, round(segment.end * 1000)),
-            "text": segment.text,
-            "language": language,
-            "provider": segment.provider,
-        }
-        if segment.confidence is not None:
-            payload["confidence"] = segment.confidence
-        if segment.is_final:
-            await self._publish(TRANSCRIPT_FINAL, "stt", payload, t=start_ms)
-            # Also a refused (secret-looking) final is settled: a resend must not retry it.
-            self.state.finals_seen.add(segment_id)
-        else:
-            await self._publish(TRANSCRIPT_PARTIAL, "stt", payload, t=start_ms, persist=False)
+        try:
+            await self.gateway.publish_segment(self.state, segment_id, segment, language)
+        except SessionNotAttachedError:
+            raise self._not_active() from None
 
     async def _publish(
         self,
@@ -516,13 +614,14 @@ class _Connection:
         persist: bool = True,
     ) -> None:
         try:
-            await self.bus.publish(self.session_id, kind, origin, payload, persist=persist, t=t)
+            await self.gateway.publish(self.session_id, kind, origin, payload, t=t, persist=persist)
         except SessionNotAttachedError:
-            raise _RefusedError(
-                f"session {self.session_id} is no longer active", CLOSE_UNKNOWN_SESSION
-            ) from None
-        except SecretRefused:
-            logger.warning("a %s event of session %s was refused as secret", kind, self.session_id)
+            raise self._not_active() from None
+
+    def _not_active(self) -> _RefusedError:
+        return _RefusedError(
+            f"session {self.session_id} is no longer active", CLOSE_UNKNOWN_SESSION
+        )
 
     # -- bus -> client -------------------------------------------------------------------------
 
