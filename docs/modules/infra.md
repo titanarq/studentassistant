@@ -39,6 +39,9 @@ the `studentassistant` console script.
   and force-pushes with leases after asking for `reescribir` (or `--yes`). Behaviour and the
   consequence for other PCs: `docs/modules/vault.md`, "Purge".
 - Not built yet: `replay` (server).
+- `studentassistant eval run [--case NAME]... [--yes]` -- the eval set (below, "Evals"): prints
+  the estimated cost per case and role, asks before any Claude call (`--yes` does not), runs
+  every case and writes the report; exit 1 when a case could not be replayed.
 
 ### Install (`studentassistant/install/`)
 The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/runbooks/install.md`.
@@ -104,6 +107,51 @@ The defaults live here and nowhere else:
 | `vault.path` | `~/StudentAssistant/vault`, `~` expanded (ADR-0002) |
 | `llm.roles.observer.model`, `llm.roles.transcriber.model` | `claude-sonnet-5` (ADR-0004) |
 | `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
+| `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |
+| `eval.speed` | `4.0`: how many times faster than recorded `eval run` replays each session |
+
+## Evals (`studentassistant/evals/`)
+A small set of the student's real recorded sessions with reference notes, scored whenever prompts
+or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
+
+- **Layout** (`cases.py`, `read_eval_set` / `read_case`, `EvalSetError`): `[eval] path` holds one
+  directory per case -- `recording/` (a `serve --record` recording, `server/recording.py`) and
+  `reference/notes.md` (required), `reference/pages/<capture_id>.md` and
+  `reference/sections.yaml` (`sections: [{title, segments: [<segment_id>]}]`), both optional --
+  plus `runs/`. Every reference is checked against its recording before anything runs. `eval run`
+  refuses a path inside the vault (or holding it) or inside the source checkout it runs from.
+- **Cost first** (`estimate.py`, `estimate_case`): calls and tokens per role from the recording
+  alone (constants in the module), priced with `[llm.prices]` at the uncached input price; a
+  model with no price is named and left out of the total. The real cost is summed from the
+  run vault's ledgers and reported next to it.
+- **Run** (`run.py`, `run_eval` / `run_case`): each case is wired as
+  `tests/server/test_pipeline_e2e.py` wires the pipeline -- `create_app` with its lifespan over a
+  fresh vault under `runs/<UTC time>/<case>/vault` (no remote; index, devices, recordings also
+  under the run directory), `replay` at `[eval] speed`, then `POST .../notes/generate` with
+  `confirm_over_cap` (the estimate was already confirmed) -- with the real Claude transport
+  (`evals.cli._eval_transport`, replaced in tests). What came out is read back through the vault
+  and the observer's loader and scored. `write_report` writes `report.md` (Spanish) and
+  `report.json` (`EvalReport`, computed scores included).
+- **Rubric** (`scoring.py`; pure, deterministic, every score in [0, 1], higher is better). Text is
+  compared normalized: `[[?x]]` becomes `x`; footnote references, anchors, link targets, Markdown
+  markup and punctuation are dropped; accents folded; lower case; whitespace collapsed. *Content
+  words*: normalized words of 3+ letters that are not Spanish stop words, and numbers.
+  - *Page transcription*, per reference page: character accuracy `1 - CER` and word accuracy
+    `1 - WER` (Levenshtein distance / reference length, floored at 0). A page never transcribed
+    scores 0.
+  - *Observer sections*, when `sections.yaml` exists: pairwise agreement (Rand index) over the
+    reference's segments -- a pair agrees when the reference and the observer both put it in one
+    section or both keep it apart; an unassigned segment is in no section -- plus coverage (share
+    of those segments assigned). Section ids and titles never need to match.
+  - *Editor fidelity*: both notes are cut into units (list items and sentences; headings,
+    footnote definitions and units with fewer than 2 content words left out). *Kept* = share of
+    reference units with at least 50 % of their content words in one generated unit (dropped
+    content lowers it). *Supported* = share of generated units with at least 80 % of their
+    content words in the session's transcript, its page transcriptions or the reference notes
+    (content from nowhere lowers it). The report lists the dropped and unsupported units, whether
+    the notes stayed a draft, and the validator's errors.
+  - *Global* per case: the mean of page character accuracy, section agreement, kept and
+    supported (those that exist; no notes counts kept and supported as 0).
 
 ## CI (`.github/workflows/ci.yml`)
 Triggered on every `pull_request` with no `paths` filter, top-level `permissions: contents: read`.

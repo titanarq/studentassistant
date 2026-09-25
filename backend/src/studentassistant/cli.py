@@ -46,6 +46,7 @@ from studentassistant.config import (
     config_toml_path,
     write_vault_config,
 )
+from studentassistant.evals.cli import eval_cli
 from studentassistant.generators import (
     GenerationError,
     UnknownGeneratorError,
@@ -435,6 +436,7 @@ def replay_command(
 
 index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")
 cli.add_typer(index_cli, name="index")
+cli.add_typer(eval_cli, name="eval")
 
 
 def _index_summary(report: IndexReport) -> str:
