@@ -82,7 +82,14 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   came before. Only 16 kHz PCM16 is accepted. The model loads lazily (first chunk, in the worker
   thread); `device = "auto"` picks CUDA (`int8_float16`) when CTranslate2 sees a device and CPU
   (`int8`) otherwise, and falls back to the CPU once when the first CUDA transcription fails (a
-  missing cuBLAS/cuDNN). `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe`;
+  missing cuBLAS/cuDNN). Before choosing a device it calls `cuda.preload()`.
+- `stt/cuda.py`: the `whisper` extra also pulls the `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`
+  (cuDNN 9) wheels on Linux; `preload()` loads `libcublasLt.so.12`, `libcublas.so.12` and
+  `libcudnn.so.9` from their site-packages `lib/` directories with `RTLD_GLOBAL` (once, never
+  raises, a no-op without the wheels), so CTranslate2's later lookup by name finds them without
+  `LD_LIBRARY_PATH`. `check() -> str | None` opens both by name and creates/destroys a cuBLAS and
+  a cuDNN handle; `None` when they work, else a Spanish reason (used by `doctor`).
+- `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe`;
   blocking) for tests. `studentassistant stt download` fetches the configured model (as `setup`
   does).
 - Fakes: `FakeProvider` (registered as `fake`; `segments=` or `options["segments"]`, each

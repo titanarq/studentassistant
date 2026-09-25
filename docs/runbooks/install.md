@@ -12,7 +12,8 @@ lo deja todo como estaba.
   escritura en el repositorio del vault.
 - Una clave de la API de Anthropic (`sk-ant-...`), de <https://console.anthropic.com/>.
 - Solo si quieres transcribir la voz en el PC (Whisper) en lugar de en el móvil o el navegador:
-  una GPU NVIDIA con los controladores y CUDA instalados.
+  una GPU NVIDIA con su controlador instalado. No hace falta instalar CUDA en el sistema: el
+  extra `whisper` trae cuBLAS y cuDNN como paquetes de Python.
 
 ## 1. Descargar e instalar
 
@@ -78,7 +79,7 @@ Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, term
 | Configuración | que `config.toml` se pueda leer | corrige el valor que indica |
 | Dependencias de Python | que estén instaladas | `uv sync` en `backend/` (con Whisper, `uv sync --extra whisper`) |
 | Voz (STT) | modo y proveedor configurados | revisa `[stt]` en `config.toml` |
-| faster-whisper, CUDA, Modelo de Whisper | solo con `faster-whisper`: instalado, GPU visible, modelo descargado | ver "Whisper en el PC" |
+| faster-whisper, CUDA, Modelo de Whisper | solo con `faster-whisper`: instalado, GPU visible y cuBLAS/cuDNN funcionando en ella, modelo descargado | ver "Whisper en el PC" |
 | Clave de la API de Anthropic | que haya clave (y, con `--api-call`, que Anthropic la acepte) | `setup --api-key-stdin`; `chmod 600` si lo pide |
 | Vault | que la carpeta sea un vault | `setup` |
 | Remoto del vault | que `origin` sea el repositorio de `vault.repo` | `setup` |
@@ -109,8 +110,15 @@ device = "auto"            # auto: la GPU si hay, si no la CPU (lento); cuda; cp
 # download_root = "/ruta/a/los/modelos"   # por defecto, la caché de Hugging Face
 ```
 
-Después, `uv run studentassistant setup` descarga el modelo y `doctor` comprueba la GPU y el
-modelo. (Ojo: un `uv sync` sin `--extra whisper` desinstala faster-whisper; con Whisper,
+El extra instala también las bibliotecas de CUDA 12 que usa faster-whisper en la GPU
+(`nvidia-cublas-cu12` y `nvidia-cudnn-cu12`, cuDNN 9) dentro del entorno de `backend/`; el backend
+las carga desde ahí, sin `LD_LIBRARY_PATH` ni paquetes del sistema. Basta con el controlador de
+NVIDIA (`nvidia-smi` debe ver la GPU).
+
+Después, `uv run studentassistant setup` descarga el modelo y `doctor` comprueba la GPU (crea un
+contexto de cuBLAS y otro de cuDNN en ella) y el modelo. Si la línea `CUDA` dice que no se
+encuentra `libcublas.so.12` o `libcudnn.so.9`, vuelve a lanzar `uv sync --extra whisper`; con
+`device = "auto"` es un aviso y Whisper usará la CPU (lento), con `device = "cuda"` es un fallo. (Ojo: un `uv sync` sin `--extra whisper` desinstala faster-whisper; con Whisper,
 usa siempre `uv sync --extra whisper`.)
 
 ## El día a día

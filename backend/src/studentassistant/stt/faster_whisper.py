@@ -40,6 +40,7 @@ from studentassistant.config import (
     DEFAULT_WHISPER_DEVICE,
     DEFAULT_WHISPER_MODEL,
 )
+from studentassistant.stt import cuda
 from studentassistant.stt.models import AudioChunk, NormalisedSegment
 from studentassistant.stt.provider import SpeechToTextProvider
 
@@ -167,6 +168,8 @@ class FasterWhisperBackend:
                 return
             module = _import("faster_whisper")
             self._vad = _import("faster_whisper.vad")
+            if self.device != "cpu":
+                cuda.preload()  # the `whisper` extra's cuBLAS/cuDNN wheels, before any encode
             device, compute_type = resolve_device(self.device, self.compute_type)
             logger.info(
                 "loading faster-whisper model %s on %s (%s)", self.model_name, device, compute_type
