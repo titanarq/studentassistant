@@ -33,14 +33,21 @@ it("posts the message and streams the reply, dropping it on a restart", async ()
 it("reports an error before the stream with the backend's detail", async () => {
   stubApi({ [`POST ${CHAT}`]: jsonResponse({ detail: "El editor ya está trabajando en los apuntes." }, 409) });
   const outcome = await sendChatMessage("historia", "revolucion-industrial", "hola");
-  expect(outcome).toEqual({ kind: "refused", status: 409, detail: "El editor ya está trabajando en los apuntes.", overCap: false });
+  expect(outcome).toEqual({ kind: "refused", status: 409, detail: "El editor ya está trabajando en los apuntes.", code: null, overCap: false });
 });
 
-it("reports an error event, marking a reached cost cap", async () => {
+it("reports an error event, marking a reached cost cap by its code", async () => {
+  const detail = "Se ha alcanzado el límite de gasto del día (5.00 de 5.00 USD). Confirma para continuar igualmente.";
+  stubApi({ [`POST ${CHAT}`]: () => sseResponse([["error", { status: 409, detail, code: "cost_cap_reached" }]]) });
+  const outcome = await sendChatMessage("historia", "revolucion-industrial", "hola", { confirmOverCap: true });
+  expect(outcome).toEqual({ kind: "refused", status: 409, detail, code: "cost_cap_reached", overCap: true });
+});
+
+it("does not read a cost cap from the wording of an uncoded error event", async () => {
   const detail = "Se ha alcanzado el límite de gasto del día (5.00 de 5.00 USD). Confirma para continuar igualmente.";
   stubApi({ [`POST ${CHAT}`]: () => sseResponse([["error", { status: 409, detail }]]) });
-  const outcome = await sendChatMessage("historia", "revolucion-industrial", "hola", { confirmOverCap: true });
-  expect(outcome).toEqual({ kind: "refused", status: 409, detail, overCap: true });
+  const outcome = await sendChatMessage("historia", "revolucion-industrial", "hola");
+  expect(outcome).toEqual({ kind: "refused", status: 409, detail, code: null, overCap: false });
 });
 
 it("is interrupted when the stream ends or breaks before its result", async () => {

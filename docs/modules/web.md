@@ -118,7 +118,8 @@ token):
     .../notes/chat` and reads its stream (`reply.delta` -> `onDelta(text, attempt)`,
     `reply.restart` -> `onRestart(attempt)`) -> `ChatOutcome` = `ActionResult<RevisionResult>`
     (an error before the stream or an `error` event is `refused` with its status and Spanish
-    `detail`, `overCap` for a reached cost cap) `| {kind: "interrupted"}` when the stream ends or
+    `detail` and `code`, `overCap` when the code is `cost_cap_reached`, never read from the
+    wording) `| {kind: "interrupted"}` when the stream ends or
     breaks before `result`/`error`; `fetchChatHistory -> ReadResult<ChatHistory>` (`GET
     .../notes/chat`), `undoLastTurn -> ActionResult<UndoResult>` (`POST .../notes/chat/undo`),
     `describeChatFailure`. Bodies are read leniently (`readRevision`, `readHistory`, `readUndo`).
