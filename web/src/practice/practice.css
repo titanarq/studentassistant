@@ -64,3 +64,16 @@
 .practice-wrong {
   color: #a3261b;
 }
+
+.practice-suspend {
+  margin: 1rem 0 0;
+  text-align: right;
+}
+
+.practice-suspended ul {
+  padding-left: 1rem;
+}
+
+.practice-suspended li {
+  margin: 0.5rem 0;
+}

@@ -4,6 +4,9 @@
  *   new ones of the day, with counts, the next due time and Spanish warnings.
  * - `POST .../practice/reviews`, body `PracticeAnswer` -> `ReviewOutcome`: the review (graded by
  *   the backend for a quiz question) and the item's new schedule, kept in `study/practice.jsonl`.
+ * - `POST .../practice/items/{key}/suspend` and `.../restore` -> `SuspensionOutcome` (#281): set an
+ *   item aside (no longer queued) or bring it back with its history; idempotent. The items set
+ *   aside come in the queue response (`suspended`).
  *
  * Every call answers an `ActionResult` (`pending/doubts.ts`). Bodies are read leniently: an item
  * the page cannot show is skipped, a body without the fields the page needs is an error.
@@ -53,11 +56,25 @@ export interface PracticeCounts {
   new: number;
   unseen: number;
   learned: number;
+  suspended: number;
+}
+
+export interface SuspendedItem {
+  key: string;
+  source: Source;
+  prompt: string;
+  suspended_at: string;
+}
+
+export interface SuspensionOutcome {
+  item: string;
+  suspended: boolean;
 }
 
 export interface PracticeQueue {
   queue: QueuedItem[];
   counts: PracticeCounts;
+  suspended: SuspendedItem[];
   next_due: string | null;
   warnings: string[];
 }
@@ -119,6 +136,19 @@ function readSchedule(value: unknown): ItemSchedule | null {
   };
 }
 
+function readSuspended(value: unknown): SuspendedItem | null {
+  if (!isRecord(value) || typeof value.key !== "string" || typeof value.prompt !== "string") return null;
+  const source = (["flashcards", "quiz"] as const).find((s) => s === value.source);
+  if (source === undefined) return null;
+  const at = typeof value.suspended_at === "string" ? value.suspended_at : "";
+  return { key: value.key, source, prompt: value.prompt, suspended_at: at };
+}
+
+export function readSuspension(body: unknown): SuspensionOutcome | null {
+  if (!isRecord(body) || typeof body.item !== "string" || typeof body.suspended !== "boolean") return null;
+  return { item: body.item, suspended: body.suspended };
+}
+
 export function readQueue(body: unknown): PracticeQueue | null {
   if (!isRecord(body) || !Array.isArray(body.queue) || !isRecord(body.counts)) return null;
   const queue: QueuedItem[] = [];
@@ -128,14 +158,19 @@ export function readQueue(body: unknown): PracticeQueue | null {
     if (item !== null) queue.push({ item, state: readSchedule(entry.state) });
   }
   const counts = body.counts;
+  const suspended = Array.isArray(body.suspended)
+    ? body.suspended.map(readSuspended).filter((item): item is SuspendedItem => item !== null)
+    : [];
   return {
     queue,
+    suspended,
     counts: {
       total: count(counts.total),
       due: count(counts.due),
       new: count(counts.new),
       unseen: count(counts.unseen),
       learned: count(counts.learned),
+      suspended: count(counts.suspended),
     },
     next_due: typeof body.next_due === "string" ? body.next_due : null,
     warnings: texts(body.warnings),
@@ -165,6 +200,17 @@ export function sendReview(
   answer: PracticeAnswer,
 ): Promise<ActionResult<ReviewOutcome>> {
   return postAction(`${practicePath(subjectId, topicId)}/reviews`, answer, readOutcome);
+}
+
+/** Set an item aside (`suspend: true`) or bring it back. */
+export function sendSuspension(
+  subjectId: string,
+  topicId: string,
+  key: string,
+  suspend: boolean,
+): Promise<ActionResult<SuspensionOutcome>> {
+  const path = `${practicePath(subjectId, topicId)}/items/${encodeURIComponent(key)}/${suspend ? "suspend" : "restore"}`;
+  return postAction(path, undefined, readSuspension);
 }
 
 /** "en 10 minutos", "mañana", "en 6 días", "en 2 meses": when an item comes back. */

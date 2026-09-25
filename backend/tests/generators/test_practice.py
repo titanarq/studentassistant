@@ -25,20 +25,28 @@ from studentassistant.generators.practice import (
     PracticeAnswer,
     PracticeItemNotFoundError,
     PracticeReview,
+    PracticeSuspension,
     practice_history,
+    practice_log,
     practice_queue,
     quiz_item_key,
     record_practice_review,
     replay,
+    restore_practice_item,
     schedule,
+    suspend_practice_item,
+    suspended_items,
+    suspensions,
 )
 from studentassistant.generators.quiz import QuizGenerator
 from studentassistant.llm import FakeClaude, LedgerBinding
 from studentassistant.vault import GitSync, Vault, write_notes
+from studentassistant.vault.jsonl import append_jsonl
 from studentassistant.vault.study import study_log_path
 
 NOW = datetime(2026, 9, 25, 18, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
+HOUR = timedelta(hours=1)
 
 CARDS: list[dict[str, Any]] = [
     {"front": "¿Qué es la derivada?", "back": "Un límite.", "anchors": ["definicion"]},
@@ -217,6 +225,7 @@ def test_queue_offers_cards_then_questions_as_new_items(material: ReviseTopic) -
         "unseen": 5,
         "learned": 0,
         "new_today": 0,
+        "suspended": 0,
     }
     assert queue.next_due is None and queue.warnings == []
     assert len(_queue(material, new_limit=2).queue) == 2
@@ -334,3 +343,98 @@ def test_stale_material_is_warned(material: ReviseTopic) -> None:
     warnings = _queue(material).warnings
     assert any("flashcards" in warning for warning in warnings)
     assert any("quiz" in warning for warning in warnings)
+
+
+# -- setting items aside (#281) --------------------------------------------------------------------
+
+
+def _keys(queue: Any) -> list[str]:
+    return [queued.item.key for queued in queue.queue]
+
+
+def test_a_suspended_item_is_never_queued_and_comes_back_with_its_history(
+    material: ReviseTopic, sync: GitSync
+) -> None:
+    card, new_card = _keys(_queue(material))[:2]
+    _review(material, sync, item=card, rating="good")  # due tomorrow
+    aside = suspend_practice_item(
+        material.vault, material.subject, material.topic, card, sync=sync, clock=lambda: NOW
+    )
+    assert aside.suspended and aside.changed and aside.suspended_at == NOW
+    suspend_practice_item(
+        material.vault, material.subject, material.topic, new_card, sync=sync, clock=lambda: NOW
+    )
+    assert sync.status().pending_changes
+
+    tomorrow = _queue(material, NOW + DAY)
+    assert card not in _keys(tomorrow) and new_card not in _keys(tomorrow)
+    counts = tomorrow.counts
+    assert (counts.total, counts.suspended, counts.due, counts.unseen, counts.learned) == (
+        5,
+        2,
+        0,
+        3,
+        0,
+    )
+    assert tomorrow.next_due is None
+    assert [entry.key for entry in tomorrow.suspended] == [card, new_card]
+    listed = suspended_items(material.vault, material.subject, material.topic)
+    assert listed == tomorrow.suspended
+    assert listed[0].prompt == CARDS[0]["front"] and listed[0].suspended_at == NOW
+
+    back = restore_practice_item(
+        material.vault, material.subject, material.topic, card, sync=sync, clock=lambda: NOW + DAY
+    )
+    assert back.changed and not back.suspended and back.suspended_at is None
+    restored = _queue(material, NOW + DAY)
+    assert _keys(restored)[0] == card and restored.counts.due == 1
+    assert restored.queue[0].state is not None and restored.queue[0].state.reviews == 1
+    assert restored.counts.suspended == 1
+    # The reviews still load alone, and the log holds all three kinds of line.
+    assert len(practice_history(material.vault, material.subject, material.topic)) == 1
+    assert len(practice_log(material.vault, material.subject, material.topic)) == 4
+
+
+def test_suspend_and_restore_are_idempotent(material: ReviseTopic, sync: GitSync) -> None:
+    card = _keys(_queue(material))[0]
+    path = study_log_path(material.vault, material.subject, material.topic, "practice")
+
+    def call(action: Any, when: datetime) -> Any:
+        return action(
+            material.vault, material.subject, material.topic, card, sync=sync, clock=lambda: when
+        )
+
+    assert not call(restore_practice_item, NOW).changed and not path.exists()
+    call(suspend_practice_item, NOW)
+    again = call(suspend_practice_item, NOW + DAY)
+    assert not again.changed and again.suspended and again.suspended_at == NOW
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_an_unknown_item_cannot_be_set_aside(material: ReviseTopic, sync: GitSync) -> None:
+    for action in (suspend_practice_item, restore_practice_item):
+        with pytest.raises(PracticeItemNotFoundError, match="quiz:nada"):
+            action(material.vault, material.subject, material.topic, "quiz:nada", sync=sync)
+    assert practice_log(material.vault, material.subject, material.topic) == []
+
+
+def test_two_pcs_interleaved_lines_agree_by_time(material: ReviseTopic) -> None:
+    card = _keys(_queue(material))[0]
+    path = study_log_path(material.vault, material.subject, material.topic, "practice")
+    path.parent.mkdir(exist_ok=True)
+    # PC A set it aside at +2h, PC B restored it at +1h and set it aside again at +3h; merged by
+    # union, A's lines come first in the file.
+    lines = [
+        PracticeSuspension(time=NOW + 2 * HOUR, item=card, source="flashcards", action="suspend"),
+        PracticeReview(time=NOW, item=card, source="flashcards", rating="good"),
+        PracticeSuspension(time=NOW + 3 * HOUR, item=card, source="flashcards", action="restore"),
+        PracticeSuspension(time=NOW + HOUR, item=card, source="flashcards", action="suspend"),
+    ]
+    for line in lines:
+        append_jsonl(path, line)
+    log = practice_log(material.vault, material.subject, material.topic)
+    assert log == lines
+    assert suspensions(log) == {}
+    assert suspensions(list(reversed(log))) == {}
+    assert suspensions(log[:2]) == {card: NOW + 2 * HOUR}
+    assert _keys(_queue(material, NOW + DAY))[0] == card

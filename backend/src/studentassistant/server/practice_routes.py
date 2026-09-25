@@ -9,6 +9,11 @@ Thin: the work is `studentassistant.generators.practice`. The vault is opened th
 - `POST .../topics/{topic_id}/practice/reviews`, body `PracticeAnswer` -> `ReviewOutcome`: the
   review appended to `study/practice.jsonl` and committed, and the item's new schedule. 404 an item
   no longer in the material, 422 a flashcard review without a rating.
+- `POST .../topics/{topic_id}/practice/items/{key}/suspend` and `.../restore` -> `SuspensionOutcome`
+  (#281): set an item aside so it is no longer queued, or bring it back with its history. The
+  record goes to `study/practice.jsonl` and is committed with the sitting's batch
+  (`sync.note_change()`); a repeated request writes nothing (`changed: false`). 404 an item no
+  longer in the material. The items set aside are listed in the queue response (`suspended`).
 
 Errors as `{"detail": "..."}` in Spanish; an unknown topic is 404, a vault that cannot be opened
 503, a material that cannot be read 500.
@@ -30,8 +35,11 @@ from studentassistant.generators.practice import (
     PracticeItemNotFoundError,
     PracticeQueue,
     ReviewOutcome,
+    SuspensionOutcome,
     practice_queue,
     record_practice_review,
+    restore_practice_item,
+    suspend_practice_item,
 )
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
@@ -45,6 +53,7 @@ from studentassistant.vault import (
 
 SubjectId = Annotated[str, Path(pattern=ID_PATTERN)]
 TopicId = Annotated[str, Path(pattern=ID_PATTERN)]
+ItemKey = Annotated[str, Path(pattern=r"^(flashcards|quiz):[A-Za-z0-9_-]{1,100}$")]
 
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 UNKNOWN_TOPIC_DETAIL = "No existe ese tema en la bóveda."
@@ -101,5 +110,29 @@ def practice_router() -> APIRouter:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except GenerationError as error:
             raise HTTPException(status_code=500, detail=UNREADABLE_DETAIL) from error
+
+    async def set_aside(
+        request: Request, subject_id: str, topic_id: str, key: str, suspend: bool
+    ) -> SuspensionOutcome:
+        vault, sync = await open_topic(request, subject_id, topic_id)
+        action = suspend_practice_item if suspend else restore_practice_item
+        try:
+            return await asyncio.to_thread(action, vault, subject_id, topic_id, key, sync=sync)
+        except PracticeItemNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except GenerationError as error:
+            raise HTTPException(status_code=500, detail=UNREADABLE_DETAIL) from error
+
+    @router.post(BASE + "/items/{key}/suspend")
+    async def suspend(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, key: ItemKey
+    ) -> SuspensionOutcome:
+        return await set_aside(request, subject_id, topic_id, key, True)
+
+    @router.post(BASE + "/items/{key}/restore")
+    async def restore(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, key: ItemKey
+    ) -> SuspensionOutcome:
+        return await set_aside(request, subject_id, topic_id, key, False)
 
     return router

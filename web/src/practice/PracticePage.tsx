@@ -12,6 +12,8 @@ import {
   RATING_LABELS,
   type Rating,
   sendReview,
+  sendSuspension,
+  type SuspendedItem,
 } from "./api";
 import "./practice.css";
 
@@ -25,6 +27,10 @@ import "./practice.css";
  * backend grades it, keeps it in the vault and schedules the item); an item rated "Otra vez"
  * comes back at the end of the session. When nothing is left, the page says when the next review
  * is due.
+ *
+ * "Descartar esta tarjeta" / "Descartar esta pregunta" sets the current item aside (#281): the
+ * backend stops scheduling it and it leaves this session. The collapsible "Descartadas" list shows
+ * the items set aside, each with "Recuperar", which brings it back with its previous history.
  */
 
 type Phase = "asking" | "revealed";
@@ -93,11 +99,13 @@ function ItemCard({
   notesHref,
   sending,
   onReview,
+  onSuspend,
 }: {
   queued: QueuedItem;
   notesHref: string;
   sending: boolean;
   onReview: (answer: Omit<PracticeAnswer, "item">) => void;
+  onSuspend: () => void;
 }) {
   const { item } = queued;
   const [phase, setPhase] = useState<Phase>("asking");
@@ -202,7 +210,45 @@ function ItemCard({
           )}
         </div>
       )}
+      <p className="practice-suspend">
+        <button type="button" disabled={sending} onClick={onSuspend}>
+          {isQuiz ? "Descartar esta pregunta" : "Descartar esta tarjeta"}
+        </button>
+      </p>
     </article>
+  );
+}
+
+function SuspendedList({
+  items,
+  busy,
+  onRestore,
+}: {
+  items: SuspendedItem[];
+  busy: boolean;
+  onRestore: (item: SuspendedItem) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <details className="practice-suspended">
+      <summary>Descartadas ({items.length})</summary>
+      <ul>
+        {items.map((item) => (
+          <li key={item.key}>
+            <span className="practice-kind">{item.source === "quiz" ? "Pregunta" : "Flashcard"}:</span>{" "}
+            {item.prompt}{" "}
+            <button
+              type="button"
+              disabled={busy}
+              aria-label={`Recuperar: ${item.prompt}`}
+              onClick={() => onRestore(item)}
+            >
+              Recuperar
+            </button>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -215,6 +261,7 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [last, setLast] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedItem[]>([]);
   const reads = useRef(0);
 
   const load = useCallback(async () => {
@@ -223,6 +270,7 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
     if (read !== reads.current) return;
     setLoaded(result);
     setQueue(result.kind === "ok" ? result.value.queue : []);
+    setSuspended(result.kind === "ok" ? result.value.suspended : []);
   }, [subjectId, topicId]);
 
   useEffect(() => {
@@ -266,6 +314,39 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
     });
   }
 
+  async function suspendCurrent() {
+    if (current === undefined) return;
+    const { item } = current;
+    setSending(true);
+    setFailure(null);
+    const result = await sendSuspension(subjectId, topicId, item.key, true);
+    setSending(false);
+    if (result.kind !== "ok") {
+      setFailure(describeActionFailure(result));
+      return;
+    }
+    setLast(`${item.source === "quiz" ? "Pregunta descartada" : "Tarjeta descartada"}: ya no saldrá en la práctica.`);
+    setTurn((value) => value + 1);
+    setQueue((previous) => previous.filter((queued) => queued.item.key !== item.key));
+    setSuspended((previous) => [
+      { key: item.key, source: item.source, prompt: item.prompt, suspended_at: new Date().toISOString() },
+      ...previous.filter((entry) => entry.key !== item.key),
+    ]);
+  }
+
+  async function restore(item: SuspendedItem) {
+    setSending(true);
+    setFailure(null);
+    const result = await sendSuspension(subjectId, topicId, item.key, false);
+    setSending(false);
+    if (result.kind !== "ok") {
+      setFailure(describeActionFailure(result));
+      return;
+    }
+    setLast("Recuperada: volverá a salir cuando le toque, con su historial.");
+    setSuspended((previous) => previous.filter((entry) => entry.key !== item.key));
+  }
+
   return (
     <main className="practice-page">
       <p>
@@ -279,6 +360,7 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
           <p className="practice-meta">
             {practice.counts.due} para repasar · {practice.counts.new} nuevas · {practice.counts.learned} de{" "}
             {practice.counts.total} ya vistas
+            {suspended.length > 0 && ` · ${suspended.length} descartadas`}
           </p>
           {practice.warnings.map((warning) => (
             <p key={warning} className="practice-warning" role="note">
@@ -301,8 +383,8 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
                 notesHref={`${base}/notes`}
                 sending={sending}
                 onReview={(answer) => void review(answer)}
+                onSuspend={() => void suspendCurrent()}
               />
-              {failure !== null && <p role="alert">{failure}</p>}
             </>
           ) : (
             practice.counts.total > 0 && (
@@ -321,6 +403,8 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
               </section>
             )
           )}
+          {failure !== null && <p role="alert">{failure}</p>}
+          <SuspendedList items={suspended} busy={sending} onRestore={(item) => void restore(item)} />
         </>
       )}
       <p className="practice-links">

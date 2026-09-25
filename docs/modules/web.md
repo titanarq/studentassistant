@@ -533,8 +533,13 @@ token):
   volverá en 6 días."), an item rated "Otra vez" is asked again at the end of the session, a
   refusal is an `alert` and keeps the item. With nothing left: "¡Hecho! Has repasado…" or "No
   tienes nada que repasar ahora." with "Próximo repaso: <fecha>", and "Volver a comprobar".
-  `api.ts`: `fetchPractice`, `sendReview` -> `ActionResult` (read leniently: `readQueue`,
-  `readOutcome`), `describeInterval`.
+  Setting aside (#281): each item has "Descartar esta tarjeta" / "Descartar esta pregunta"; on
+  success it leaves the session ("Tarjeta descartada: ya no saldrá en la práctica.") and joins
+  the collapsible "Descartadas (<n>)" list (`details`, from the queue's `suspended`; the meta line
+  adds "· <n> descartadas"), where "Recuperar" brings it back ("Recuperada: volverá a salir cuando
+  le toque, con su historial."); a refusal is an `alert` and changes nothing.
+  `api.ts`: `fetchPractice`, `sendReview`, `sendSuspension` -> `ActionResult` (read leniently:
+  `readQueue`, `readOutcome`, `readSuspension`), `describeInterval`.
 - `src/materials/` (#79): `MaterialsPanel`, section "Material de estudio" on the topic page, over
   `GET .../generated` (`MaterialsStatus`) and `GET /api/generators` (only for each kind's
   description). One item per kind in the order of study (`STUDY_ORDER`: esquema, quiz, flashcards,
