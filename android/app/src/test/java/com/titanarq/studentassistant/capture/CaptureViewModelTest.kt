@@ -18,6 +18,10 @@ import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.NotesGenerationStart
+import com.titanarq.studentassistant.protocol.NotesGenerationState
+import com.titanarq.studentassistant.protocol.NotesGenerationStatus
+import com.titanarq.studentassistant.desk.DeskTopic
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.protocol.SttStatus
@@ -77,6 +81,7 @@ class CaptureViewModelTest {
         audioStreamerFactory = { AudioStreamer(audioSource, clock, main.dispatcher) },
         stillCapture = stillCapture,
         reconnectDelaysMs = listOf(100),
+        notesPollIntervalMs = POLL_MS,
     )
 
     private fun TestScope.connect(viewModel: CaptureViewModel, mode: SttMode = SttMode.CLIENT) {
@@ -224,6 +229,160 @@ class CaptureViewModelTest {
         advanceUntilIdle()
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
         assertNull(holder.current.value)
+    }
+
+    @Test
+    fun `plain Terminar sends no prepare_notes and polls nothing`() = runTest(main.dispatcher) {
+        backend.endSessionResult = BackendResult.Success(SessionEndResponse("s1", SessionEndedStatus.ENDED, 1))
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.end()
+        advanceTimeBy(POLL_MS * 3)
+        runCurrent()
+        assertEquals(listOf(null), backend.endSessionRequests.map { it.prepareNotes })
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(viewModel.state.value.notesProgress)
+        assertTrue(backend.calls.none { it.startsWith("notesGeneration") })
+    }
+
+    private fun prepared(start: NotesGenerationStart?) =
+        BackendResult.Success(SessionEndResponse("s1", SessionEndedStatus.ENDED, 1, start))
+
+    private fun status(state: NotesGenerationState, detail: String? = null, version: Int? = null, draft: Boolean? = null) =
+        BackendResult.Success(
+            NotesGenerationStatus("historia", "feudalismo", state, version = version, draft = draft, detail = detail),
+        )
+
+    private fun pollCalls() = backend.calls.count { it.startsWith("notesGeneration") }
+
+    @Test
+    fun `Terminar y preparar apuntes sends the flag and follows the generation until it is done`() = runTest(main.dispatcher) {
+        backend.endSessionResult = prepared(NotesGenerationStart.STARTED)
+        backend.notesGenerationResults += status(NotesGenerationState.RUNNING)
+        backend.notesGenerationResults += BackendResult.Unreachable("wifi")
+        backend.notesGenerationResult = status(NotesGenerationState.DONE, version = 2, draft = false)
+        val viewModel = viewModel()
+        connect(viewModel)
+        val socket = sockets.last
+
+        viewModel.end(prepareNotes = true)
+        runCurrent()
+        assertEquals(listOf(true), backend.endSessionRequests.map { it.prepareNotes })
+        assertEquals(CapturePhase.NOTES, viewModel.state.value.phase)
+        assertEquals(NotesProgress.Running(), viewModel.state.value.notesProgress)
+        assertTrue(socket.closed)
+        assertFalse(transcriber.running)
+        assertNotNull(holder.current.value) // kept until the student leaves the progress
+        assertEquals(0, pollCalls())
+
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals("notesGeneration http://192.168.1.20:8000 historia/feudalismo", backend.calls.last())
+        assertEquals(NotesProgress.Running(), viewModel.state.value.notesProgress)
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals(NotesProgress.Running(BackendResult.Unreachable("wifi")), viewModel.state.value.notesProgress)
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals(NotesProgress.Done(2, false, null), viewModel.state.value.notesProgress)
+
+        // Done: polling stops.
+        advanceTimeBy(POLL_MS * 5)
+        runCurrent()
+        assertEquals(3, pollCalls())
+        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo"), viewModel.deskTopic)
+
+        viewModel.closeNotes()
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(holder.current.value)
+    }
+
+    @Test
+    fun `a failed, capped, forgotten or refused generation is shown and stops the polling`() = runTest(main.dispatcher) {
+        val cases = listOf(
+            status(NotesGenerationState.FAILED, detail = "Claude no respondió") to NotesProgress.Failed("Claude no respondió"),
+            status(NotesGenerationState.NEEDS_CONFIRMATION, detail = "Límite") to NotesProgress.NeedsConfirmation("Límite"),
+            status(NotesGenerationState.IDLE) to NotesProgress.Lost,
+            BackendResult.HttpError(404) to NotesProgress.Unknown(BackendResult.HttpError(404)),
+        )
+        for ((answer, expected) in cases) {
+            backend.calls.clear()
+            backend.endSessionResult = prepared(NotesGenerationStart.RUNNING)
+            backend.notesGenerationResult = answer
+            val viewModel = viewModel()
+            connect(viewModel)
+            viewModel.end(prepareNotes = true)
+            runCurrent()
+            advanceTimeBy(POLL_MS * 4)
+            runCurrent()
+            assertEquals(expected, viewModel.state.value.notesProgress)
+            assertEquals(1, pollCalls())
+            assertEquals(CapturePhase.NOTES, viewModel.state.value.phase)
+            viewModel.leave() // back: the same as "Volver al inicio"
+            assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+            holder.open(open)
+        }
+    }
+
+    @Test
+    fun `a backend that cannot prepare notes is said at once, with no polling`() = runTest(main.dispatcher) {
+        for (start in listOf(NotesGenerationStart.UNAVAILABLE, null)) {
+            backend.calls.clear()
+            backend.endSessionResult = prepared(start)
+            val viewModel = viewModel()
+            connect(viewModel)
+            viewModel.end(prepareNotes = true)
+            advanceTimeBy(POLL_MS * 3)
+            runCurrent()
+            assertEquals(CapturePhase.NOTES, viewModel.state.value.phase)
+            assertEquals(NotesProgress.Unavailable, viewModel.state.value.notesProgress)
+            assertEquals(0, pollCalls())
+            viewModel.closeNotes()
+            holder.open(open)
+        }
+    }
+
+    @Test
+    fun `an already ended session follows no generation`() = runTest(main.dispatcher) {
+        backend.endSessionResult = BackendResult.HttpError(409)
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.end(prepareNotes = true)
+        advanceTimeBy(POLL_MS * 3)
+        runCurrent()
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(holder.current.value)
+        assertEquals(0, pollCalls())
+    }
+
+    @Test
+    fun `polling pauses in the background and stops when the screen is left`() = runTest(main.dispatcher) {
+        backend.endSessionResult = prepared(NotesGenerationStart.STARTED)
+        backend.notesGenerationResult = status(NotesGenerationState.RUNNING)
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.end(prepareNotes = true)
+        runCurrent()
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals(1, pollCalls())
+
+        viewModel.onBackground()
+        advanceTimeBy(POLL_MS * 5)
+        runCurrent()
+        assertEquals(1, pollCalls())
+        assertFalse(viewModel.state.value.micPaused)
+
+        viewModel.onForeground()
+        advanceTimeBy(POLL_MS)
+        runCurrent()
+        assertEquals(2, pollCalls())
+
+        viewModel.closeNotes()
+        advanceTimeBy(POLL_MS * 5)
+        runCurrent()
+        assertEquals(2, pollCalls())
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
     }
 
     @Test
@@ -461,5 +620,9 @@ class CaptureViewModelTest {
         assertTrue(audioSource.opened)
         assertEquals(listOf(0L, 1L, 2L, 3L), sockets.last.frames.map { it.seq })
         viewModel.leave()
+    }
+
+    private companion object {
+        const val POLL_MS = 3_000L
     }
 }

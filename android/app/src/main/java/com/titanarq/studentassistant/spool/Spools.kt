@@ -16,6 +16,12 @@ data class PendingEnd(
     /** Phone time of "Terminar", sent as the end request's `client_time_ms`. */
     @SerialName("client_time_ms") val clientTimeMs: Long,
     val reason: SessionEndReason = SessionEndReason.BUTTON,
+    /**
+     * "Terminar y preparar apuntes" (protocol 1.6, #272): the end request says `prepare_notes`, so
+     * the backend prepares the topic's notes once the end is finally delivered. Absent in the
+     * files of older versions, which read as a plain end.
+     */
+    @SerialName("prepare_notes") val prepareNotes: Boolean = false,
 )
 
 /** The backend a session's spool belongs to (`sessions/<session_id>/session.json`). */

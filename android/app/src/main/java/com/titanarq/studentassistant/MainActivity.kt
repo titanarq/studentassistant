@@ -136,6 +136,10 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
                     ),
                     onLeave = { route = Route.HOME },
                     onEnded = { route = Route.HOME },
+                    onOpenNotes = { topic ->
+                        deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
+                        route = Route.DESK
+                    },
                     imageCapture = imageCapture,
                 )
             }

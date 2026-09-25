@@ -144,6 +144,24 @@
     <string name="capture_end_text">Se cerrará la sesión de este tema. Podrás revisar los apuntes en el ordenador.</string>
     <string name="capture_end_confirm">Terminar</string>
     <string name="capture_end_failed">No se pudo terminar la sesión: %1$s</string>
+    <string name="capture_button_end_prepare">Terminar y preparar apuntes</string>
+    <string name="capture_end_prepare_title">¿Terminar y preparar los apuntes?</string>
+    <string name="capture_end_prepare_text">Se cerrará la sesión de este tema y el ordenador preparará sus apuntes en segundo plano. Puede tardar unos minutos.</string>
+    <string name="capture_end_prepare_confirm">Terminar y preparar</string>
+    <string name="capture_notes_title">Apuntes de %1$s · %2$s</string>
+    <string name="capture_notes_running">Preparando los apuntes… Puede tardar unos minutos.</string>
+    <string name="capture_notes_poll_failed">No se puede consultar el progreso (%1$s). Se volverá a intentar.</string>
+    <string name="capture_notes_done">Los apuntes están listos.</string>
+    <string name="capture_notes_done_draft">El borrador de los apuntes está listo para revisarlo.</string>
+    <string name="capture_notes_failed">No se pudieron preparar los apuntes: %1$s</string>
+    <string name="capture_notes_failed_unknown">No se pudieron preparar los apuntes.</string>
+    <string name="capture_notes_needs_confirmation">Se ha alcanzado el límite de gasto. Confírmalo desde el escritorio de estudio para preparar los apuntes.</string>
+    <string name="capture_notes_unavailable">El ordenador no puede preparar los apuntes ahora. La sesión se ha terminado igualmente.</string>
+    <string name="capture_notes_lost">El ordenador ya no tiene noticia de la preparación (quizá se reinició). Puedes prepararlos desde el escritorio de estudio.</string>
+    <string name="capture_notes_unknown">No se puede consultar la preparación de los apuntes: %1$s</string>
+    <string name="capture_notes_open">Abrir apuntes</string>
+    <string name="capture_notes_open_desk">Ir al escritorio de estudio</string>
+    <string name="capture_notes_close">Volver al inicio</string>
     <!-- "Compartir -> Student Assistant" (share/ShareScreen.kt, #62) -->
     <string name="share_label">Guardar en un tema</string>
     <string name="share_title">Guardar la página en un tema</string>

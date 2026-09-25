@@ -3,6 +3,7 @@ package com.titanarq.studentassistant.backend
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
 import com.titanarq.studentassistant.protocol.HealthResponse
+import com.titanarq.studentassistant.protocol.NotesGenerationStatus
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.PairResponse
@@ -175,6 +176,18 @@ class OkHttpBackendClient(
     }
 
     // --- plumbing ---
+
+    override suspend fun notesGeneration(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<NotesGenerationStatus> =
+        call(
+            backend,
+            listOf("api", "subjects", subjectId, "topics", topicId, "notes", "generation"),
+            body = null,
+            NotesGenerationStatus.serializer(),
+        )
 
     private fun <T> jsonBody(serializer: KSerializer<T>, value: T): RequestBody =
         ProtocolJson.encodeToString(serializer, value).toRequestBody(JSON_MEDIA_TYPE)

@@ -39,7 +39,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * 2. When the session's audio or event spool holds something, a [SessionConnection] over those
  *    spools resends it, until [SessionConnection.drained] or [drainTimeoutMs].
  * 3. Waits until no capture of the session is pending upload, at most [capturesTimeoutMs].
- * 4. `POST .../end` with the student's time of "Terminar": success, 404 or 409 (ended already)
+ * 4. `POST .../end` with the student's time of "Terminar" (and `prepare_notes` when the student
+ *    chose "Terminar y preparar apuntes", so the backend prepares the notes then): success, 404 or 409 (ended already)
  *    completes it, the session's spools are deleted and its captures refused for good forgotten.
  *
  * A transient failure (unreachable, 408/425/429/5xx, an unreadable answer) retries the whole
@@ -191,7 +192,8 @@ class SessionFinisher(
             }
             is BackendResult.Failure -> return outcomeOf(resumed)
         }
-        val result = client.endSession(backend, end.sessionId, SessionEndRequest(end.clientTimeMs, end.reason))
+        val request = SessionEndRequest(end.clientTimeMs, end.reason, prepareNotes = true.takeIf { end.prepareNotes })
+        val result = client.endSession(backend, end.sessionId, request)
         return when {
             result is BackendResult.Success -> Outcome.DONE
             result is BackendResult.HttpError && result.status in ENDED_STATUSES -> Outcome.DONE
