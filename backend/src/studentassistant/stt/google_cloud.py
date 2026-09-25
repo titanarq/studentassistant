@@ -38,11 +38,11 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Protocol
 
 from studentassistant.config import DEFAULT_GOOGLE_SPEECH_MODEL, DEFAULT_STT_LANGUAGE
 from studentassistant.stt.models import AudioChunk, NormalisedSegment
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import ProviderStatus, SpeechToTextProvider
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,6 @@ NOT_INSTALLED_MESSAGE = (
     "to use stt.provider = 'google-cloud'"
 )
 
-State = Literal["idle", "streaming", "reconnecting", "unavailable"]
-
 
 class GoogleCloudSetupError(RuntimeError):
     """The provider cannot work at all (library missing, bad credentials); no retry helps."""
@@ -75,14 +73,6 @@ class StreamResult:
     is_final: bool
     end: float | None = None
     confidence: float | None = None
-
-
-@dataclass(frozen=True)
-class ProviderStatus:
-    """How the provider is doing; `detail` is a Spanish sentence for the student when not fine."""
-
-    state: State
-    detail: str | None = None
 
 
 class SpeechStreamClient(Protocol):

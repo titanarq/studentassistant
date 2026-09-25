@@ -77,6 +77,21 @@ export interface Notice {
   vocabulary_hints?: string[];
 }
 
+/** Since 1.5: the longest `stt.status` detail. */
+export const STT_STATUS_DETAIL_MAX_CHARS = 300;
+
+/**
+ * Since 1.5: the backend's own STT provider (server STT mode) changed between working and
+ * degraded. `ok` clears any warning; `reconnecting` and `unavailable` mean the audio is not being
+ * transcribed, and `detail` says so in Spanish.
+ */
+export interface SttStatus {
+  type: "stt.status";
+  state: "ok" | "reconnecting" | "unavailable";
+  detail?: string;
+  server_time_ms: number;
+}
+
 /** The backend stored audio up to a frame `seq` and/or the listed captures. */
 export interface ServerAck {
   type: "ack";
@@ -85,7 +100,14 @@ export interface ServerAck {
   server_time_ms: number;
 }
 
-export type ServerEvent = HelloAck | TranscriptPartial | TranscriptFinal | Command | Notice | ServerAck;
+export type ServerEvent =
+  | HelloAck
+  | TranscriptPartial
+  | TranscriptFinal
+  | Command
+  | Notice
+  | SttStatus
+  | ServerAck;
 
 // Decoders
 
@@ -148,6 +170,15 @@ export const decodeNotice: Decoder<Notice> = object(
   { vocabulary_hints: vocabularyHints },
 );
 
+export const decodeSttStatus: Decoder<SttStatus> = object(
+  {
+    type: literal("stt.status"),
+    state: literal("ok", "reconnecting", "unavailable"),
+    server_time_ms: epochMs,
+  },
+  { detail: str({ minLength: 1, maxLength: STT_STATUS_DETAIL_MAX_CHARS }) },
+);
+
 export const decodeServerAck: Decoder<ServerAck> = refine(
   object(
     { type: literal("ack"), server_time_ms: epochMs },
@@ -166,6 +197,7 @@ export const decodeServerEvent: Decoder<ServerEvent> = discriminated<ServerEvent
   "transcript.final": decodeTranscriptFinal,
   command: decodeCommand,
   notice: decodeNotice,
+  "stt.status": decodeSttStatus,
   ack: decodeServerAck,
 });
 

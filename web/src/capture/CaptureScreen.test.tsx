@@ -807,6 +807,26 @@ describe("what the backend sends back", () => {
     );
   });
 
+  it("warns while the server's recognizer is degraded and clears the warning when it recovers", async () => {
+    renderScreen();
+    await open("server");
+    const warning = () => screen.queryByRole("alert", { name: "Estado de la transcripción" });
+    expect(warning()).not.toBeInTheDocument();
+
+    const lost = "Se ha perdido la conexión con Google Cloud; se reintenta en 5 s.";
+    await push({ type: "stt.status", state: "reconnecting", detail: lost, server_time_ms: NOW });
+    expect(warning()).toHaveTextContent(lost);
+
+    await push({ type: "stt.status", state: "ok", server_time_ms: NOW });
+    expect(warning()).not.toBeInTheDocument();
+
+    // A status without a detail of its own still says what it means.
+    await push({ type: "stt.status", state: "unavailable", server_time_ms: NOW });
+    expect(warning()).toHaveTextContent("La transcripción del servidor no está disponible");
+    // The session goes on: nothing blocks the page.
+    expect(screen.getByRole("button", { name: "Importante" })).toBeEnabled();
+  });
+
   it("takes a burst and answers the ack when the backend asks for capture_now", async () => {
     renderScreen();
     await open();

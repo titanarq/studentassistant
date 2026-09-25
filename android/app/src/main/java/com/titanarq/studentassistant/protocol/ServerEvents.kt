@@ -81,6 +81,33 @@ data class Notice(
     @SerialName("vocabulary_hints") val vocabularyHints: List<String>? = null,
 ) : ServerEvent
 
+@Serializable
+enum class SttState {
+    /** Transcribing: the client clears any STT warning. */
+    @SerialName("ok")
+    OK,
+
+    /** The provider lost its service and retries; the audio meanwhile is not transcribed. */
+    @SerialName("reconnecting")
+    RECONNECTING,
+
+    /** The provider cannot work this session at all; no audio is transcribed. */
+    @SerialName("unavailable")
+    UNAVAILABLE,
+}
+
+/**
+ * Since 1.5, server STT mode: the backend's own STT provider changed between working and degraded;
+ * sent once per change. [detail] is a Spanish sentence for the student, present when not [SttState.OK].
+ */
+@Serializable
+@SerialName("stt.status")
+data class SttStatus(
+    val state: SttState,
+    val detail: String? = null,
+    @SerialName("server_time_ms") val serverTimeMs: Long,
+) : ServerEvent
+
 /** The backend stored audio up to a frame `seq` and/or the listed captures (at least one). */
 @Serializable
 @SerialName("ack")

@@ -51,6 +51,8 @@ from studentassistant.protocol.rest import (
 )
 from studentassistant.protocol.server import (
     SERVER_EVENT_ADAPTER,
+    STT_STATUS_DETAIL_MAX_CHARS,
+    STT_STATUS_SINCE,
     VOCABULARY_HINT_MAX_CHARS,
     VOCABULARY_HINTS_MAX_ITEMS,
     VOCABULARY_HINTS_SINCE,
@@ -59,6 +61,7 @@ from studentassistant.protocol.server import (
     Notice,
     ServerAck,
     ServerEvent,
+    SttStatus,
     TranscriptFinal,
     TranscriptPartial,
     parse_server_event,
@@ -80,6 +83,8 @@ __all__ = [
     "MODELS",
     "PROTOCOL_VERSION",
     "SERVER_EVENT_ADAPTER",
+    "STT_STATUS_DETAIL_MAX_CHARS",
+    "STT_STATUS_SINCE",
     "VOCABULARY_HINTS_MAX_ITEMS",
     "VOCABULARY_HINTS_SINCE",
     "VOCABULARY_HINT_MAX_CHARS",
@@ -109,6 +114,7 @@ __all__ = [
     "ProtocolModel",
     "ServerAck",
     "ServerEvent",
+    "SttStatus",
     "Session",
     "SessionEndRequest",
     "SessionEndResponse",

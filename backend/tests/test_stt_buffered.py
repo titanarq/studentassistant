@@ -16,6 +16,7 @@ from studentassistant.stt import (
     AudioChunk,
     BufferedProvider,
     NormalisedSegment,
+    ProviderStatus,
     SpeechToTextProvider,
     buffered_provider_from_settings,
 )
@@ -227,3 +228,19 @@ def test_vocabulary_hints_pass_through_to_the_wrapped_provider() -> None:
 
     assert inner.vocabulary == ("Historia", "caciquismo")
     assert buffered.vocabulary == ("Historia", "caciquismo")
+
+
+def test_the_status_is_the_wrapped_providers() -> None:
+    inner = FakeProvider()
+    buffered = BufferedProvider(inner)
+    assert buffered.status == ProviderStatus("idle")
+    assert not buffered.status.degraded
+
+    inner.set_status("reconnecting", "Se reintenta.")
+
+    assert buffered.status == ProviderStatus("reconnecting", "Se reintenta.")
+    assert buffered.status.degraded
+
+
+def test_a_provider_that_reports_nothing_is_idle() -> None:
+    assert GatedProvider().status == ProviderStatus("idle")

@@ -5,7 +5,7 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.4**.
+Current version: **`protocol_version` 1.5**.
 
 | version | change |
 |---|---|
@@ -14,6 +14,7 @@ Current version: **`protocol_version` 1.4**.
 | 1.2 | REST error bodies gain the optional machine-readable `code` (see "REST errors") |
 | 1.3 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `digest_excerpt` |
 | 1.4 | `hello.ack` and `notice` gain the optional `vocabulary_hints` (see "Vocabulary hints") |
+| 1.5 | new server message `stt.status`: the server-side STT provider's state (see "STT status") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -52,7 +53,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.4; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.5; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -259,6 +260,7 @@ time. `hello.ack.server_time_ms` is the backend clock when it answered.
 | `server.transcript.final` | `transcript.final` | normalised segment fields below |
 | `server.command` | `command` | `command_id`, `command`, `server_time_ms` |
 | `server.notice` | `notice` | `pending_count`, `server_time_ms`, `vocabulary_hints?` |
+| `server.stt.status` | `stt.status` | `state`, `detail?`, `server_time_ms` (since 1.5) |
 | `server.ack` | `ack` | `audio_seq?`, `capture_ids?`, `server_time_ms` |
 
 - `hello.ack`: `protocol_version` is the negotiated one; `stt_mode` is `client` or `server`;
@@ -291,6 +293,25 @@ observer has extracted for the topic, newest first. The backend caps the list fu
 A client that cannot use hints ignores them. They are sent only to a client whose negotiated
 version is 1.4 or higher; the backend applies the same hints to its own server-side provider (e.g.
 Whisper `hotwords`) whatever the client's version.
+
+### STT status
+
+Since 1.5, server STT mode only. `stt.status` tells the client whether the backend's own
+speech-to-text provider is transcribing the audio it streams, so the student learns that what they
+say is not being written down (e.g. a cloud provider lost its connection) instead of finding a gap
+in the transcript later.
+
+- `state`: `ok` (transcribing; the client clears any STT warning it shows), `reconnecting` (the
+  provider lost its service and retries; the audio meanwhile is not transcribed) or `unavailable`
+  (it cannot work this session at all, e.g. missing installation or credentials; no audio is
+  transcribed).
+- `detail`: a Spanish sentence for the student saying what happens, 1 to 300 characters, sent
+  with `reconnecting` and `unavailable` and left out with `ok`.
+
+The backend sends it once per change of `state` (a session starts `ok`, which is never announced),
+and right after `hello.ack` to a client that connects while the provider is degraded. The client
+keeps streaming audio whatever the state (a provider that reconnects needs it). It is sent only to
+a client whose negotiated version is 1.5 or higher; an older one gets nothing.
 
 ## Binary audio frames
 

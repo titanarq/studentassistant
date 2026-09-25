@@ -69,6 +69,10 @@ class ProtocolExamplesTest {
         val notice = decodeServerEvent(SharedExamples.read("server.notice")) as Notice
         assertEquals(2, notice.pendingCount)
         assertEquals("caciquismo", notice.vocabularyHints?.get(2))
+
+        val status = decodeServerEvent(SharedExamples.read("server.stt.status")) as SttStatus
+        assertEquals(SttState.RECONNECTING, status.state)
+        assertTrue(status.detail!!.startsWith("Se ha perdido la conexión"))
     }
 
     @Test

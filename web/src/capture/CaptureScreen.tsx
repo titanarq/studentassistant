@@ -71,6 +71,13 @@ const CONNECTION_TEXT: Record<ConnectionState, string> = {
   unavailable: "Esta página no puede abrir la sesión",
 };
 
+/** What a degraded `stt.status` means when it carries no `detail` of its own (protocol 1.5). */
+const STT_DEGRADED: Record<"reconnecting" | "unavailable", string> = {
+  reconnecting:
+    "El servidor ha perdido la transcripción y está reintentando; lo que digas mientras tanto no se transcribe.",
+  unavailable: "La transcripción del servidor no está disponible; lo que digas no se transcribe.",
+};
+
 const BURST_LABELS: Record<BurstState, string> = {
   subiendo: "Subiendo…",
   guardada: "Guardada",
@@ -352,6 +359,8 @@ export default function CaptureScreen({
   const [cameraOn, setCameraOn] = useState(false);
   const [source, setSource] = useState<SourceKind | null>(null);
   const [pending, setPending] = useState<number | null>(null);
+  /** Since 1.5 (#222): what the backend's own recognizer said went wrong; null while it works. */
+  const [sttWarning, setSttWarning] = useState<string | null>(null);
   const [segments, setSegments] = useState<readonly LiveSegment[]>([]);
   const [bursts, setBursts] = useState<readonly BurstEntry[]>([]);
   const [flashing, setFlashing] = useState(false);
@@ -443,6 +452,11 @@ export default function CaptureScreen({
           vocabularyHints.current = event.event.vocabulary_hints;
           runtime.current.transcriber?.setVocabularyHints?.(event.event.vocabulary_hints);
         }
+        break;
+      case "sttStatus":
+        setSttWarning(
+          event.event.state === "ok" ? null : (event.event.detail ?? STT_DEGRADED[event.event.state]),
+        );
         break;
       case "ack":
         setBursts((current) =>
@@ -645,6 +659,11 @@ export default function CaptureScreen({
         </p>
       )}
       {trouble !== null && <p role="alert">{trouble}</p>}
+      {sttWarning !== null && (
+        <p role="alert" aria-label="Estado de la transcripción">
+          {sttWarning}
+        </p>
+      )}
 
       <section aria-label="Cámara">
         <h2>Cámara</h2>

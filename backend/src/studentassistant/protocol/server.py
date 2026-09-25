@@ -31,6 +31,12 @@ VocabularyHints = Annotated[
     Field(min_length=1, max_length=VOCABULARY_HINTS_MAX_ITEMS),
 ]
 
+STT_STATUS_SINCE = (1, 5)
+"""The protocol version that added the `stt.status` server message."""
+STT_STATUS_DETAIL_MAX_CHARS = 300
+# A Spanish sentence for the student about the server-side STT provider.
+SttStatusDetail = Annotated[str, Field(min_length=1, max_length=STT_STATUS_DETAIL_MAX_CHARS)]
+
 
 class HelloAck(ProtocolModel):
     """Reply to the client `hello`: negotiated version, chosen STT mode and clock offset."""
@@ -110,6 +116,20 @@ class Notice(ProtocolModel):
     vocabulary_hints: VocabularyHints | None = None
 
 
+class SttStatus(ProtocolModel):
+    """Since 1.5: the server-side STT provider changed between working and degraded.
+
+    `ok`: speech is transcribed (the client clears its warning); `reconnecting`: the provider lost
+    its service and retries, the audio meanwhile is not transcribed; `unavailable`: it cannot work
+    this session at all. `detail` is a Spanish sentence for the student, sent when not `ok`.
+    """
+
+    type: Literal["stt.status"]
+    state: Literal["ok", "reconnecting", "unavailable"]
+    detail: SttStatusDetail | None = None
+    server_time_ms: EpochMs
+
+
 class ServerAck(ProtocolModel):
     """The backend stored audio up to a frame `seq` and/or the listed captures."""
 
@@ -127,7 +147,7 @@ class ServerAck(ProtocolModel):
 
 
 ServerEvent = Annotated[
-    HelloAck | TranscriptPartial | TranscriptFinal | Command | Notice | ServerAck,
+    HelloAck | TranscriptPartial | TranscriptFinal | Command | Notice | SttStatus | ServerAck,
     Field(discriminator="type"),
 ]
 SERVER_EVENT_ADAPTER: TypeAdapter[ServerEvent] = TypeAdapter(ServerEvent)

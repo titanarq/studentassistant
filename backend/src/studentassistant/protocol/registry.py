@@ -37,6 +37,7 @@ from studentassistant.protocol.server import (
     HelloAck,
     Notice,
     ServerAck,
+    SttStatus,
     TranscriptFinal,
     TranscriptPartial,
 )
@@ -53,6 +54,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "server.transcript.final": TranscriptFinal,
     "server.command": Command,
     "server.notice": Notice,
+    "server.stt.status": SttStatus,
     "server.ack": ServerAck,
     "rest.pair.request": PairRequest,
     "rest.pair.response": PairResponse,

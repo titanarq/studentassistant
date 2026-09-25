@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.config import DEFAULT_STT_LANGUAGE
 from studentassistant.stt.models import AudioChunk, ClientSegment, NormalisedSegment
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import ProviderState, ProviderStatus, SpeechToTextProvider
 from studentassistant.stt.sink import TranscriptSink
 
 
@@ -35,7 +35,8 @@ class FakeProvider(SpeechToTextProvider):
 
     The script comes from `segments=` or from the options table's `segments` list (so
     `[stt.options.fake]` in a test config works too). `finish` yields whatever the audio never
-    reached. Every chunk fed is kept in `fed`.
+    reached. Every chunk fed is kept in `fed`. `set_status` scripts its `status` (default
+    `idle`), e.g. a cloud provider losing its connection.
     """
 
     name = "fake"
@@ -54,6 +55,15 @@ class FakeProvider(SpeechToTextProvider):
         )
         self.fed: list[AudioChunk] = []
         self.finished = False
+        self._status = ProviderStatus("idle")
+
+    @property
+    def status(self) -> ProviderStatus:
+        return self._status
+
+    def set_status(self, state: ProviderState, detail: str | None = None) -> None:
+        """What `status` reports from now on."""
+        self._status = ProviderStatus(state, detail)
 
     def _normalise(self, scripted: ScriptedSegment) -> NormalisedSegment:
         return NormalisedSegment(provider=self.name, **scripted.model_dump())

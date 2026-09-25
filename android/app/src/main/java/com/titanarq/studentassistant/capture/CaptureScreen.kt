@@ -68,6 +68,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 import com.titanarq.studentassistant.protocol.SourceKind
+import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.ui.backendFailureMessage
 
 /**
@@ -128,6 +129,14 @@ fun CaptureScreen(
             }
             if (state.spoolNearCap) {
                 Text(stringResource(R.string.capture_spool_near_cap), color = MaterialTheme.colorScheme.error)
+            }
+            state.sttWarning?.let {
+                Text(
+                    it.detail ?: stringResource(
+                        if (it.state == SttState.RECONNECTING) R.string.capture_stt_reconnecting else R.string.capture_stt_unavailable,
+                    ),
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             if (state.micPaused) {
                 Text(stringResource(R.string.capture_mic_paused), color = MaterialTheme.colorScheme.primary)

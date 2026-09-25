@@ -19,7 +19,10 @@
   hints (protocol 1.4, #227): the list of `hello.ack.vocabulary_hints`, replaced by every
   `notice` that carries one, becomes the `phrases` of each recognition it (re)starts where the
   browser has contextual biasing (`SpeechRecognitionPhrase`); a browser without it, or whose
-  service answers `phrases-not-supported`, recognizes without them and shows nothing. A server `capture_now` command takes a burst with that `command_id` and is
+  service answers `phrases-not-supported`, recognizes without them and shows nothing. In
+  `server` mode a degraded `stt.status` (protocol 1.5, #222) shows its Spanish `detail` (or a
+  fallback sentence per state) as an alert, "Estado de la transcripción", until an `ok` status
+  clears it; the session goes on meanwhile. A server `capture_now` command takes a burst with that `command_id` and is
   answered with an `ack`. Denied or missing camera/microphone, a browser without
   `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
   Spanish explanation. The page runs on the PC itself under loopback trust
@@ -97,7 +100,7 @@ token):
     `sendTranscript(segment, kind)`, `sendButton(button, clientTimeMs, source?)`,
     `sendAck(commandId, clientTimeMs)` and `sendAudio(frame)`, and `close()`. Decoded server
     events arrive through `onEvent` as `SessionSocketEvent` (`transcript`, `command`, `notice`,
-    `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
+    `sttStatus` (1.5), `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
     (pcm16 / 16 kHz / mono) and `WEB_SPEECH_PROVIDER` are the `hello` defaults.
   - `transcriber.ts`: the seam a provider is swapped at (ADR-0008) --
     `ClientTranscriber {readonly provider: string; start(): Promise<void>; stop(): void;
