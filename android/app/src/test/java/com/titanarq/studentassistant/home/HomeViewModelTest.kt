@@ -14,8 +14,9 @@ import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicsListResponse
 import com.titanarq.studentassistant.session.SessionHolder
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -36,7 +37,10 @@ class HomeViewModelTest {
     @get:Rule
     val folder = TemporaryFolder()
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // The store runs on the test thread: store work on Dispatchers.IO could outlive the test and
+    // resume a view model on Dispatchers.Main after the rule reset it, failing a later test.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())
     private val client = FakeBackendClient()
     private val sessions = SessionHolder()
     private val store by lazy { BackendStore.create(File(folder.root, BackendStore.FILE_NAME), scope) }
