@@ -119,3 +119,15 @@ it("renders the subject's style guide at /subjects/<subject>/style-guide", async
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
 });
+
+it("renders the preview of a generated Markdown file at <topic>/material/<name>", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/material/examen-soluciones.md" />);
+
+  expect(screen.getByRole("heading", { name: "examen-soluciones de revolucion-industrial" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/subjects/historia/topics/revolucion-industrial/generated/files/examen-soluciones.md",
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el material");
+});

@@ -63,8 +63,8 @@ token):
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`,
-  `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`,
+  `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except
@@ -156,16 +156,17 @@ token):
   its style guide page. Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer) shows `TopicCard`, `PdfUploadForm` and
+  <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
+  `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm` and
   `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
   and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
-  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`),
-  and, when there are any, Descargas: a `download` link per generated `.apkg`/`.csv`/`.pdf`/`.pptx`
-  (`flashcards (Anki)`, `flashcards (CSV)`...) to `GET /api/.../generated/files/<name>`.
-  `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
+  Generating, previewing and downloading each material is `MaterialsPanel` (#79; the card's
+  former "Descargas" row moved there, per material).
+  `PrepareTopic` ("Prepárame el tema", below) sits above the materials and the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
@@ -398,6 +399,31 @@ token):
   "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
   the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->
   `ActionResult` (read leniently: `readStoredQuiz`, `readResult(s)`).
+- `src/materials/` (#79): `MaterialsPanel`, section "Material de estudio" on the topic page, over
+  `GET .../generated` (`MaterialsStatus`) and `GET /api/generators` (only for each kind's
+  description). One item per kind in the order of study (`STUDY_ORDER`: esquema, quiz, flashcards,
+  examen, diapositivas, then any other alphabetically), named by its Spanish title: "○ Sin
+  generar" or "✓ Generado el <fecha y hora> · de los apuntes v<N>", a "Desactualizado" badge with
+  the backend's `stale_reason` when stale, then its links -- "Hacer el quiz" (the quiz page),
+  "Ver <nombre>" per top-level `.md` file (the preview page), a `download` link per
+  `.apkg`/`.csv`/`.pdf`/`.pptx` ("flashcards (Anki)", "diapositivas (PowerPoint)"...) -- and
+  "Generar" / "Generar de nuevo" ("Generando…" while it runs), which posts `POST
+  .../generated/<kind>` with default options (`{options: {}, confirm_over_cap}`; the quiz page
+  keeps its own options form). The button is disabled while running and while the topic has no
+  notes ("Todavía no hay apuntes: prepara el tema..."); a kind no longer registered (no title)
+  has none. A refusal is an `alert` with the Spanish `detail`, plus "Generar igualmente" past the
+  cost cap; a generation's warnings are listed under the item. After a generation the page
+  reloads (`onGenerated`: the card and, through `refreshKey`, the section); without
+  `onGenerated` the section reads itself again. A list that cannot be read is plain text.
+  `MaterialPreviewPage` at `<topic path>/material/<name>` (a top-level file name): `← Tema
+  <name>`, heading "<title> de <tema>" (the file's stem in brackets when it is not the kind's own,
+  "Ejercicios y examen (examen-soluciones)"), "De los apuntes v<N> · Descargar <name>", a `note`
+  "Desactualizado <reason>" when stale, then the file (`GET .../generated/files/<name>` as text)
+  rendered by `NotesView` over `parseNotes`, so no markup of it reaches the DOM (a mind map or a
+  Marp deck shows as its Markdown source). `api.ts`: `fetchGenerators`, `fetchMaterials`,
+  `fetchGeneratedText` (`ReadResult`), `generateMaterial(s, t, kind, confirmOverCap)`
+  (`ActionResult<Generated>`: `kind`, `notesVersion`, `warnings`), `fileUrl`, `previewPath`,
+  `generatedName`; lenient readers `readGenerators`, `readMaterials`, `readGenerated`.
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
