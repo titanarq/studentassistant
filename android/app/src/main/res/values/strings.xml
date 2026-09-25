@@ -87,6 +87,10 @@
     <string name="desk_invalid_backend">La dirección del ordenador activo no es válida. Vuelve a emparejarlo.</string>
     <string name="desk_unauthorized">El ordenador ya no acepta este teléfono. Vuelve a emparejarlo desde «Ordenadores».</string>
     <string name="desk_load_failed">No se han podido abrir los apuntes en %1$s (%2$s). Comprueba que el ordenador está encendido y en la misma red.</string>
+    <string name="desk_download_started">Descarga iniciada: %1$s</string>
+    <string name="desk_download_failed">No se pudo descargar el archivo.</string>
+    <string name="desk_download_refused">Solo se descargan archivos del ordenador emparejado.</string>
+    <string name="desk_file_chooser_failed">No hay ninguna aplicación para elegir el archivo.</string>
     <string name="create_topic_title">Nuevo tema</string>
     <string name="create_topic_subject">Asignatura</string>
     <string name="create_topic_subject_hint">Elige una o escribe una nueva</string>

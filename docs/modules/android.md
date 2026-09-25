@@ -161,8 +161,20 @@ web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes 
   WebView (JavaScript and DOM storage on, file/content access off). Links to another origin open
   in the system browser; system back goes back in the WebView history, then home. A progress bar
   shows while a page loads; a failure covers the page with its Spanish message.
+- **Files and downloads (#259)**: a file input (the topic's PDF upload) opens the system document
+  picker (`OpenDocument`, or `OpenMultipleDocuments` for a `multiple` input) filtered by
+  `acceptMimeTypes(accept)`; a cancel answers `null`, so the input stays usable. A download (the
+  generated materials' links: Anki deck, PDF exam, slides) goes through `decideDownload` and then
+  `DownloadManager` with `Authorization: Bearer <token>` (never logged; `DeskPage.token`,
+  redacted from `toString()`), the server's file name (`URLUtil.guessFileName` on
+  `Content-Disposition`, made safe by `safeFileName`) and a notification, into Downloads (the
+  app's own external Downloads folder on Android 9, which would need a storage permission for
+  the shared one); a URL that is not on the paired backend's origin is refused. Toasts:
+  «Descarga iniciada: <archivo>», «No se pudo descargar el archivo.», «Solo se descargan
+  archivos del ordenador emparejado.». The decisions live in `DeskFiles.kt` (pure, JVM-tested),
+  the Android glue in `DeskDownloader.kt`.
 - Known gaps: the web layout is the desktop one (it wraps below 80rem, the chat under the notes);
-  no file chooser (PDF upload), downloads or microphone inside the WebView; nothing offline.
+  no microphone inside the WebView (the voice tutor is native, #248); nothing offline.
 
 ## Voice tutor on the phone (#248)
 
