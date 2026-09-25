@@ -29,6 +29,17 @@ it("renders the study desk at /", () => {
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
 });
 
+it.each(["/capture", "/capture/"])("renders the capture page at %s", (pathname) => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname={pathname} />);
+
+  expect(
+    screen.getByRole("heading", { name: "Capturar una sesión de estudio" }),
+  ).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects", { method: "GET" });
+});
+
 it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/topics/revolucion-industrial/"])(
   "renders the topic page at %s",
   (pathname) => {

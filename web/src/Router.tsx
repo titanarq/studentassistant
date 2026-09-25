@@ -1,4 +1,5 @@
 import App from "./App";
+import SessionPicker from "./capture/SessionPicker";
 import PairPage from "./pairing/PairPage";
 import TopicPage from "./topic/TopicPage";
 
@@ -19,6 +20,8 @@ function decode(segment: string): string | null {
 export default function Router({ pathname = window.location.pathname }: { pathname?: string }) {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/pair") return <PairPage />;
+  // The capture client (#40): the student picks the subject and topic and opens the session here.
+  if (path === "/capture") return <SessionPicker />;
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
     const subjectId = decode(topic[1]);
