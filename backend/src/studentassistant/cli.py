@@ -1,17 +1,18 @@
 """The `studentassistant` command line.
 
-`serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
-running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
-`cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, `replay` feeds a recorded session through the
-gateway as a capture client would, and `setup` creates or clones the vault on this PC and records
-it in the configuration file.
+`serve` runs the backend (`serve --record` also records each session for `replay`), `version`
+prints the version, `pair` shows a pairing QR minted by the running backend, `devices` lists (or
+`devices revoke <id>` removes) the paired capture clients, `cost` prints what the Claude calls
+recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range of it) to a topic
+as a source, `replay` feeds a recorded session through the gateway as a capture client would, and
+`setup` creates or clones the vault on this PC and records it in the configuration file.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
 where the server listens comes from `studentassistant.config` (the TOML file plus the `SA_*`
 environment variables), so there is one way to configure the backend and not two. `setup`'s
-options are the answers it writes into that configuration, not a second way to set it.
+options are the answers it writes into that configuration, not a second way to set it, and
+`serve --record` only switches recording on: where recordings go is `[server].recordings_dir`.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from studentassistant.config import ServerSettings, Settings, check_repo_name, w
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.recording import Recording, RecordingError, read_recording
 from studentassistant.server.replay import (
     AsgiTransport,
@@ -73,12 +75,28 @@ cli = typer.Typer(
 
 
 @cli.command()
-def serve() -> None:
+def serve(
+    record: Annotated[
+        bool,
+        typer.Option(
+            "--record",
+            help="Record each session's raw inputs under [server].recordings_dir, for `replay`.",
+        ),
+    ] = False,
+) -> None:
     """Serve the FastAPI app on the configured host and port until interrupted."""
     server = Settings().server
+    recorder = SessionRecorder(server.recordings_dir) if record else None
+    try:
+        app = create_app(server=server, recorder=recorder)
+    except ValueError as error:
+        typer.echo(f"Cannot record: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    if recorder is not None:
+        typer.echo(f"Recording every session under {recorder.root}")
     # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
     # guard and the loopback trust see (uvicorn trusts it from loopback by default).
-    uvicorn.run(create_app(server=server), host=server.host, port=server.port, proxy_headers=False)
+    uvicorn.run(app, host=server.host, port=server.port, proxy_headers=False)
 
 
 @cli.command()

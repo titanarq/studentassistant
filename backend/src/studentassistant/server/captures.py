@@ -18,11 +18,14 @@ repeated `capture_id` (`sessions.stored_captures`), and which the WebSocket gate
 the connected client as its capture `ack`.
 A new capture answers 201 `stored`, a repeated one 200 `duplicate` storing and publishing nothing;
 the check-and-store is serialised per session, so two concurrent uploads of one id store it once.
+With a recorder (`serve --record`), a newly stored burst is also recorded, every image of it, in
+a worker thread; a recording that cannot be written is logged and never fails the upload.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -42,6 +45,7 @@ from studentassistant.config import ServerSettings
 from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.bus import SessionNotAttachedError
+from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.sessions import (
     SessionConflictError,
     SessionService,
@@ -50,6 +54,8 @@ from studentassistant.server.sessions import (
     stored_captures,
 )
 from studentassistant.vault import SecretRefused, Session, SessionEndedError, put_source
+
+logger = logging.getLogger(__name__)
 
 SessionId = Annotated[str, PathParam(pattern=ID_PATTERN)]
 
@@ -387,10 +393,40 @@ def captures_router() -> APIRouter:
                     status.HTTP_409_CONFLICT,
                     f"la sesión {session.id} terminó mientras llegaba la captura",
                 ) from error
+            recorder: SessionRecorder | None = request.app.state.recorder
+            if recorder is not None:
+                await _record(request, recorder, session.id, metadata, parts)
             body = _response(metadata, session.id, "stored", len(metadata.images))
             return JSONResponse(body.model_dump(exclude_none=True), status.HTTP_201_CREATED)
 
     return router
+
+
+async def _record(
+    request: Request,
+    recorder: SessionRecorder,
+    session_id: str,
+    metadata: protocol.CaptureUploadRequest,
+    parts: Mapping[str, _Part],
+) -> None:
+    open_session = request.app.state.sessions.get_active(session_id)
+    if open_session is None:
+        return
+    gateway = request.app.state.gateway
+    images = {image.part: bytes(parts[image.part].data) for image in metadata.images}
+    try:
+        await asyncio.to_thread(
+            recorder.capture,
+            open_session,
+            metadata,
+            images,
+            stt_mode=gateway.stt.mode,
+            language=gateway.stt.language,
+        )
+    except Exception:
+        logger.exception(
+            "recording capture %s of session %s failed", metadata.capture_id, session_id
+        )
 
 
 def _capture_state(session: Session) -> tuple[dict[str, Mapping[str, Any]], str]:

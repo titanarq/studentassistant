@@ -32,6 +32,11 @@ Backpressure: nothing here blocks the event loop (vault writes run in worker thr
 bus). Outbound messages go through the connection's bounded bus subscription, which drops the
 oldest notices (partials) first and never a persisted event; out-of-order audio is buffered up to
 `MAX_PENDING_FRAMES` frames, past which the socket is closed so the client resends from its ack.
+
+Recording (`serve --record`): with a `SessionRecorder`, the handshake opens the session's
+recording, and each accepted client transcript message, `button`/`marker` and fed audio frame is
+appended to it (in a worker thread) as it is received; a recording that cannot be written is logged
+and never interrupts the session.
 """
 
 from __future__ import annotations
@@ -74,6 +79,7 @@ from studentassistant.protocol import (
 from studentassistant.protocol.base import ProtocolModel
 from studentassistant.server.auth import WS_POLICY_VIOLATION, authenticate_websocket
 from studentassistant.server.bus import SessionBus, SessionNotAttachedError, Subscription
+from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.sessions import OpenSession, SessionService
 from studentassistant.stt import (
     AudioChunk,
@@ -174,6 +180,7 @@ class SessionGateway:
     `stt` is the `[stt]` config section; `sink_factory` builds a connection's `TranscriptSink`
     (default: `InMemoryTranscriptSink`), `provider_factory` a session's server-side provider
     (default: `provider_from_settings`), `clock` gives backend epoch ms. Tests replace them.
+    `recorder`, when given, records every session's client inputs (`serve --record`).
     """
 
     def __init__(
@@ -185,6 +192,7 @@ class SessionGateway:
         sink_factory: SinkFactory = _default_sink,
         provider_factory: ProviderFactory = provider_from_settings,
         clock: Callable[[], int] = _now_ms,
+        recorder: SessionRecorder | None = None,
     ) -> None:
         self.bus = bus
         self.sessions = sessions
@@ -192,6 +200,7 @@ class SessionGateway:
         self.sink_factory = sink_factory
         self.provider_factory = provider_factory
         self.clock = clock
+        self.recorder = recorder
         self._states: dict[str, ReceiveState] = {}
 
     def state_for(self, session_id: str) -> ReceiveState:
@@ -258,6 +267,13 @@ class _Connection:
             async with self._send_lock:
                 await self.websocket.close(code=code, reason=encoded.decode("utf-8", "ignore"))
 
+    async def record(self, method: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        """Run a recorder method in a worker thread; a failure is logged, never raised."""
+        try:
+            await asyncio.to_thread(method, *args, **kwargs)
+        except Exception:
+            logger.exception("recording session %s failed", self.session_id)
+
     # -- flow ----------------------------------------------------------------------------------
 
     async def run(self) -> None:
@@ -320,6 +336,16 @@ class _Connection:
         else:
             client_start_s = (self.session.started_at_ms - self.clock_offset_ms) / 1000
             self.sink = self.gateway.sink_factory(settings, client_start_s)
+        recorder = self.gateway.recorder
+        if recorder is not None:
+            await self.record(
+                recorder.start,
+                self.session,
+                stt_mode=self.mode,
+                language=self.language,
+                stt_provider=hello.capabilities.stt_provider,
+                clock_offset_ms=self.clock_offset_ms,
+            )
         await self.send(
             HelloAck(
                 type="hello.ack",
@@ -375,13 +401,19 @@ class _Connection:
             if event.source is not None:
                 payload["source"] = event.source
             await self._publish_client_event(BUTTON, payload, event.client_time_ms)
+            await self._record_event(event)
         elif isinstance(event, Marker):
             payload = {} if event.label is None else {"label": event.label}
             await self._publish_client_event(MARKER, payload, event.client_time_ms)
+            await self._record_event(event)
         elif isinstance(event, ClientAck):
             await self._publish_client_event(
                 COMMAND_ACK, {"command_id": event.command_id}, event.client_time_ms
             )
+
+    async def _record_event(self, event: Button | Marker) -> None:
+        if self.gateway.recorder is not None:
+            await self.record(self.gateway.recorder.event, self.session_id, event)
 
     async def _publish_client_event(
         self, kind: str, payload: dict[str, Any], client_time_ms: int
@@ -408,6 +440,8 @@ class _Connection:
                 )
             )
             await self._publish_segment(event.segment_id, normalised, event.language)
+            if self.gateway.recorder is not None:
+                await self.record(self.gateway.recorder.transcript, self.session_id, event)
 
     # -- server-mode audio ---------------------------------------------------------------------
 
@@ -433,6 +467,10 @@ class _Connection:
                 while state.next_seq in state.pending:
                     chunk = state.pending.pop(state.next_seq)
                     state.next_seq += 1
+                    if self.gateway.recorder is not None:
+                        await self.record(
+                            self.gateway.recorder.audio, self.session_id, chunk.data, chunk.start
+                        )
                     for segment in await state.provider.feed(chunk):
                         await self._publish_segment(
                             state.server_segment_id(segment.is_final), segment, self.language

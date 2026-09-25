@@ -27,6 +27,8 @@ DEFAULT_CONFIG_PATH = Path("~/.config/studentassistant/config.toml")
 DEFAULT_VAULT_PATH = Path("~/StudentAssistant/vault")
 # Paired capture clients: machine-local state, never inside the vault.
 DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
+# `serve --record`: one directory of raw client inputs per session, never inside the vault.
+DEFAULT_RECORDINGS_DIR = Path("~/.cache/studentassistant/recordings")
 
 # Claude roles: the observer reads the live session, the editor and the generators write (ADR-0004).
 FAST_MODEL = "claude-sonnet-5"
@@ -59,8 +61,11 @@ class ServerSettings(BaseModel):
     # the most images one burst may hold; beyond either the upload is refused with 413.
     max_capture_image_bytes: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGE_BYTES, ge=1)
     max_capture_images: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGES, ge=1)
+    # Where `studentassistant serve --record` writes each session's recording (what `replay`
+    # reads back), one directory per session id; it must not be inside the vault.
+    recordings_dir: Path = DEFAULT_RECORDINGS_DIR
 
-    @field_validator("devices_path")
+    @field_validator("devices_path", "recordings_dir")
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
