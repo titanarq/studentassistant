@@ -110,6 +110,7 @@ def test_a_reached_cap_is_409_until_confirmed(
         refused = client.post(_route(topic))
         assert refused.status_code == 409
         assert "Confirma" in refused.json()["detail"]
+        assert refused.json()["code"] == "cost_cap_reached"
         assert fake.requests == []
 
         confirmed = client.post(_route(topic), json={"confirm_over_cap": True})

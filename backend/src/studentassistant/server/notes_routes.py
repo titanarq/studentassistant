@@ -8,10 +8,10 @@ answers with the `GenerationResult`. One generation per topic runs at a time. Th
 session is the active one; it is always recorded in the topic's `conversations/editor.jsonl`.
 
 Available only when the app has an `llm_transport` (`serve` passes the real one): without it,
-nothing ever calls Claude and the route answers 503. Errors, as `{"detail": "..."}` in Spanish:
-an unknown topic 404, a generation of that topic already running 409, a reached cost cap 409 until
-the request says `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be
-opened 503.
+nothing ever calls Claude and the route answers 503. Errors, as `{"detail": "...", "code"?: "..."}`
+in Spanish (`server.errors`): an unknown topic 404, a generation of that topic already running
+409, a reached cost cap 409 `cost_cap_reached` until the request says `confirm_over_cap`, a Claude
+failure or refusal 502, a vault that cannot be opened 503.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from studentassistant.llm import (
 )
 from studentassistant.observer import topic_digest
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, get_topic
 
@@ -49,14 +50,7 @@ UNKNOWN_TOPIC_DETAIL = "No existe ese tema en la bóveda."
 BUSY_DETAIL = "Ya se están generando los apuntes de este tema."
 REFUSED_DETAIL = "Claude se ha negado a escribir los apuntes de este tema."
 FAILED_DETAIL = "No se han podido generar los apuntes: Claude no ha respondido. Prueba más tarde."
-
-
-def cap_detail(error: CostConfirmationRequiredError) -> str:
-    scope = "de la sesión" if error.cap == "session" else "del día"
-    return (
-        f"Se ha alcanzado el límite de gasto {scope} ({error.total_usd:.2f} de"
-        f" {error.limit_usd:.2f} USD). Confirma para generar los apuntes igualmente."
-    )
+CONFIRM_SENTENCE = "Confirma para generar los apuntes igualmente."
 
 
 class GenerateNotesRequest(BaseModel):
@@ -138,7 +132,7 @@ def notes_router() -> APIRouter:
                 confirm_over_cap=bool(body and body.confirm_over_cap),
             )
         except CostConfirmationRequiredError as error:
-            raise HTTPException(status_code=409, detail=cap_detail(error)) from error
+            raise cost_cap_error(error, CONFIRM_SENTENCE) from error
         except RefusalError as error:
             raise HTTPException(status_code=502, detail=REFUSED_DETAIL) from error
         except LLMError as error:

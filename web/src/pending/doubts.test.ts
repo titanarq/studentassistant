@@ -83,24 +83,47 @@ it("dismisses without a body", async () => {
   expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeUndefined();
 });
 
-it("keeps a refusal's Spanish detail and marks a reached cost cap", async () => {
+it("keeps a refusal's Spanish detail and code, and marks a reached cost cap by its code", async () => {
   const cap = "Se ha alcanzado el límite de gasto del día (5.10 de 5.00 USD). Confirma para continuar igualmente.";
   stubApi({
-    [`POST ${BASE}/review`]: jsonResponse({ detail: cap }, 409),
-    [`POST ${BASE}/p1/answer`]: jsonResponse({ detail: "Esa duda ya está cerrada." }, 409),
+    [`POST ${BASE}/review`]: jsonResponse({ detail: cap, code: "cost_cap_reached" }, 409),
+    [`POST ${BASE}/p1/answer`]: jsonResponse({ detail: "Esa duda ya está cerrada.", code: "doubt_closed" }, 409),
     [`POST ${BASE}/p1/dismiss`]: new Error("offline"),
   });
 
-  expect(await reviewDoubts("historia", "revolucion-francesa")).toEqual({
+  const refused = await reviewDoubts("historia", "revolucion-francesa");
+  expect(refused).toEqual({
     kind: "refused",
     status: 409,
     detail: cap,
+    code: "cost_cap_reached",
     overCap: true,
   });
   const closed = await answerDoubt("historia", "revolucion-francesa", "p1", { answer: "1789" });
-  expect(closed).toEqual({ kind: "refused", status: 409, detail: "Esa duda ya está cerrada.", overCap: false });
+  expect(closed).toEqual({
+    kind: "refused",
+    status: 409,
+    detail: "Esa duda ya está cerrada.",
+    code: "doubt_closed",
+    overCap: false,
+  });
   const offline = await dismissDoubt("historia", "revolucion-francesa", "p1");
   expect(offline.kind === "ok" ? "" : describeActionFailure(offline)).toBe("No se pudo conectar con el servidor.");
+});
+
+it("goes by the code, never by the wording of the detail", async () => {
+  const reworded = "Has llegado al tope de gasto de hoy.";
+  const lookalike = "Se ha alcanzado el límite de gasto del día (5.10 de 5.00 USD).";
+  let calls = 0;
+  stubApi({
+    [`POST ${BASE}/review`]: () =>
+      ++calls === 1
+        ? jsonResponse({ detail: reworded, code: "cost_cap_reached" }, 409)
+        : jsonResponse({ detail: lookalike, code: "added_later" }, 409),
+  });
+
+  expect(await reviewDoubts("historia", "revolucion-francesa")).toMatchObject({ code: "cost_cap_reached", overCap: true });
+  expect(await reviewDoubts("historia", "revolucion-francesa")).toMatchObject({ code: null, overCap: false });
 });
 
 it("says what a review did", () => {

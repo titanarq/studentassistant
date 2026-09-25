@@ -125,7 +125,34 @@ def test_a_second_active_session_is_a_409(local: TestClient) -> None:
     )
     assert second.status_code == 409
     assert first["session_id"] in second.json()["detail"]
+    assert second.json()["code"] == "session_open"
     assert second.headers["X-Open-Session-Id"] == first["session_id"]
+
+
+@pytest.mark.parametrize(("paired_as", "coded"), [("1.0", False), ("1.1", False), ("1.2", True)])
+def test_the_error_code_follows_the_devices_protocol_version(
+    local: TestClient, lan: TestClient, paired_as: str, coded: bool
+) -> None:
+    code = local.post("/api/pair/codes").json()["code"]
+    pairing = {
+        "pairing_code": code,
+        "device_name": "Móvil",
+        "client_kind": "android",
+        "protocol_version": paired_as,
+    }
+    headers = bearer(lan.post("/api/pair", json=pairing).json()["token"])
+    local.post("/api/subjects", json={"name": "Física"})
+    local.post("/api/subjects/fisica/topics", json={"name": "Cinemática"})
+    local.post("/api/subjects/fisica/topics", json={"name": "Dinámica"})
+    start = {"subject_id": "fisica", "client_time_ms": 1}
+    assert local.post("/api/sessions", json={**start, "topic_id": "cinematica"}).status_code == 201
+
+    refused = lan.post("/api/sessions", json={**start, "topic_id": "dinamica"}, headers=headers)
+
+    assert refused.status_code == 409 and "X-Open-Session-Id" in refused.headers
+    # A 1.0/1.1 client gets the body it knows; `code` arrived in 1.2.
+    expected_keys = {"detail", "code"} if coded else {"detail"}
+    assert set(refused.json()) == expected_keys
 
 
 def test_unknown_things_are_404_and_ended_sessions_409(local: TestClient) -> None:

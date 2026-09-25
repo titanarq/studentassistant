@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from revise_topic import BOOK_FOOTNOTE, ReviseTopic, make_revise_topic
-from studentassistant.config import ObserverSettings, ServerSettings, Settings
+from studentassistant.config import LlmSettings, ObserverSettings, ServerSettings, Settings
 from studentassistant.editor.revise import EDIT_TOOL
 from studentassistant.llm import FakeClaude, LLMServerError
 from studentassistant.server.app import create_app
@@ -20,7 +20,7 @@ from studentassistant.server.pairing import PairingCodes
 from studentassistant.vault import Vault, create_topic, read_notes
 
 LOCAL_BASE_URL = "http://localhost:8765"
-AppFactory = Callable[[FakeClaude | None], FastAPI]
+AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
@@ -36,14 +36,16 @@ def _base(topic: ReviseTopic) -> str:
 def make_app(
     devices_path: Path, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
 ) -> AppFactory:
-    def make(transport: FakeClaude | None) -> FastAPI:
+    def make(transport: FakeClaude | None, llm: LlmSettings | None = None) -> FastAPI:
         return create_app(
             static_dir=tmp_path / "no-web-build",
             server=ServerSettings(devices_path=devices_path),
             codes=codes,
             vault=tmp_vault,
             llm_transport=transport,
-            llm_settings=Settings(observer=ObserverSettings(enabled=False)),
+            llm_settings=Settings(
+                observer=ObserverSettings(enabled=False), llm=llm or LlmSettings()
+            ),
         )
 
     return make
@@ -134,6 +136,23 @@ def test_a_claude_failure_is_an_error_event(
     # The lock was released: the next turn runs.
     fake.reply_text("Vale.")
     assert events_of(client.post(_base(topic), json={"message": "Hola"}))[-1][0] == "result"
+
+
+def test_a_reached_cap_is_a_coded_error_event_until_confirmed(
+    make_app: AppFactory, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    app = make_app(fake, LlmSettings(max_usd_per_day=0))
+    with TestClient(app, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000)) as client:
+        ((kind, data),) = events_of(client.post(_base(topic), json={"message": "Pon un ejemplo"}))
+        assert kind == "error" and data["status"] == 409
+        assert data["code"] == "cost_cap_reached" and "Confirma" in data["detail"]
+        assert fake.requests == []
+
+        fake.reply_text("Vale.")
+        confirmed = client.post(
+            _base(topic), json={"message": "Pon un ejemplo", "confirm_over_cap": True}
+        )
+        assert events_of(confirmed)[-1][0] == "result"
 
 
 def test_errors_before_the_stream(

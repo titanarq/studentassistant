@@ -5,12 +5,13 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.1**.
+Current version: **`protocol_version` 1.2**.
 
 | version | change |
 |---|---|
 | 1.0 | first version |
 | 1.1 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `last_session_at_ms` and `pending_count` |
+| 1.2 | REST error bodies gain the optional machine-readable `code` (see "REST errors") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -84,6 +85,32 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/end` | `rest.sessions.end.request` | `rest.sessions.end.response` |
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
 | `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
+
+### REST errors
+
+A non-2xx REST answer has the body `{"detail": "<Spanish sentence for the student>"}` (a 422 from
+request validation carries a list of the offending fields as `detail` instead). Since 1.2 the
+refusals a client branches on also carry `code`, so no client matches the Spanish wording:
+
+| `code` | status | meaning |
+|---|---|---|
+| `cost_cap_reached` | 409 | the session's or the day's cost cap is reached; the same request with `confirm_over_cap: true` goes past it |
+| `doubt_closed` | 409 | the doubt was already answered, auto-resolved or dismissed |
+| `session_open` | 409 | an unended session is in the way: another session when starting or resuming one (its id also in the `X-Open-Session-Id` header), or the topic's own session when resolving its doubts |
+
+`code` is optional: other errors have none, a client must treat a missing or unknown code as "no
+code" (and fall back on the status), and new codes may be added in later MINOR versions. Like
+every field newer than 1.0 it is sent only to a client whose negotiated version has it: a device
+paired as a 1.0 or 1.1 client gets the plain `{"detail": ...}` body. Error bodies have no schema
+under `protocol/`: every client reads them leniently -- the Android app (1.1) decodes no error
+body at all and goes by the HTTP status only; the web (1.2) reads `detail` and `code` and ignores
+anything else. In Python: `ErrorCode`, `ERROR_CODE_SINCE`; in TypeScript: `ErrorCode`,
+`ERROR_CODES`, `errorCode(body)`.
+
+The web-only editor chat stream (`POST .../notes/chat`, Server-Sent Events,
+`docs/modules/server.md`) reports a failure after the stream started as an `error` event
+`{"status", "detail", "code"?}` that carries the same `code` (e.g. `cost_cap_reached`), sent under
+the same version rule.
 
 ### Pairing and health
 

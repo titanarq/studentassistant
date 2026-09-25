@@ -7,10 +7,11 @@ operation of a topic at a time. Reviewing and answering call the `editor` role t
 el tema" (`NotesGenerator.claim`), since both write the notes; without a transport they are 503.
 Listing and dismissing never call Claude.
 
-Errors, as `{"detail": "..."}` in Spanish: an unknown topic or doubt 404; a doubt already closed,
-a topic with an unended session, a review without notes, another operation of the topic running,
-or a reached cost cap (until the request says `confirm_over_cap`) 409; an answer that does not fit
-the question 422; a Claude failure or refusal 502; a vault that cannot be opened 503.
+Errors, as `{"detail": "...", "code"?: "..."}` in Spanish (`server.errors`): an unknown topic or
+doubt 404; a doubt already closed (`doubt_closed`), a topic with an unended session
+(`session_open`), a review without notes, another operation of the topic running, or a reached
+cost cap (`cost_cap_reached`, until the request says `confirm_over_cap`) 409; an answer that
+does not fit the question 422; a Claude failure or refusal 502; a vault that cannot be opened 503.
 """
 
 from __future__ import annotations
@@ -26,9 +27,11 @@ from pydantic import BaseModel
 
 from studentassistant.editor.doubts import (
     DoubtAnswer,
+    DoubtClosedError,
     DoubtError,
     DoubtsQueue,
     InvalidAnswerError,
+    OpenSessionError,
     ResolutionResult,
     ReviewResult,
     UnknownDoubtError,
@@ -45,7 +48,9 @@ from studentassistant.llm import (
     RefusalError,
     get_client,
 )
+from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.errors import ApiError, cost_cap_error
 from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
@@ -70,14 +75,7 @@ UNKNOWN_TOPIC_DETAIL = "No existe ese tema en la bóveda."
 BUSY_DETAIL = "El editor ya está trabajando en los apuntes o las dudas de este tema."
 REFUSED_DETAIL = "Claude se ha negado a resolver las dudas de este tema."
 FAILED_DETAIL = "No se han podido resolver las dudas: Claude no ha respondido. Prueba más tarde."
-
-
-def cap_detail(error: CostConfirmationRequiredError) -> str:
-    scope = "de la sesión" if error.cap == "session" else "del día"
-    return (
-        f"Se ha alcanzado el límite de gasto {scope} ({error.total_usd:.2f} de"
-        f" {error.limit_usd:.2f} USD). Confirma para continuar igualmente."
-    )
+CONFIRM_SENTENCE = "Confirma para continuar igualmente."
 
 
 class ReviewRequest(BaseModel):
@@ -98,6 +96,14 @@ def _status(error: DoubtError) -> int:
     if isinstance(error, InvalidAnswerError):
         return 422
     return 409  # closed already, an unended session, no notes yet
+
+
+def _code(error: DoubtError) -> ErrorCode | None:
+    if isinstance(error, DoubtClosedError):
+        return ErrorCode.DOUBT_CLOSED
+    if isinstance(error, OpenSessionError):
+        return ErrorCode.SESSION_OPEN
+    return None
 
 
 def doubts_router() -> APIRouter:
@@ -136,9 +142,12 @@ def doubts_router() -> APIRouter:
         try:
             yield generator
         except DoubtError as error:
+            code = _code(error)
+            if code is not None:
+                raise ApiError(_status(error), str(error), code) from error
             raise HTTPException(status_code=_status(error), detail=str(error)) from error
         except CostConfirmationRequiredError as error:
-            raise HTTPException(status_code=409, detail=cap_detail(error)) from error
+            raise cost_cap_error(error, CONFIRM_SENTENCE) from error
         except RefusalError as error:
             raise HTTPException(status_code=502, detail=REFUSED_DETAIL) from error
         except LLMError as error:

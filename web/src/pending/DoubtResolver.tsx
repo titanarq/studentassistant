@@ -78,7 +78,8 @@ export default function DoubtResolver({
     }
     const overCap = result.kind === "refused" && result.overCap;
     setFailure({ result, retry: overCap ? () => void run(kind, call, true) : null });
-    if (result.kind === "refused" && !overCap && (result.status === 404 || result.status === 409)) onStale?.();
+    // A doubt gone (404) or closed meanwhile: the queue the panel shows is out of date.
+    if (result.kind === "refused" && (result.status === 404 || result.code === "doubt_closed")) onStale?.();
   };
 
   const answer = (body: DoubtAnswer) =>

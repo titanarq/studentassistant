@@ -5,7 +5,8 @@ Thin: the work is `studentassistant.editor.revise`. Every route opens the vault 
 
 - `POST .../notes/chat` answers with a Server-Sent Events stream (`text/event-stream`): the
   editor's reply as it is written (`reply.delta`, `reply.restart` on a re-ask), then one `result`
-  event with the `RevisionResult` (the applied diff) or one `error` event (`status`, `detail`).
+  event with the `RevisionResult` (the applied diff) or one `error` event (`status`, `detail`,
+  and `code` when the failure has one and the caller speaks it, as in a REST error body).
   The turn runs as its own task, so a client that goes away does not cut a change in half; it
   holds the topic's notes lock (`NotesGenerator.claim`) with "prepárame el tema" and the doubts.
 - `GET .../notes/chat` -> `ChatHistory`; `POST .../notes/chat/undo` -> `UndoResult` (no Claude
@@ -15,8 +16,8 @@ Errors before the stream starts are ordinary HTTP errors, as `{"detail": "..."}`
 `llm_transport` 503 (chat only), a vault that cannot be opened 503, an unknown topic 404, another
 notes operation of the topic running or no notes yet 409, an invalid message 422; undo: nothing to
 undo or a later change in the way 409. Inside the stream, the `error` event carries the status the
-same failure would have had: a reached cost cap 409 (until the body says `confirm_over_cap`), a
-Claude refusal or failure 502.
+same failure would have had: a reached cost cap 409 `cost_cap_reached` (until the body says
+`confirm_over_cap`), a Claude refusal or failure 502.
 """
 
 from __future__ import annotations
@@ -48,7 +49,9 @@ from studentassistant.llm import (
     RefusalError,
     get_client,
 )
+from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.errors import caller_speaks_error_codes, cost_cap_error
 from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
@@ -75,12 +78,7 @@ NO_NOTES_DETAIL = "Todavía no hay apuntes de este tema: prepáralos antes de re
 INTERNAL_DETAIL = "No se han podido revisar los apuntes por un error del servidor."
 
 
-def cap_detail(error: CostConfirmationRequiredError) -> str:
-    scope = "de la sesión" if error.cap == "session" else "del día"
-    return (
-        f"Se ha alcanzado el límite de gasto {scope} ({error.total_usd:.2f} de"
-        f" {error.limit_usd:.2f} USD). Confirma para continuar igualmente."
-    )
+CAP_THEN = "Confirma para continuar igualmente."
 
 
 class ChatRequest(BaseModel):
@@ -95,18 +93,19 @@ def sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
-def _error_of(error: BaseException) -> tuple[int, str]:
+def _error_of(error: BaseException) -> tuple[int, str, ErrorCode | None]:
     if isinstance(error, InvalidMessageError):
-        return 422, str(error)
+        return 422, str(error), None
     if isinstance(error, RevisionError):
-        return 409, str(error)
+        return 409, str(error), None
     if isinstance(error, CostConfirmationRequiredError):
-        return 409, cap_detail(error)
+        refused = cost_cap_error(error, CAP_THEN)
+        return refused.status_code, refused.detail, refused.code
     if isinstance(error, RefusalError):
-        return 502, REFUSED_DETAIL
+        return 502, REFUSED_DETAIL, None
     if isinstance(error, LLMError):
-        return 502, FAILED_DETAIL
-    return 500, INTERNAL_DETAIL
+        return 502, FAILED_DETAIL, None
+    return 500, INTERNAL_DETAIL, None
 
 
 def revise_router() -> APIRouter:
@@ -163,6 +162,7 @@ def revise_router() -> APIRouter:
         if not generator.claim(subject_id, topic_id):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
 
+        speaks_codes = caller_speaks_error_codes(request)
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
         async def on_reply(kind: str, data: dict[str, Any]) -> None:
@@ -189,14 +189,17 @@ def revise_router() -> APIRouter:
                 )
                 queue.put_nowait(sse("result", result.model_dump(mode="json")))
             except Exception as error:
-                status, detail = _error_of(error)
+                status, detail, code = _error_of(error)
                 if status == 500:
                     logger.exception("the notes chat of %s/%s failed", subject_id, topic_id)
                 elif status == 502:
                     logger.warning(
                         "the notes chat of %s/%s failed: %s", subject_id, topic_id, error
                     )
-                queue.put_nowait(sse("error", {"status": status, "detail": detail}))
+                data: dict[str, Any] = {"status": status, "detail": detail}
+                if code is not None and speaks_codes:
+                    data["code"] = code.value
+                queue.put_nowait(sse("error", data))
             finally:
                 generator.release(subject_id, topic_id)
                 queue.put_nowait(None)

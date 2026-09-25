@@ -68,7 +68,7 @@ it("confirms past a cost cap on the step that stopped", async () => {
   let reviews = 0;
   const fetchMock = stubApi({
     [GENERATE]: generated(),
-    [REVIEW]: () => (++reviews === 1 ? jsonResponse({ detail: CAP }, 409) : REVIEWED.clone()),
+    [REVIEW]: () => (++reviews === 1 ? jsonResponse({ detail: CAP, code: "cost_cap_reached" }, 409) : REVIEWED.clone()),
   });
   render(<PrepareTopic subjectId="historia" topicId="revolucion-francesa" />);
 

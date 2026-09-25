@@ -3,8 +3,9 @@
 Thin: each route validates its body with the protocol model, calls the `SessionService` on
 `app.state.sessions` and answers with the protocol model it returns. Lifecycle refusals map to
 HTTP: an unknown subject, topic or session is 404, a clash with the current state (another session
-active or unended, a session already ended, a vault pull that hit a conflict at session start --
-the detail names the conflicting paths) is 409, and a vault that cannot be opened is 503.
+active or unended, with code `session_open` -- see `server.errors` -- and its id in the
+`X-Open-Session-Id` header; a session already ended; a vault pull that hit a conflict at session
+start, whose detail names the conflicting paths) is 409, and a vault that cannot be opened is 503.
 Optional fields are left out rather than sent as `null`, as the protocol's schemas want.
 Every route sits behind the LAN guard, the Host allowlist and the bearer check.
 """
@@ -18,9 +19,10 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path, Request, status
 
 from studentassistant import protocol
-from studentassistant.protocol import PROTOCOL_VERSION
+from studentassistant.protocol import PROTOCOL_VERSION, ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.auth import Principal
+from studentassistant.server.errors import ApiError
 from studentassistant.server.sessions import (
     ActiveSessionExistsError,
     SessionConflictError,
@@ -50,8 +52,11 @@ async def _http_errors() -> AsyncIterator[None]:
     except (UnknownSessionError, SubjectNotFoundError, TopicNotFoundError) as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
     except ActiveSessionExistsError as error:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, str(error), headers={"X-Open-Session-Id": error.session_id}
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            str(error),
+            ErrorCode.SESSION_OPEN,
+            headers={"X-Open-Session-Id": error.session_id},
         ) from error
     except SessionConflictError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error

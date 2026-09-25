@@ -47,6 +47,7 @@ from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.doubts_routes import doubts_router
+from studentassistant.server.errors import install_error_handler
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
@@ -212,6 +213,8 @@ def create_app(
     app.add_middleware(BearerAuthMiddleware, server=server, devices=devices)
     app.add_middleware(HostAllowlistMiddleware, server=server)
     app.add_middleware(LanGuardMiddleware)
+
+    install_error_handler(app)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
