@@ -43,6 +43,11 @@ class FakeSessionSocket(
         return true
     }
 
+    /** What [queuedBytes] reports: the test simulates a slow link by raising it. */
+    var queued: Long = 0
+
+    override fun queuedBytes(): Long = queued
+
     override fun close() {
         closed = true
     }
@@ -167,5 +172,16 @@ class FakeStillCapture : StillCapture {
 
     override fun retry(captureId: String) {
         retries += captureId
+    }
+
+    val confirmed = mutableListOf<List<String>>()
+    val resumes = mutableListOf<List<String>>()
+
+    override fun confirmReceived(captureIds: List<String>) {
+        confirmed += captureIds
+    }
+
+    override fun resumed(receivedCaptureIds: List<String>) {
+        resumes += receivedCaptureIds
     }
 }

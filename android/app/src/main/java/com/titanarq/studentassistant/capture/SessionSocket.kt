@@ -16,6 +16,9 @@ interface SessionSocket {
 
     fun sendBinary(bytes: ByteArray): Boolean
 
+    /** Bytes accepted by the send methods and not transmitted yet. */
+    fun queuedBytes(): Long = 0
+
     /** Closes normally; the listener then hears nothing more from this socket. */
     fun close()
 }
@@ -59,6 +62,8 @@ class OkHttpSessionSocketFactory(
             override fun sendText(text: String): Boolean = socket.send(text)
 
             override fun sendBinary(bytes: ByteArray): Boolean = socket.send(bytes.toByteString())
+
+            override fun queuedBytes(): Long = socket.queueSize()
 
             override fun close() {
                 socket.close(NORMAL_CLOSURE, null)

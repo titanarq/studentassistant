@@ -126,6 +126,9 @@ fun CaptureScreen(
                     Text(stringResource(R.string.capture_no_camera), modifier = Modifier.align(Alignment.Center))
                 }
             }
+            if (state.spoolNearCap) {
+                Text(stringResource(R.string.capture_spool_near_cap), color = MaterialTheme.colorScheme.error)
+            }
             if (state.micPaused) {
                 Text(stringResource(R.string.capture_mic_paused), color = MaterialTheme.colorScheme.primary)
             }

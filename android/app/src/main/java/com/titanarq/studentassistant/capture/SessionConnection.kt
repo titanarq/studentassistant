@@ -1,6 +1,7 @@
 package com.titanarq.studentassistant.capture
 
 import com.titanarq.studentassistant.Clock
+import com.titanarq.studentassistant.protocol.AudioFormat
 import com.titanarq.studentassistant.protocol.AudioFrame
 import com.titanarq.studentassistant.protocol.ClientCapabilities
 import com.titanarq.studentassistant.protocol.ClientEvent
@@ -15,6 +16,13 @@ import com.titanarq.studentassistant.protocol.TranscriptClientPartial
 import com.titanarq.studentassistant.protocol.TranscriptFinal
 import com.titanarq.studentassistant.protocol.decodeServerEvent
 import com.titanarq.studentassistant.protocol.encodeClientEvent
+import com.titanarq.studentassistant.spool.AudioBacklog
+import com.titanarq.studentassistant.spool.EventBacklog
+import com.titanarq.studentassistant.spool.MemoryAudioBacklog
+import com.titanarq.studentassistant.spool.MemoryEventBacklog
+import com.titanarq.studentassistant.spool.SpooledFrame
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -61,21 +69,33 @@ sealed interface ConnectionFailure {
  * The client side of `/ws/sessions/{id}` (protocol v1): `hello`, `hello.ack`, every client event,
  * the server events on [events], audio frames in server STT mode, and reconnection.
  *
- * Reconnect on drop, with in-memory buffers only (the disk spool is android-offline):
- * - transcript finals stay buffered until the backend echoes the `transcript.final` with the same
- *   `segment_id` and are resent after every reconnect (the backend drops a final it saw already);
- * - `button`, `marker` and `ack` sent while disconnected are queued and sent after `hello.ack`;
- *   partials are dropped while disconnected (their final supersedes them);
- * - audio frames stay buffered until the server `ack`'s `audio_seq` covers them and are resent
- *   after every `hello.ack` in server mode (the backend drops a `seq` it already has). When the
- *   backend already acknowledges more frames than this connection produced (a restarted app on a
- *   resumed session), the buffered frames are renumbered after that `seq` and resent.
+ * What the backend may not have yet lives in two backlogs, in memory by default or on disk (the
+ * [com.titanarq.studentassistant.spool] classes) so it survives the app process dying:
+ * - [backlog]: transcript finals until the backend echoes the `transcript.final` with the same
+ *   `segment_id`; they are resent after every `hello.ack` in client mode (the backend drops a final
+ *   it saw already, without echoing it, so a resent final not echoed within [finalGraceMs] of a
+ *   connection that stayed up counts as held). `button`, `marker` and `ack` sent while
+ *   disconnected are queued and sent after `hello.ack`. Partials are dropped while disconnected
+ *   (their final supersedes them).
+ * - [audio]: every frame until the server `ack`'s `audio_seq` covers it. After a `hello.ack` in
+ *   server mode with frames held, the connection waits up to [ackWaitMs] for the `ack` the backend
+ *   sends right after it (where it stands), then resends in `seq` order everything after the
+ *   acknowledged `seq`, a batch at a time while the socket's send queue is under
+ *   [maxSocketQueueBytes], and only then live frames (a live frame produced meanwhile joins the
+ *   backlog behind them). When the held frames do not follow the acknowledged `seq` (older audio
+ *   was dropped at the spool's cap) or the backend acknowledges more frames than this connection
+ *   produced (a restarted app on a resumed session without a spool), the held frames are
+ *   renumbered right after the acknowledged `seq`: the backend places audio by client time, never
+ *   by `seq`, and never skips a missing `seq`.
+ *
+ * [drained] is true while connected with nothing left to deliver in the negotiated mode.
  *
  * A close with code 4404 (the session is not active, e.g. the backend restarted) runs [resume]
  * (the REST resume) and reconnects when it returns true.
  *
- * Everything runs on one coroutine of [scope] fed by a channel, so socket callbacks (any thread)
- * and callers (any thread) never race. [start] opens the first socket.
+ * Everything runs on one coroutine of [scope] (plus [loopContext], e.g. an I/O dispatcher for a
+ * disk backlog) fed by a channel, so socket callbacks (any thread) and callers (any thread) never
+ * race. [start] opens the first socket; [stop] closes it and keeps the backlogs as they are.
  */
 class SessionConnection(
     private val scope: CoroutineScope,
@@ -86,9 +106,12 @@ class SessionConnection(
     private val capabilities: ClientCapabilities,
     private val resume: suspend () -> Boolean = { false },
     private val reconnectDelaysMs: List<Long> = DEFAULT_RECONNECT_DELAYS_MS,
-    private val maxQueuedEvents: Int = MAX_QUEUED_EVENTS,
-    private val maxBufferedFrames: Int = MAX_BUFFERED_FRAMES,
-    private val maxUnconfirmedFinals: Int = MAX_UNCONFIRMED_FINALS,
+    private val audio: AudioBacklog = MemoryAudioBacklog(MAX_BUFFERED_FRAMES),
+    private val backlog: EventBacklog = MemoryEventBacklog(MAX_UNCONFIRMED_FINALS, MAX_QUEUED_EVENTS),
+    private val loopContext: CoroutineContext = EmptyCoroutineContext,
+    private val ackWaitMs: Long = ACK_WAIT_MS,
+    private val finalGraceMs: Long = FINAL_GRACE_MS,
+    private val maxSocketQueueBytes: Long = MAX_SOCKET_QUEUE_BYTES,
     private val protocolVersion: String = PROTOCOL_VERSION,
 ) {
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Connecting)
@@ -98,6 +121,14 @@ class SessionConnection(
 
     /** Every server event after `hello.ack` (and `hello.ack` itself), in arrival order. */
     val events: SharedFlow<ServerEvent> = _events.asSharedFlow()
+
+    private val _drained = MutableStateFlow(false)
+
+    /**
+     * True while connected with nothing left to deliver: no queued event and, in client mode, no
+     * unconfirmed final, in server mode, no unacknowledged frame.
+     */
+    val drained: StateFlow<Boolean> = _drained.asStateFlow()
 
     private sealed interface Input {
         data object Start : Input
@@ -109,9 +140,10 @@ class SessionConnection(
         data class Reconnect(val generation: Int) : Input
         data class Send(val event: ClientEvent) : Input
         data class Audio(val samples: ShortArray, val clientTimeMs: Long) : Input
+        data class AckWaitOver(val generation: Int) : Input
+        data class Pump(val generation: Int) : Input
+        data class Settle(val generation: Int, val segmentIds: List<String>) : Input
     }
-
-    private class BufferedFrame(var seq: Long, val clientTimeMs: Long, val samples: ShortArray)
 
     private val inputs = Channel<Input>(Channel.UNLIMITED)
 
@@ -123,14 +155,24 @@ class SessionConnection(
     private var attempt = 0
     private var stopped = false
     private var reconnectJob: Job? = null
-    private val queued = ArrayDeque<ClientEvent>()
-    private val unconfirmedFinals = LinkedHashMap<String, TranscriptClientFinal>()
-    private val frames = ArrayDeque<BufferedFrame>()
-    private var nextSeq = 0L
+    private var nextSeq = audio.lastSeq + 1
+
+    /** Server mode: the highest `seq` sent on this socket (or known held by the backend). */
+    private var sentThrough = -1L
+
+    /** Server mode: false until resending may start (the `ack` after `hello.ack` came or timed out). */
+    private var pumpOpen = false
+    private var pumpScheduled = false
+
+    /** The `audio_seq` of the last `ack` received on this socket, -1 before one. */
+    private var socketAcked = -1L
 
     init {
-        scope.launch {
-            for (input in inputs) handle(input)
+        scope.launch(loopContext) {
+            for (input in inputs) {
+                handle(input)
+                updateDrained()
+            }
         }
     }
 
@@ -176,6 +218,21 @@ class SessionConnection(
             }
             is Input.Send -> onSend(input.event)
             is Input.Audio -> onAudio(input.samples, input.clientTimeMs)
+            is Input.AckWaitOver -> if (input.generation == generation && handshaken && !pumpOpen) openPump()
+            is Input.Pump -> if (input.generation == generation) {
+                pumpScheduled = false
+                pump()
+            }
+            is Input.Settle -> if (input.generation == generation && handshaken) backlog.confirmFinals(input.segmentIds)
+        }
+    }
+
+    private fun updateDrained() {
+        val connected = handshaken && socket != null
+        _drained.value = connected && backlog.queued().isEmpty() && when (mode) {
+            SttMode.CLIENT -> backlog.finals().isEmpty()
+            SttMode.SERVER -> !audio.hasUnacked
+            null -> false
         }
     }
 
@@ -183,6 +240,8 @@ class SessionConnection(
         if (stopped) return
         socket?.close()
         handshaken = false
+        pumpOpen = false
+        socketAcked = -1L
         val current = ++generation
         if (_state.value !is ConnectionState.Reconnecting) _state.value = ConnectionState.Connecting
         socket = socketFactory.open(
@@ -229,7 +288,7 @@ class SessionConnection(
             onHelloAck(event)
         } else {
             when (event) {
-                is TranscriptFinal -> unconfirmedFinals.remove(event.segmentId)
+                is TranscriptFinal -> backlog.confirmFinals(listOf(event.segmentId))
                 is ServerAck -> event.audioSeq?.let(::onAudioAck)
                 else -> Unit
             }
@@ -244,26 +303,97 @@ class SessionConnection(
         _state.value = ConnectionState.Connected(ack.sttMode, ack.clockOffsetMs)
         val socket = socket ?: return
         if (ack.sttMode == SttMode.CLIENT) {
-            for (final in unconfirmedFinals.values) socket.sendText(encodeClientEvent(final))
+            val finals = backlog.finals()
+            for (final in finals) socket.sendText(encodeClientEvent(final))
+            if (finals.isNotEmpty()) settleLater(finals.map { it.segmentId })
         }
-        while (queued.isNotEmpty()) socket.sendText(encodeClientEvent(queued.removeFirst()))
+        val queued = backlog.queued()
+        for (event in queued) socket.sendText(encodeClientEvent(event))
+        backlog.dequeue(queued.size)
         if (ack.sttMode == SttMode.SERVER) {
-            for (frame in frames) socket.sendBinary(encode(frame))
+            sentThrough = audio.ackedSeq
+            if (audio.hasUnacked) {
+                // Learn where the backend stands before resending (its `ack` follows `hello.ack`).
+                val current = generation
+                scope.launch(loopContext) {
+                    delay(ackWaitMs)
+                    inputs.trySend(Input.AckWaitOver(current))
+                }
+            } else {
+                openPump()
+            }
+        }
+    }
+
+    private fun settleLater(segmentIds: List<String>) {
+        val current = generation
+        scope.launch(loopContext) {
+            delay(finalGraceMs)
+            inputs.trySend(Input.Settle(current, segmentIds))
         }
     }
 
     private fun onAudioAck(acked: Long) {
+        socketAcked = maxOf(socketAcked, acked)
         if (acked >= nextSeq) {
             // The backend already holds more frames than we produced (a resumed session after an
-            // app restart): our buffered frames were dropped as repeats. Renumber and resend them.
-            nextSeq = acked + 1
-            for (frame in frames) {
-                frame.seq = nextSeq++
-                socket?.sendBinary(encode(frame))
-            }
+            // app restart without a spool): our held frames were dropped as repeats. Renumber them.
+            rebase(acked)
             return
         }
-        while (frames.isNotEmpty() && frames.first().seq <= acked) frames.removeFirst()
+        audio.acknowledge(acked)
+        sentThrough = maxOf(sentThrough, acked)
+        if (handshaken && mode == SttMode.SERVER && !pumpOpen) openPump()
+    }
+
+    /** Resending starts: renumber the held frames when they do not follow the backend's `seq`. */
+    private fun openPump() {
+        pumpOpen = true
+        val acked = maxOf(socketAcked, audio.ackedSeq)
+        val first = audio.after(acked, 1).firstOrNull()
+        if (first != null && first.seq > acked + 1) {
+            rebase(acked)
+            return
+        }
+        sentThrough = maxOf(sentThrough, acked)
+        pump()
+    }
+
+    private fun rebase(acked: Long) {
+        audio.rebaseAfter(acked)
+        nextSeq = maxOf(audio.lastSeq, acked) + 1
+        sentThrough = acked
+        pumpOpen = true
+        pump()
+    }
+
+    /** Sends held frames after [sentThrough] in order, a batch per turn, while the socket keeps up. */
+    private fun pump() {
+        if (!handshaken || mode != SttMode.SERVER || !pumpOpen || pumpScheduled) return
+        val socket = socket ?: return
+        val batch = audio.after(sentThrough, PUMP_BATCH)
+        for (frame in batch) {
+            if (socket.queuedBytes() > maxSocketQueueBytes) {
+                schedulePump(PUMP_WAIT_MS)
+                return
+            }
+            socket.sendBinary(encode(frame))
+            sentThrough = frame.seq
+        }
+        if (batch.size == PUMP_BATCH) schedulePump(0)
+    }
+
+    private fun schedulePump(waitMs: Long) {
+        pumpScheduled = true
+        val current = generation
+        if (waitMs == 0L) {
+            inputs.trySend(Input.Pump(current))
+        } else {
+            scope.launch(loopContext) {
+                delay(waitMs)
+                inputs.trySend(Input.Pump(current))
+            }
+        }
     }
 
     private fun onSend(event: ClientEvent) {
@@ -273,26 +403,29 @@ class SessionConnection(
                 socket?.sendText(encodeClientEvent(event))
             }
             is TranscriptClientFinal -> {
-                unconfirmedFinals[event.segmentId] = event
-                while (unconfirmedFinals.size > maxUnconfirmedFinals) {
-                    unconfirmedFinals.remove(unconfirmedFinals.keys.first())
-                }
+                backlog.putFinal(event)
                 if (connected && mode == SttMode.CLIENT) socket?.sendText(encodeClientEvent(event))
             }
             else -> if (connected) {
                 socket?.sendText(encodeClientEvent(event))
             } else {
-                queued.addLast(event)
-                while (queued.size > maxQueuedEvents) queued.removeFirst()
+                backlog.enqueue(event)
             }
         }
     }
 
     private fun onAudio(samples: ShortArray, clientTimeMs: Long) {
-        val frame = BufferedFrame(nextSeq++, clientTimeMs, samples)
-        frames.addLast(frame)
-        while (frames.size > maxBufferedFrames) frames.removeFirst()
-        if (handshaken && mode == SttMode.SERVER) socket?.sendBinary(encode(frame))
+        val frame = SpooledFrame(nextSeq++, clientTimeMs, samples)
+        audio.append(frame)
+        val live = handshaken && mode == SttMode.SERVER && pumpOpen && !pumpScheduled && sentThrough == frame.seq - 1
+        val socket = socket
+        if (live && socket != null && socket.queuedBytes() <= maxSocketQueueBytes) {
+            // Caught up: straight out (also when the backlog could not keep it, e.g. a full disk).
+            socket.sendBinary(encode(frame))
+            sentThrough = frame.seq
+        } else {
+            pump()
+        }
     }
 
     private suspend fun onClosed(code: Int?, reason: String) {
@@ -343,18 +476,26 @@ class SessionConnection(
         reconnectJob = null
         socket?.close()
         socket = null
+        handshaken = false
         generation++
-        queued.clear()
-        unconfirmedFinals.clear()
-        frames.clear()
         _state.value = ConnectionState.Stopped
         inputs.close()
     }
 
-    private fun encode(frame: BufferedFrame): ByteArray =
+    private fun encode(frame: SpooledFrame): ByteArray =
         AudioFrame(frame.seq, frame.clientTimeMs, frame.samples, protocolVersion).encode()
 
     companion object {
+        /**
+         * What the capture app offers in `hello`: client STT with Android's recognizer, or PCM16
+         * streaming if the backend prefers server STT (ADR-0008).
+         */
+        val CAPTURE_CAPABILITIES: ClientCapabilities = ClientCapabilities(
+            stt = SttMode.CLIENT,
+            sttProvider = SpeechRecognizerTranscriber.PROVIDER_ID,
+            audioFormat = AudioFormat(),
+        )
+
         /** Back-off before each reconnect attempt; the last one repeats. */
         val DEFAULT_RECONNECT_DELAYS_MS: List<Long> = listOf(500, 1_000, 2_000, 5_000, 10_000)
 
@@ -365,6 +506,18 @@ class SessionConnection(
         const val MAX_BUFFERED_FRAMES: Int = 600
 
         const val MAX_UNCONFIRMED_FINALS: Int = 200
+
+        /** How long to wait after `hello.ack` for the backend's `ack` before resending audio. */
+        const val ACK_WAIT_MS: Long = 1_000
+
+        /** A resent final not echoed within this time of a live connection is held by the backend. */
+        const val FINAL_GRACE_MS: Long = 5_000
+
+        /** Resending pauses while the socket has this much queued (OkHttp fails a send past 16 MiB). */
+        const val MAX_SOCKET_QUEUE_BYTES: Long = 1L shl 20
+
+        private const val PUMP_BATCH = 20
+        private const val PUMP_WAIT_MS = 50L
 
         /** The backend's close code for a session that is not the active one. */
         const val CLOSE_UNKNOWN_SESSION: Int = 4404
