@@ -88,8 +88,8 @@ SCRIPT: list[tuple[str, list[ScriptedEvent]]] = [
             op(
                 "add_pending",
                 pending_id="p-2",
-                category="unexplained_concept",
-                description="Se menciona la regla de L'Hôpital sin explicarla",
+                kind="unexplained_concept",
+                text="Se menciona la regla de L'Hôpital sin explicarla",
                 segment_ids=["s2-b"],
             ),
             op("note", text="El profesor insiste en la notación de Leibniz", segment_ids=["s2-a"]),

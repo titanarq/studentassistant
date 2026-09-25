@@ -8,6 +8,7 @@ This module opens no file and runs no git itself.
 from __future__ import annotations
 
 from studentassistant.observer.fold import TopicEvent
+from studentassistant.observer.pending import pending_review
 from studentassistant.observer.snapshot import STATE_VERSION, ObserverSnapshot, advance_snapshot
 from studentassistant.observer.state import EventRef
 from studentassistant.vault import (
@@ -16,6 +17,7 @@ from studentassistant.vault import (
     read_observer_snapshot,
     read_topic_events,
     write_observer_snapshot,
+    write_pending_review,
 )
 
 
@@ -59,5 +61,8 @@ def load_observer_snapshot(
     start = base.event_count if base is not None else 0
     snapshot = advance_snapshot(base, events[start:])
     if write_back and snapshot != stored:
+        previous = base.state.pending if base is not None else {}
+        if snapshot.state.pending != previous:
+            write_pending_review(vault, subject_slug, topic_slug, pending_review(snapshot.state))
         write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)
     return snapshot

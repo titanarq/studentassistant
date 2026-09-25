@@ -15,8 +15,8 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29 and #51: the knowledge-state model, its ops, the pure fold, the
-snapshot, the vault-backed loader and the live loop. The pending queue's deduplication (#55), the
+What exists today, after issues #29, #51 and #55: the knowledge-state model, its ops, the pure
+fold, the snapshot, the vault-backed loader, the live loop and the pending-review queue. The
 digest (#56) and the purge (#60) are not written yet. Everything below except the live loop is
 re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
 (its batch rendering `studentassistant.observer.context`), kept out of the package root so that
@@ -42,17 +42,25 @@ Frozen Pydantic v2 models (`extra="forbid"`) in the discriminated union `StateOp
 `rename_section` (`section_id`, `title`), `assign_segments` (`section_id`, `segment_ids`; the last
 assignment of a segment wins), `add_concept` (`concept_id`, `name`, `section_id?`, `segment_ids`),
 `link_capture` (`capture_id`, `segment_ids`; links accumulate), `set_source_context` (`kind` in
-`notes`/`book`/`pdf`/`web`, `reference?`), `add_pending` (`pending_id`, `category` in
-`illegible`/`unexplained_concept`/`incomplete`/`possible_error`/`contradiction`, `description`,
-`segment_ids`, `capture_ids`), `resolve_pending` (`pending_id`, `resolution`), `note` (`text`,
-`segment_ids`). A malformed payload is a `pydantic.ValidationError`.
+`notes`/`book`/`pdf`/`web`, `reference?`), `add_pending` (`pending_id`, `kind` in
+`PENDING_KINDS` -- `illegible`/`unexplained_concept`/`incomplete`/`possible_error`/`contradiction`
+--, `text` (Spanish), `segment_ids`, `capture_ids`, `source_refs`; a payload written before #55
+with `category`/`description` is read as `kind`/`text`), `resolve_pending` (`pending_id`,
+`resolution?`, `status?` in `resolved`/`auto_resolved`/`dismissed`; only a dismissal may go
+without a resolution), `note` (`text`, `segment_ids`). A malformed payload is a
+`pydantic.ValidationError`.
 
 ### Topic state -- `state.py`
 `TopicState`: `sections` (the outline, by id in the order added; `outline(parent_id)`),
 `segments` and `captures` (registered ids -> the `EventRef` that stored them), `assignments`
 (segment -> section; `segments_of(section_id)`), `concepts`, `capture_links` (capture -> segments),
-`source_context` (`SourceContext` or `None`), `pending` (`PendingItem`s open and resolved;
-`open_pending()`, `resolved_pending()`) and `notes` (`ObserverNote`). Every item keeps the
+`source_context` (`SourceContext` or `None`), `pending` (`PendingItem`s open and closed;
+`open_pending()`, `resolved_pending()` for the closed ones), `pending_aliases` (a merged
+`add_pending` id -> the item it joined; `pending_item(id)` follows it) and `notes`
+(`ObserverNote`). A `PendingItem` is `id`, `kind`, `text`, `refs` (`PendingRefs`: `pages` --
+capture ids --, `segments`, `sources`), `created_by` (the origin of the event that added it),
+`status` (`PendingStatus`: `open`/`auto_resolved`/`resolved`/`dismissed`), `resolution`,
+`added_at`, `resolved_at` and `merged_ids`. Every item keeps the
 `EventRef` (`session_id`, `seq`) of the event that made it, because `seq` restarts per session.
 
 ### Fold -- `fold.py`
@@ -61,8 +69,11 @@ of a topic in `(session_id, seq)` order, as `vault.read_topic_events` yields the
 deterministic: no I/O, input never mutated, equal input gives an equal state (and equal JSON).
 `validate_op(state, op)` checks an op before it is applied and raises an `ObserverStateError`
 (a `ValueError`): `UnknownIdError` (`op`, `entity` -- section, segment, capture or pending
-item -- and `id`), `DuplicateIdError`, `PendingAlreadyResolvedError`. `apply_op(state, op, at)`
-returns the new state. `fold` never skips an op: it raises the error with `at` set to the event;
+item -- and `id`), `DuplicateIdError` (a merged pending id counts as taken),
+`PendingAlreadyResolvedError` (the item is closed). `apply_op(state, op, at, origin="observer")`
+returns the new state. `created_by` is the event's origin; a `resolve_pending` without `status`
+is `auto_resolved` from the observer and `resolved` from anyone else. An `add_pending` that
+duplicates an open item is merged into it (see the pending-review queue). `fold` never skips an op: it raises the error with `at` set to the event;
 `InvalidEventError` is a read kind with a malformed payload and `EventOrderError` events out of
 order.
 
@@ -73,11 +84,31 @@ order.
 event at or before the cursor is an `EventOrderError`); `fold_from(snapshot, tail) -> TopicState`
 equals `fold` over all the events for every split point; `snapshot_of(events)` folds from scratch.
 
+### Pending-review queue -- `pending.py`
+Doubts accumulate without interrupting the student; only a counter reaches the phone.
+- **Deduplication** (in the fold, so a replay always merges the same way):
+  `find_duplicate(state, kind, text, refs)` is the first open item of the same `kind` whose text
+  is very similar (`text_similarity >= STRONG_SIMILARITY`, 0.85) or whose refs overlap (a shared
+  page, segment or source) with a text somewhat similar (`>= OVERLAP_SIMILARITY`, 0.5). Texts
+  naming different numbers are never the same doubt; closed items are never merged into.
+  `text_similarity` compares without case, accents or punctuation (best of a character ratio and
+  a word Jaccard). A merge joins the refs, keeps the first text and records the id.
+- **Review file**: `pending_review(state) -> PendingReview` (`format_version`, `open_count`,
+  `items`: open ones first) is `review/pending.yaml`, written through
+  `vault.write_pending_review` by the live loop after each change and by the loader.
+- **Prompt**: the `observer` prompt describes each kind with a Spanish example and asks not to
+  re-add an open doubt, and to close one (`resolve_pending`) only when the session settled it.
+- **Web**: `GET /api/subjects/{subject_id}/topics/{topic_id}/pending` (server module).
+- The topic list's `pending_count` (#147) and the summary's `open_pending` are
+  `len(open_pending())` of this same fold, so they count merged doubts once.
+
 ### Loader -- `loader.py`
 `load_observer_snapshot(vault, subject_slug, topic_slug, *, write_back=True) -> ObserverSnapshot`
 reads the events (`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds
 only the tail after it and writes the result back (`write_observer_snapshot`) when it changed and
-`write_back` is true (a read-only caller such as the topic list passes `False`). The stored snapshot is
+`write_back` is true (a read-only caller such as the topic list passes `False`); when the pending
+items changed too (from the stored snapshot's, none when it was not usable) it regenerates
+`review/pending.yaml` (`write_pending_review`). The stored snapshot is
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
@@ -129,6 +160,11 @@ topic digest (none until #56). The server builds one when `create_app` gets an `
   `reason`, `cap`, `limit_usd`, `total_usd`) is published; the next new item tries again, and a
   successful call publishes `status: running`. Any other Claude failure keeps the batch the same
   way with `status: error`. A failed call is never retried until something new arrives.
+- **Pending notice**: when a folded event changes the pending items (a new item, a merge, a close
+  of any origin), the loop publishes a transient `notice` (`NOTICE_EVENT_KIND`, `persist=False`,
+  `payload.pending_count` = the open count; the gateway forwards it to the phone as the protocol
+  `notice`) and regenerates `review/pending.yaml`. The count is also published when a session is
+  first observed.
 - **Ending**: `flush(session_id)` is registered with `SessionService.add_before_ended` (after the
   gateway's STT flush, so it sees the last finals): it waits for the call in flight and sends what
   is still waiting, so its ops land before `session.ended` (bounded by the end hook timeout; a call

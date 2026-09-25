@@ -23,7 +23,7 @@ from studentassistant.observer.fold import (
     SEGMENT_ID_KEY,
 )
 from studentassistant.observer.ops import STATE_OP_EVENT_KIND
-from studentassistant.observer.state import TopicState
+from studentassistant.observer.state import PendingRefs, TopicState
 
 # The event kinds the observer reads besides the two the fold registers. The page transcription
 # (#50) MUST publish `PAGE_TRANSCRIPTION_KIND` with `payload.capture_id` and `payload.text`.
@@ -133,6 +133,19 @@ def render_topic(subject: str, topic: str, digest: str | None) -> str:
     return text
 
 
+def _refs(refs: PendingRefs) -> str:
+    parts = [
+        f"{name} {', '.join(ids)}"
+        for name, ids in (
+            ("pages", refs.pages),
+            ("segments", refs.segments),
+            ("sources", refs.sources),
+        )
+        if ids
+    ]
+    return f"; {'; '.join(parts)}" if parts else ""
+
+
 def render_state(state: TopicState, *, session_id: str, resumed: bool) -> str:
     """The record of the topic as the observer starts (or resumes) watching `session_id`.
 
@@ -177,12 +190,17 @@ def render_state(state: TopicState, *, session_id: str, resumed: bool) -> str:
         )
     open_items = state.open_pending()
     if open_items:
-        out.append("\nOpen pending items (id [category]: description):")
+        out.append("\nOpen pending items (id [kind]: text; refs):")
         for item in open_items:
-            out.append(f"- {item.id} [{item.category}]: {item.description}")
+            out.append(f"- {item.id} [{item.kind}]: {item.text}{_refs(item.refs)}")
     resolved = state.resolved_pending()
     if resolved:
-        out.append(f"Resolved pending items: {', '.join(item.id for item in resolved)}")
+        out.append(
+            "Closed pending items: " + ", ".join(f"{item.id} ({item.status})" for item in resolved)
+        )
+    used = [*state.pending, *state.pending_aliases]
+    if used:
+        out.append("Pending ids already used (never reuse one): " + ", ".join(used))
     if state.notes:
         out.append("\nObserver notes (most recent last):")
         out.extend(f"- {note.text}" for note in state.notes[-MAX_CONTEXT_NOTES:])
