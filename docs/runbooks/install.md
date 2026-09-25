@@ -21,7 +21,14 @@ lo deja todo como estaba.
 git clone https://github.com/titanarq/studentassistant.git
 cd studentassistant/backend
 uv sync
+cd ../web
+npm ci && npm run build
+cd ../backend
 ```
+
+`npm run build` (necesita Node 22) deja la web en `backend/src/studentassistant/server/static/`,
+que es lo que sirve el backend; sin él, `http://localhost:8765/` solo muestra un aviso de "web sin
+construir".
 
 A partir de aquí, `uv run studentassistant ...` (o activa el entorno con
 `source .venv/bin/activate` y escribe solo `studentassistant ...`).
@@ -131,7 +138,7 @@ uv run studentassistant pair                       # emparejar el móvil (códig
 ```
 
 Actualizar: `git pull && uv sync` en `backend/` (`uv sync --extra whisper` si usas Whisper en el
-PC) y `systemctl --user restart studentassistant`.
+PC), `npm ci && npm run build` en `web/` y `systemctl --user restart studentassistant`.
 
 Quitar el servicio:
 
