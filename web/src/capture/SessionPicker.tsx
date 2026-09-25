@@ -23,9 +23,7 @@ import {
   resumeSession,
   startSession,
 } from "./api";
-
-/** Any call that did not answer the protocol message it promised. */
-type Failure = Exclude<ApiResult<unknown>, { kind: "ok" }>;
+import { describeFailure } from "./failures";
 
 /** The session the student opened, with the names the picker showed it under. */
 export interface OpenedSession {
@@ -66,20 +64,6 @@ const SUBJECTS_FAILURE = "No se han podido cargar las asignaturas";
 const TOPICS_FAILURE = "No se han podido cargar los temas";
 const START_FAILURE = "No se ha podido empezar la sesión";
 const RESUME_FAILURE = "No se ha podido continuar la sesión";
-
-/** The Spanish sentence the student reads for a call that failed; a refusal's `detail` comes as it is. */
-function describeFailure(prefix: string, failure: Failure): string {
-  switch (failure.kind) {
-    case "refused":
-      return `${prefix}: ${failure.detail}`;
-    case "error":
-      return `${prefix}: el servidor respondió con un error (${failure.status}).`;
-    case "unexpected":
-      return `${prefix}: la respuesta del servidor no sigue el protocolo esperado (${failure.expected}).`;
-    case "unreachable":
-      return `${prefix}: no se pudo conectar con el servidor.`;
-  }
-}
 
 /** What a topic's row says besides its name: an unended session and the doubts waiting on it. */
 function topicHint(topic: Topic): string | null {
