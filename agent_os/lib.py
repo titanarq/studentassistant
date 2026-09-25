@@ -558,6 +558,13 @@ class ProjectConfig(Strict):
     # `agent_os/**`; a host whose own CI already reports on every PR sets this to false
     # (agent_os/docs/adr/2026-09-24-a-pr-with-no-checks-fails-the-ci-condition-and-every-host-ships-a-ci.md).
     install_host_ci: bool = True
+    # How the control plane merges a PR it has verified (Duty 4 of `.claude/agents/control-plane.md`,
+    # rendered as `__MERGE_METHOD__`): the `merge_method` of GitHub's REST merge endpoint. Nothing
+    # in the mechanism needs a merge commit -- merge condition 4 compares content, not ancestry --
+    # so a host that squashes says so here instead of hand-editing the generated prompt, an edit
+    # `agent-os-install --force` would overwrite (agent-os#88). A value outside the three GitHub
+    # accepts fails the load rather than reaching a merge.
+    merge_method: Literal["merge", "squash", "rebase"] = "merge"
     # How a freshly added worktree -- a worker's, on `init`, and a validator's throwaway one -- is
     # made runnable, since a new worktree carries tracked files only (agent-os#41,
     # agent_os/docs/adr/2026-09-24-a-fresh-worktree-is-provisioned-the-way-the-host-configures.md).

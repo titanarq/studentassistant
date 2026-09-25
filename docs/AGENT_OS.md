@@ -76,7 +76,7 @@ guard/planner ──(only when nothing can proceed without a human)──> notif
 | `status:blocked-on-human` → label removed + `human_replied` event | Guard (`tick`) | a comment **by the human** (`project.human_login`) newer than the one that set the label — an agent's own comment on the issue it is blocked on never counts, whatever its timestamp: the mechanism's identities are `project.planner_app`, `backends.*.app` and `role_apps.*`, each commenting as `<slug>[bot]`. Until #397 any newer comment counted, and the planner's own "I am waiting for you" on #387 unblocked a question nobody had answered (2026-09-16) | removes the label; sets no other one | `agent_os.guard` `_check_human_replies`/`_latest_human_comment_at`; `agent_os.lib` `is_human_comment`/`mechanism_logins` |
 | **gap**: `human_replied` → what the planner does | Planner (LLM) | — | — | the planner's rules have no paragraph dedicated to this event outside the validator-doubt case (`agent_os/bin/planner_task.sh:138-139`); between label removal and the planner's next run the issue carries no `status:*` at all — unless a worker is still ALIVE on it, in which case the same tick puts `status:doing` back (#385 tick side, `agent_guard.restore_doing_label_on_live_runs`) |
 | Open issue carries `project.labels.wake_planner` → label removed + `nudged` event | Guard (`tick`) | the label found on an OPEN issue — the tick removes it every time it sees it, whoever set it (a timeline it cannot read leaves it for the next tick). A `nudged` event is written only when the timeline says the human login (`project.human_login`, via `agent_lib.is_human_comment`) set it; a mechanism identity setting it is removed and ignored, so the planner cannot wake itself in a loop. While the tracking epic carries `status:agents-paused` the tick returns before ever reaching this check, so the label stays put until unpaused. **Not** rate-limited: an edge happens once (`agent_os/docs/adr/2026-09-17-a-merge-is-an-edge-and-the-human-can-wake-the-planner-by-label.md`, #413) | removes `project.labels.wake_planner`; one event file, subject = issue number, detail names who set it and when, and points the planner at the latest human comment on that issue for the reason | `agent_os.guard` `_write_nudged_events`; `project.labels.wake_planner` in `config/agents.yaml`; the label is also the sanctioned lever `.claude/agents/control-plane.md` uses to wake the planner early |
-| `status:review` → `done` (close) | Human, or the control plane acting in the human's name under its five merge conditions (§2.4, "Duty 4") | human decision, or the control plane verifying all five conditions itself against GitHub and the diff | `gh pr merge` (manual, no script does this) + `issues.py move N done` closes the issue | confirmed by grep: no script contains `pr merge`; `docs/adr/2026-08-26-the-agent-proposes-the-human-publishes.md`; `agent_os/docs/adr/2026-09-17-the-control-plane-merges-a-pr-in-the-humans-name-under-five-conditions.md`; `agent_os.issues:1102-1122` |
+| `status:review` → `done` (close) | Human, or the control plane acting in the human's name under its five merge conditions (§2.4, "Duty 4") | human decision, or the control plane verifying all five conditions itself against GitHub and the diff | the human's own merge, or the control plane's REST merge pinned to the verified head with `project.merge_method` (§2.4; no script does this) + `issues.py move N done` closes the issue | confirmed by grep: no script contains `pr merge`; `docs/adr/2026-08-26-the-agent-proposes-the-human-publishes.md`; `agent_os/docs/adr/2026-09-17-the-control-plane-merges-a-pr-in-the-humans-name-under-five-conditions.md`; `agent_os.issues:1102-1122` |
 | closed by GitHub's own `Closes #N`, still carrying `status:*` → `done` | Guard (`tick`) | every tick, for every closed issue that still holds a state label (#365) | `issues.py move N done` — strips the label, leaves the closed issue closed, mirrors the board column | `agent_os.guard` `closed_issues_with_status_label`/`reconcile_closed_issues`, through `_move_issue` |
 | Claude quota exhausted → fallback to Qwen | Planner | `CUT_BY_GUARD reason=quota` or `quota_changed`; class allows `qwen_fallback_eligible: true` | redispatch on Qwen (prompt instruction) | `agent_os/bin/planner_task.sh:181-187`; mechanical detection `agent_os.lib:518-533`. **Inert since 2026-09-16**: no worker class runs on Claude, so no worker run can hit a Claude quota wall |
 | Quota exhausted, no eligible fallback | Guard, mechanically | `_tick_backend` sees `quota` and the class disallows Qwen | `notify.sh` (ntfy) | `agent_os.guard:724-728` |
@@ -205,6 +205,19 @@ GitHub and the diff rather than trusted from the PR text. `.claude/agents/contro
    squash merge is not an ancestor).
 5. The PR body closes exactly the issue it was dispatched for, and the module doc changed if
    behaviour or a contract changed.
+
+When all five hold it merges through GitHub's REST endpoint
+(`PUT repos/<project.repo>/pulls/N/merge`) with `merge_method` set to `project.merge_method`
+(`merge`, `squash` or `rebase`, default `merge`) and `sha` set to the head it verified, then
+deletes the remote branch (`DELETE .../git/refs/heads/<branch>`) only once the merge answered
+`"merged": true`. Pinning the SHA means a push after the review makes the merge fail with `409`
+instead of riding along; the control plane then re-verifies the new head, it never retries
+blindly. REST, not `gh pr merge`, because the latter goes through GraphQL and its secondary rate
+limit (agent-os#70). Nothing in the mechanism needs a merge commit — condition 4 compares content,
+and `worker_task.sh` only checks the base's ancestry into a branch — so the method is the host's
+choice, rendered into the installed prompt as `__MERGE_METHOD__` (agent-os#88). Deleting only the
+remote ref also leaves a backend's worktree in place, where `gh pr merge --delete-branch` could
+take it with the local branch (§7 row (r)).
 
 If any one of them fails it requests changes with the failing condition and the evidence, leaves
 `status:review`, and reports it — it never merges to unblock a round.
@@ -426,6 +439,7 @@ one-line `exec` into `agent_os/`, listed in `mechanism.own_paths` and never in
 | `project.messages` | one one-line ntfy template per page, written in `project.human_language`; rendered by `agent_lib.render_human_message`, which refuses an unknown key | `review_ready`, `quota_exhausted_no_fallback`, `planner_run_cap_reached`, `backend_worktree_missing`, `unreviewed_pull_request`, `backend_worktree_dirty` |
 | `project.modules` | the project's own module names, one per `docs/modules/*.md`; the `module:<name>` half of the fixed label set `issues.py` creates | `ingest`, `metrics`, `workers`, … |
 | `project.test_command` | the project's own compact test wrapper, injected as `__TEST_COMMAND__` | `scripts/test.sh` |
+| `project.merge_method` | how the control plane merges a verified PR: `merge`, `squash` or `rebase`, the `merge_method` of GitHub's REST merge endpoint, rendered into `.claude/agents/control-plane.md` as `__MERGE_METHOD__` (§2.4). Any other value fails the config load (agent-os#88) | `merge` (the default) |
 | `project.worktree_links` | paths (relative to the host root) symlinked from the main checkout into a fresh worktree — the validator's throwaway one and a worker's on `init` — when the checkout has them and the worktree does not (agent-os#41) | `[.venv, .env]` |
 | `project.worktree_setup_command` | a command run by `bash -c` inside a fresh worktree after the links and before any backend starts; non-zero refuses the run (no validator launched, `init` removes the tree and its branch). For a host whose environment is not a root `.venv` — a monorepo's `uv sync`, an `npm ci` (agent-os#41) | empty: nothing runs |
 | `project.lint_commands` | the linters the validator runs on the files a PR touches, each with the file list appended, rendered as `__LINT_RULES__`; empty renders no lint bullet (agent-os#41) | empty (`config.example.yaml`: `.venv/bin/ruff check`, `.venv/bin/ruff format --check`) |
@@ -498,7 +512,10 @@ one-line `exec` into `agent_os/`, listed in `mechanism.own_paths` and never in
   `.github/workflows/ci-agent-os.yml`, copied as-is if absent, and `.github/workflows/ci-host.yml`,
   rendered from `agent_os/templates/ci-host.yml` with `project.test_command` if absent and
   `project.install_host_ci` is true (the default): a workflow with no path filter, so every PR
-  reports at least one check (§2.4 condition 1, agent-os#50).
+  reports at least one check (§2.4 condition 1, agent-os#50). The rendered
+  `.claude/agents/*.md` are generated files: `--force` rewrites each one whole and keeps no hand
+  edit, so a customization a host needs becomes a `config/agents.yaml` key rendered as a token
+  (`project.merge_method` for the control plane's merge, agent-os#88), never a local edit.
 - `agent-os-doctor` (#511) reads back the checklist above — `gh auth status` scopes, the labels
   that do not autocreate, the Project v2 `Status` field and its six options, each App's
   `.json`+`.pem`, each `project.executables` entry, each worktree, `project.notify_topic_file` and
