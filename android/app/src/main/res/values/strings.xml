@@ -112,6 +112,12 @@
     <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
     <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
     <string name="capture_button_capture">Capturar</string>
+    <string name="capture_shot_capturing">Haciendo fotos…</string>
+    <string name="capture_shot_pending">Foto pendiente de enviar</string>
+    <string name="capture_shot_uploading">Enviando foto…</string>
+    <string name="capture_shot_uploaded">Foto enviada</string>
+    <string name="capture_shot_failed">El ordenador no aceptó la foto. Toca para reintentar.</string>
+    <string name="capture_shot_camera_failed">No se pudo hacer la foto</string>
     <string name="capture_button_important">Importante</string>
     <string name="capture_source_notes">Mirando: Apuntes</string>
     <string name="capture_source_book">Mirando: Libro</string>

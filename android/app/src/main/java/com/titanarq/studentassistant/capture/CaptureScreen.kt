@@ -8,11 +8,15 @@ import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.graphics.BitmapFactory
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,11 +24,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -41,7 +48,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.pluralStringResource
@@ -62,7 +74,8 @@ import com.titanarq.studentassistant.ui.backendFailureMessage
  * The session screen: camera preview, live transcript, pending-doubts counter and the session
  * buttons. Asks for the camera and microphone at runtime; the session starts once the microphone
  * is granted. Keeps the screen on. [onLeave] (back) leaves the session open; [onEnded] follows
- * "Terminar".
+ * "Terminar". [imageCapture] (the still camera's use case) is bound next to the preview; the
+ * thumbnail strip shows each capture's upload state (a tap on a failed one retries it).
  */
 @Composable
 fun CaptureScreen(
@@ -70,8 +83,10 @@ fun CaptureScreen(
     onLeave: () -> Unit,
     onEnded: () -> Unit,
     modifier: Modifier = Modifier,
+    imageCapture: ImageCapture? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val shots by viewModel.shots.collectAsStateWithLifecycle()
     val context = LocalContext.current
     fun granted(permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -106,7 +121,7 @@ fun CaptureScreen(
             }
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (cameraGranted) {
-                    SessionCameraPreview(modifier = Modifier.fillMaxSize())
+                    SessionCameraPreview(imageCapture, modifier = Modifier.fillMaxSize())
                 } else {
                     Text(stringResource(R.string.capture_no_camera), modifier = Modifier.align(Alignment.Center))
                 }
@@ -128,6 +143,7 @@ fun CaptureScreen(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            if (shots.isNotEmpty()) ThumbnailStrip(shots, onRetry = viewModel::retryShot)
             Transcript(state.transcript, modifier = Modifier.fillMaxWidth().weight(1f))
             SessionButtons(
                 state = state,
@@ -300,15 +316,15 @@ private fun SessionButtons(
     }
 }
 
-/** The back camera's CameraX preview, bound to the screen's lifecycle (stills are #46's). */
+/** The back camera's CameraX preview and [imageCapture], bound to the screen's lifecycle. */
 @Composable
-private fun SessionCameraPreview(modifier: Modifier = Modifier) {
+private fun SessionCameraPreview(imageCapture: ImageCapture?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val previewView = remember { PreviewView(context) }
     var failed by remember { mutableStateOf(false) }
 
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, imageCapture) {
         val mainExecutor = ContextCompat.getMainExecutor(context)
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
@@ -320,7 +336,9 @@ private fun SessionCameraPreview(modifier: Modifier = Modifier) {
                     val preview = Preview.Builder().build()
                     preview.setSurfaceProvider(previewView.surfaceProvider)
                     cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                    val useCases = listOfNotNull(preview, imageCapture)
+                    previewView.display?.let { display -> imageCapture?.targetRotation = display.rotation }
+                    cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, *useCases.toTypedArray())
                 } catch (e: Exception) {
                     failed = true
                 }
@@ -340,5 +358,60 @@ private fun SessionCameraPreview(modifier: Modifier = Modifier) {
         }
     } else {
         AndroidView(factory = { previewView }, modifier = modifier)
+    }
+}
+
+/** The session's captures, newest last, each with its upload state. */
+@Composable
+private fun ThumbnailStrip(shots: List<CaptureShot>, onRetry: (String) -> Unit) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(shots.size) { listState.animateScrollToItem(shots.lastIndex) }
+    LazyRow(state = listState, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        items(shots, key = { it.captureId }) { shot -> Thumbnail(shot, onRetry) }
+    }
+}
+
+@Composable
+private fun Thumbnail(shot: CaptureShot, onRetry: (String) -> Unit) {
+    val bitmap = remember(shot.captureId, shot.thumbnail) {
+        shot.thumbnail?.bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    val description = stringResource(
+        when (shot.status) {
+            ShotStatus.CAPTURING -> R.string.capture_shot_capturing
+            ShotStatus.PENDING -> R.string.capture_shot_pending
+            ShotStatus.UPLOADING -> R.string.capture_shot_uploading
+            ShotStatus.UPLOADED -> R.string.capture_shot_uploaded
+            ShotStatus.FAILED -> R.string.capture_shot_failed
+            ShotStatus.CAMERA_FAILED -> R.string.capture_shot_camera_failed
+        },
+    )
+    val clickable = if (shot.status == ShotStatus.FAILED) Modifier.clickable { onRetry(shot.captureId) } else Modifier
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(MaterialTheme.shapes.small)
+            .background(Color.DarkGray)
+            .then(clickable)
+            .semantics { contentDescription = description },
+    ) {
+        if (bitmap != null) {
+            Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+        val badge = Modifier.align(Alignment.BottomEnd).padding(2.dp)
+        when (shot.status) {
+            ShotStatus.CAPTURING, ShotStatus.UPLOADING ->
+                CircularProgressIndicator(modifier = badge.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+            ShotStatus.PENDING -> StatusBadge("↑", Color(0xFF8D6E00), badge)
+            ShotStatus.UPLOADED -> StatusBadge("✓", Color(0xFF2E7D32), badge)
+            ShotStatus.FAILED, ShotStatus.CAMERA_FAILED -> StatusBadge("!", MaterialTheme.colorScheme.error, badge)
+        }
+    }
+}
+
+@Composable
+private fun StatusBadge(symbol: String, color: Color, modifier: Modifier) {
+    Surface(color = color, shape = MaterialTheme.shapes.extraSmall, modifier = modifier) {
+        Text(symbol, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
