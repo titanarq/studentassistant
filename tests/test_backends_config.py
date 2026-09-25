@@ -5,13 +5,18 @@ never off the backend's name."""
 
 from __future__ import annotations
 
+import re
+import typing
 import warnings
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from agent_os import guard, lib
+from agent_os.cli import AGENT_OS_DIR
 from agent_os.lib import (
+    DEPRECATED_BACKEND_MAPS,
+    AgentsConfig,
     BackendConfig,
     DeprecatedBackendMapsWarning,
     ProjectConfig,
@@ -241,3 +246,63 @@ def test_the_budget_reads_the_live_cost_through_the_backends_own_parser():
     task_class = _task_class(max_cost_usd=1.0)
     assert guard.budget_exceeded(summary, task_class) is True
     assert guard.budget_exceeded(summary, task_class, parser=_ReportsNoCost()) is False
+
+
+# ---- the adoption checklist names live keys (agent-os#8) ---------------------------------------
+
+# A config key as `docs/ADOPTION.md` spells it: `project.backends.<name>.app`,
+# `project.labels.{a,b}`. Not preceded by a word character or `[`, so `pyproject.toml` and the
+# `[project.scripts]` table of `pyproject.toml` are not read as keys of `config/agents.yaml`.
+_CONFIG_KEY = re.compile(
+    r"(?<![\w\[.])(project|mechanism|planner)((?:\.(?:[a-z_]+|<[a-z]+>|\{[a-z_,]+\}))+)"
+)
+
+
+def _unknown_segments(section: str, dotted: str) -> list[str]:
+    """What of `<section><dotted>` the schema does not have, walked field by field through the
+    pydantic models `AgentsConfig` is built from; a `dict[str, X]` field takes any key next."""
+    node = AgentsConfig.model_fields[section].annotation
+    for segment in dotted.strip(".").split("."):
+        if typing.get_origin(node) is dict:
+            node = typing.get_args(node)[1]
+            continue
+        if not (isinstance(node, type) and issubclass(node, BaseModel)):
+            return [f"{segment} (below a value that has no fields)"]
+        names = segment.strip("{}").split(",")
+        unknown = [name for name in names if name not in node.model_fields]
+        if unknown:
+            return unknown
+        node = node.model_fields[names[0]].annotation
+    return []
+
+
+def _deprecated_project_keys() -> set[str]:
+    """The old per-backend maps the loader still warns about when one alone is set -- asked of the
+    loader, so `executables`, which kept a live meaning of its own, is not among them."""
+    deprecated = set()
+    for key in DEPRECATED_BACKEND_MAPS:
+        # Every key's warning is the same one message, emitted once per process: forget it
+        # between keys (the autouse fixture above hands this test a set of its own).
+        lib._EMITTED_DEPRECATION_WARNINGS.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _project(**{key: {"somebackend": "some-value"}})
+        if _deprecation_messages(caught):
+            deprecated.add(key)
+    return deprecated
+
+
+def test_every_config_key_the_adoption_checklist_names_is_a_live_key():
+    deprecated = _deprecated_project_keys()
+    assert deprecated, "the loader deprecates no key any more -- drop this half of the test"
+    mentions = _CONFIG_KEY.findall((AGENT_OS_DIR / "docs" / "ADOPTION.md").read_text())
+    assert mentions, "ADOPTION.md names no config key -- the pattern no longer matches it"
+    problems = []
+    for section, dotted in mentions:
+        key = f"{section}{dotted}"
+        problems += [f"{key}: no field {name!r}" for name in _unknown_segments(section, dotted)]
+        if section == "project" and dotted.split(".")[1] in deprecated:
+            problems.append(f"{key}: deprecated")
+    assert not problems, "ADOPTION.md names config keys the loader does not read:\n" + "\n".join(
+        sorted(set(problems))
+    )

@@ -4,7 +4,12 @@ terminal `result` with `total_cost_usd`, `usage` and, on a refused run, `api_err
 
 from __future__ import annotations
 
-from agent_os.streams.interface import ResultUsage, StreamQuotaVerdict, UsageSummary
+from agent_os.streams.interface import (
+    ResultUsage,
+    StreamQuotaVerdict,
+    UsageSummary,
+    event_message,
+)
 
 
 def turn_context_tokens(usage: dict) -> int:
@@ -42,7 +47,7 @@ class ClaudeJsonlStreamParser:
         result = None
         for event in events:
             session_id = event.get("session_id") or session_id
-            usage = (event.get("message") or {}).get("usage") or event.get("usage") or {}
+            usage = event_message(event).get("usage") or event.get("usage") or {}
             size = turn_context_tokens(usage)
             if event.get("type") == "assistant" and size:
                 context = max(context, size)

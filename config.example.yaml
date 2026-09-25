@@ -55,6 +55,27 @@ project:
   # The project's own compact test wrapper, injected into the worker's RULES as `__TEST_COMMAND__`.
   # A host with more than one test suite names the wrapper that runs the right one.
   test_command: scripts/test.sh
+  # Whether `agent-os-install` writes `.github/workflows/ci-host.yml`, running `test_command` on
+  # every pull request with no path filter. The control plane never merges a PR whose head SHA
+  # reports zero checks, and `ci-agent-os.yml` only fires on `agent_os/**`, so a host without a
+  # workflow of its own could never get a host-only PR merged. Set it to false only when the
+  # host's own CI already reports a check on every pull request; `agent-os-doctor` checks either way.
+  install_host_ci: true
+  # How a fresh worktree -- a worker's on `init`, a validator's throwaway one -- is made runnable,
+  # since it carries tracked files only. Each `worktree_links` path (relative to the repository
+  # root) is symlinked from this checkout when it exists here; then `worktree_setup_command`, when
+  # set, runs by `bash -c` inside the worktree before any backend starts, and a non-zero exit
+  # refuses the run. Defaults: the root `.venv` and `.env`, and no setup command. A monorepo whose
+  # environment lives in subdirectories lists those, or provisions them itself:
+  #   worktree_links: [.env]
+  #   worktree_setup_command: "cd backend && uv sync --frozen && cd ../web && npm ci"
+  worktree_links: [.venv, .env]
+  worktree_setup_command: ""
+  # The linters the validator runs on the files a pull request touches, each a command the file
+  # list is appended to, from inside its worktree. Empty (the default) renders no lint bullet.
+  lint_commands:
+    - .venv/bin/ruff check
+    - .venv/bin/ruff format --check
   # One file of YOUR OWN per role, appended verbatim at that role's `__PROJECT_EXTRAS__` point in
   # `agent_os/prompts/<role>.md`: the place for a sentence only this project can write -- how its
   # package resolves under test, which budget class a worker task belongs in. Paths relative to

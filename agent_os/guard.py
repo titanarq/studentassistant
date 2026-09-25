@@ -68,7 +68,8 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -101,11 +102,14 @@ from agent_os.lib import (
     quota_status,
     read_events,
     read_role_run_exit_marker,
+    refine_queue_rank,
+    refiner_pass_answered_by_the_human,
     render_human_message,
     role_app_slug,
     usage_failed,
     usage_summary,
 )
+from agent_os.streams.interface import event_message
 
 # The HOST project's root, resolved rather than assumed: `$AGENT_OS_HOST_ROOT`, else the git
 # checkout the call is made from. Everything a project owns hangs off it -- `config/agents.yaml`,
@@ -377,6 +381,24 @@ class StallBookkeeping:
     # `None` before the first tick has ever observed this backend, so that first observation is
     # never itself reported as a change.
     last_quota_status: str | None = None
+    # Which worker process the three stall fields above were counted in (#52): `_run_identity`'s
+    # issue, start ref and PID. The fields are per-run -- Qwen's `turns` restarts at 0 with every
+    # stage process and the commit count is `<startref>..HEAD` -- but the file outlives every run
+    # because `last_quota_status` must. `None` (a file written before this field existed) never
+    # matches a live run, so such a file is re-scoped on its first tick.
+    run_identity: str | None = None
+
+
+def scoped_to_run(bookkeeping: StallBookkeeping, run_identity: str) -> StallBookkeeping:
+    """The bookkeeping as the run `run_identity` names should see it: unchanged when it was
+    counted in that run, otherwise with the stall fields back to a fresh run's and only the quota
+    memory kept -- a previous run's commit count and turn anchor mean nothing against this run's
+    stream (#52)."""
+    if bookkeeping.run_identity == run_identity:
+        return bookkeeping
+    return StallBookkeeping(
+        last_quota_status=bookkeeping.last_quota_status, run_identity=run_identity
+    )
 
 
 def turns_since_commit(
@@ -399,8 +421,15 @@ def turns_since_commit(
         return since, bookkeeping
 
     commit_count = len(commit_timestamps)
-    if commit_count > bookkeeping.commit_count:
-        bookkeeping = StallBookkeeping(commit_count=commit_count, turn_count_at_commit=turns)
+    if bookkeeping.turn_count_at_commit > turns:
+        # An anchor this process has not reached: it was counted in another process (#52). The
+        # caller scopes the bookkeeping to the run first; this is the backstop that keeps a stale
+        # file from ever yielding a negative count, anchored at the one point this process's
+        # stream can vouch for, its own start.
+        bookkeeping = replace(bookkeeping, commit_count=commit_count, turn_count_at_commit=0)
+    elif commit_count > bookkeeping.commit_count:
+        # `replace`, not a fresh instance: the quota memory and the warning marker survive a commit.
+        bookkeeping = replace(bookkeeping, commit_count=commit_count, turn_count_at_commit=turns)
     return turns - bookkeeping.turn_count_at_commit, bookkeeping
 
 
@@ -430,7 +459,7 @@ def repeated_tool_calls(events: list[dict], streak: int = 3) -> bool:
     for event in events:
         if event.get("type") != "assistant":
             continue
-        for block in (event.get("message") or {}).get("content") or []:
+        for block in event_message(event).get("content") or []:
             if block.get("type") == "tool_use":
                 calls.append((block.get("name"), json.dumps(block.get("input"), sort_keys=True)))
     return any(len(set(calls[i : i + streak])) == 1 for i in range(len(calls) - streak + 1))
@@ -633,6 +662,17 @@ def _commit_timestamps(worktree: Path, startref: Path) -> list[datetime]:
         check=False,
     )
     return [datetime.fromisoformat(line) for line in out.stdout.splitlines() if line.strip()]
+
+
+def _run_identity(paths: WorkerPaths, issue: str) -> str:
+    """What tells one worker process from the next (#52): the issue, the start ref `start` writes
+    for it, and the PID every stage process writes for itself -- so a new dispatch and a resume
+    of the same issue are both a new run."""
+
+    def contents(path: Path) -> str:
+        return path.read_text().strip() if path.is_file() else ""
+
+    return f"issue={issue} startref={contents(paths.startref)} pid={contents(paths.pidfile)}"
 
 
 def _load_bookkeeping(path: Path) -> StallBookkeeping:
@@ -1082,7 +1122,7 @@ def _tick_backend_locked(backend: str, *, main: Path, now: datetime | None) -> T
     for warning in unparsable_cutoff_lines(progress_text):
         print(f"{backend}: {progress_log} {warning}")
     commit_ts = _commit_timestamps(paths.worktree, paths.startref)
-    bookkeeping = _load_bookkeeping(paths.bookkeeping)
+    bookkeeping = scoped_to_run(_load_bookkeeping(paths.bookkeeping), _run_identity(paths, issue))
     tier, since_commit, bookkeeping = stall_detected(
         events, commit_ts, task_class, summary.turns, bookkeeping
     )
@@ -1571,22 +1611,45 @@ def refinable_issues(*, main: Path = HOST_ROOT) -> list[int]:
     unresolvable budget line) -- the mechanical half of
     agent_os/docs/adr/2026-09-15-the-refiner-runs-unattended-only-after-a-human-reviewed-its-dry-run.md. An
     issue whose body is otherwise template-conformant but carries an open `Blocked by #N` is NOT
-    refinable this way: that is not something the refiner wrote or can rewrite away (#356). Same
+    refinable this way: that is not something the refiner wrote or can rewrite away (#356). Nor is
+    one whose `<!-- refiner-summary -->` the human already replied to
+    (`agent_lib.refiner_pass_answered_by_the_human`, agent-os#72): its doubt is settled, and the
+    planner would only re-ask it. Same
     two-`gh`-call shape as `dispatchable_issues` above even though `needs_refinement` itself no
     longer reads `open_numbers` -- kept for the call-site's own symmetry with
-    `promotable_to_ready`, which still needs it, below."""
-    refine = _gh_issue_list("number,state,labels,body", main=main, extra=["--label", REFINE_LABEL])
+    `promotable_to_ready`, which still needs it, below.
+
+    Returned in REFINE QUEUE ORDER (`agent_lib.refine_queue_rank`): parent carries `auto-ready`,
+    then priority, then no open blocker, then oldest first -- `refine_pending` names the head of
+    this list and the planner launches the refiner on the earliest of it (#32)."""
+    refine = _gh_issue_list(
+        "number,state,labels,body,parent,comments", main=main, extra=["--label", REFINE_LABEL]
+    )
     if not refine:
         return []
     open_numbers = {int(row["number"]) for row in _gh_issue_list("number", main=main)}
     classes = load_task_classes()
-    return [
-        int(row["number"])
+    needing = [
+        row
         for row in refine
         if needs_refinement(
             row, task_classes=classes, open_issue_numbers=open_numbers, labels=PROJECT.labels
         )
+        # A refiner doubt the human already answered is settled, not pending (agent-os#72).
+        and not refiner_pass_answered_by_the_human(row, PROJECT)
     ]
+    # `gh issue list` answers newest first, which on a large backlog handed the refiner the
+    # lowest-priority, last-milestone issues first (#32): rank by closeness to dispatch instead.
+    parent_labels_of = _parent_labels_lookup(main=main)
+    needing.sort(
+        key=lambda row: refine_queue_rank(
+            row,
+            parent_labels=parent_labels_of(row),
+            open_issue_numbers=open_numbers,
+            labels=PROJECT.labels,
+        )
+    )
+    return [int(row["number"]) for row in needing]
 
 
 def _write_refine_pending_event_if_due(*, main: Path, now: datetime) -> EventOutcome:
@@ -1635,6 +1698,23 @@ def _gh_issue_labels(issue_number: int, *, main: Path) -> set[str] | None:
     except ValueError:
         return None
     return label_names(data)
+
+
+def _parent_labels_lookup(*, main: Path) -> Callable[[dict], set[str] | None]:
+    """A row's parent's labels (`None` for no parent or a failed lookup), one `gh issue view` per
+    distinct parent however many children share it -- the refine queue's order and the auto-ready
+    promotion both ask this of every `status:refine` row."""
+    cache: dict[int, set[str] | None] = {}
+
+    def parent_labels(row: dict) -> set[str] | None:
+        parent_number = (row.get("parent") or {}).get("number")
+        if parent_number is None:
+            return None
+        if parent_number not in cache:
+            cache[parent_number] = _gh_issue_labels(parent_number, main=main)
+        return cache[parent_number]
+
+    return parent_labels
 
 
 def _current_status_label(issue_number: int, *, main: Path) -> str | None:
@@ -1703,25 +1783,18 @@ def promote_refined(*, main: Path = HOST_ROOT) -> list[int]:
     (agent_os/docs/adr/2026-09-15-the-refiner-runs-unattended-only-after-a-human-reviewed-its-dry-run.md).
     An issue with no parent is never promotable this way; the human promotes it by hand."""
     refine = _gh_issue_list(
-        "number,state,labels,body,parent", main=main, extra=["--label", REFINE_LABEL]
+        "number,state,labels,body,parent,comments", main=main, extra=["--label", REFINE_LABEL]
     )
     if not refine:
         return []
     open_numbers = {int(row["number"]) for row in _gh_issue_list("number", main=main)}
     classes = load_task_classes()
-    parent_labels_cache: dict[int, set[str] | None] = {}
+    parent_labels_of = _parent_labels_lookup(main=main)
     promoted: list[int] = []
     for row in refine:
-        parent = row.get("parent") or {}
-        parent_number = parent.get("number")
-        parent_labels = None
-        if parent_number is not None:
-            if parent_number not in parent_labels_cache:
-                parent_labels_cache[parent_number] = _gh_issue_labels(parent_number, main=main)
-            parent_labels = parent_labels_cache[parent_number]
         if promotable_to_ready(
             row,
-            parent_labels=parent_labels,
+            parent_labels=parent_labels_of(row),
             task_classes=classes,
             open_issue_numbers=open_numbers,
             labels=PROJECT.labels,

@@ -12,15 +12,18 @@ on:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # Where the job runs is a repository variable, not a literal here: this file sits under the
+    # host-literal walk (tests/test_no_host_literals.py) like every other one. `CI_RUNS_ON` holds a
+    # JSON label list (e.g. the owner's self-hosted runners); unset, it is GitHub's hosted runner.
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     # GitHub's runners set FORCE_COLOR and Rich then splits flag-shaped tokens in CLI error text
     # into ANSI-wrapped spans; TERM=dumb renders as a local run does.
     env:
       TERM: dumb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

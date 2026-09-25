@@ -153,14 +153,19 @@ stagefile=$cache/worker_$backend.stage
 # One finished stage process's event stream, per issue, kept where #367's spend report will read
 # it: .cache/spend/<issue>/<ts>-<backend>-stage<N>.jsonl.
 spenddir=$cache/spend
-mkdir -p "$cache"
+# `rules` only prints, so it creates nothing: before agent-os#25 it made `$cache` too, and every
+# test that rendered a worker's rules left a `.cache/` in the checkout the suite ran from.
+[ "${1:-status}" = rules ] || mkdir -p "$cache"
 
 # The worker's own liveness diary, relative to the worktree root -- the same path the guard reads
 # (`agent_guard.py`'s `worker_paths`) and the one the RULES below tell the worker to append to. It
 # is the one file a worker writes that NO commit may carry (#407): it is not the task's output, it
 # reached `main` inside a pull request and every worker branch after that conflicted with `main` on
 # it, and its uncommitted lines are the dirty-worktree signal `start`, `resume` and `branch` refuse
-# to relaunch over. Relative, so it is a pathspec `git add`, `git diff` and `git log` all take.
+# to relaunch over -- until `.state` records that run's end (`retire_finished_runs_scratchpad`,
+# #18, #75, which archives the rest of the run's untracked `scratchpad/` with it), or `resume`
+# continues the run the guard cut (`drop_the_cut_runs_diary`, #22). Relative, so it is a pathspec
+# `git add`, `git diff` and `git log` all take.
 DIARY=scratchpad/progress.log
 
 # The subject every freeze this driver writes, and the ONE freeze that is not a cut (#407):
@@ -525,8 +530,11 @@ freeze_uncommitted_work() {
 # temporary one, or any project that does not gitignore it -- it was refused every time. This
 # repository does ignore it, which is why the real worktrees never showed the defect; the guarantee
 # cannot rest on that, because the driver is project-agnostic and knows no `.gitignore` of its own.
+#
+# `uncommitted_work resume` also leaves out the diary of a run the guard cut, and only that (#22):
+# see `drop_the_cut_runs_diary`. Every other caller still counts the diary as work.
 uncommitted_work() {
-  local entries
+  local mode=${1:-} entries
   entries=$(git -C "$worktree" status --porcelain)
   # Narrow on purpose: only that path's UNTRACKED entry, and only while the path holds a symlink,
   # which is the shape the driver's link has. A `.env` that is a real file, a tracked `.env` git
@@ -535,8 +543,91 @@ uncommitted_work() {
   if [ -L "$worktree/.env" ]; then
     entries=$(printf '%s\n' "$entries" | grep -v -x '?? \.env' || true)
   fi
+  if [ "$mode" = resume ]; then
+    entries=$(printf '%s\n' "$entries" | drop_the_cut_runs_diary)
+  fi
   [ -n "$entries" ] || return 0
   printf '%s\n' "$entries" | head -5
+}
+
+# A CUT RUN'S DIARY IS THE HISTORY OF THE RUN `resume` CONTINUES (#22). The freeze never stages
+# the diary (#407), so a run the guard cut leaves it in the worktree, untracked or modified, and
+# `resume` used to refuse every relaunch over the lines the very run it resumes had written: on a
+# host with no `.git/info/exclude` entry for the file, each resume after a cut needed a human.
+# #407's reading -- uncommitted diary lines mean live work -- does not hold here: `alive` has
+# already answered no, and the freeze has committed everything else. So the `git status
+# --porcelain` entries on stdin come back without the diary's when `.state` line 1 records
+# `CUT_BY_GUARD`, the one ending `resume` continues from (`after=guard_cut`). A run that finished
+# (`DONE`), never launched (`FAILED_LAUNCH`) or reached `open-pr` and blocked (`BLOCKED`) is not
+# one to resume, and a `.state` recording no ending is a run the driver never saw end: over any
+# of those the diary still counts. Dropped are the diary's own entries -- ` M` while git tracks
+# it, `??` when something else in `scratchpad/` is tracked -- and the collapsed `?? scratchpad/`
+# only while the diary is the one untracked file inside it. The file itself is never touched,
+# unlike #18's archive: the monitor reads it and the resumed run appends to it.
+drop_the_cut_runs_diary() {
+  local previous_state diary_dir inside entry
+  previous_state=$([ -s "$statefile" ] && sed -n '1p' "$statefile" || true)
+  if [ "${previous_state%% *}" != CUT_BY_GUARD ]; then
+    cat
+    return 0
+  fi
+  diary_dir=${DIARY%/*}/
+  inside=$(git -C "$worktree" status --porcelain --untracked-files=all -- "$diary_dir")
+  while IFS= read -r entry; do
+    case "$entry" in
+      '' | " M $DIARY" | "?? $DIARY") continue ;;
+      "?? $diary_dir") [ "$inside" = "?? $DIARY" ] && continue ;;
+    esac
+    printf '%s\n' "$entry"
+  done
+  return 0
+}
+
+# A FINISHED RUN'S SCRATCH IS NOT THE NEXT RUN'S DIRT (#18, #75). No commit carries the diary
+# (#407), and the RULES send a worker's intermediate results to `scratchpad/` as well, so a run
+# leaves untracked files there after it ends, and the next `branch`/`start` read them as work left
+# behind: in a host with no ignore rule for the directory, a dispatch after a completed issue was
+# refused -- over the diary alone (#18), or over an ad hoc script, a commit message draft and a
+# `__pycache__/` with no diary at all (#75), a shape #18's "the diary is the ONE thing dirty" never
+# matched. What tells a finished run from one that never reached its end is the driver's own
+# `.state` line 1, not the files' existence and not a line the agent may or may not have typed:
+# `DONE`, `CUT_BY_GUARD`, `FAILED_LAUNCH` and `BLOCKED` are the endings
+# (`agent_os.guard.RUN_ENDED_STATES`). Only then, only while nothing is alive, and only when EVERY
+# dirty path is an untracked file under the diary's directory -- a refusal over anything else, a
+# tracked file there included (a committed deliverable someone edited), still moves nothing -- the
+# files go to `$cache/diaries/`, archived rather than deleted: the diary as `<run>.progress.log`,
+# #18's name, and the rest under `<run>.scratchpad/` with their paths kept. Ignored files are not
+# dirt and stay. A diary git tracks (a branch forked before the base stopped tracking it) shows as
+# ` M`, not `??`, so it is left alone: moving it would leave a deletion behind.
+retire_finished_runs_scratchpad() {
+  local previous_state entry scratch_dir run_name path destination
+  local leftovers=()
+  alive && return 0
+  previous_state=$([ -s "$statefile" ] && sed -n '1p' "$statefile" || true)
+  case "${previous_state%% *}" in DONE | CUT_BY_GUARD | FAILED_LAUNCH | BLOCKED) ;; *) return 0 ;; esac
+  scratch_dir=${DIARY%/*}/
+  # `-z`: every entry is `XY <path>` verbatim, never quoted. Anything but an untracked path under
+  # the scratch directory -- the driver's own `.env` link aside (#404) -- leaves the tree alone.
+  while IFS= read -r -d '' entry; do
+    [ "$entry" = '?? .env' ] && [ -L "$worktree/.env" ] && continue
+    case "$entry" in
+      "?? $scratch_dir"?*) leftovers+=("${entry#?? }") ;;
+      *) return 0 ;;
+    esac
+  done < <(git -C "$worktree" status --porcelain -z --untracked-files=all)
+  [ "${#leftovers[@]}" -gt 0 ] || return 0
+  mkdir -p "$cache/diaries"
+  run_name="worker_$backend-issue$(cat "$issuefile" 2>/dev/null || echo unknown)-$(date +%Y%m%d-%H%M%S)"
+  for path in "${leftovers[@]}"; do
+    if [ "$path" = "$DIARY" ]; then
+      destination="$cache/diaries/$run_name.progress.log"
+    else
+      destination="$cache/diaries/$run_name.scratchpad/${path#"$scratch_dir"}"
+      mkdir -p "${destination%/*}"
+    fi
+    mv "$worktree/$path" "$destination"
+  done
+  echo "moved the finished run's ${#leftovers[@]} untracked $scratch_dir file(s) (${previous_state%% *}) to $cache/diaries/$run_name.*"
 }
 
 # What happened to work the process never committed -- the last clause of the progress comment.
@@ -683,7 +774,12 @@ launch_stage() {
     [ -n "$env_key" ] && export "$env_key=$env_value"
   done < <("$agent_python" -m agent_os.lib worker-environment)
 
-  export PYTHONPATH="$worktree"
+  # The worktree's root, and in a host that vendors the mechanism its copy of the mechanism too
+  # (agent-os#35, `agent_os_worktree_pythonpath`); with the mechanism's venv linked for a worktree
+  # `init` made before the driver linked it, and only where git ignores that link.
+  agent_os_link_mechanism_venv "$worktree" "$main" only-if-ignored
+  PYTHONPATH=$(agent_os_worktree_pythonpath "$worktree" "$main")
+  export PYTHONPATH
   export WORKER_RULES="$RULES" WORKER_BRIEF="$brief" WORKER_MODEL_ID="$model"
   # AGENTS.md, then the brief (the issue and its parent), then only what those name -- in that
   # order and nothing else. agent_os/docs/adr/2026-09-14-the-issue-is-the-unit-of-work-and-status-labels-
@@ -826,16 +922,17 @@ init)
   git -C "$main" worktree add -q -b "$init_branch" "$worktree" origin/main \
     || { echo "git worktree add failed for $worktree"; exit 1; }
   echo "created $worktree on $init_branch @ $(git -C "$worktree" rev-parse --short HEAD) (from origin/main)"
-  # `git worktree add` brings tracked files only; without these two gitignored links a worker
-  # cannot run a test (`.venv`) or reach a network credential (`.env`) the first time it starts --
-  # the same reasoning `agent_prepare_worktree`'s throwaway worktree already applies to a role run.
-  # A link, never a copy: one file stays authoritative for every tree.
-  for linked in .venv .env; do
-    if [ ! -e "$worktree/$linked" ] && [ -e "$main/$linked" ]; then
-      ln -s "$main/$linked" "$worktree/$linked"
-      echo "linked $worktree/$linked -> $main/$linked"
-    fi
-  done
+  # `git worktree add` brings tracked files only: the host's `project.worktree_links` and
+  # `project.worktree_setup_command` make it runnable, through the same helper the one-shot roles'
+  # throwaway worktree uses (agent-os#41). A tree whose provisioning failed is removed along with
+  # its branch, so the next `init` starts from nothing instead of calling it initialized.
+  if ! agent_provision_worktree "$main" "$worktree"; then
+    git -C "$main" worktree remove --force "$worktree" >/dev/null 2>&1
+    git -C "$main" branch -q -D "$init_branch" >/dev/null 2>&1
+    echo "removed $worktree and $init_branch -- fix the provisioning and run init again"
+    exit 1
+  fi
+  agent_os_link_mechanism_venv "$worktree" "$main" only-if-ignored
   ;;
 
 branch)
@@ -843,6 +940,7 @@ branch)
   [ -n "$name" ] || { echo "usage: $0 $backend branch <name> [<from>]"; exit 2; }
   alive && { echo "a run is alive (pid $(cat "$pidfile")); stop it before switching branches"; exit 1; }
   [ -e "$worktree/.git" ] || { echo "no worktree at $worktree"; exit 1; }
+  retire_finished_runs_scratchpad
   dirty=$(uncommitted_work)
   [ -n "$dirty" ] && { echo "worktree is dirty; commit or clean it first:"; echo "$dirty"; exit 1; }
   # No explicit base: start from the remote's tip, never from whatever the shared `.git` happens
@@ -880,7 +978,10 @@ start|resume)
 
   alive && { echo "a run is already alive (pid $(cat "$pidfile")); stop it first"; exit 1; }
   [ -e "$worktree/.git" ] || { echo "no worktree at $worktree"; exit 1; }
-  dirty=$(uncommitted_work)
+  # `start` only: `resume` continues the SAME run, whose diary is its own -- kept on disk, and
+  # left out of the dirty check when that run was cut (`drop_the_cut_runs_diary`, #22).
+  [ "$mode" = start ] && retire_finished_runs_scratchpad
+  dirty=$(uncommitted_work "$mode")
   [ -n "$dirty" ] && { echo "worktree is dirty; commit or clean it first:"; echo "$dirty"; exit 1; }
 
   if [ "$mode" = start ]; then
@@ -925,12 +1026,15 @@ start|resume)
     # ANCHORED ON THE PLANNER'S OWN SHAPE, `<word>/<issue>-<slug>`. An unanchored token search
     # accepted `task/387-close-the-390-gap` as a branch for #390 and `chore/2026-09-16-cleanup`
     # for #16 -- and accepting a wrong branch is the whole failure this gate exists to stop.
-    elif ! printf '%s\n' "$current_branch" | grep -qE "(^|/)[a-z]+/$issue([-/]|$)"; then
+    # What anchors it is the NUMBER: right after a `/`, then `-`, `/` or the end. The `<word>` is
+    # any lowercase git word, hyphens and digits included (agent-os#16): `[a-z]+` refused the
+    # planner's `agent-os/37-gradle-skeleton` for #37 while its message said "a branch naming #37".
+    elif ! printf '%s\n' "$current_branch" | grep -qE "(^|/)[a-z][a-z0-9-]*/$issue([-/]|$)"; then
       issue_base=$(issue_base_branch "$body")
       if [ "$current_branch" != "$issue_base" ]; then
         echo "refusing to dispatch: $worktree is on ${current_branch:-a detached HEAD}, but issue" \
           "#$issue's base is $issue_base -- put the worktree on it" \
-          "($0 $backend branch task/$issue-<slug> $issue_base) or on a branch naming #$issue," \
+          "($0 $backend branch task/$issue-<slug> $issue_base) or on a <word>/$issue-<slug> branch," \
           "or pass --force"
         exit 1
       fi
@@ -1353,26 +1457,91 @@ open-pr)
   # about to be created -- it is what produces the `refs/pull/N/merge` ref CI needs (#389). A push
   # of a branch the remote already has is a no-op, so this costs nothing on the common path.
   push_failed=no
-  git -C "$worktree" push -u origin "$branch" || push_failed=yes
+  push_output=$(git -C "$worktree" push -u origin "$branch" 2>&1) || push_failed=yes
+  [ -z "$push_output" ] || printf '%s\n' "$push_output"
+  # A REJECTED PUSH IS CLASSIFIED BEFORE IT IS ACTED ON (#61). GitHub refuses a ref a GitHub App
+  # creates or updates when its tree differs from the default branch in `.github/workflows/` and
+  # the App has no `workflows` permission -- and a branch forked before `main` changed a workflow
+  # differs in exactly that way without touching one, which is the stale branch the conflict path
+  # above pushes unmerged. That is not a diverged remote: no fetch or fast-forward can fix it.
+  push_rejection=""
   if [ "$push_failed" = yes ]; then
-    # A REJECTED PUSH MEANS THE REMOTE BRANCH HAS COMMITS THIS WORKTREE DOES NOT -- a human
-    # updated it while the run was going. Fast-forward onto them if that is all it is; anything
-    # else stops the run, because moving the issue on would declare finished a pull request whose
-    # head is not what this run produced, and the two tips would diverge permanently.
+    if printf '%s\n' "$push_output" | grep -q 'refusing to allow a GitHub App to create or update workflow'; then
+      push_rejection=workflows_permission
+    else
+      push_rejection=push_rejected
+    fi
+  fi
+  if [ "$push_rejection" = push_rejected ]; then
+    # AN UNCLASSIFIED REJECTION IS FIRST READ AS A REMOTE BRANCH WITH COMMITS THIS WORKTREE DOES
+    # NOT HAVE -- a human updated it while the run was going. Fast-forward onto them if that is all
+    # it is; anything else stops the run, because moving the issue on would declare finished a
+    # pull request whose head is not what this run produced, and the two tips would diverge.
     if git -C "$worktree" fetch -q origin "$branch" 2>/dev/null \
        && git -C "$worktree" merge --ff-only FETCH_HEAD >/dev/null 2>&1 \
        && git -C "$worktree" push -u origin "$branch" >/dev/null 2>&1; then
       push_failed=no
+      push_rejection=""
       echo "open-pr: the remote $branch was ahead -- fast-forwarded onto it and pushed"
     fi
   fi
   if [ "$push_failed" = yes ]; then
-    write_state "BLOCKED reason=push_rejected branch=$branch"
-    echo "open-pr: could not push $branch, and fast-forwarding onto the remote was not possible."
-    echo "  The issue is left where it is: moving it on would call finished a pull request whose"
-    echo "  head is not what this run produced, and the two tips would diverge for good."
+    # EVERY REJECTED PUSH ENDS VISIBLE: a `BLOCKED` line in `.state` alone left finished work in
+    # `doing` with no pull request, no comment and nothing for a human to see (#61). The issue
+    # says why in a comment quoting GitHub's own words, and carries the label that stops the
+    # planner from relaunching anything -- the same ending the conflict path below uses.
+    rejection_lines=$(printf '%s\n' "$push_output" | grep -E '^ ! |^remote: |^error: |^fatal: ' || true)
+    [ -n "$rejection_lines" ] || rejection_lines=$push_output
+    write_state "BLOCKED reason=$push_rejection branch=$branch"
+    if [ "$push_rejection" = workflows_permission ]; then
+      echo "open-pr: GitHub refused $branch because the App pushing it has no \`workflows\` permission"
+      echo "  and the branch's tree differs from the default branch under .github/workflows/."
+      # TODO(#366): render from project.messages.
+      rejection_note="The work of this issue is committed on \`$branch\`, but GitHub refused to create or
+update that branch: the worker's GitHub App has no \`workflows\` permission, and the branch's tree
+differs from the default branch in \`.github/workflows/\` -- which a branch forked before a workflow
+changed on the base does even when none of its own commits touch one.
+
+\`\`\`
+$rejection_lines
+\`\`\`
+
+What unblocks it: merge \`origin/$base\` into \`$branch\` in the worker's worktree, resolve any
+conflict, push, and run \`open-pr\` again -- the branch then carries the base's workflow files and
+the push is accepted. Alternatively, grant the worker's App \`workflows: write\`."
+      [ -z "$conflicting_paths" ] || rejection_note="$rejection_note
+
+Merging \`$base\` into \`$branch\` before pushing conflicted on:
+$(printf '%s\n' "$conflicting_paths" | sed 's/^/- `/;s/$/`/')
+
+The merge was aborted and the worktree left exactly as it was."
+    else
+      echo "open-pr: could not push $branch, and fast-forwarding onto the remote was not possible."
+      echo "  The issue is not moved on: that would call finished a pull request whose head is not"
+      echo "  what this run produced. It goes to blocked-on-human with the rejection quoted."
+      rejection_note="The work of this issue is committed on \`$branch\`, but pushing it was rejected and
+fast-forwarding onto the remote branch was not possible, so no pull request was opened:
+
+\`\`\`
+$rejection_lines
+\`\`\`
+
+A human decides how the two tips are reconciled; then run \`open-pr\` again."
+    fi
+    "$agent_python" -m agent_os.issues update "$issue" --comment "$rejection_note" \
+      || echo "WARNING: could not comment the rejected push on #$issue"
+    if "$agent_python" -m agent_os.issues move "$issue" blocked-on-human; then
+      write_state_marker "$issue" "$(project_value labels.blocked_on_human)"
+    else
+      echo "WARNING: could not move #$issue to blocked-on-human"
+    fi
     exit 1
   fi
+
+  # A SUCCESSFUL `open-pr` AFTER A BLOCKED ONE is how a human's fix is confirmed (#61): the
+  # previous attempt's `BLOCKED` line would otherwise outlive the pull request it was about, and
+  # `write_state_marker` below preserves line 1 as it is.
+  case "$(sed -n '1p' "$statefile" 2>/dev/null)" in BLOCKED*) write_state DONE ;; esac
 
   existing=$(gh pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)
   if [ -n "$existing" ]; then
@@ -1489,7 +1658,7 @@ for line in pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines():
         event = json.loads(line)
     except ValueError:
         continue
-    for block in ((event.get("message") or {}).get("content") or []):
+    for block in ((event.get("message") if isinstance(event.get("message"), dict) else {}).get("content") or []):
         if block.get("type") == "text" and block.get("text", "").strip():
             texts.append(block["text"].strip())
 print("\n".join(texts[-2:])[-1200:] if texts else "  (nothing yet)")

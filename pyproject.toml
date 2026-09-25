@@ -8,10 +8,14 @@ name = "agent-os"
 version = "0.1.0"
 description = "Runs a software project with agents: guard, planner, worker and one-shot role drivers, tracker CLI"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
-    "PyJWT>=2.8",
+    # `[crypto]` brings `cryptography`, without which PyJWT has no RS256 signer and the GitHub App
+    # JWT (`gh_app_token.build_app_jwt`) fails with `KeyError: 'RS256'` (#6).
+    "PyJWT[crypto]>=2.8",
 ]
 
 # For a host that prefers a name on PATH over `python -m agent_os.<module>`; the drivers use the
@@ -39,7 +43,8 @@ target-version = "py312"
 testpaths = ["tests"]
 
 [build-system]
-requires = ["hatchling"]
+# `license` as an SPDX expression and `license-files` (PEP 639) need hatchling 1.27 or later.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

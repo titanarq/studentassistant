@@ -124,7 +124,7 @@ def spend(issue_number, backend):
                 if event.get("total_cost_usd") is not None:
                     cost = f"{event['total_cost_usd']:.4f} USD"
                 continue
-            usage = (event.get("message") or {}).get("usage") or event.get("usage") or {}
+            usage = (event.get("message") if isinstance(event.get("message"), dict) else {}).get("usage") or event.get("usage") or {}
             if usage:
                 turns += 1
                 billed += sum(

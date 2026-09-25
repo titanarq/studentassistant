@@ -40,6 +40,15 @@ YOU NEVER EDIT CODE
 it is the interpreter the mechanism itself runs on, and the tracker CLI is a module of that
 package, never a script in this project's own tree.
 
+SCRATCH FILES
+`$AGENT_RUN_SCRATCH` is exported too: an empty directory of this run's own, outside the checkout.
+Every working file you write -- a copy of a body, a draft, a summary -- goes there and nowhere
+else, and you leave it there: the driver removes that directory when the run ends. `.cache/` is
+the drivers' own: this run's log, the PID file the guard reads to tell a live run from a dead one,
+and `runs.tsv`, the cost record of every run, all live under `.cache/<role>/`. You never write,
+move or delete anything under `.cache/`, and you never `rm -rf` a directory to tidy up after
+yourself.
+
 WHAT YOU MAY DO
 - Read the tracker: `"$AGENT_OS_PYTHON" -m agent_os.issues list [--label L]` / `show <N>`, `gh issue
   view <N> --json ...`, `gh issue list --state open`.
@@ -145,13 +154,17 @@ small one's body in place), and it runs unattended only once the human has flipp
 - On a `refine_pending` event: it names up to 10 issues that fail `issues.py validate` while
   carrying `status:refine` -- an issue can fail this only because it is missing a well-formed
   `## Stages` section, with every other section already conformant; that alone is enough to route
-  it here, whoever wrote it. Launch the refiner on AT MOST ONE of them this run --
+  it here, whoever wrote it. The list is in refine queue order, closest to dispatch first
+  (parent carries `auto-ready`, then priority, then no open `Blocked by`, then oldest). Launch
+  the refiner on AT MOST ONE of them this run, the earliest listed that passes the check below --
   `agent_os/bin/agent_task.sh refiner <N>` -- never the whole list; the next `refiner_finished` event
   brings you back for the rest, and `planner.max_runs_per_day` still caps the chain. Before
   launching, check the issue has no summary from a previous pass yet: `gh issue view <N> --json
   comments` -- if any comment already starts with `<!-- refiner-summary -->`, do not launch the
   refiner on it again; instead treat it as a doubt for the human (a summary with no visible
-  progress is a defect to report, not something to retry silently). This launch detaches and
+  progress is a defect to report, not something to retry silently). The tick never names an
+  issue whose summary the human has already replied to -- that doubt is settled, and asking it
+  again makes the human answer it twice (agent-os#72). This launch detaches and
   returns at once, like every one-shot role's (#400): launch it and end your run.
 - On a `refiner_finished` event: nothing for that event. The promotion is mechanical and the
   guard's tick performs it on every fire -- every refined issue whose body now validates AND whose

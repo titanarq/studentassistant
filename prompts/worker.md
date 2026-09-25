@@ -114,9 +114,10 @@ LIVENESS: SAY WHAT YOU ARE DOING BEFORE YOU DO IT
 __HUMAN_MESSAGE_RULES__
 
 HOW TO REPORT
-- Do not infer what the code does when you can look. `scripts/debug.py` runs a whole pdb session
-  non-interactively and prints the transcript; a claim resting on reading code where a breakpoint
-  could have settled it is worth less.
+- Do not infer what the code does when you can look. Run it -- a breakpoint, a debugger session or
+  a few throwaway lines that print the value, with this project's own debugging tool when these
+  instructions name one; a claim resting on reading code where a breakpoint could have settled it
+  is worth less.
 - Quote evidence literally. A number you did not measure in this run is not evidence, and neither
   is a number copied from the brief -- re-derive it and say so if it differs.
 - Say plainly what you could not settle and what would settle it. "Undecided, because X" is a

@@ -7,7 +7,7 @@ project field-list` for the Project v2 board, file existence under the host's ow
 reacts to -- a manual check would re-announce a run that already finished and wake the planner for
 free (`agent_os/docs/AGENT_OS.md` §7, the `role_died`/exit-hook machinery in `agent_os.guard`) -- and it
 never arms, restarts or edits a systemd unit: that stays a human decision
-(`docs/runbooks/agent_monitor.md`).
+(`agent_os/docs/ADOPTION.md` step 22).
 
     agent-os-doctor        # one line per check, exit 1 if any fails
 
@@ -24,14 +24,24 @@ import pathlib
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+
+import yaml
 
 from agent_os.cli import host_root
 from agent_os.issues import board_owner, gh_json, repo_name
-from agent_os.lib import ProjectConfig, load_project
+from agent_os.lib import (
+    CONFIG_LOAD_ERRORS,
+    DEFAULT_AGENTS_CONFIG,
+    ProjectConfig,
+    config_load_failure,
+    load_project,
+)
 
 REQUIRED_GH_SCOPES = ("repo", "project")
 BOARD_STATUS_FIELD = "Status"
+CONFIG_CHECK = "config/agents.yaml loads"
 
 
 @dataclass
@@ -87,7 +97,9 @@ def check_gh_auth() -> Check:
 
 def check_labels(project: ProjectConfig, repo: str) -> Check:
     labels = project.labels
-    required = [labels.ai_completed, labels.agents_paused, labels.auto_ready, labels.wake_planner]
+    # Only the labels `issues.py move` never writes: every state label (`status:ai-completed`
+    # included) is created by `move` on first use, so its absence on a fresh host is healthy (#54).
+    required = [labels.agents_paused, labels.auto_ready, labels.wake_planner]
     rows = gh_json("label", "list", "--repo", repo, "--limit", "200", "--json", "name") or []
     existing = {row["name"] for row in rows}
     missing = [name for name in required if name not in existing]
@@ -97,14 +109,60 @@ def check_labels(project: ProjectConfig, repo: str) -> Check:
     return Check("labels that do not autocreate", True, f"{required} all exist")
 
 
+# The Projects linked to one repository, each with its owner's login: `repository.projectsV2`
+# answers exactly "which boards does this repo show", which `gh project list --owner` cannot.
+LINKED_PROJECTS_QUERY = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    projectsV2(first: 100) {
+      nodes { number owner { ... on Organization { login } ... on User { login } } }
+    }
+  }
+}
+"""
+
+
+def linked_boards(repo: str) -> set[tuple[int, str]]:
+    """`(number, lowercased owner login)` for every Project v2 linked to `repo`."""
+    owner, name = repo.split("/", 1)
+    response = gh_json(
+        "api",
+        "graphql",
+        "-f",
+        f"query={LINKED_PROJECTS_QUERY}",
+        "-F",
+        f"owner={owner}",
+        "-F",
+        f"name={name}",
+    )
+    repository = ((response or {}).get("data") or {}).get("repository") or {}
+    nodes = (repository.get("projectsV2") or {}).get("nodes") or []
+    return {
+        (node["number"], ((node.get("owner") or {}).get("login") or "").lower())
+        for node in nodes
+        if node and "number" in node
+    }
+
+
 def check_board(project: ProjectConfig, repo: str) -> Check:
     owner = board_owner(repo)
-    try:
-        response = gh_json(
-            "project", "field-list", str(project.board_number), "--owner", owner, "--format", "json"
+    linked = linked_boards(repo)
+    response = gh_json(
+        "project", "field-list", str(project.board_number), "--owner", owner, "--format", "json"
+    )
+    # A `board_number` copied from the example names SOME Project of the owner, possibly another
+    # repository's with every column in place; only a board linked to `repo` is this one's
+    # (agent-os#5).
+    if (project.board_number, owner.lower()) not in linked:
+        others = sorted(number for number, login in linked if login == owner.lower())
+        return Check(
+            "Project v2 Status field",
+            False,
+            f"project {owner}/{project.board_number} is not linked to {repo} "
+            f"(linked: {others or 'none'}) -- set project.board_number to the repository's "
+            f"board, or `gh project link {project.board_number} --owner {owner} "
+            f"--repo {repo.split('/', 1)[1]}`",
         )
-    except SystemExit as failure:
-        return Check("Project v2 Status field", False, str(failure))
     fields = (response or {}).get("fields") or []
     single_selects = [field for field in fields if field.get("options") is not None]
     status = next(
@@ -208,21 +266,98 @@ def check_guard_timer(project: ProjectConfig) -> Check:
     )
     state = result.stdout.strip() or "not installed"
     ok = state == "active"
-    detail = state if ok else f"{state} -- see docs/runbooks/agent_monitor.md's Install section"
+    # Self-sufficient on purpose (agent-os#10): the host reading this may carry no runbook of its
+    # own, so the line says what to run, and the doc it names ships inside `agent_os/`.
+    detail = (
+        state
+        if ok
+        else f"{state} -- arm it with `systemctl --user enable --now {unit}` once "
+        "`agent-os-install` has written the unit (agent_os/docs/ADOPTION.md steps 20 and 22)"
+    )
     return Check("guard timer active", ok, detail)
+
+
+PULL_REQUEST_CI_CHECK = "a check on every pull request"
+PATH_FILTER_KEYS = ("paths", "paths-ignore")
+
+
+def _reports_on_every_pull_request(workflow: object) -> bool:
+    """Whether a parsed workflow's `on:` fires on `pull_request` with no `paths`/`paths-ignore`
+    filter. PyYAML reads the bare key `on` as the boolean True, so both spellings are looked up.
+    A heuristic: it does not read job-level `if:` conditions or branch filters."""
+    if not isinstance(workflow, dict):
+        return False
+    triggers = workflow.get("on", workflow.get(True))
+    if triggers == "pull_request":
+        return True
+    if isinstance(triggers, list):
+        return "pull_request" in triggers
+    if isinstance(triggers, dict) and "pull_request" in triggers:
+        pull_request = triggers["pull_request"] or {}
+        return isinstance(pull_request, dict) and not any(
+            key in pull_request for key in PATH_FILTER_KEYS
+        )
+    return False
+
+
+def check_pull_request_ci(root: pathlib.Path) -> Check:
+    """At least one workflow under `.github/workflows/` would report a check on a PR that touches
+    only host files. The control plane counts zero checks on a PR's head SHA as merge condition 1
+    not met (agent-os#50), and the installed `ci-agent-os.yml` is path-filtered to `agent_os/**`."""
+    workflows_dir = root / ".github" / "workflows"
+    candidates = sorted([*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")])
+    unfiltered = []
+    for path in candidates:
+        try:
+            workflow = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            continue
+        if _reports_on_every_pull_request(workflow):
+            unfiltered.append(path.name)
+    if unfiltered:
+        return Check(
+            PULL_REQUEST_CI_CHECK, True, f"unfiltered pull_request trigger in {unfiltered}"
+        )
+    return Check(
+        PULL_REQUEST_CI_CHECK,
+        False,
+        f"no workflow under {workflows_dir} fires on pull_request without a path filter "
+        "(read from the `on:` block only), so a host-only PR would report zero checks and the "
+        "control plane's merge condition 1 would never be met -- run `agent-os-install` to add "
+        "`ci-host.yml` (project.install_host_ci), or give your own CI an unfiltered "
+        "pull_request trigger",
+    )
+
+
+def _guarded(name: str, check: Callable[..., Check], *args) -> Check:
+    """`check(*args)`, or a [FAIL] under `name` carrying the error when the check cannot finish:
+    `gh_json` answers a failed `gh` call with `sys.exit(message)`, and a binary that is not
+    installed raises `FileNotFoundError` out of `subprocess.run`. Either one used to end the whole
+    run after one line; a checklist has to report every check (agent-os#4)."""
+    try:
+        return check(*args)
+    except SystemExit as failure:
+        return Check(name, False, _one_line(failure.code))
+    except OSError as failure:
+        return Check(name, False, _one_line(failure))
+
+
+def _one_line(message: object) -> str:
+    return " ".join(str(message).split())
 
 
 def run_checks(project: ProjectConfig, root: pathlib.Path, repo: str) -> list[Check]:
     return [
         check_python_version(),
-        check_gh_auth(),
-        check_labels(project, repo),
-        check_board(project, repo),
+        _guarded("gh auth status", check_gh_auth),
+        _guarded("labels that do not autocreate", check_labels, project, repo),
+        _guarded("Project v2 Status field", check_board, project, repo),
         check_app_secrets(project, root),
         check_executables(project),
         check_worktrees(project, root),
         check_notify_topic(project, root),
-        check_guard_timer(project),
+        _guarded("guard timer active", check_guard_timer, project),
+        check_pull_request_ci(root),
     ]
 
 
@@ -231,10 +366,21 @@ def main() -> None:
     parser.parse_args()
 
     root = host_root()
-    project = load_project()
-    repo = repo_name()
-
-    checks = run_checks(project, root, repo)
+    try:
+        project = load_project()
+    except CONFIG_LOAD_ERRORS as error:
+        # Every other check reads `project:`, so only the ones that need no config still run --
+        # a first-time adopter learns about gh and python in the same pass (agent-os#3).
+        checks = [
+            Check(CONFIG_CHECK, False, config_load_failure(error)),
+            check_python_version(),
+            _guarded("gh auth status", check_gh_auth),
+        ]
+    else:
+        checks = [
+            Check(CONFIG_CHECK, True, str(DEFAULT_AGENTS_CONFIG)),
+            *run_checks(project, root, repo_name()),
+        ]
     for check in checks:
         print(check.line())
 
