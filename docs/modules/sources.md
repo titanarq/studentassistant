@@ -16,7 +16,37 @@
 
 ## Public surface (`from studentassistant.sources import ...`)
 
-What exists today, after issue #34: PDF import.
+What exists today, after issues #34 and #44: PDF import and capture processing.
+
+### Capture processing -- `captures.py`
+- `store_capture(vault, subject_slug, topic_slug, kind, stills, meta, session_t_ms, settings)
+  -> StoredCapture` processes one burst (`stills`: `BurstStill(data, content_type)` in burst
+  order) and stores it through one `vault.put_source` call as a page of `sources/<kind>/`:
+  - `page-NNN.jpg`: the sharpest still (variance of the Laplacian on a grayscale copy at a common
+    1200 px long edge; ties go to the frame nearest the middle, `len // 2`, the earlier one when
+    two are equally near), downscaled to `capture_long_edge` and re-encoded as JPEG at
+    `capture_jpeg_quality`. Stills that do not decode are skipped; if none decodes,
+    `CaptureImageError` (Spanish message) and nothing is written.
+  - `page-NNN.page.jpg`: the page image. The largest convex quadrilateral covering 20-98 % of
+    the still, with at most one corner on the image border and clearly lighter than what surrounds
+    it (Canny edges and an Otsu threshold both searched), is warped flat by a perspective
+    transform; then a mild CLAHE contrast boost on lightness. No page found: the uncropped still
+    with the same contrast boost.
+  - `page-NNN.burst<K>.<ext>`: every other still exactly as uploaded, `K` its 1-based position in
+    the burst (the retention purge's `burst-original` target).
+  - `page-NNN.yaml`: `meta` plus `width_px`/`height_px` (of `page-NNN.jpg`), `session_t_ms`,
+    `transcript_window: {t_start, t_end}` (session ms; `capture_window_before_seconds` before to
+    `capture_window_after_seconds` after, never below 0) -- the span of `transcript.jsonl` a page
+    transcription reads as spoken hints -- `selected_image` (the kept still's `K`), `sharpness`
+    (per still, `null` for one that did not decode) and `page_detected`.
+  `StoredCapture` has `path` (`page-NNN.jpg`), `page_path` and `processed`.
+- `process_burst(stills: Sequence[bytes], settings) -> ProcessedBurst` (`selected`, `sharpness`,
+  `still`, `page`, `page_detected`, `width_px`, `height_px`) is the same processing without
+  storing; `transcript_window(session_t_ms, settings) -> {"t_start", "t_end"}`.
+- The building blocks (`decode_image`, `sharpness`, `pick_sharpest`, `downscale`, `find_page`,
+  `crop_page`, `enhance_contrast`) are importable from `studentassistant.sources.captures`.
+- Everything is CPU-bound (OpenCV, `opencv-python-headless`): the capture upload
+  (`server/captures.py`) runs `store_capture` in a worker thread.
 
 ### PDF import -- `pdf.py`
 - `import_pdf(vault, subject_slug, topic_slug, name, content, *, pages=None, settings=None,
@@ -64,3 +94,7 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `max_stored_pdf_bytes` | 20 MiB | the kept pages as a PDF are refused: choose a shorter range |
 | `pdf_thumbnail_long_edge` | 1200 px | -- |
 | `pdf_thumbnail_quality` | 85 | -- |
+| `capture_long_edge` | 2400 px | a captured still and its page image are downscaled to it |
+| `capture_jpeg_quality` | 85 | -- |
+| `capture_window_before_seconds` | 20 | a capture's transcript window starts this long before it |
+| `capture_window_after_seconds` | 10 | ...and ends this long after it |

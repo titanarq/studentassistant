@@ -81,15 +81,15 @@ the snapshot's cursor): the fold of the compacted log equals the fold of the ori
 re-exported from here.
 
 ### Loader -- `loader.py`
-`load_observer_snapshot(vault, subject_slug, topic_slug) -> ObserverSnapshot` reads the events
-(`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds only the tail after
-it and writes the result back (`write_observer_snapshot`) when it changed. The stored snapshot is
+`load_observer_snapshot(vault, subject_slug, topic_slug, *, write_back=True) -> ObserverSnapshot`
+reads the events (`read_topic_events`) and the stored snapshot (`read_observer_snapshot`), folds
+only the tail after it and writes the result back (`write_observer_snapshot`) when it changed and
+`write_back` is true (a read-only caller such as the topic list passes `False`). The stored snapshot is
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
-folded raises and nothing is written. `current_observer_snapshot(vault, subject_slug,
-topic_slug)` returns the same up-to-date snapshot without writing it back (the purge's dry run
-uses it). Nothing in `studentassistant.observer` opens a file, runs
+folded raises and nothing is written. The purge reads the snapshot it compacts to with
+`write_back=False`. Nothing in `studentassistant.observer` opens a file, runs
 git, imports `studentassistant.llm`/`anthropic` or imports a vault submodule: only the
 `studentassistant.vault` root (checked by `tests/observer/test_boundaries.py`).
 

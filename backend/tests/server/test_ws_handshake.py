@@ -59,7 +59,7 @@ def test_hello_ack_in_server_mode_names_the_audio_format(ws: WsHarness) -> None:
 def test_a_newer_minor_is_negotiated_down(ws: WsHarness) -> None:
     with ws.connect() as socket:
         socket.send_json(ws.hello(protocol_version="1.7"))
-        assert socket.receive_json()["protocol_version"] == "1.0"
+        assert socket.receive_json()["protocol_version"] == "1.1"
 
 
 def test_the_clock_offset_may_be_negative(ws: WsHarness) -> None:

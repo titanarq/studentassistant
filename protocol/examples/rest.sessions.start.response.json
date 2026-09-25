@@ -5,6 +5,6 @@
   "status": "active",
   "started_at_ms": 1790251200120,
   "ws_path": "/ws/sessions/s-20260924-1810",
-  "protocol_version": "1.0",
+  "protocol_version": "1.1",
   "received_capture_ids": []
 }

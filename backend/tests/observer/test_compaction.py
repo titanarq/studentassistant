@@ -14,7 +14,6 @@ from studentassistant.observer import (
     ObserverSnapshot,
     TopicEvent,
     compaction_payload,
-    current_observer_snapshot,
     fold,
     fold_from,
     load_observer_snapshot,
@@ -96,7 +95,9 @@ def test_fold_after_compaction_equals_the_pre_purge_state(
 def test_new_events_after_a_purge_still_reference_what_was_folded(
     tmp_vault: Vault, topic: tuple[str, str]
 ) -> None:
-    purge(tmp_vault, topic, compaction_of(current_observer_snapshot(tmp_vault, *topic)))
+    purge(
+        tmp_vault, topic, compaction_of(load_observer_snapshot(tmp_vault, *topic, write_back=False))
+    )
     session = start_session(tmp_vault, *topic, host="ubuntu-pc", protocol_version="1.0")
     for origin, kind, payload in [
         segment("s3-a"),
@@ -112,7 +113,7 @@ def test_new_events_after_a_purge_still_reference_what_was_folded(
 
 
 def test_current_snapshot_writes_nothing(tmp_vault: Vault, topic: tuple[str, str]) -> None:
-    snapshot = current_observer_snapshot(tmp_vault, *topic)
+    snapshot = load_observer_snapshot(tmp_vault, *topic, write_back=False)
 
     assert snapshot.state == fold(read_topic_events(tmp_vault, *topic))
     state_dir = topic_directory(tmp_vault, *topic) / "state"

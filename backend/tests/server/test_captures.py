@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 import yaml
 from fastapi import FastAPI
@@ -33,8 +35,40 @@ LAN_BASE_URL = "http://192.168.1.20:8765"
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "protocol"
 CAPTURE_ID = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a60"
 OTHER_CAPTURE_ID = "5d2a7e10-3c4b-4f9a-a1d2-7e6f5c4b3a21"
-JPEG = b"\xff\xd8\xff\xe0" + b"notes-page" * 20 + b"\xff\xd9"
-PNG = b"\x89PNG\r\n\x1a\n" + b"second-still" * 10
+STILL_SIZE = (320, 240)  # w x h of the synthetic stills
+
+
+def _encode(image: np.ndarray, extension: str, *params: int) -> bytes:
+    ok, data = cv2.imencode(extension, image, list(params))
+    assert ok
+    return data.tobytes()
+
+
+def _sharp_still() -> np.ndarray:
+    """Sharp, busy detail (the still capture processing must keep)."""
+    rng = np.random.default_rng(3)
+    return rng.integers(0, 256, (STILL_SIZE[1], STILL_SIZE[0], 3), dtype=np.uint8)
+
+
+def _soft_still() -> np.ndarray:
+    """A shaken frame: the same detail heavily blurred."""
+    return cv2.GaussianBlur(_sharp_still(), (31, 31), 0)
+
+
+# The first still of the default burst is the sharp one (and the larger file), the second a
+# blurred PNG, stored as the burst original `page-NNN.burst2.png`.
+JPEG = _encode(_sharp_still(), ".jpg", cv2.IMWRITE_JPEG_QUALITY, 95)
+PNG = _encode(_soft_still(), ".png", cv2.IMWRITE_PNG_COMPRESSION, 9)
+assert len(JPEG) > len(PNG)
+PAGE_FILES = ["page-001.burst2.png", "page-001.jpg", "page-001.page.jpg", "page-001.yaml"]
+
+
+def decoded_size(path: Path) -> tuple[int, int]:
+    """The (width, height) of the image file at `path`."""
+    image = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    assert image is not None
+    return image.shape[1], image.shape[0]
+
 
 Part = tuple[str, str | None, bytes]
 
@@ -193,7 +227,7 @@ def test_the_capture_limits_have_defaults_and_env_overrides(
 # -- storing -----------------------------------------------------------------------------------
 
 
-def test_a_burst_stores_its_first_image_as_a_notes_source_and_publishes_the_event(
+def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_event(
     app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
 ) -> None:
     notes: list[int] = []
@@ -214,18 +248,33 @@ def test_a_burst_stores_its_first_image_as_a_notes_source_and_publishes_the_even
     assert body["received_at_ms"] >= before
 
     files = stored_files(tmp_vault)
-    assert [f.name for f in files] == ["page-001.jpg", "page-001.yaml"]
-    assert files[0].read_bytes() == JPEG
-    sidecar = yaml.safe_load(files[1].read_text(encoding="utf-8"))
+    assert [f.name for f in files] == PAGE_FILES
+    burst_original, still, page, sidecar_path = files
+    assert burst_original.read_bytes() == PNG  # the blurred still, kept as it came
+    assert still.read_bytes().startswith(b"\xff\xd8")
+    assert decoded_size(still) == STILL_SIZE
+    assert decoded_size(page) == STILL_SIZE  # no sheet in a noise still: uncropped fallback
+    sidecar = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+    sharpness = sidecar.pop("sharpness")
+    assert len(sharpness) == 2 and sharpness[0] > sharpness[1]
+    started = app.state.sessions.get_active(session_id).started_at_ms
+    session_t_ms = max(0, 1_790_000_000_000 - started)
     assert sidecar == {
         "capture_id": CAPTURE_ID,
         "session": session_id,
         "captured_at": "2026-09-21T14:13:20.100000Z",  # images[0].client_time_ms in UTC
         "trigger": "button",
         "image_count": 2,
-        "width_px": 3000,
-        "height_px": 4000,
         "source_context": "notes",
+        "width_px": STILL_SIZE[0],
+        "height_px": STILL_SIZE[1],
+        "session_t_ms": session_t_ms,
+        "transcript_window": {
+            "t_start": max(0, session_t_ms - 20_000),
+            "t_end": session_t_ms + 10_000,
+        },
+        "selected_image": 1,
+        "page_detected": False,
     }
     assert notes, "the vault write must be noted to GitSync"
 
@@ -237,9 +286,10 @@ def test_a_burst_stores_its_first_image_as_a_notes_source_and_publishes_the_even
         "image_count": 2,
         "client_time_ms": 1_790_000_000_000,
         "source_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.jpg",
+        "page_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.page.jpg",
         "source_context": "notes",
     }
-    assert (tmp_vault.path / event.payload["source_path"]).read_bytes() == JPEG
+    assert (tmp_vault.path / event.payload["source_path"]).read_bytes() == still.read_bytes()
     delivered = subscription.get_nowait()
     assert delivered.session_id == session_id
     assert delivered.seq == event.seq
@@ -260,7 +310,7 @@ def test_a_command_capture_carries_its_command_id(
     assert event.payload["trigger"] == "command"
 
 
-def test_the_stored_file_takes_the_extension_of_the_first_image(
+def test_a_single_png_still_is_stored_as_a_jpeg_page_without_originals(
     client: TestClient, session_id: str, tmp_vault: Vault
 ) -> None:
     meta = metadata()
@@ -268,7 +318,36 @@ def test_the_stored_file_takes_the_extension_of_the_first_image(
     response = upload(client, session_id, burst(meta, [("image_0", "image/png", PNG)]))
     assert response.status_code == 201
     assert response.json()["image_count"] == 1
-    assert (notes_dir(tmp_vault) / "page-001.png").read_bytes() == PNG
+    assert [f.name for f in stored_files(tmp_vault)] == [
+        "page-001.jpg",
+        "page-001.page.jpg",
+        "page-001.yaml",
+    ]
+
+
+def test_the_capture_session_time_uses_the_hello_clock_offset(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    started = app.state.sessions.get_active(session_id).started_at_ms
+    # The client clock runs 5 s behind the backend's: its hello set the offset to +5000 ms.
+    app.state.gateway.state_for(session_id).clock_offset_ms = 5_000
+    captured_client_ms = started + 30_000 - 5_000
+    response = upload(client, session_id, burst(metadata(client_time_ms=captured_client_ms)))
+    assert response.status_code == 201
+    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    assert sidecar["session_t_ms"] == 30_000
+    assert sidecar["transcript_window"] == {"t_start": 10_000, "t_end": 40_000}
+
+
+def test_without_a_hello_the_client_time_is_taken_as_backend_time(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    started = app.state.sessions.get_active(session_id).started_at_ms
+    response = upload(client, session_id, burst(metadata(client_time_ms=started + 12_000)))
+    assert response.status_code == 201
+    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    assert sidecar["session_t_ms"] == 12_000
+    assert sidecar["transcript_window"] == {"t_start": 0, "t_end": 22_000}
 
 
 # -- idempotency -------------------------------------------------------------------------------
@@ -287,7 +366,7 @@ def test_a_repeated_capture_id_is_a_duplicate_that_stores_nothing(
     assert body["status"] == "duplicate"
     assert body["image_count"] == 2
     assert body["capture_id"] == CAPTURE_ID
-    assert len(stored_files(tmp_vault)) == 2
+    assert len(stored_files(tmp_vault)) == len(PAGE_FILES)
     assert len(capture_events(tmp_vault, session_id)) == 1
     assert len(subscription) == 0
 
@@ -311,7 +390,7 @@ def test_another_capture_id_is_stored_as_the_next_page(
         201
     )
     names = [f.name for f in stored_files(tmp_vault)]
-    assert names == ["page-001.jpg", "page-001.yaml", "page-002.jpg", "page-002.yaml"]
+    assert names == PAGE_FILES + [name.replace("001", "002") for name in PAGE_FILES]
     assert [e.payload["capture_id"] for e in capture_events(tmp_vault, session_id)] == [
         CAPTURE_ID,
         OTHER_CAPTURE_ID,
@@ -321,22 +400,22 @@ def test_another_capture_id_is_stored_as_the_next_page(
 def test_two_concurrent_uploads_of_one_capture_store_it_once(
     app: FastAPI, session_id: str, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    real_put_source = captures_module.put_source
+    real_store_capture = captures_module.store_capture
     entered = threading.Event()
 
-    def slow_put_source(*args: Any) -> Path:
+    def slow_store_capture(*args: Any) -> Any:
         entered.set()
         time.sleep(0.3)  # a worker thread: the other request gets every chance to interleave
-        return real_put_source(*args)
+        return real_store_capture(*args)
 
-    monkeypatch.setattr(captures_module, "put_source", slow_put_source)
+    monkeypatch.setattr(captures_module, "store_capture", slow_store_capture)
     with client_of(app) as client, ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: upload(client, session_id), range(2)))
 
     assert entered.is_set()
     assert sorted(r.status_code for r in results) == [200, 201]
     assert sorted(r.json()["status"] for r in results) == ["duplicate", "stored"]
-    assert len(stored_files(tmp_vault)) == 2
+    assert len(stored_files(tmp_vault)) == len(PAGE_FILES)
     assert len(capture_events(tmp_vault, session_id)) == 1
 
 
@@ -364,7 +443,7 @@ def test_a_capture_after_switch_source_is_stored_under_that_source(
     assert upload(client, session_id).status_code == 201
 
     stored = sources_directory(tmp_vault, "fisica", "cinematica", source) / "page-001.jpg"
-    assert stored.read_bytes() == JPEG
+    assert decoded_size(stored) == STILL_SIZE
     assert sidecar_of(tmp_vault, source)["source_context"] == source
     (event,) = capture_events(tmp_vault, session_id)
     assert event.payload["source_context"] == source
@@ -513,6 +592,12 @@ REFUSED_BODIES: dict[str, Callable[[], list[Part]]] = {
     "content type missing": _no_content_type,
     "an empty image": _empty_image,
     "one part named twice": _repeated_part,
+    "no image decodes": lambda: burst(
+        images=[
+            ("image_0", "image/jpeg", b"\xff\xd8 not a jpeg"),
+            ("image_1", "image/png", b"png?"),
+        ]
+    ),
 }
 
 

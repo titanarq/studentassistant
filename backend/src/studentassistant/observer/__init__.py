@@ -17,7 +17,7 @@ from studentassistant.observer.fold import (
     fold,
     validate_op,
 )
-from studentassistant.observer.loader import current_observer_snapshot, load_observer_snapshot
+from studentassistant.observer.loader import load_observer_snapshot
 from studentassistant.observer.ops import (
     OP_NAMES,
     STATE_OP_EVENT_KIND,
@@ -91,7 +91,6 @@ __all__ = [
     "advance_snapshot",
     "apply_op",
     "compaction_payload",
-    "current_observer_snapshot",
     "fold",
     "fold_from",
     "load_observer_snapshot",

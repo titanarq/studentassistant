@@ -9,20 +9,26 @@ names that is absent, a part it does not name, or a part whose `Content-Type` is
 declares is 422. Every refusal (`{"detail": "..."}`, Spanish) stores and publishes nothing.
 
 The session must be the active one: unknown is 404, ended or not resumed is 409, a vault that
-cannot be opened is 503. Until capture processing exists (the `sources` module), only the burst's
-first image is stored, as it came, through `vault.put_source` with its sidecar metadata, under the
+cannot be opened is 503. The burst is processed and stored by `sources.store_capture` in a worker
+thread (the sharpest still downscaled as `page-NNN.jpg`, its cropped page `page-NNN.page.jpg`, the
+other stills as `page-NNN.burst<K>.<ext>`, the sidecar with the transcript window), under the
 session's current source context (`current_source_context`: the `source` of its latest
-`switch_source` button event, `notes` when there is none); then a persisted `capture.stored` event
-(origin `phone`) is published on the bus, which is also what later uploads read to recognise a
-repeated `capture_id` (`sessions.stored_captures`), and which the WebSocket gateway forwards to
-the connected client as its capture `ack`.
+`switch_source` button event, `notes` when there is none); a burst none of whose images decodes is
+422. The capture's session time is the burst's `client_time_ms` mapped through the clock offset of
+the session's latest WebSocket `hello` (client time taken as backend time when there was none).
+Then a persisted `capture.stored` event (origin `phone`) is published on the bus, which is also
+what later uploads read to recognise a repeated `capture_id` (`sessions.stored_captures`), and
+which the WebSocket gateway forwards to the connected client as its capture `ack`.
 A new capture answers 201 `stored`, a repeated one 200 `duplicate` storing and publishing nothing;
 the check-and-store is serialised per session, so two concurrent uploads of one id store it once.
+With a recorder (`serve --record`), a newly stored burst is also recorded, every image of it, in
+a worker thread; a recording that cannot be written is logged and never fails the upload.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -38,10 +44,11 @@ from python_multipart.exceptions import MultipartParseError
 from python_multipart.multipart import MultipartParser, parse_options_header
 
 from studentassistant import protocol
-from studentassistant.config import ServerSettings
+from studentassistant.config import ServerSettings, SourcesSettings
 from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.bus import SessionNotAttachedError
+from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.sessions import (
     SessionConflictError,
     SessionService,
@@ -49,7 +56,10 @@ from studentassistant.server.sessions import (
     VaultUnavailableError,
     stored_captures,
 )
-from studentassistant.vault import SecretRefused, Session, SessionEndedError, put_source
+from studentassistant.sources import BurstStill, CaptureImageError, store_capture
+from studentassistant.vault import SecretRefused, Session, SessionEndedError
+
+logger = logging.getLogger(__name__)
 
 SessionId = Annotated[str, PathParam(pattern=ID_PATTERN)]
 
@@ -67,8 +77,6 @@ BUTTON_EVENT_KIND = "button"
 SWITCH_SOURCE = "switch_source"
 # Protocol v1 `button.source` -> the vault source kind a capture is stored under.
 _SOURCE_KINDS = {"notes": "notes", "book": "book", "pdf": "pdf"}
-
-_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
 class _RefusedError(Exception):
@@ -285,12 +293,7 @@ def _source_meta(
     }
     if metadata.command_id is not None:
         meta["command_id"] = metadata.command_id
-    meta |= {
-        "image_count": len(metadata.images),
-        "width_px": first.width_px,
-        "height_px": first.height_px,
-        "source_context": source_context,
-    }
+    meta |= {"image_count": len(metadata.images), "source_context": source_context}
     return meta
 
 
@@ -350,23 +353,31 @@ def captures_router() -> APIRouter:
                 )
                 return JSONResponse(body.model_dump(exclude_none=True), status.HTTP_200_OK)
 
-            first = metadata.images[0]
+            sources: SourcesSettings = request.app.state.sources
+            stills = [
+                BurstStill(bytes(parts[image.part].data), image.content_type)
+                for image in metadata.images
+            ]
             try:
-                path = await asyncio.to_thread(
-                    put_source,
+                stored_capture = await asyncio.to_thread(
+                    store_capture,
                     session.vault,
                     session.subject_slug,
                     session.topic_slug,
                     context,
-                    f"capture{_EXTENSIONS[first.content_type]}",
-                    bytes(parts[first.part].data),
+                    stills,
                     _source_meta(session, metadata, context),
+                    _session_t_ms(request, session, metadata),
+                    sources,
                 )
+            except CaptureImageError as error:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
             except SecretRefused as error:
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "La imagen parece contener una clave y no se ha guardado.",
                 ) from error
+            path = stored_capture.path
             service.note_change()
             payload: dict[str, Any] = {CAPTURE_ID_KEY: metadata.capture_id}
             payload["trigger"] = metadata.trigger
@@ -376,6 +387,7 @@ def captures_router() -> APIRouter:
                 "image_count": len(metadata.images),
                 "client_time_ms": metadata.client_time_ms,
                 "source_path": _relative(path, session.vault.path),
+                "page_path": _relative(stored_capture.page_path, session.vault.path),
                 "source_context": context,
             }
             try:
@@ -387,10 +399,50 @@ def captures_router() -> APIRouter:
                     status.HTTP_409_CONFLICT,
                     f"la sesión {session.id} terminó mientras llegaba la captura",
                 ) from error
+            recorder: SessionRecorder | None = request.app.state.recorder
+            if recorder is not None:
+                await _record(request, recorder, session.id, metadata, parts)
             body = _response(metadata, session.id, "stored", len(metadata.images))
             return JSONResponse(body.model_dump(exclude_none=True), status.HTTP_201_CREATED)
 
     return router
+
+
+async def _record(
+    request: Request,
+    recorder: SessionRecorder,
+    session_id: str,
+    metadata: protocol.CaptureUploadRequest,
+    parts: Mapping[str, _Part],
+) -> None:
+    open_session = request.app.state.sessions.get_active(session_id)
+    if open_session is None:
+        return
+    gateway = request.app.state.gateway
+    images = {image.part: bytes(parts[image.part].data) for image in metadata.images}
+    try:
+        await asyncio.to_thread(
+            recorder.capture,
+            open_session,
+            metadata,
+            images,
+            stt_mode=gateway.stt.mode,
+            language=gateway.stt.language,
+        )
+    except Exception:
+        logger.exception(
+            "recording capture %s of session %s failed", metadata.capture_id, session_id
+        )
+
+
+def _session_t_ms(
+    request: Request, session: Session, metadata: protocol.CaptureUploadRequest
+) -> int:
+    """The capture's session time (ms since `started_at`): its client time mapped to backend time
+    through the latest `hello`'s clock offset (none known: client time is taken as it is)."""
+    offset = request.app.state.gateway.clock_offset_ms(session.id) or 0
+    started_ms = int(session.meta.started_at.timestamp() * 1000)  # as `OpenSession.started_at_ms`
+    return max(0, metadata.client_time_ms + offset - started_ms)
 
 
 def _capture_state(session: Session) -> tuple[dict[str, Mapping[str, Any]], str]:

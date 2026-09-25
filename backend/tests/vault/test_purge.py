@@ -141,6 +141,26 @@ def test_plan_lists_bursts_and_rolled_over_conversations_only(topic: Topic) -> N
     assert all(item.removed for item in plan.items)
 
 
+def test_bursts_are_found_under_every_source_kind(topic: Topic) -> None:
+    book = put_source(
+        topic.vault,
+        topic.subject,
+        topic.topic,
+        "book",
+        "still.jpg",
+        PAGE,
+        {"capture_id": "b"},
+        derived={"burst1.jpg": BURST + b"book"},
+    )
+
+    plan = plan_topic_purge(topic.sync, topic.subject, topic.topic)
+
+    burst = book.with_name("page-001.burst1.jpg").relative_to(topic.vault.path).as_posix()
+    assert burst.endswith("sources/book/page-001.burst1.jpg")
+    assert paths_of(plan)[burst] == "burst-original"
+    assert book.relative_to(topic.vault.path).as_posix() not in paths_of(plan)
+
+
 def test_planning_writes_nothing(topic: Topic) -> None:
     plan_topic_purge(
         topic.sync,

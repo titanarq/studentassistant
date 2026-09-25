@@ -29,7 +29,14 @@ VAULT_META_NAME = "vault.yaml"
 GITATTRIBUTES_NAME = ".gitattributes"
 MAIN_BRANCH = "main"
 
-GITATTRIBUTES_CONTENT = "*.jsonl merge=union\n"
+ACTIVE_HOST_NAME = ".sa/active.yaml"
+# The merge driver of `.sa/active.yaml`: `true` keeps the upstream side of a rebase, i.e. the
+# remote's record, which is the one the session start must see (`vault/active.py`). Git knows the
+# driver only because the pull defines it on its command line (`vault/sync.py`).
+ACTIVE_HOST_MERGE_DRIVER = "sa-active"
+ACTIVE_HOST_GITATTRIBUTES_LINE = f"{ACTIVE_HOST_NAME} merge={ACTIVE_HOST_MERGE_DRIVER}\n"
+
+GITATTRIBUTES_CONTENT = "*.jsonl merge=union\n" + ACTIVE_HOST_GITATTRIBUTES_LINE
 
 
 class VaultNotFoundError(VaultError):

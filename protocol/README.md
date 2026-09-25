@@ -5,7 +5,18 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.0**.
+Current version: **`protocol_version` 1.1**.
+
+| version | change |
+|---|---|
+| 1.0 | first version |
+| 1.1 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `last_session_at_ms` and `pending_count` |
+
+Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
+only when the negotiated version has it: REST requests carry no version, so the backend shapes
+each REST response to the `protocol_version` the device sent in `POST /api/pair` (kept in its
+pairing record; a device paired before 1.1 counts as 1.0) and leaves out every field newer than
+the lower MINOR. A client upgraded after pairing gets the new fields once it pairs again.
 
 ## Files and naming
 
@@ -38,13 +49,14 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.0; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.1; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
 
 - `POST /api/pair`: the client sends its version, the backend answers with its own; the client
-  refuses to pair with an incompatible MAJOR.
+  refuses to pair with an incompatible MAJOR. The backend keeps the client's version with the
+  device and answers that device's REST requests in the negotiated version.
 - `GET /api/health` and every session response carry the backend's version.
 - The WebSocket `hello` carries the client's version; `hello.ack` carries the negotiated one. An
   incompatible MAJOR gets no `hello.ack`: the backend closes the socket with the message above.
@@ -71,6 +83,7 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/resume` | -- | `rest.sessions.resume.response` |
 | `POST /api/sessions/{id}/end` | `rest.sessions.end.request` | `rest.sessions.end.response` |
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
+| `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
 
 ### Pairing and health
 
@@ -86,8 +99,12 @@ the token returned by pairing (never logged by either side).
 - `rest.subjects.list.response`: `subjects`, a list of `{subject_id, name}`.
 - `rest.subjects.create.request`: `{name}`; `rest.subjects.create.response`: the created subject.
 - `rest.topics.list.response`: `subject_id` and its `topics`, each `{topic_id, subject_id, name,
-  open_session_id?}`. `open_session_id` names the session still open on that topic: the client
-  resumes it instead of starting a new one.
+  open_session_id?, last_session_at_ms?, pending_count?}`. `open_session_id` names the session
+  still open on that topic: the client resumes it instead of starting a new one.
+  `last_session_at_ms` (since 1.1) is the start of the topic's latest session, open or ended, on
+  the backend's clock; `pending_count` (since 1.1) counts the topic's open pending-review items
+  (doubts awaiting the student). Both are left out when unknown (no session yet, or state the
+  backend could not read) and always for a device that paired as a 1.0 client.
 - `rest.topics.create.request`: `{name}`; `rest.topics.create.response`: the created topic.
 
 ### Session lifecycle
@@ -117,6 +134,20 @@ A session is about exactly one topic of one subject, fixed when it starts.
 
 Re-sending a `capture_id` the backend already stored is answered with `status: "duplicate"` and
 stores nothing, so a client may retry an upload or replay its offline spool freely.
+
+### Search
+
+`GET /api/search` searches the vault's notes, page transcriptions, PDF page text, web pages and
+final transcript segments (the web's search box). Query: `q` (plain text, every word must appear
+as a prefix, accents and case ignored), optional `subject` and `topic` ids (`topic` needs
+`subject`), `kinds` (comma-separated subset of the hit kinds below, default all) and `limit`
+(1-100, default 20).
+
+- `rest.search.response`: the `query` and its `hits`, best first, each `{kind (notes | page | pdf
+  | web | transcript), path, source?, subject, topic, session?, seq?, t_start?, snippet}`. `path`
+  is the vault-relative file the text is in, `source` the vault-relative source it belongs to
+  (absent for notes and transcripts); a transcript hit carries its `session`, the segment's `seq`
+  and `t_start` (session time, ms). `snippet` marks each matched term between U+0002 and U+0003.
 
 ## WebSocket `/ws/sessions/{id}`
 

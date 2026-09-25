@@ -43,18 +43,36 @@ token):
   no router library is used.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
-- `src/topic/`: `TopicPage` (heading "Tema <topic>") is the topic page; for now it only hosts
+- `src/desk/api.ts`: the study desk's read client. `fetchSubjects()`, `fetchTopics(subjectId)`
+  (decoded strictly as protocol `rest.subjects.list.response` / `rest.topics.list.response`) and
+  `fetchTopicSummary(subjectId, topicId)` (`GET /api/subjects/{s}/topics/{t}/summary`, #38,
+  decoded as `TopicSummary`) -> `{kind: "ok", value} | {kind: "not-found", detail} | {kind:
+  "error", status} | {kind: "unreachable"}` (`describeFailure()` puts a failure in one Spanish
+  sentence); `topicPath(s, t)` builds the topic page path. The web app declares no protocol
+  version on REST: served by the backend's own build, it is answered as that backend's version
+  (>= 1.1), so topics may carry `last_session_at_ms` and `pending_count`; both stay optional and
+  a topic without them shows only its name.
+- `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
+  after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
+  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them. Empty states: no
+  subjects, a subject without topics; a failing topic list is reported inside its subject only.
+- `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
+  <subject name>", the ids until the lists answer) shows `TopicCard` and `PdfUploadForm`; an
+  unknown topic (404) shows the backend's Spanish detail and no upload form, and a successful
+  upload (`onImported`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
+  tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
+  conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
+  Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
-- `src/App.tsx` is the placeholder study desk: heading "Mesa de estudio", fetches
-  `GET /api/health` on mount, decodes it strictly as `rest.health.response` and shows the
-  backend `protocol_version` (Spanish loading/error states; any other shape is the error state).
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
 
 ## Tests
-vitest + Testing Library with a mocked API.
+vitest + Testing Library with a mocked API (`src/test/mockApi.ts`: `stubApi({path: response})`
+stubs `fetch` by method and path).

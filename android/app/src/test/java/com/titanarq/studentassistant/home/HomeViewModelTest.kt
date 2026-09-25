@@ -46,7 +46,14 @@ class HomeViewModelTest {
     private val historia = Subject("historia", "Historia")
     private val fisica = Subject("fisica", "Física")
     private val feudalismo = Topic("feudalismo", "historia", "El feudalismo")
-    private val reconquista = Topic("reconquista", "historia", "La Reconquista", openSessionId = "20260924-101500")
+    private val reconquista = Topic(
+        "reconquista",
+        "historia",
+        "La Reconquista",
+        openSessionId = "20260924-101500",
+        lastSessionAtMs = 1_790_244_900_000,
+        pendingCount = 2,
+    )
 
     @After
     fun tearDown() {
@@ -119,9 +126,9 @@ class HomeViewModelTest {
         val rows = (state.topics as Loadable.Loaded).value
         assertEquals(listOf(feudalismo, reconquista), rows.map { it.topic })
         assertEquals(listOf(false, true), rows.map { it.canContinue })
-        // Protocol v1's topic list carries neither, so nothing is shown for them.
-        assertEquals(listOf(null, null), rows.map { it.lastSessionAtMs })
-        assertEquals(listOf(null, null), rows.map { it.pendingCount })
+        // The last session date and pending count are mapped when sent and null when left out.
+        assertEquals(listOf(null, 1_790_244_900_000), rows.map { it.lastSessionAtMs })
+        assertEquals(listOf(null, 2), rows.map { it.pendingCount })
         assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
     }
 

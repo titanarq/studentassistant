@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
+import threading
 
 import pytest
 
@@ -120,21 +120,33 @@ async def test_a_failing_or_hanging_hook_is_logged_and_the_session_ends_anyway(
 
 
 async def test_ending_right_after_finals_waits_for_the_pipeline_to_write_them(
-    service: SessionService,
+    tmp_vault: Vault,
 ) -> None:
+    # The pipeline is held behind a gate until `end` reaches its drain hook, so it is provably
+    # behind when the drain starts, whatever the machine's speed. The hook timeout is generous:
+    # the test is about `end` waiting for the drain, not about the drain beating a deadline.
+    service = SessionService(SessionBus(), vault=tmp_vault, host="pc-test", end_hook_timeout=10)
     pipeline = TranscriptPipeline(service.bus, service.bus.attached)
-    service.add_before_close(lambda _session_id: pipeline.drain())
+    gate = threading.Event()
+    written_at_drain: list[int] = []
+
+    async def drain(session_id: str) -> None:
+        written_at_drain.append(len(list(session.read_transcript())))
+        gate.set()
+        await pipeline.drain()
+
+    service.add_before_close(drain)
     pipeline.start()
     try:
         session = await _start(service)
-        # A slow vault write, so the pipeline is still behind when `end` is called.
         append = session.append_transcript
 
-        def slow_append(*args: object, **kwargs: object) -> object:
-            time.sleep(0.02)
+        def gated_append(*args: object, **kwargs: object) -> object:
+            if not gate.wait(timeout=5):
+                raise TimeoutError("the drain hook never opened the gate")
             return append(*args, **kwargs)  # type: ignore[arg-type]
 
-        session.append_transcript = slow_append  # type: ignore[method-assign]
+        session.append_transcript = gated_append  # type: ignore[method-assign]
         texts = [f"frase {n}" for n in range(20)]
         for n, text in enumerate(texts):
             payload = {
@@ -149,6 +161,8 @@ async def test_ending_right_after_finals_waits_for_the_pipeline_to_write_them(
         # No explicit drain: `end` has to wait for the pipeline itself.
         await asyncio.wait_for(service.end(session.id, client_time_ms=5, reason="button"), 5)
     finally:
-        await pipeline.stop()
+        gate.set()
+        await asyncio.wait_for(pipeline.stop(), 5)
 
+    assert written_at_drain == [0]
     assert [s.text for s in session.read_transcript()] == texts

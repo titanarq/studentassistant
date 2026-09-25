@@ -27,6 +27,10 @@ DEFAULT_CONFIG_PATH = Path("~/.config/studentassistant/config.toml")
 DEFAULT_VAULT_PATH = Path("~/StudentAssistant/vault")
 # Paired capture clients: machine-local state, never inside the vault.
 DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
+# `serve --record`: one directory of raw client inputs per session, never inside the vault.
+DEFAULT_RECORDINGS_DIR = Path("~/.cache/studentassistant/recordings")
+# The derived SQLite index of the vault (ADR-0002): a cache, rebuildable from the vault at any time.
+DEFAULT_INDEX_PATH = Path("~/.cache/studentassistant/index.sqlite3")
 
 # The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
 DEFAULT_API_KEY_FILE_NAME = "secrets.env"
@@ -62,8 +66,11 @@ class ServerSettings(BaseModel):
     # the most images one burst may hold; beyond either the upload is refused with 413.
     max_capture_image_bytes: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGE_BYTES, ge=1)
     max_capture_images: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGES, ge=1)
+    # Where `studentassistant serve --record` writes each session's recording (what `replay`
+    # reads back), one directory per session id; it must not be inside the vault.
+    recordings_dir: Path = DEFAULT_RECORDINGS_DIR
 
-    @field_validator("devices_path")
+    @field_validator("devices_path", "recordings_dir")
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
@@ -76,6 +83,7 @@ DEFAULT_PUSH_DEBOUNCE_SECONDS = 120.0
 DEFAULT_PUSH_BACKOFF_INITIAL_SECONDS = 15.0
 DEFAULT_PUSH_BACKOFF_MAX_SECONDS = 900.0
 DEFAULT_GIT_TIMEOUT_SECONDS = 120.0
+DEFAULT_ACTIVE_HOST_STALE_SECONDS = 6 * 3600.0
 DEFAULT_VAULT_REMOTE = "origin"
 # The author email a vault commit carries when none is configured: a reserved `.invalid` domain,
 # so no real mailbox is ever claimed on the student's behalf.
@@ -101,6 +109,8 @@ class VaultGitSettings(BaseModel):
     push_backoff_max_seconds: float = Field(default=DEFAULT_PUSH_BACKOFF_MAX_SECONDS, gt=0)
     # A network git command (push, pull, ls-remote) is killed after this long.
     timeout_seconds: float = Field(default=DEFAULT_GIT_TIMEOUT_SECONDS, gt=0)
+    # Another PC's active-host record (`.sa/active.yaml`) older than this is ignored as stale.
+    active_host_stale_seconds: float = Field(default=DEFAULT_ACTIVE_HOST_STALE_SECONDS, gt=0)
 
 
 class VaultPurgeSettings(BaseModel):
@@ -113,7 +123,8 @@ class VaultPurgeSettings(BaseModel):
     # Only purge a topic once its notes carry a version tag
     # `<subject-slug>/<topic-slug>/apuntes-vN`.
     require_notes_tag: bool = True
-    # The stills of a burst other than the one kept as the page (`sources/notes/page-NNN.burstK.*`).
+    # The stills of a burst other than the one kept as the page
+    # (`sources/<kind>/page-NNN.burstK.*`, any source kind).
     burst_originals: bool = True
     # `conversations/observer-<session-id>.jsonl` of ended sessions (already rolled over).
     observer_conversations: bool = True
@@ -135,8 +146,10 @@ class VaultSettings(BaseModel):
     repo: str | None = None
     git: VaultGitSettings = Field(default_factory=VaultGitSettings)
     purge: VaultPurgeSettings = Field(default_factory=VaultPurgeSettings)
+    # Where the derived search/listing index lives; never inside the vault.
+    index_path: Path = DEFAULT_INDEX_PATH
 
-    @field_validator("path")
+    @field_validator("path", "index_path")
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
@@ -321,6 +334,10 @@ DEFAULT_MAX_PDF_PAGES = 100
 DEFAULT_MAX_STORED_PDF_BYTES = 20 * 1024 * 1024
 DEFAULT_PDF_THUMBNAIL_LONG_EDGE = 1200
 DEFAULT_PDF_THUMBNAIL_QUALITY = 85
+DEFAULT_CAPTURE_LONG_EDGE = 2400
+DEFAULT_CAPTURE_JPEG_QUALITY = 85
+DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
+DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS = 10.0
 
 
 class SourcesSettings(BaseModel):
@@ -336,6 +353,15 @@ class SourcesSettings(BaseModel):
     # Page thumbnails: long edge in pixels and JPEG quality.
     pdf_thumbnail_long_edge: int = Field(default=DEFAULT_PDF_THUMBNAIL_LONG_EDGE, ge=16)
     pdf_thumbnail_quality: int = Field(default=DEFAULT_PDF_THUMBNAIL_QUALITY, ge=1, le=100)
+    # Captured pages: the kept still and its page image are downscaled to this long edge (px)
+    # and stored as JPEG at this quality.
+    capture_long_edge: int = Field(default=DEFAULT_CAPTURE_LONG_EDGE, ge=16)
+    capture_jpeg_quality: int = Field(default=DEFAULT_CAPTURE_JPEG_QUALITY, ge=1, le=100)
+    # The transcript window a capture is linked to: this long before it to this long after it.
+    capture_window_before_seconds: float = Field(
+        default=DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS, ge=0
+    )
+    capture_window_after_seconds: float = Field(default=DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS, ge=0)
 
 
 def config_toml_path() -> Path:

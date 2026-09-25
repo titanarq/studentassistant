@@ -1,21 +1,25 @@
 """The `studentassistant` command line.
 
-`serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
-running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
-`cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, `setup` gets a PC from clone to running (the
-vault, the Anthropic API key, the STT model, the systemd service), `doctor` checks that it is,
-and `purge` applies the vault's retention policy.
+`serve` runs the backend (`serve --record` also records each session for `replay`), `version`
+prints the version, `pair` shows a pairing QR minted by the running backend, `devices` lists (or
+`devices revoke <id>` removes) the paired capture clients, `cost` prints what the Claude calls
+recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range of it) to a topic
+as a source, `replay` feeds a recorded session through the gateway as a capture client would,
+`setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
+systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
+index from the vault, and `purge` applies the vault's retention policy.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
 where the server listens comes from `studentassistant.config` (the TOML file plus the `SA_*`
 environment variables), so there is one way to configure the backend and not two. `setup`'s
-options are the answers it writes into that configuration, not a second way to set it.
+options are the answers it writes into that configuration, not a second way to set it, and
+`serve --record` only switches recording on: where recordings go is `[server].recordings_dir`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -55,11 +59,19 @@ from studentassistant.observer import (
     COMPACTED_EVENT_KIND,
     ObserverStateError,
     compaction_payload,
-    current_observer_snapshot,
     load_observer_snapshot,
 )
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.recorder import SessionRecorder
+from studentassistant.server.recording import Recording, RecordingError, read_recording
+from studentassistant.server.replay import (
+    AsgiTransport,
+    HttpTransport,
+    ReplayError,
+    ReplayResult,
+    replay,
+)
 from studentassistant.sources import (
     PdfImportError,
     PdfTooLargeError,
@@ -81,6 +93,7 @@ from studentassistant.vault import (
     topic_directory,
 )
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.index import IndexReport, VaultIndexError, rebuild_index
 from studentassistant.vault.purge import (
     REASON_TEXT,
     Compaction,
@@ -102,15 +115,31 @@ cli = typer.Typer(
 
 
 @cli.command()
-def serve() -> None:
+def serve(
+    record: Annotated[
+        bool,
+        typer.Option(
+            "--record",
+            help="Record each session's raw inputs under [server].recordings_dir, for `replay`.",
+        ),
+    ] = False,
+) -> None:
     """Serve the FastAPI app on the configured host and port until interrupted."""
     settings = Settings()
     server = settings.server
     # The key `setup` stored on this PC, unless the environment already carries one.
     export_api_key(settings.llm.api_key_path())
+    recorder = SessionRecorder(server.recordings_dir) if record else None
+    try:
+        app = create_app(server=server, recorder=recorder)
+    except ValueError as error:
+        typer.echo(f"Cannot record: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    if recorder is not None:
+        typer.echo(f"Recording every session under {recorder.root}")
     # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
     # guard and the loopback trust see (uvicorn trusts it from loopback by default).
-    uvicorn.run(create_app(server=server), host=server.host, port=server.port, proxy_headers=False)
+    uvicorn.run(app, host=server.host, port=server.port, proxy_headers=False)
 
 
 @cli.command()
@@ -315,6 +344,98 @@ def import_pdf_command(
         )
 
 
+async def _replay_in_process(recording: Recording, **options: Any) -> ReplayResult:
+    """Replay into an app built from the configuration, its lifespan run as `serve` runs it."""
+    async with AsgiTransport(create_app()) as transport:
+        return await replay(recording, transport, **options)
+
+
+async def _replay_to(url: str, recording: Recording, **options: Any) -> ReplayResult:
+    async with HttpTransport(url) as transport:
+        return await replay(recording, transport, **options)
+
+
+@cli.command("replay")
+def replay_command(
+    directory: Annotated[Path, typer.Argument(help="La carpeta de la sesión grabada.")],
+    speed: Annotated[
+        float, typer.Option("--speed", help="Cuántas veces más rápido que la grabación.")
+    ] = 1.0,
+    topic: Annotated[
+        str | None,
+        typer.Option("--topic", help="Otro tema en vez del grabado, como <asignatura>/<tema>."),
+    ] = None,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help="Un backend en marcha, p. ej. http://localhost:8765."),
+    ] = None,
+) -> None:
+    """Replay a recorded session as a capture client: start, hello, the timed inputs, the end.
+
+    With `--url` it talks to that running backend; without it, it builds the app in-process
+    against the configured vault (and `[stt]`, which must match the recording's STT mode).
+    """
+    subject_id = topic_id = None
+    if topic is not None:
+        subject_id, _, topic_id = topic.partition("/")
+        if not subject_id or not topic_id or "/" in topic_id:
+            typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+            raise typer.Exit(code=2)
+    if speed <= 0:
+        typer.echo("--speed tiene que ser mayor que 0.")
+        raise typer.Exit(code=2)
+    try:
+        recording = read_recording(directory)
+    except RecordingError as error:
+        typer.echo(f"No se puede leer la grabación «{directory}»: {error}")
+        raise typer.Exit(code=1) from error
+    options: dict[str, Any] = {"speed": speed, "subject": subject_id, "topic": topic_id}
+    try:
+        if url is None:
+            result = asyncio.run(_replay_in_process(recording, **options))
+        else:
+            result = asyncio.run(_replay_to(url, recording, **options))
+    except ReplayError as error:
+        typer.echo(f"La reproducción ha fallado: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        f"Sesión {result.session_id} reproducida en {result.subject_id}/{result.topic_id}: "
+        f"{result.finals_sent} frases finales, {result.partials_sent} parciales, "
+        f"{result.events_sent} eventos, {result.audio_frames_sent} tramas de audio, "
+        f"{result.captures_stored} capturas guardadas"
+        + (f" ({result.captures_duplicate} repetidas)" if result.captures_duplicate else "")
+        + "."
+    )
+
+
+index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")
+cli.add_typer(index_cli, name="index")
+
+
+def _index_summary(report: IndexReport) -> str:
+    line = f"Índice reconstruido: {report.documents} documentos buscables."
+    if report.skipped:
+        line += f" {len(report.skipped)} partes de la bóveda no se pudieron leer:"
+        line += "".join(f"\n  {unit}: {reason}" for unit, reason in report.skipped)
+    return line
+
+
+@index_cli.command("rebuild")
+def index_rebuild() -> None:
+    """Recreate the index from scratch, reading only the vault."""
+    settings = Settings().vault
+    try:
+        vault = Vault.open(settings.path)
+        report = rebuild_index(vault, settings.index_path)
+    except VaultIndexError as error:
+        typer.echo(f"No se pudo reconstruir el índice: {error}")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(_index_summary(report))
+
+
 class SetupMode(StrEnum):
     """What `setup` does with the GitHub repository (the values are the Spanish prompt answers)."""
 
@@ -434,8 +555,22 @@ def setup(
                 warn=typer.echo,
             )
         else:
+            index_path = settings.vault.index_path
+
+            def rebuild_after_clone(vault: Vault) -> None:
+                # ADR-0002: install -> setup -> clone -> index rebuild.
+                try:
+                    typer.echo(_index_summary(rebuild_index(vault, index_path)))
+                except VaultIndexError as error:
+                    typer.echo(f"Aviso: no se pudo reconstruir el índice: {error}")
+
             result = clone_vault(
-                path, vault_repo, host, author_email=git.author_email, timeout=git.timeout_seconds
+                path,
+                vault_repo,
+                host,
+                post_clone=rebuild_after_clone,
+                author_email=git.author_email,
+                timeout=git.timeout_seconds,
             )
     except (SetupError, GitHubHostError) as error:
         typer.echo(f"No se pudo preparar el vault: {error}")
@@ -603,7 +738,7 @@ def _purge_targets(vault: Vault, topic: str | None) -> list[tuple[str, str]]:
 def _compaction(vault: Vault, subject_slug: str, topic_slug: str) -> Compaction | None:
     """Where the topic's folded events end, from the observer's current snapshot."""
     try:
-        snapshot = current_observer_snapshot(vault, subject_slug, topic_slug)
+        snapshot = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False)
     except ObserverStateError as error:
         typer.echo(f"{subject_slug}/{topic_slug}: sus eventos no se compactan ({error}).")
         return None

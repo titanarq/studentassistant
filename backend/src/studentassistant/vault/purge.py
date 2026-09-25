@@ -5,7 +5,8 @@ grow forever. The candidates, each switched on or off by `VaultPurgeSettings`
 (`[vault.purge]`), are:
 
 - `burst-original`: the stills of a capture burst other than the page kept, stored by capture
-  processing as the derived files `sources/notes/page-NNN.burst<K>.<ext>` of the page.
+  processing as the derived files `sources/<kind>/page-NNN.burst<K>.<ext>` of the page, under
+  whichever source kind the session was on.
 - `observer-conversation`: `conversations/observer-<session-id>.jsonl` of an ended session; the
   observer rolls it over to snapshot + digest at every session end, so nothing is lost.
 - `folded-events`: the events a caller-given `Compaction` covers -- every event of the topic up to
@@ -54,7 +55,7 @@ from studentassistant.vault.notes import list_generated, read_notes
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.session_models import Event, Origin, SessionMeta
 from studentassistant.vault.sessions import EVENTS_FILE_NAME, list_sessions, sessions_directory
-from studentassistant.vault.sources import sources_directory
+from studentassistant.vault.sources import SOURCE_KINDS, sources_directory
 from studentassistant.vault.sync import GitSync
 from studentassistant.vault.topics import require_topic, topic_directory
 from studentassistant.vault.vault import MAIN_BRANCH
@@ -237,10 +238,12 @@ def plan_topic_purge(
         return path.relative_to(vault.path).as_posix()
 
     if policy.burst_originals:
-        notes_sources = sources_directory(vault, subject_slug, topic_slug, "notes")
-        for path in _files(notes_sources):
-            if BURST_ORIGINAL.match(path.name):
-                candidates.append(PurgeItem(relative(path), "burst-original", path.stat().st_size))
+        # A burst is stored under whatever source the session was on, so every kind is looked at.
+        for kind in SOURCE_KINDS:
+            for path in _files(sources_directory(vault, subject_slug, topic_slug, kind)):
+                if BURST_ORIGINAL.match(path.name):
+                    size = path.stat().st_size
+                    candidates.append(PurgeItem(relative(path), "burst-original", size))
     if policy.observer_conversations:
         ended = {meta.id for meta in sessions}
         for path in _files(topic_root / CONVERSATIONS_DIRNAME):

@@ -26,6 +26,19 @@ sessions, and again before every session start; a `conflict` refuses the start
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
 flushes whatever is still pending.
 
+One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
+(`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
+`host_warning` the status route shows -- a warning, never a refusal. A session start then claims
+the record for this host, commits it and asks for an immediate push; its end releases it before
+the end's checkpoint and push.
+
+The derived search index (`VaultIndex`, ADR-0002) is opened at `[vault] index_path` right after
+the vault is (after its first pull), in a worker thread; an index that cannot be opened is logged
+and left out (`index` stays `None`), never failing the vault. While serving, `VaultIndex.run()`
+keeps it current in the background next to the sync loop; after the pull at every session start a
+`refresh()` is scheduled in a worker thread (without delaying the start); shutdown stops both and
+closes the index.
+
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
 within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. Every vault call
 runs in a worker thread, and lifecycle changes are serialised by one lock.
@@ -41,6 +54,7 @@ import asyncio
 import contextlib
 import logging
 import socket
+import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,11 +62,17 @@ from typing import Any, Literal, TypeVar
 
 from studentassistant import protocol
 from studentassistant.config import VaultSettings
-from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
-from studentassistant.protocol.version import PROTOCOL_VERSION
+from studentassistant.observer import (
+    CAPTURE_EVENT_KIND,
+    CAPTURE_ID_KEY,
+    ObserverStateError,
+    load_observer_snapshot,
+)
+from studentassistant.protocol.version import PROTOCOL_VERSION, negotiate, parse_version
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
 from studentassistant.vault import (
+    ActiveHostWarning,
     GitSync,
     NoOpenSessionError,
     Session,
@@ -60,14 +80,19 @@ from studentassistant.vault import (
     SyncResult,
     Vault,
     VaultError,
+    check_active_host,
+    claim_active_host,
     create_subject,
     create_topic,
     end_session,
+    list_sessions,
     list_subjects,
     list_topics,
+    release_active_host,
     resume_session,
     start_session,
 )
+from studentassistant.vault.index import VaultIndex, VaultIndexError
 
 SESSION_STARTED = "session.started"
 SESSION_RESUMED = "session.resumed"
@@ -76,8 +101,14 @@ LIFECYCLE_KINDS = frozenset({SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED})
 
 T = TypeVar("T")
 
+TOPIC_ACTIVITY_SINCE = (1, 1)
+"""The protocol version that added a topic's `last_session_at_ms` and `pending_count`."""
+
 DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
 """How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
+
+DEFAULT_INDEX_INTERVAL_SECONDS = 5.0
+"""How often the background loop brings the search index up to date (`VaultIndex.run()`)."""
 
 DEFAULT_END_HOOK_TIMEOUT_SECONDS = 10.0
 """How long `end` waits for each end hook before logging it and ending the session anyway."""
@@ -150,6 +181,8 @@ class SessionService:
     to a `GitSync` of that vault with `vault_settings.git`. `sync_interval` is how often the
     background loop (only between `startup()` and `shutdown()`) checks what is due.
     `end_hook_timeout` bounds each end hook (`add_before_ended`, `add_before_close`).
+    `index_interval` is how often the background loop updates the search index, which lives at
+    `vault_settings.index_path`.
     """
 
     def __init__(
@@ -162,6 +195,7 @@ class SessionService:
         host: str | None = None,
         sync_interval: float = DEFAULT_SYNC_INTERVAL_SECONDS,
         end_hook_timeout: float = DEFAULT_END_HOOK_TIMEOUT_SECONDS,
+        index_interval: float = DEFAULT_INDEX_INTERVAL_SECONDS,
     ) -> None:
         self.bus = bus
         self._vault = vault
@@ -179,6 +213,11 @@ class SessionService:
         self._end_hook_timeout = end_hook_timeout
         self._before_ended: list[EndHook] = []
         self._before_close: list[EndHook] = []
+        self._index: VaultIndex | None = None
+        self._index_interval = index_interval
+        self._index_runner: asyncio.Task[None] | None = None
+        self._index_refresh: asyncio.Task[None] | None = None
+        self._host_warning: ActiveHostWarning | None = None
         if bus.on_append is None:
             bus.on_append = self._note_change
 
@@ -207,9 +246,30 @@ class SessionService:
         return await self._ready()
 
     @property
+    def host_warning(self) -> ActiveHostWarning | None:
+        """Another PC's open claim on the vault, as of the last pull (vault open, session start)."""
+        return self._host_warning
+
+    @property
     def sync_running(self) -> bool:
         """Whether the background `GitSync.run()` loop is running."""
         return self._runner is not None and not self._runner.done()
+
+    @property
+    def index(self) -> VaultIndex | None:
+        """The vault's search index once the vault is open; `None` before, or if it cannot open."""
+        return self._index
+
+    @property
+    def index_running(self) -> bool:
+        """Whether the background `VaultIndex.run()` loop is running."""
+        return self._index_runner is not None and not self._index_runner.done()
+
+    async def wait_index_refreshed(self) -> None:
+        """Wait for the index refresh a session start scheduled, if one is still running."""
+        task = self._pending_refresh()
+        if task is not None:
+            await asyncio.wait({task})
 
     # -- end hooks ---------------------------------------------------------------------------
 
@@ -258,20 +318,36 @@ class SessionService:
             self._start_runner()
 
     async def shutdown(self) -> None:
-        """Stop the background loop, then commit and push what is pending (in a worker thread)."""
+        """Stop the background loops, commit and push what is pending, then close the index.
+
+        The flush and the close run in worker threads; a refresh still running is waited for.
+        """
         self._serving = False
         runner, self._runner = self._runner, None
-        if runner is not None:
-            runner.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await runner
+        index_runner, self._index_runner = self._index_runner, None
+        for task in (runner, index_runner):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         if self._loaded and self._sync is not None:
             await asyncio.to_thread(self._sync.flush)
+        refresh, self._index_refresh = self._pending_refresh(), None
+        if refresh is not None:
+            await asyncio.wait({refresh})
+        index, self._index = self._index, None
+        if index is not None:
+            # `close()` waits for the index lock; an update still in its worker thread holds it.
+            await asyncio.to_thread(index.close)
 
     def _start_runner(self) -> None:
         if self._serving and self._sync is not None and not self.sync_running:
             self._runner = asyncio.create_task(
                 self._sync.run(self._sync_interval), name="vault-git-sync"
+            )
+        if self._serving and self._index is not None and not self.index_running:
+            self._index_runner = asyncio.create_task(
+                self._index.run(self._index_interval), name="vault-index"
             )
 
     # -- subjects and topics -------------------------------------------------------------------
@@ -288,12 +364,28 @@ class SessionService:
         self._note_change()
         return _subject(stored)
 
-    async def list_topics(self, subject_id: str) -> protocol.TopicsListResponse:
+    async def list_topics(
+        self, subject_id: str, *, protocol_version: str = PROTOCOL_VERSION
+    ) -> protocol.TopicsListResponse:
+        """The subject's topics, shaped for a client speaking `protocol_version`.
+
+        Peers speak the lower MINOR, and a client refuses unknown fields, so a topic carries
+        `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client.
+        """
         vault = await self._ready()
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
+        if _speaks_at_least(protocol_version, TOPIC_ACTIVITY_SINCE):
+            activity = await asyncio.to_thread(
+                lambda: [_topic_activity(vault, subject_id, t.slug) for t in stored]
+            )
+        else:
+            activity = [(None, None)] * len(stored)
         return protocol.TopicsListResponse(
             subject_id=subject_id,
-            topics=[self._topic(subject_id, t.slug, t.topic.title) for t in stored],
+            topics=[
+                self._topic(subject_id, t.slug, t.topic.title, last, pending)
+                for t, (last, pending) in zip(stored, activity, strict=True)
+            ],
         )
 
     async def create_topic(self, subject_id: str, name: str) -> protocol.Topic:
@@ -339,8 +431,13 @@ class SessionService:
                     " Resolve the conflict in the vault before starting a session",
                     result.conflicts,
                 )
+            self._schedule_index_refresh()
+            await self._check_host(vault)
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
+            )
+            await asyncio.to_thread(
+                claim_active_host, vault, self.host, session.id, subject_id, topic_id
             )
             self._note_change()
             self._open[(subject_id, topic_id)] = session.id
@@ -356,6 +453,14 @@ class SessionService:
                     "device_id": _device(principal),
                 },
             )
+            sync = self._sync
+            if sync is not None:
+                # The claim is committed now and pushed by the background loop right away, so the
+                # other PCs see it without the start waiting for the network.
+                await asyncio.to_thread(
+                    sync.checkpoint, f"sesión {session.id} iniciada en {self.host}"
+                )
+                sync.request_push()
             return await _wire_session(session)
 
     async def resume(
@@ -422,6 +527,7 @@ class SessionService:
                 )
                 await self._run_end_hooks(self._before_close, session.id, "before close")
                 meta = await asyncio.to_thread(end_session, session)
+                await asyncio.to_thread(release_active_host, session.vault, self.host, session.id)
             except BaseException:
                 if attached_here:
                     self.bus.detach(session.id)
@@ -513,7 +619,9 @@ class SessionService:
                 # Pull before the scan, so sessions another PC left open are seen. A conflict is
                 # only logged here: the next session start pulls again and refuses on it.
                 await self._pull("vault open")
+                await self._check_host(vault)
                 self._open = await asyncio.to_thread(_scan_open_sessions, vault)
+                self._index = await self._open_index(vault)
                 self._vault = vault
                 self._loaded = True
                 self._start_runner()
@@ -545,17 +653,102 @@ class SessionService:
             logger.warning("vault sync at %s: %s: %s", when, result.outcome, result.message)
         return result
 
+    async def _open_index(self, vault: Vault) -> VaultIndex | None:
+        """`VaultIndex.open` in a worker thread; a failure is logged and leaves the index out."""
+        path = self._settings.index_path
+        try:
+            return await asyncio.to_thread(VaultIndex.open, vault, path)
+        except (VaultIndexError, sqlite3.Error, OSError) as error:
+            logger.error("search index at %s cannot be opened; search is off: %s", path, error)
+            return None
+
+    def _schedule_index_refresh(self) -> None:
+        """Refresh the index in a worker thread after a pull, unless a refresh is still running."""
+        index = self._index
+        if index is None or self._pending_refresh() is not None:
+            return
+        self._index_refresh = asyncio.create_task(_refresh(index), name="vault-index-refresh")
+
+    def _pending_refresh(self) -> asyncio.Task[None] | None:
+        """The scheduled refresh while it runs on this event loop.
+
+        A request served outside the app's lifespan (a `TestClient` used without `with`) runs on
+        a loop of its own that is gone afterwards; its task is never waited for.
+        """
+        task = self._index_refresh
+        if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+            return None
+        return task
+
+    async def _check_host(self, vault: Vault) -> None:
+        """Read the active-host record just pulled into `host_warning`; logs a warning it finds."""
+        stale_after = (
+            self._sync.settings if self._sync is not None else self._settings.git
+        ).active_host_stale_seconds
+        warning = await asyncio.to_thread(check_active_host, vault, self.host, stale_after)
+        if warning is not None:
+            logger.warning("vault active host: %s", warning.message)
+        self._host_warning = warning
+
     def _note_change(self) -> None:
         if self._sync is not None:
             self._sync.note_change()
 
-    def _topic(self, subject_id: str, topic_id: str, title: str) -> protocol.Topic:
+    def _topic(
+        self,
+        subject_id: str,
+        topic_id: str,
+        title: str,
+        last_session_at_ms: int | None = None,
+        pending_count: int | None = None,
+    ) -> protocol.Topic:
         return protocol.Topic(
             topic_id=topic_id,
             subject_id=subject_id,
             name=title,
             open_session_id=self._open.get((subject_id, topic_id)),
+            last_session_at_ms=last_session_at_ms,
+            pending_count=pending_count,
         )
+
+
+async def _refresh(index: VaultIndex) -> None:
+    try:
+        await asyncio.to_thread(index.refresh)
+    except (VaultError, sqlite3.Error, OSError) as error:
+        logger.warning("search index refresh failed: %s", error)
+
+
+def _speaks_at_least(client: str, since: tuple[int, int]) -> bool:
+    """Whether the version negotiated with a client speaking `client` is at least `since`."""
+    try:
+        return parse_version(negotiate(client)) >= since
+    except ValueError:
+        return False
+
+
+def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int | None, int | None]:
+    """The topic's latest session start (epoch ms) and open pending count, `None` when unknown.
+
+    Each is read on its own through the vault's and the observer's public functions; one that
+    cannot be read is logged and left out, so a damaged session never hides the topic list.
+    """
+    last: int | None = None
+    try:
+        sessions = list_sessions(vault, subject_id, topic_id)
+    except VaultError as error:
+        logger.warning("topic %s/%s: sessions unreadable: %s", subject_id, topic_id, error)
+    else:
+        if sessions:
+            last = _epoch_ms(max(meta.started_at for meta in sessions))
+    pending: int | None = None
+    try:
+        snapshot = load_observer_snapshot(vault, subject_id, topic_id, write_back=False)
+    except (VaultError, ObserverStateError) as error:
+        logger.warning("topic %s/%s: observer state unreadable: %s", subject_id, topic_id, error)
+    else:
+        pending = len(snapshot.state.open_pending())
+    return last, pending
 
 
 def _scan_open_sessions(vault: Vault) -> dict[tuple[str, str], str]:
@@ -625,6 +818,7 @@ def _epoch_ms(moment: datetime) -> int:
 
 __all__ = [
     "DEFAULT_END_HOOK_TIMEOUT_SECONDS",
+    "DEFAULT_INDEX_INTERVAL_SECONDS",
     "DEFAULT_SYNC_INTERVAL_SECONDS",
     "LIFECYCLE_KINDS",
     "SESSION_ENDED",

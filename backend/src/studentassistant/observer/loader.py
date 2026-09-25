@@ -34,9 +34,22 @@ def _still_valid(snapshot: ObserverSnapshot, events: list[TopicEvent]) -> bool:
     return snapshot.cursor == EventRef(session_id=session_id, seq=event.seq)
 
 
-def _stored_and_current(
-    vault: Vault, subject_slug: str, topic_slug: str
-) -> tuple[ObserverSnapshot | None, ObserverSnapshot]:
+def load_observer_snapshot(
+    vault: Vault, subject_slug: str, topic_slug: str, *, write_back: bool = True
+) -> ObserverSnapshot:
+    """The topic's up-to-date observer snapshot; the stored one is refreshed when it changed.
+
+    The stored snapshot is used when it still matches the log; otherwise (none stored, not
+    readable, another `state_version`, or the log changed before its cursor) the state is folded
+    from scratch. The events after it are folded and, when the result differs from what was
+    stored, it is written back through `write_observer_snapshot`, unless `write_back` is false
+    (a read-only caller, such as a listing, that must leave the vault untouched).
+
+    Raises:
+        SubjectNotFoundError, TopicNotFoundError, SessionFileError: what the vault raises for a
+            topic or a session it cannot read.
+        ObserverStateError: an event of the log cannot be folded (see `fold`).
+    """
     events = list(read_topic_events(vault, subject_slug, topic_slug))
     try:
         stored = read_observer_snapshot(vault, subject_slug, topic_slug, ObserverSnapshot)
@@ -44,32 +57,7 @@ def _stored_and_current(
         stored = None
     base = stored if stored is not None and _still_valid(stored, events) else None
     start = base.event_count if base is not None else 0
-    return stored, advance_snapshot(base, events[start:])
-
-
-def current_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> ObserverSnapshot:
-    """`load_observer_snapshot` without writing the refreshed snapshot back: reads only.
-
-    Raises:
-        What `load_observer_snapshot` raises.
-    """
-    return _stored_and_current(vault, subject_slug, topic_slug)[1]
-
-
-def load_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> ObserverSnapshot:
-    """The topic's up-to-date observer snapshot; the stored one is refreshed when it changed.
-
-    The stored snapshot is used when it still matches the log; otherwise (none stored, not
-    readable, another `state_version`, or the log changed before its cursor) the state is folded
-    from scratch. The events after it are folded and, when the result differs from what was
-    stored, it is written back through `write_observer_snapshot`.
-
-    Raises:
-        SubjectNotFoundError, TopicNotFoundError, SessionFileError: what the vault raises for a
-            topic or a session it cannot read.
-        ObserverStateError: an event of the log cannot be folded (see `fold`).
-    """
-    stored, snapshot = _stored_and_current(vault, subject_slug, topic_slug)
-    if snapshot != stored:
+    snapshot = advance_snapshot(base, events[start:])
+    if write_back and snapshot != stored:
         write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)
     return snapshot

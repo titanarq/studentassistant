@@ -32,8 +32,8 @@ sealed interface Loadable<out T> {
 }
 
 /**
- * One topic row. [lastSessionAtMs] and [pendingCount] are shown only when the backend reports
- * them; protocol v1's topic list does not carry them yet, so they are null for now.
+ * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1)
+ * and are shown only when the backend reports them; a 1.0 backend sends neither.
  */
 data class TopicRow(
     val topic: Topic,
@@ -243,7 +243,7 @@ class HomeViewModel(
         topicsJob?.cancel()
         topicsJob = viewModelScope.launch {
             val topics = client.listTopics(credentials, subject.subjectId).toLoadable { response ->
-                response.topics.map { TopicRow(it) }
+                response.topics.map { TopicRow(it, it.lastSessionAtMs, it.pendingCount) }
             }
             _state.update {
                 if (it.selectedSubject?.subjectId != subject.subjectId) {

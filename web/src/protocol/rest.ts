@@ -66,6 +66,10 @@ export interface Topic {
   name: string;
   /** The session still open on this topic, if any; the client resumes it. */
   open_session_id?: string;
+  /** Since 1.1: start of the topic's latest session, backend clock, epoch ms; absent when unknown. */
+  last_session_at_ms?: number;
+  /** Since 1.1: open pending-review items (doubts awaiting the student); absent when unknown. */
+  pending_count?: number;
 }
 
 export interface TopicsListResponse {
@@ -139,6 +143,32 @@ export interface CaptureUploadResponse {
   received_at_ms: number;
 }
 
+// GET /api/search
+
+/**
+ * One match of a search over the vault. `path` is the vault-relative file the text is in;
+ * `source` the source it belongs to (absent for notes and transcripts). A transcript hit carries
+ * its `session`, the segment's `seq` and its `t_start` in session ms. `snippet` marks each
+ * matched term between U+0002 and U+0003.
+ */
+export interface SearchHit {
+  kind: "notes" | "page" | "pdf" | "web" | "transcript";
+  path: string;
+  source?: string;
+  subject: string;
+  topic: string;
+  session?: string;
+  seq?: number;
+  t_start?: number;
+  snippet: string;
+}
+
+/** The best matches of `query`, best first. */
+export interface SearchResponse {
+  query: string;
+  hits: SearchHit[];
+}
+
 // Decoders
 
 export const decodePairRequest: Decoder<PairRequest> = object({
@@ -170,7 +200,7 @@ export const decodeSubjectCreateRequest: Decoder<SubjectCreateRequest> = object(
 
 export const decodeTopic: Decoder<Topic> = object(
   { topic_id: id, subject_id: id, name },
-  { open_session_id: id },
+  { open_session_id: id, last_session_at_ms: epochMs, pending_count: int({ min: 0 }) },
 );
 
 export const decodeTopicsListResponse: Decoder<TopicsListResponse> = object({
@@ -234,4 +264,20 @@ export const decodeCaptureUploadResponse: Decoder<CaptureUploadResponse> = objec
   status: literal("stored", "duplicate"),
   image_count: int({ min: 1 }),
   received_at_ms: epochMs,
+});
+
+export const decodeSearchHit: Decoder<SearchHit> = object(
+  {
+    kind: literal("notes", "page", "pdf", "web", "transcript"),
+    path: str({ minLength: 1 }),
+    subject: id,
+    topic: id,
+    snippet: str(),
+  },
+  { source: str({ minLength: 1 }), session: id, seq: int({ min: 0 }), t_start: int({ min: 0 }) },
+);
+
+export const decodeSearchResponse: Decoder<SearchResponse> = object({
+  query: str(),
+  hits: array(decodeSearchHit),
 });

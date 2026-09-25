@@ -6,7 +6,10 @@ web page: url, fetch time). Pages of `notes`, `book` and `pdf` are numbered `pag
 the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the name it was given.
 The next number is found by scanning the directory, so numbering resumes after whatever is there
 already, including the derived files the `sources` module adds next to a page (`page-NNN.md`,
-`page-NNN.page.jpg`).
+`page-NNN.page.jpg`). Allocating a number and writing the files under it happen under one lock per
+`sources/<kind>/` directory, shared by every thread of the process, so two writers storing into
+the same topic at once (a capture and a PDF upload, say) get distinct numbers and never overwrite
+each other.
 
 Nothing here processes what it stores: the transcription of a page and the cropped page image are
 derived by `sources`, which hands them back for storage. Both the content and the sidecar pass the
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -51,6 +55,11 @@ _WEB_NUMBER = re.compile(r"^(\d{3,})-")
 _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
 _DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
+
+# One lock per resolved `sources/<kind>/` directory, held from choosing a number until the files
+# under it are on disk. The registry lock only guards the dictionary itself.
+_DIRECTORY_LOCKS: dict[Path, threading.Lock] = {}
+_DIRECTORY_LOCKS_GUARD = threading.Lock()
 
 
 class SourceError(VaultError):
@@ -157,16 +166,31 @@ def put_source(
         guard(derived_content)
 
     if kind in PAGED_KINDS:
-        extension = _extension_of(name)
-        number = _next_number(directory, _PAGE_NUMBER)
-        stem = f"page-{number:03d}"
-        content_path = directory / f"{stem}{extension}"
+        pattern, stem_template, content_suffix = _PAGE_NUMBER, "page-{:03d}", _extension_of(name)
     else:
-        slug = slugify(name)
-        number = _next_number(directory, _WEB_NUMBER)
-        stem = f"{number:03d}-{slug}"
-        content_path = directory / f"{stem}{WEB_SUFFIX}"
+        pattern, stem_template, content_suffix = (
+            _WEB_NUMBER,
+            f"{{:03d}}-{slugify(name)}",
+            WEB_SUFFIX,
+        )
 
+    with _directory_lock(directory):
+        # Scanning for the next number and writing under it is one step for every writer of the
+        # process; outside the lock, two writers could both see the same highest number.
+        stem = stem_template.format(_next_number(directory, pattern))
+        return _store(directory, stem, content_suffix, content, sidecar_text, derived_files)
+
+
+def _store(
+    directory: Path,
+    stem: str,
+    content_suffix: str,
+    content: bytes | str,
+    sidecar_text: str,
+    derived_files: Mapping[str, bytes | str],
+) -> Path:
+    """Write the content, its derived files and last its sidecar under `stem`; all or nothing."""
+    content_path = directory / f"{stem}{content_suffix}"
     directory.mkdir(parents=True, exist_ok=True)
     sidecar_path = directory / f"{stem}{SIDECAR_SUFFIX}"
     written: list[Path] = []
@@ -183,6 +207,16 @@ def put_source(
             path.unlink(missing_ok=True)
         raise
     return content_path
+
+
+def _directory_lock(directory: Path) -> threading.Lock:
+    """The process-wide lock of one `sources/<kind>/` directory, made on first use."""
+    key = directory.resolve()
+    with _DIRECTORY_LOCKS_GUARD:
+        lock = _DIRECTORY_LOCKS.get(key)
+        if lock is None:
+            lock = _DIRECTORY_LOCKS[key] = threading.Lock()
+        return lock
 
 
 def _write(path: Path, data: bytes | str) -> None:
