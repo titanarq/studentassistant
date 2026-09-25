@@ -383,6 +383,20 @@ Routes registered today:
     (`[]` clears it).
   - Errors, Spanish `detail`: an unknown subject 404, an empty or too long rule or more than 50
     422, a vault that cannot be opened 503. Needs the bearer check like every non-exempt route.
+- **Study materials** (`server/generators_routes.py`): thin over `studentassistant.generators`
+  (`docs/modules/generators.md`), over the vault and `GitSync` of the `SessionService`; the
+  registry is `app.state.generators` (`generators.default_registry`).
+  - `GET /api/generators` -> `[GeneratorInfo]` (`kind`, `title`, `description`, `version`,
+    `options_schema`: the JSON Schema of its options).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/generated` -> `MaterialsStatus`
+    (`has_notes`, `notes_sha256`, `artifacts`: per kind `generated`, `stale`, `stale_reason`,
+    `files`, `meta`). No Claude call: works without `llm_transport`.
+  - `POST .../generated/{kind}`, optional body `{"options": {...}, "confirm_over_cap": false}` ->
+    `GenerateResult`. Needs `llm_transport` (503 otherwise; `MaterialGenerators`, one run per
+    topic and kind); a `generator` client bound to the topic's ledger.
+  - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
+    the same generation running 409, a reached cap 409 `cost_cap_reached` until
+    `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).

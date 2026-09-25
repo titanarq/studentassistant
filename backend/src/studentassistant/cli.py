@@ -7,7 +7,8 @@ recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range o
 as a source, `replay` feeds a recorded session through the gateway as a capture client would,
 `setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
 systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
-index from the vault, and `purge` applies the vault's retention policy.
+index from the vault, `purge` applies the vault's retention policy, and `generate <kind> --topic`
+builds one kind of study material from a topic's notes (`studentassistant.generators`).
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -45,6 +46,12 @@ from studentassistant.config import (
     config_toml_path,
     write_vault_config,
 )
+from studentassistant.generators import (
+    GenerationError,
+    UnknownGeneratorError,
+    default_registry,
+    run_generator,
+)
 from studentassistant.install import service as install_service
 from studentassistant.install import whisper
 from studentassistant.install.apikey import (
@@ -54,7 +61,15 @@ from studentassistant.install.apikey import (
     store_api_key,
 )
 from studentassistant.install.doctor import DoctorProbes, run_doctor
-from studentassistant.llm import AnthropicTransport
+from studentassistant.llm import (
+    AnthropicTransport,
+    CostConfirmationRequiredError,
+    LedgerBinding,
+    LLMError,
+    RefusalError,
+    Transport,
+    get_client,
+)
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.observer import (
     COMPACTED_EVENT_KIND,
@@ -922,3 +937,111 @@ def purge(
             )
     elif hard:
         typer.echo("No había nada purgado en el historial que reescribir.")
+
+
+def _option_value(text: str) -> Any:
+    """A `--option` value: JSON when it parses as JSON (`10`, `true`, `["a"]`), else the text."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _generator_transport() -> Transport:
+    """The transport `generate` calls Claude through; tests replace this function."""
+    return AnthropicTransport()
+
+
+@cli.command("generate")
+def generate_command(
+    kind: Annotated[
+        str, typer.Argument(help="Qué material: el tipo de generador (p. ej. esquema).")
+    ],
+    topic: Annotated[str, typer.Option("--topic", help="El tema, como <asignatura>/<tema>.")],
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", "-o", help="Una opción del generador, como clave=valor."),
+    ] = None,
+    confirm_over_cap: Annotated[
+        bool,
+        typer.Option("--confirm-over-cap", help="Generar aunque se haya alcanzado el límite."),
+    ] = False,
+) -> None:
+    """Generate one kind of study material from a topic's notes into its `generated/` and commit.
+
+    The artifact records the notes version it was built from, and is reported stale once the notes
+    change. The commit is local; the server's sync pushes it.
+    """
+    settings = Settings()
+    subject_slug, _, topic_slug = topic.partition("/")
+    if not subject_slug or not topic_slug or "/" in topic_slug:
+        typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+        raise typer.Exit(code=2)
+    if kind not in default_registry:
+        typer.echo(str(UnknownGeneratorError(kind, default_registry.kinds())))
+        raise typer.Exit(code=2)
+    options: dict[str, Any] = {}
+    for item in option or []:
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip():
+            typer.echo(f"«{item}» no es una opción: escríbela como clave=valor.")
+            raise typer.Exit(code=2)
+        options[key.strip()] = _option_value(value)
+    try:
+        vault = Vault.open(settings.vault.path)
+        require_topic(vault, subject_slug, topic_slug)
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    sync = GitSync(vault, settings.vault.git)
+    client = get_client(
+        "generator",
+        settings=settings,
+        transport=_generator_transport(),
+        ledger=LedgerBinding(vault, subject_slug, topic_slug),
+    )
+    try:
+        result = asyncio.run(
+            run_generator(
+                vault,
+                subject_slug,
+                topic_slug,
+                kind,
+                client=client,
+                sync=sync,
+                options=options,
+                confirm_over_cap=confirm_over_cap,
+            )
+        )
+    except GenerationError as error:
+        typer.echo(f"No se ha generado: {error}")
+        raise typer.Exit(code=1) from error
+    except CostConfirmationRequiredError as error:
+        scope = "de la sesión" if error.cap == "session" else "del día"
+        typer.echo(
+            f"Se ha alcanzado el límite de gasto {scope} ({error.total_usd:.2f} de"
+            f" {error.limit_usd:.2f} USD). Repite con --confirm-over-cap para generar igualmente."
+        )
+        raise typer.Exit(code=1) from error
+    except RefusalError as error:
+        typer.echo("Claude se ha negado a generar este material.")
+        raise typer.Exit(code=1) from error
+    except LLMError as error:
+        typer.echo(f"No se ha podido generar: Claude no ha respondido ({error}).")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se ha podido guardar en la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    version = f"apuntes v{result.notes.version}" if result.notes.version else "apuntes sin versión"
+    if result.notes.version and result.notes.changed_since_version:
+        version += " con cambios"
+    typer.echo(f"Generado «{kind}» de {topic} a partir de {version}:")
+    for path in result.files:
+        typer.echo(f"  {path}")
+    for path in result.removed:
+        typer.echo(f"  (borrado) {path}")
+    for warning in result.warnings:
+        typer.echo(f"Aviso: {warning}")

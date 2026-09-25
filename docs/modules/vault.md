@@ -223,7 +223,13 @@ the directory does not exist. `notes_path(...)` and `generated_directory(...)` g
 rejected), leaving `apuntes.md` untouched; `read_notes_draft(...)` and `notes_draft_path(...)`
 mirror the notes ones. Both writers return the path, refuse an unknown topic like the readers and
 a symlinked `notes/` or file with `NotesError`. Nothing here runs git (the editor commits and
-tags through `GitSync`); writing generated material belongs to the generators tasks.
+tags through `GitSync`, the generators commit through it).
+`write_generated(vault, subject_slug, topic_slug, name, content)` writes `generated/<name>`
+(text as UTF-8 or bytes, atomically, secret guard included, creating subdirectories);
+`read_generated(...)` returns its bytes or `None`; `remove_generated(...)` removes it (and the
+directories it leaves empty), `False` when it was not there. `name` is relative to `generated/`,
+`/`-separated segments of `[A-Za-z0-9._-]` not starting with a dot (`check_generated_name`); a bad
+name or a symlink on the way is a `NotesError`.
 
 ### Reading with ids from outside
 Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `list_generated`)
