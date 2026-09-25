@@ -202,12 +202,22 @@ export class FakeMediaDevices {
   failure: string | null = null;
   /** Every stream handed out, in order. */
   readonly streams: FakeMediaStream[] = [];
-  private readonly videoTrack: FakeMediaStreamTrack;
+  private videoTrack: FakeMediaStreamTrack;
   private readonly audioTrack: FakeMediaStreamTrack;
 
   constructor(videoTrack: FakeMediaStreamTrack, audioTrack: FakeMediaStreamTrack) {
     this.videoTrack = videoTrack;
     this.audioTrack = audioTrack;
+  }
+
+  /**
+   * Test control: the camera is plugged back in (or the other application let it go). The streams
+   * handed out from now on carry a fresh live video track with the old one's settings, which is
+   * returned; a track that ended never comes back to life, in a browser or here.
+   */
+  plugInCamera(): FakeMediaStreamTrack {
+    this.videoTrack = new FakeMediaStreamTrack("video", this.videoTrack.getSettings());
+    return this.videoTrack;
   }
 
   /**

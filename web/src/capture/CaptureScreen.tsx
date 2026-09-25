@@ -40,6 +40,7 @@ import {
   WEB_SPEECH_PROVIDER,
 } from "./sessionSocket";
 import { type ClientTranscriber, type TranscriberProblemCode } from "./transcriber";
+import { ScreenWakeLock } from "./wakeLock";
 import { WebSpeechTranscriber } from "./webSpeechTranscriber";
 
 /** How long a burst's flash covers the preview: long enough to see, short enough to not miss. */
@@ -94,7 +95,7 @@ const CAMERA_MESSAGES: Record<CameraProblemCode, string> = {
   "missing-device":
     "No se ha encontrado ninguna cámara. Conecta una y vuelve a cargar la página.",
   "in-use": "Otra aplicación está usando la cámara. Ciérrala y vuelve a cargar la página.",
-  lost: "La cámara se ha desconectado o otra aplicación se la ha quedado. Vuelve a conectarla.",
+  lost: "La cámara se ha desconectado o otra aplicación se la ha quedado. Vuelve a conectarla o cierra esa aplicación y pulsa «Reactivar cámara».",
   unavailable: "La cámara no ha funcionado. Cierra la página, vuelve a abrirla e inténtalo otra vez.",
 };
 
@@ -140,6 +141,14 @@ const HANDSHAKE_LOST: Blocking = {
 const PROTOCOL_REFUSED: Blocking = {
   message: "El servidor ha enviado un mensaje que no sigue el protocolo esperado.",
 };
+
+/**
+ * What the student reads on coming back to a tab that was hidden mid-session (#256): Chrome throttles
+ * a background tab, and the recognizer of `client` mode can go quiet with it. It is a caution and
+ * not a failure -- the session went on -- so it is a status line and it clears on the next final.
+ */
+const HIDDEN_TAB_NOTICE =
+  "Mientras esta pestaña estaba oculta, la transcripción puede haberse pausado. Si has hablado entonces, repítelo.";
 
 const CAPTURE_FAILURE = "No se han podido tomar las fotografías";
 const UPLOAD_FAILURE = "El servidor no ha guardado las fotografías";
@@ -330,7 +339,8 @@ export default function CaptureScreen({
     socket: SessionSocket | null;
     camera: Camera | null;
     transcriber: ClientTranscriber | null;
-  }>({ socket: null, camera: null, transcriber: null });
+    wakeLock: ScreenWakeLock | null;
+  }>({ socket: null, camera: null, transcriber: null, wakeLock: null });
   /** True once this screen stopped the session itself: its own close is not a lost connection. */
   const stopped = useRef(false);
   const burstKeys = useRef(0);
@@ -365,6 +375,14 @@ export default function CaptureScreen({
   const [bursts, setBursts] = useState<readonly BurstEntry[]>([]);
   const [flashing, setFlashing] = useState(false);
   const [ending, setEnding] = useState(false);
+  /**
+   * Since #256: the Spanish sentence of a camera whose track ended mid-session, shown with the
+   * **Reactivar cámara** button; null while the camera is fine or never started.
+   */
+  const [cameraLost, setCameraLost] = useState<string | null>(null);
+  const [reactivating, setReactivating] = useState(false);
+  /** Since #256: the tab was hidden mid-session, so transcription may have paused meanwhile. */
+  const [hiddenTabNotice, setHiddenTabNotice] = useState(false);
 
   const flash = useCallback(() => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
@@ -437,6 +455,8 @@ export default function CaptureScreen({
     switch (event.kind) {
       case "transcript":
         setSegments((current) => mergeSegment(current, event.event));
+        // Text is flowing again, so whatever the hidden tab paused has resumed.
+        if (event.event.type === "transcript.final") setHiddenTabNotice(false);
         break;
       case "command":
         // `capture_now` is the only command of protocol v1, so there is nothing else to dispatch.
@@ -472,6 +492,7 @@ export default function CaptureScreen({
       case "closed":
       case "failed":
         if (stopped.current) return;
+        runtime.current.wakeLock?.stop();
         setConnection("lost");
         setBlocking({
           ...DISCONNECTED,
@@ -494,16 +515,30 @@ export default function CaptureScreen({
     const camera = new Camera({
       onLost: (problem) => {
         setCameraOn(false);
-        setTrouble(cameraMessage(problem));
+        // Only the camera is gone: the socket, the transcript and the uploaded bursts carry on.
+        setCameraLost(cameraMessage(problem));
       },
     });
+    const wakeLock = new ScreenWakeLock();
+    wakeLock.start();
+    let tabWasHidden = false;
+    const onVisibilityChange = (): void => {
+      if (stopped.current) return;
+      if (document.visibilityState === "hidden") {
+        tabWasHidden = true;
+      } else if (tabWasHidden) {
+        tabWasHidden = false;
+        setHiddenTabNotice(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     const socket = new SessionSocket({
       wsPath: session.ws_path,
       clientTimeMs: clock.current(),
       capabilities: captureCapabilities(),
       onEvent: onSocketEvent,
     });
-    runtime.current = { socket, camera, transcriber: null };
+    runtime.current = { socket, camera, transcriber: null, wakeLock };
     vocabularyHints.current = null;
 
     let disposed = false;
@@ -511,6 +546,7 @@ export default function CaptureScreen({
       const handshake = await socket.handshake;
       if (disposed) return;
       if (handshake.kind !== "ok") {
+        wakeLock.stop();
         setConnection("lost");
         setBlocking(
           handshake.kind === "rejected"
@@ -563,7 +599,9 @@ export default function CaptureScreen({
       disposed = true;
       stopped.current = true;
       runtime.current.transcriber?.stop();
-      runtime.current = { socket: null, camera: null, transcriber: null };
+      runtime.current = { socket: null, camera: null, transcriber: null, wakeLock: null };
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      wakeLock.stop();
       camera.stop();
       socket.close();
     };
@@ -601,6 +639,27 @@ export default function CaptureScreen({
   );
 
   /**
+   * Reactivar cámara (#256): asks the browser for the camera again after its track ended, on the
+   * same preview. A refusal keeps the notice up with its own sentence, so the student can fix what
+   * it says and press again; nothing else of the session is touched either way.
+   */
+  async function reactivateCamera() {
+    const camera = runtime.current.camera;
+    if (camera === null || reactivating) return;
+    setReactivating(true);
+    try {
+      await camera.start(preview.current);
+      if (runtime.current.camera !== camera) return;
+      setCameraOn(true);
+      setCameraLost(null);
+    } catch (problem) {
+      if (runtime.current.camera === camera) setCameraLost(cameraMessage(problem));
+    } finally {
+      setReactivating(false);
+    }
+  }
+
+  /**
    * Terminar: the session ends on the backend first and the devices are given back after, so a
    * refusal of the end is a refusal the student still reads with the session on the page. Either
    * way the camera, the microphone and the socket stop: an end that failed is not a reason to keep
@@ -610,10 +669,13 @@ export default function CaptureScreen({
     setEnding(true);
     const result = await endSession(session.session_id, "button", now());
     stopped.current = true;
+    runtime.current.wakeLock?.stop();
     runtime.current.transcriber?.stop();
     runtime.current.transcriber = null;
     runtime.current.camera?.stop();
     setCameraOn(false);
+    setCameraLost(null);
+    setHiddenTabNotice(false);
     runtime.current.socket?.close();
     runtime.current.socket = null;
     if (result.kind === "ok") {
@@ -659,6 +721,11 @@ export default function CaptureScreen({
         </p>
       )}
       {trouble !== null && <p role="alert">{trouble}</p>}
+      {hiddenTabNotice && (
+        <p role="status" aria-label="Aviso de pestaña oculta">
+          {HIDDEN_TAB_NOTICE}
+        </p>
+      )}
       {sttWarning !== null && (
         <p role="alert" aria-label="Estado de la transcripción">
           {sttWarning}
@@ -672,6 +739,18 @@ export default function CaptureScreen({
         <p role="status" aria-label="Estado de la cámara">
           {cameraOn ? "La cámara está en marcha." : "La cámara no está en marcha."}
         </p>
+        {cameraLost !== null && !ending && (
+          <div role="alert" aria-label="Cámara desconectada">
+            <p>{cameraLost}</p>
+            <button
+              type="button"
+              disabled={reactivating}
+              onClick={() => void reactivateCamera()}
+            >
+              {reactivating ? "Reactivando la cámara…" : "Reactivar cámara"}
+            </button>
+          </div>
+        )}
       </section>
 
       <section aria-label="Controles de la sesión">
