@@ -237,9 +237,23 @@ token):
   observador está en pausa y el editor pedirá confirmación antes de cada llamada.",
   `PAUSED_BANNER`) when `observer_paused` or `editor_needs_confirmation` is true, and a `note`
   when unpriced calls make the spend an underestimate. A failed read is one plain Spanish line
-  (no alert). Caps are changed in the configuration file only. Below the phone breakpoint
+  (no alert). Caps are changed in the configuration file only. After it, "Repasos para hoy"
+  (`src/desk/DeskPractice.tsx`, #285) reads `GET /api/practice/summary` (#280) once: when some
+  topic has due or new items, a region named "Repasos para hoy" with the totals ("13 pendientes,
+  5 nuevas en 2 temas.") and one row per such topic in the backend's order ("Historia · La
+  Revolución Francesa — 12 pendientes, 5 nuevas", a zero count left out), the name linking to
+  `<topic path>/practice`; with practice material but nothing to review, "Nada que repasar hoy.
+  Próximo repaso: <fecha>." (the earliest `next_due`); without any practice material (no topics
+  and no warnings) the block is not rendered. The response's `warnings` are listed (a list named
+  "Avisos de los repasos"); a failed read is one plain Spanish line (no alert) and the rest of
+  the desk is unaffected. Below the phone breakpoint
   (48rem, `src/desk/desk.css` on `main.desk`) the desk is one column with 44 px links and
   buttons and no horizontal scroll; wider it keeps the browser's default flow.
+- `src/desk/practiceSummary.ts` (#285): `fetchPracticeSummary()` (`GET /api/practice/summary`,
+  decoded strictly as `PracticeSummary`: `now`, `topics[]` with `subject_id`, `subject_name`,
+  `topic_id`, `topic_title`, `due`, `new`, `next_due` (ISO or null), `totals`, `warnings`) -> the
+  `ReadResult` of `desk/api.ts`; `topicsToReview`, `nextDue`, `countsText` ("12 pendientes, 5
+  nuevas") and `formatDue` for the block.
 - `src/desk/costApi.ts` (#260): `fetchCostStatus(session?)` (`GET /api/cost`, decoded as
   `CostStatus`) and `fetchTopicCost(s, t)` (`GET /api/subjects/{s}/topics/{t}/cost`, decoded as
   `TopicCost`: `total`, `sessions[]` with `session_id` and `started_at_ms`, `no_session`), both
