@@ -269,6 +269,21 @@ original `--reason "not planned"` as superseded. Done so far: #15 -> #84/#85 (de
 
 ## Worker routing (Claude + Qwen)
 
+**Since 2026-09-25 (the human's request): every worker runs on Claude Opus.** `mechanical-qwen`
+and `complex-qwen` keep their names (issue bodies reference them) but now say `backend: claude`,
+`model: claude-opus-5-5`, `qwen_fallback_eligible: true`, with complex-claude's ceilings
+(800k context, $20, 150M tokens). Qwen is only the quota fallback: on `CUT_BY_GUARD reason=quota`
+the planner redispatches the issue on Qwen. The unused class `qwen-fallback` (backend qwen) exists
+only so `agent_os.lib backend-model qwen` still resolves a model for that fallback launch; no issue
+names it. There is one claude worktree and a backend holds one run at a time, so in practice one
+Claude worker runs at a time (plus at most a Qwen fallback); `max_parallel_issues: 2` stays.
+The config is read fresh from the main checkout's `config/agents.yaml` on every guard tick and
+every `worker_task.sh` call, so a `git pull --ff-only` in the main checkout is the whole reload (no
+`agent-os-install`, no daemon-reload): a run already alive keeps its backend, and only new
+dispatches and relaunches pick up the new one. To go back, revert that commit.
+
+The paragraph below is the 2026-09-24 state it replaced for these two classes.
+
 Since 2026-09-24 `planner.max_parallel_issues` is 2 and the class `complex-claude` (backend
 claude, `qwen_fallback_eligible: true`) carries the harder critical-path backend tasks: every open
 `complex-qwen` task in modules server, observer, editor, llm and protocol was retagged to it.
