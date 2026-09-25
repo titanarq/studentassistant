@@ -1,5 +1,6 @@
 # The project's own CI: the backend, web and android suites of `scripts/test.sh`, each one only
-# when its own paths (or a shared file) changed, plus a `ci` summary job every PR always gets.
+# when its own paths (or a shared file) changed, the host scripts around the agent mechanism
+# (`scripts/tests`), plus a `ci` summary job every PR always gets.
 # GitHub-hosted only: the repo is public, never self-hosted (docs/runbooks/operations.md,
 # "CI runners: GitHub-hosted only (repo is public)").
 name: ci
@@ -19,6 +20,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       web: ${{ steps.filter.outputs.web }}
       android: ${{ steps.filter.outputs.android }}
+      scripts: ${{ steps.filter.outputs.scripts }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,20 +35,22 @@ jobs:
         run: |
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           echo "changed files:"; echo "$changed"
-          backend=false; web=false; android=false
+          backend=false; web=false; android=false; scripts=false
           while IFS= read -r f; do
             case "$f" in
               backend/*) backend=true ;;
               web/*) web=true ;;
               android/*) android=true ;;
               protocol/*) backend=true; web=true; android=true ;;
-              scripts/test.sh|.github/workflows/ci.yml) backend=true; web=true; android=true ;;
+              scripts/test.sh|.github/workflows/ci.yml) backend=true; web=true; android=true; scripts=true ;;
+              scripts/*|agent_os/*) scripts=true ;;
             esac
           done <<< "$changed"
           {
             echo "backend=$backend"
             echo "web=$web"
             echo "android=$android"
+            echo "scripts=$scripts"
           } | tee -a "$GITHUB_OUTPUT"
 
   backend:
@@ -107,10 +111,24 @@ jobs:
         if: failure()
         run: cat .cache/test-android-last.log || echo "no .cache/test-android-last.log"
 
+  # Host-side scripts around the agent mechanism (scripts/clean_stale_worker.sh; workaround
+  # titanarq/agent-os#18/#71, docs/runbooks/operations.md). Real git, fake gh, no network. Lives
+  # here, not in ci-agent-os.yml, which `agent-os-install --force` rewrites from its template.
+  host-scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bootstrap the mechanism's own interpreter
+        run: bash agent_os/bootstrap.sh
+      - name: host scripts suite
+        run: agent_os/.venv/bin/pytest scripts/tests -q
+
   # The one check every PR always gets: a skipped suite job is fine, a failed or cancelled one
   # is not.
   ci:
-    needs: [changes, backend, web, android]
+    needs: [changes, backend, web, android, host-scripts]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -148,8 +148,9 @@ LIVENESS: SAY WHAT YOU ARE DOING BEFORE YOU DO IT
   Two reasons, and neither is tidiness. It is not your work -- committed, it travelled inside a pull
   request onto `main`, and from then on every worker branch conflicted with `main` on it, so
   `open-pr` now refuses a branch whose diff against its base adds or modifies it and names the
-  commits that carry it. And its uncommitted lines are what keep this worktree dirty, which is the
-  signal that refuses to relaunch a run over a diary something is still writing to.
+  commits that carry it. And the driver hides `scratchpad/` from git in this worktree, so nothing
+  you put there -- the diary, a draft, an ad hoc script -- ever shows as uncommitted work, blocks
+  the next run, or lands in a freeze's commit; anything you leave anywhere else does all three.
 
 WRITING TO THE HUMAN
 Everything addressed to the human -- a `## Doubts` block, a question posted with
@@ -169,9 +170,10 @@ written from the template, and the validator's criterion-by-criterion checklist,
 worker's next brief.
 
 HOW TO REPORT
-- Do not infer what the code does when you can look. `scripts/debug.py` runs a whole pdb session
-  non-interactively and prints the transcript; a claim resting on reading code where a breakpoint
-  could have settled it is worth less.
+- Do not infer what the code does when you can look. Run it -- a breakpoint, a debugger session or
+  a few throwaway lines that print the value, with this project's own debugging tool when these
+  instructions name one; a claim resting on reading code where a breakpoint could have settled it
+  is worth less.
 - Quote evidence literally. A number you did not measure in this run is not evidence, and neither
   is a number copied from the brief -- re-derive it and say so if it differs.
 - Say plainly what you could not settle and what would settle it. "Undecided, because X" is a

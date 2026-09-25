@@ -27,9 +27,10 @@ two launches the way a worker's correction moves it. What stands in for what:
   one door to a real planner shut;
 - `git` is a stub on `PATH` that answers `ls-remote` out of a file and never reaches origin;
 - the driver runs out of a DISPOSABLE stand-in for the host checkout: a symlink farm holding the
-  real driver and the resolver it sources under `agent_os/bin/`, the host's `config/`, and a
-  `.git` FILE naming this repository's own gitdir -- which is all `git worktree add` asks of it,
-  in a linked worktree and in a plain clone alike. Since #508 the driver no longer derives its
+  real driver and the resolver it sources under `agent_os/bin/` and the host's `config/`, made
+  a git repository of its OWN: `git worktree add` registers every worktree under the gitdir of the
+  checkout it runs in, and a farm that named this repository's gitdir left the chain's worktrees
+  registered in the real repository whenever a run did not reach its own removal (#66). Since #508 the driver no longer derives its
   interpreter or its host root from its own path, so the farm names both outright:
   `AGENT_OS_HOST_ROOT` is the farm, and `AGENT_OS_PYTHON` is a one-call dispatcher that sends
   `-m agent_os.guard` to the stub above and everything else to the real interpreter.
@@ -58,7 +59,7 @@ from agent_os.cli import AGENT_OS_DIR, host_root
 # The HOST project this suite runs inside: not a fixed nesting under AGENT_OS_DIR (that
 # breaks the moment a copy IS the mechanism's own top directory, as the out-of-tree proof
 # makes it -- #512), but whatever `host_root()` itself resolves: the git checkout's toplevel,
-# same as every real driver run.
+# same as every real driver run. Named here only to assert the chain never writes into it (#66).
 ROOT = host_root()
 
 # The validator is the role under test because it is the only one that runs anything, and so the
@@ -89,7 +90,10 @@ BACKEND_STUB = r"""#!/usr/bin/env bash
 {
   env | grep -E '^AGENT_RUN_(ROLE|SUBJECT|CONTEXT|DIR|LOGFILE|PIDFILE|WORKTREE)=' | sort
   printf 'PYTHONPATH=%s\n' "${PYTHONPATH-}"
-  printf 'WORKTREE_HEAD=%s\n' "$(git -C "${PYTHONPATH-}" rev-parse HEAD 2>/dev/null || echo none)"
+  printf 'WORKTREE_HEAD=%s\n' "$(git -C "${PYTHONPATH%%:*}" rev-parse HEAD 2>/dev/null || echo none)"
+  printf 'WORKTREE_COMMON_DIR=%s\n' \
+    "$(git -C "${PYTHONPATH%%:*}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
+       || echo none)"
   printf 'INSTRUCTION_FIRST_LINE=%s\n' "${AGENT_RUN_INSTRUCTION%%$'\n'*}"
   printf 'RULES_WORKTREES=%s\n' \
     "$(printf '%s' "${AGENT_RUN_RULES-}" \
@@ -205,9 +209,20 @@ def _config_without_secrets(directory: pathlib.Path) -> pathlib.Path:
     return path
 
 
-def _git(*arguments: str) -> str:
+def _git(directory: pathlib.Path, *arguments: str) -> str:
     completed = subprocess.run(
-        ["git", "-C", str(ROOT), *arguments],
+        [
+            "git",
+            "-C",
+            str(directory),
+            "-c",
+            "user.name=agent-os-tests",
+            "-c",
+            "user.email=tests@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            *arguments,
+        ],
         capture_output=True,
         text=True,
         check=True,
@@ -215,33 +230,18 @@ def _git(*arguments: str) -> str:
     return completed.stdout.strip()
 
 
-def _commit_with_no_history(tree: str, parent: str | None) -> str:
+def _commit_with_no_history(main: pathlib.Path, tree: str, parent: str | None) -> str:
     """A commit object holding `tree`, written straight into the object database: no ref, no
     working tree, no branch. Two of these are the chain's two heads, and they are commits rather
     than `HEAD` and `HEAD~1` because CI checks this repository out one commit deep, where a second
-    revision to point at does not exist."""
-    arguments = [
-        "git",
-        "-C",
-        str(ROOT),
-        "-c",
-        "user.name=agent-os-tests",
-        "-c",
-        "user.email=tests@localhost",
-        "-c",
-        "commit.gpgsign=false",
-        "commit-tree",
-        tree,
-    ]
+    revision to point at does not exist. Written into the stand-in's own repository, never into
+    the one running this suite (#66)."""
+    arguments = ["commit-tree", tree]
     if parent:
         arguments += ["-p", parent]
-    completed = subprocess.run(
-        [*arguments, "-m", "a head for agent_os/tests/test_role_run_environment_isolation.py"],
-        capture_output=True,
-        text=True,
-        check=True,
+    return _git(
+        main, *arguments, "-m", "a head for agent_os/tests/test_role_run_environment_isolation.py"
     )
-    return completed.stdout.strip()
 
 
 def _build_stand_in_main(directory: pathlib.Path) -> pathlib.Path:
@@ -255,10 +255,6 @@ def _build_stand_in_main(directory: pathlib.Path) -> pathlib.Path:
     than leaving it to be derived."""
     main = directory / "main"
     (main / "agent_os" / "bin").mkdir(parents=True)
-    # A `.git` FILE naming this repository's gitdir, which is what a linked worktree carries and
-    # what git accepts in place of the directory a plain clone has: `git -C <main> worktree add`
-    # then works the same in this worktree and in CI's checkout.
-    (main / ".git").write_text(f"gitdir: {_git('rev-parse', '--absolute-git-dir')}\n")
     # A copy of `config.example.yaml`, not a symlink to a host's real `config/` (#512): nothing
     # this chain measures depends on a project's own values, and a copy keeps the disposable tree
     # self-contained -- `AGENT_OS_HOST_ROOT=main` below is what points both launched roles at it,
@@ -267,6 +263,12 @@ def _build_stand_in_main(directory: pathlib.Path) -> pathlib.Path:
     (main / "config" / "agents.yaml").write_text(EXAMPLE_CONFIG.read_text())
     for name in ("agent_task.sh", "_python.sh"):
         (main / "agent_os" / "bin" / name).symlink_to(AGENT_OS_DIR / "bin" / name)
+    # A repository of its own, holding exactly the farm: every `git worktree add` the chain makes
+    # is registered HERE and goes with tmp_path, never under the gitdir of the checkout running
+    # this suite, which every other checkout of the project shares (#66).
+    _git(directory, "init", "-q", "-b", "main", str(main))
+    _git(main, "add", "-A")
+    _git(main, "commit", "-q", "-m", "the stand-in host checkout")
     return main
 
 
@@ -324,6 +326,7 @@ class _Chain:
     def __init__(
         self,
         *,
+        main: pathlib.Path,
         run_directory: pathlib.Path,
         guard_calls: list[dict[str, object]],
         first: dict[str, str],
@@ -333,6 +336,7 @@ class _Chain:
         first_head: str,
         second_head: str,
     ) -> None:
+        self.main = main
         self.run_directory = run_directory
         self.guard_calls = guard_calls
         self.first = first
@@ -389,11 +393,11 @@ def woken_role_chain(tmp_path_factory) -> Iterator[_Chain]:
     interpreter.chmod(0o755)
 
     # The two heads: the branch A cuts its worktree at, and the one it has moved to by the time B
-    # is launched. Written straight into the object database, so nothing here has a ref, a branch
-    # or a working tree of its own.
-    tree = _git("rev-parse", "HEAD^{tree}")
-    first_head = _commit_with_no_history(tree, None)
-    second_head = _commit_with_no_history(tree, first_head)
+    # is launched. Written straight into the stand-in's object database, so nothing here has a
+    # ref, a branch or a working tree of its own.
+    tree = _git(main, "rev-parse", "HEAD^{tree}")
+    first_head = _commit_with_no_history(main, tree, None)
+    second_head = _commit_with_no_history(main, tree, first_head)
     assert first_head != second_head, "the two heads came out the same"
     head_file = base / "pull-request-head.txt"
     head_file.write_text(first_head + "\n")
@@ -481,6 +485,7 @@ def woken_role_chain(tmp_path_factory) -> Iterator[_Chain]:
             if line.strip()
         ]
         yield _Chain(
+            main=main,
             run_directory=run_directory,
             guard_calls=guard_calls,
             first=_parse_record(pathlib.Path(environment["STUB_RECORD"])),
@@ -493,18 +498,6 @@ def woken_role_chain(tmp_path_factory) -> Iterator[_Chain]:
     finally:
         fcntl.flock(held, fcntl.LOCK_UN)
         held.close()
-        # A chain that failed on its way must not leave the shared repository with a registration
-        # behind: `git worktree add` writes one under the gitdir this worktree shares with every
-        # other checkout of the project.
-        for leftover in cache.glob("*/worktree-*"):
-            subprocess.run(
-                ["git", "-C", str(ROOT), "worktree", "remove", "--force", str(leftover)],
-                capture_output=True,
-                check=False,
-            )
-        subprocess.run(
-            ["git", "-C", str(ROOT), "worktree", "prune"], capture_output=True, check=False
-        )
 
 
 def test_the_wake_a_finishing_role_makes_carries_no_run_environment(woken_role_chain: _Chain):
@@ -592,8 +585,36 @@ def test_a_role_launched_from_another_roles_wake_cuts_its_own_worktree(
     # The worktree the run was handed and the one its rules name are the same tree: the `__WORKTREE__`
     # placeholder is substituted with the path the driver prepared, so a role told to work in one
     # tree while running in another is a defect the rules themselves would hide.
-    assert second["AGENT_RUN_WORKTREE"] == second["PYTHONPATH"]
+    assert second["AGENT_RUN_WORKTREE"] == second["PYTHONPATH"].split(":")[0]
     assert f"worktree-pr{SECOND_PULL_REQUEST}-" in second["RULES_WORKTREES"]
+
+
+def _git_common_dir(directory: pathlib.Path) -> pathlib.Path:
+    completed = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return pathlib.Path(completed.stdout.strip()).resolve()
+
+
+def test_both_roles_register_their_worktrees_in_the_stand_in_and_never_in_this_repository(
+    woken_role_chain: _Chain,
+):
+    """`git worktree add` registers a worktree under the gitdir of the checkout it runs in. The
+    stand-in used to be a `.git` FILE naming this repository's own gitdir, so every chain
+    registered its two worktrees in the real repository, and a run that did not reach its own
+    removal left them listed there for every checkout of the project (#66)."""
+    stand_in = _git_common_dir(woken_role_chain.main)
+    under_test = _git_common_dir(ROOT)
+    for which, record, stdout in (
+        ("first", woken_role_chain.first, woken_role_chain.first_stdout),
+        ("second", woken_role_chain.second, woken_role_chain.second_stdout),
+    ):
+        registered_in = woken_role_chain.role_run(which, record, stdout)["WORKTREE_COMMON_DIR"]
+        assert pathlib.Path(registered_in).resolve() != under_test, which
+        assert pathlib.Path(registered_in).resolve() == stand_in, which
 
 
 def test_two_roles_launched_in_sequence_leave_one_row_each(woken_role_chain: _Chain):

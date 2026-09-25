@@ -55,8 +55,9 @@ VALID_BODY = (
 )
 
 GH_STUB = """#!/usr/bin/env python3
-# Stands in for `gh`: answers `issue view --json body` with $GH_STUB_BODY, plus the three calls
-# `issues.py move` makes -- `resume` re-asserts `status:doing` since #385, and a driver test about
+# Stands in for `gh`: answers `issue view --json body` with $GH_STUB_BODY, plus the calls
+# `issues.py move` makes, every one a `gh api` since #27 (the issue and its label over REST, the
+# board item over GraphQL) -- `resume` re-asserts `status:doing` since #385, and a driver test about
 # something else must not turn that into a cascade of refusals. Any other call is a test failure,
 # not a silent success: the driver must not reach the network.
 import json
@@ -75,6 +76,11 @@ if args[:2] == ["label", "list"]:
     sys.exit(0)
 if args[:2] == ["project", "item-list"]:
     print(json.dumps({"items": []}))
+    sys.exit(0)
+issue_path = args[1].split("/") if args[:1] == ["api"] and len(args) > 1 else []
+if len(issue_path) == 5 and issue_path[0] == "repos" and issue_path[3] == "issues":
+    # `issues.py validate` reads the issue over REST since #70, not with `gh issue view`.
+    print(json.dumps({"body": os.environ.get("GH_STUB_BODY", ""), "number": int(issue_path[4])}))
     sys.exit(0)
 if args[:1] == ["api"]:
     print(json.dumps({"number": 348}))
@@ -101,6 +107,9 @@ def driver_environment(tmp_path):
     environment.update(
         PATH=f"{binaries}:{environment['PATH']}",
         WORKER_WORKTREE=str(worktree),
+        # `start` creates its cache before it gets to the refusals these tests read, so a
+        # disposable one keeps that out of the checkout's real `.cache` (agent-os#25).
+        WORKER_CACHE_DIR=str(tmp_path / "cache"),
         AGENT_OS_GH_REPO="owner/name",
     )
     return environment
@@ -150,20 +159,25 @@ def test_start_refuses_a_supplement_that_does_not_exist(driver_environment):
 
 GH_STUB_MOVE_FAILS = """#!/usr/bin/env python3
 # Answers `issue view --json body...` (validate, brief -- which also needs `number` in the
-# response, unlike GH_STUB above) with $GH_STUB_BODY. The `--json labels,state` call
-# `issues.py move` makes to read the current labels fails deterministically, so `move doing`
-# itself fails -- simulating a transient gh/API hiccup, which is the case this test is about: the
-# marker must be dropped whatever the reason the move failed.
+# response, unlike GH_STUB above) with $GH_STUB_BODY, and so does the REST read of the issue
+# that `validate` makes since #70. Every other `gh api` call fails deterministically -- `issues.py move` reads the current labels with a REST `GET` (#27), and the
+# label check before it is REST too -- so `move doing` itself fails, simulating a transient gh/API
+# hiccup, which is the case this test is about: the marker must be dropped whatever the reason
+# the move failed.
 import json
 import os
 import sys
 
 args = sys.argv[1:]
+issue_path = args[1].split("/") if args[:1] == ["api"] and len(args) > 1 else []
+if len(issue_path) == 5 and issue_path[0] == "repos" and issue_path[3] == "issues":
+    # `issues.py validate` reads the issue over REST since #70, not with `gh issue view`.
+    print(json.dumps({"body": os.environ.get("GH_STUB_BODY", ""), "number": int(issue_path[4])}))
+    sys.exit(0)
+if args[:1] == ["api"]:
+    print("simulated gh failure", file=sys.stderr)
+    sys.exit(7)
 if args[:2] == ["issue", "view"] and "--json" in args:
-    json_arg = args[args.index("--json") + 1]
-    if json_arg == "labels,state":
-        print("simulated gh failure", file=sys.stderr)
-        sys.exit(7)
     number = int(args[2])
     if "-q" in args:
         print(os.environ["GH_STUB_BODY"])
@@ -963,6 +977,11 @@ if args[:2] == ["label", "list"]:
     out(json.dumps([{"name": "status:ai-completed"}, {"name": "status:blocked-on-human"}]))
 if args[:2] == ["project", "item-list"]:
     out(json.dumps({"items": []}))
+issue_path = args[1].split("/") if args[:1] == ["api"] and len(args) > 1 else []
+if len(issue_path) == 5 and issue_path[0] == "repos" and issue_path[3] == "issues":
+    # `issues.py validate` reads the issue over REST since #70, not with `gh issue view`.
+    print(json.dumps({"body": os.environ.get("GH_STUB_BODY", ""), "number": int(issue_path[4])}))
+    sys.exit(0)
 if args[0] == "api":
     out(json.dumps({"number": 348}))
 print("unexpected gh call: " + " ".join(args), file=sys.stderr)
@@ -972,6 +991,16 @@ sys.exit(3)
 
 def _git(*arguments, cwd):
     subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True)
+
+
+def _git_status(worktree):
+    return subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
 
 @pytest.fixture
@@ -1399,12 +1428,17 @@ if args[:2] == ["label", "list"]:
     # The `doing` label already exists, so `move`'s `ensure_labels` creates nothing.
     out(json.dumps([{"name": "status:doing"}]))
 
+issue_path = args[1].split("/") if args[:1] == ["api"] and len(args) > 1 else []
+if len(issue_path) == 5 and issue_path[0] == "repos" and issue_path[3] == "issues":
+    # `issues.py validate` reads the issue over REST since #70, not with `gh issue view`.
+    print(json.dumps({"body": os.environ.get("GH_STUB_BODY", ""), "number": int(issue_path[4])}))
+    sys.exit(0)
 if args[:1] == ["api"]:
     out(json.dumps({}))
 
 if args[:2] == ["project", "item-list"]:
     # No board item for this issue: `mirror_board_column` stops right there, needing no further
-    # `project view`/`field-list`/`item-edit` stub.
+    # board-field or `item-edit` stub.
     out(json.dumps({"items": []}))
 
 print("unexpected gh call: " + " ".join(args), file=sys.stderr)
@@ -1571,14 +1605,13 @@ def test_start_refuses_at_cap_two_when_the_other_backend_shares_a_module(tmp_pat
 
 
 # ---------------------------------------------------------------------------------------------
-# THE DIRTY SIGNAL SURVIVES (#407). No commit carries the diary, and that is only safe because
-# its uncommitted lines keep the worktree dirty: dirtiness is what `start`, `resume` and `branch`
-# refuse to relaunch a run over, since a diary something is still writing to means a run that is
-# not over. Both shapes the file takes in the wild are covered here -- untracked, which is the
-# state of every branch cut after `main` stopped tracking it (5a827d9), and tracked-and-modified,
-# which is what a branch forked before that deletion carries. `.gitignore`-ing the diary, or
-# narrowing these two checks to `--untracked-files=no` the way the pre-merge freeze reads the
-# tree, would erase the signal and fail here.
+# SCRATCH IS NOT DIRT, A TRACKED DIARY STILL IS (#407, #86). No commit carries the diary. #407 read
+# its uncommitted lines as "a run is not over" and refused `start`, `resume` and `branch` over
+# them; every run state then needed its own exemption (#18, #22, #75, #84), and the one not yet
+# covered was the next deadlock only a human could clear. Since #86 the driver hides `scratchpad/`
+# from git in the worktree, so an UNTRACKED diary no longer refuses anything -- liveness is `alive`
+# and `.state`'s to say. The TRACKED-and-modified shape, what a branch forked before `main` stopped
+# tracking the file (5a827d9) carries, is still work git reports, and still refuses.
 # ---------------------------------------------------------------------------------------------
 
 DIARY_HEARTBEAT = "2026-09-17 10:00  HEARTBEAT still-working normal=10m cutoff=20m\n"
@@ -1599,25 +1632,41 @@ def _diary_with_an_uncommitted_line(worktree, *, tracked):
     return diary
 
 
-def test_start_refuses_a_worktree_whose_untracked_diary_holds_lines(tmp_path):
-    environment, cache = _parallel_cap_environment(
+def test_start_is_not_refused_over_an_untracked_diary(tmp_path):
+    # No `.state` at all: the shape #407 refused. Hidden since #86, the diary is not dirt.
+    environment, _cache = _parallel_cap_environment(
         tmp_path, labels_by_issue={"347": ["module:workers"]}
     )
-    diary = _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=False)
+    worktree = tmp_path / "worktree"
+    diary = _diary_with_an_uncommitted_line(worktree, tracked=False)
     try:
         result = _start(environment, "347")
-        assert result.returncode == 1
-        assert "worktree is dirty" in result.stdout, result.stdout
-        # `git status --porcelain` collapses an untracked directory, so the refusal names
-        # `scratchpad/` and not the diary inside it -- measured, not assumed.
-        assert "?? scratchpad/" in result.stdout, result.stdout
-        # A refusal writes nothing, and the lines stay where the monitor reads them.
-        assert not (cache / "worker_claude.pid").exists()
-        assert not (cache / "worker_claude.issue").exists()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert "started pid" in result.stdout, result.stdout
+        # Hidden, not moved: a run the driver never saw end has nothing to archive.
         assert "still-working" in diary.read_text()
+        assert (worktree / "scratchpad" / ".gitignore").read_text() == "*\n"
+        assert "scratchpad" not in _git_status(worktree)
     finally:
-        # Only reached if the refusal this test is about ever stops firing: the fake backend then
-        # blocks on purpose, so stop it by PID through the driver's own `stop`.
+        _stop(environment)
+
+
+def test_start_leaves_a_scratchpad_gitignore_the_host_tracks_alone(tmp_path):
+    environment, _cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    own = worktree / "scratchpad" / ".gitignore"
+    own.parent.mkdir(exist_ok=True)
+    own.write_text("*.tmp\n")
+    _git("add", "scratchpad/.gitignore", cwd=worktree)
+    _git("commit", "-qm", "the host's own scratchpad ignore rules", cwd=worktree)
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert own.read_text() == "*.tmp\n"
+    finally:
         _stop(environment)
 
 
@@ -1639,41 +1688,361 @@ def test_start_refuses_a_worktree_whose_tracked_diary_holds_uncommitted_lines(tm
         _stop(environment)
 
 
-def test_resume_refuses_a_worktree_whose_untracked_diary_holds_lines(tmp_path):
-    # One cut commit, so the relaunch cap is not what refuses this: the dirty check comes first.
+# ---------------------------------------------------------------------------------------------
+# AFTER A CUT, THE DIARY IS THE RESUMED RUN'S OWN HISTORY (#22). The signal above is #407's, and it
+# does not hold for `resume` over a run the guard cut: nothing is alive (checked first), the freeze
+# has committed everything else, and the lines are the ones the run being resumed wrote. So
+# `resume` over `CUT_BY_GUARD` starts on a worktree whose only dirt is the diary -- in both shapes
+# -- and leaves the file where it is, untouched. Anything else dirty, or a `.state` that is not a
+# cut, still refuses.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tracked", [False, True], ids=["untracked", "tracked"])
+@pytest.mark.parametrize(
+    "state_line",
+    # `DONE` too (#84): a run that opened its PR and exited is the one the planner resumes with
+    # the validator's request-changes review (`prompts/planner.md`, CHANGES REQUESTED).
+    ["CUT_BY_GUARD reason=stall", "DONE"],
+    ids=["cut", "done"],
+)
+def test_resume_after_a_cut_starts_over_the_diary_of_the_run_it_continues(
+    tmp_path, tracked, state_line
+):
+    # One cut commit, so the relaunch cap is not what could refuse this.
     environment, cache = _worktree_with_cut_commits(tmp_path, 1)
-    diary = _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=False)
+    (cache / "worker_claude.state").write_text(f"{state_line}\n")
+    diary = _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=tracked)
+    before = diary.read_text()
+    try:
+        result = _resume(environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert "started pid" in result.stdout, result.stdout
+        # Left on disk exactly as the cut run wrote it, where the monitor reads it and the resumed
+        # run appends to it: not archived, not staged, not rewritten.
+        assert diary.read_text() == before
+        assert _archived_diaries(cache) == []
+    finally:
+        _stop(environment)
+
+
+@pytest.mark.parametrize("state_line", ["CUT_BY_GUARD reason=stall", "DONE"], ids=["cut", "done"])
+def test_resume_starts_over_other_scratch_beside_the_diary(tmp_path, state_line):
+    # #22 and #84 refused this: a draft beside the diary in the same untracked `scratchpad/`.
+    # Hidden since #86, it is the resumed run's own scratch, left where that run can read it.
+    environment, cache = _worktree_with_cut_commits(tmp_path, 1)
+    (cache / "worker_claude.state").write_text(f"{state_line}\n")
+    worktree = tmp_path / "worktree"
+    diary = _diary_with_an_uncommitted_line(worktree, tracked=False)
+    (worktree / "scratchpad" / "notes.md").write_text("a draft the worker never committed\n")
+    try:
+        result = _resume(environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "started pid" in result.stdout, result.stdout
+        assert "still-working" in diary.read_text()
+        assert (worktree / "scratchpad" / "notes.md").is_file()
+        assert _archived_diaries(cache) == []
+    finally:
+        _stop(environment)
+
+
+def test_resume_after_a_cut_still_refuses_a_modified_file_beside_the_tracked_diary(tmp_path):
+    environment, cache = _worktree_with_cut_commits(tmp_path, 1)
+    worktree = tmp_path / "worktree"
+    diary = _diary_with_an_uncommitted_line(worktree, tracked=True)
+    (worktree / "README.md").write_text("an edit nothing froze\n")
     try:
         result = _resume(environment)
         assert result.returncode != 0
         assert "worktree is dirty" in result.stdout, result.stdout
-        assert "?? scratchpad/" in result.stdout, result.stdout
-        assert "resume refused" not in result.stdout, result.stdout
-        # A refusal writes nothing: the state the prior cut left is untouched, and so are the
-        # diary's own lines, which the monitor is still reading.
+        assert "README.md" in result.stdout, result.stdout
+        # Only the other work is named: the diary is no longer what the refusal is about.
+        assert "progress.log" not in result.stdout, result.stdout
         assert not (cache / "worker_claude.pid").exists()
-        assert not (cache / "worker_claude.jsonl").exists()
-        assert (cache / "worker_claude.state").read_text() == "CUT_BY_GUARD reason=stall\n"
         assert "still-working" in diary.read_text()
     finally:
         _stop(environment)
 
 
-def test_resume_refuses_a_worktree_whose_tracked_diary_holds_uncommitted_lines(tmp_path):
+@pytest.mark.parametrize(
+    "state_line",
+    [
+        "STARTED",
+        "RESUMED after=guard_cut",
+        "FAILED_LAUNCH command=claude status=127",
+        "BLOCKED reason=merge_failed base=main",
+    ],
+)
+def test_resume_still_refuses_a_tracked_diary_when_the_state_is_not_a_cut(tmp_path, state_line):
+    # `resume` continues a run the guard cut or one that finished (#84). Over a run the driver
+    # never saw end, one that never launched, or one that blocked at `open-pr`, a diary git TRACKS
+    # is an edit git reports, and still refuses; #86 hides only the untracked shape.
     environment, cache = _worktree_with_cut_commits(tmp_path, 1)
+    (cache / "worker_claude.state").write_text(f"{state_line}\n")
     diary = _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=True)
     try:
         result = _resume(environment)
         assert result.returncode != 0
         assert "worktree is dirty" in result.stdout, result.stdout
         assert "scratchpad/progress.log" in result.stdout, result.stdout
-        assert "resume refused" not in result.stdout, result.stdout
         assert not (cache / "worker_claude.pid").exists()
-        assert not (cache / "worker_claude.jsonl").exists()
-        assert (cache / "worker_claude.state").read_text() == "CUT_BY_GUARD reason=stall\n"
+        assert (cache / "worker_claude.state").read_text() == f"{state_line}\n"
         assert "still-working" in diary.read_text()
     finally:
         _stop(environment)
+
+
+# ---------------------------------------------------------------------------------------------
+# A FINISHED RUN'S DIARY IS NOT THE NEXT RUN'S DIRT (#18). The signal above holds for a run the
+# driver never saw end; once `.state` line 1 records an ending, the untracked diary is the previous
+# run's leftover, and `start`/`branch` archive it into `$cache/diaries/` instead of refusing the
+# next dispatch over it. Observed on a host with no ignore rule for the file: the first dispatch to
+# a backend after every completed issue was refused.
+# ---------------------------------------------------------------------------------------------
+
+
+def _finished_previous_run(cache, state_line, previous_issue="37"):
+    (cache / "worker_claude.state").write_text(f"{state_line}\nissue={previous_issue} label=done\n")
+    (cache / "worker_claude.issue").write_text(f"{previous_issue}\n")
+
+
+def _archived_diaries(cache):
+    return (
+        sorted((cache / "diaries").glob("*.progress.log")) if (cache / "diaries").is_dir() else []
+    )
+
+
+@pytest.mark.parametrize("ending", ["DONE", "CUT_BY_GUARD reason=stall", "BLOCKED reason=ci"])
+def test_start_archives_a_finished_runs_diary_and_dispatches(tmp_path, ending):
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=False)
+    _finished_previous_run(cache, ending)
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert "started pid" in result.stdout, result.stdout
+        # Archived, not deleted, and named after the run that wrote it.
+        [archived] = _archived_diaries(cache)
+        assert archived.name.startswith("worker_claude-issue37-"), archived.name
+        assert "still-working" in archived.read_text()
+    finally:
+        _stop(environment)
+
+
+def test_start_neither_refuses_nor_archives_a_diary_whose_run_the_driver_never_saw_end(tmp_path):
+    # #18 refused this; since #86 the diary is hidden, and with no ending recorded it is not
+    # archived either -- it stays exactly where it is.
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    diary = _diary_with_an_uncommitted_line(tmp_path / "worktree", tracked=False)
+    _finished_previous_run(cache, "STARTED")
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert "still-working" in diary.read_text()
+        assert _archived_diaries(cache) == []
+    finally:
+        _stop(environment)
+
+
+def test_start_leaves_a_finished_runs_diary_alone_when_other_work_is_also_left(tmp_path):
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    diary = _diary_with_an_uncommitted_line(worktree, tracked=False)
+    (worktree / "scratchpad" / "notes.md").write_text("scratch the run left beside its diary\n")
+    # Outside `scratchpad/`: work, not the run's scratch, whatever `.state` says.
+    (worktree / "draft.py").write_text("a module the worker never committed\n")
+    _finished_previous_run(cache, "DONE")
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 1
+        assert "worktree is dirty" in result.stdout, result.stdout
+        assert "draft.py" in result.stdout, result.stdout
+        # A refusal writes nothing: neither the diary nor the scratch beside it is moved.
+        assert "still-working" in diary.read_text()
+        assert (worktree / "scratchpad" / "notes.md").is_file()
+        assert _archived_diaries(cache) == []
+        assert _archived_scratch(cache) == []
+    finally:
+        _stop(environment)
+
+
+def test_start_still_refuses_a_modified_tracked_file_under_scratchpad(tmp_path):
+    # Only UNTRACKED scratch is the run's leftover: a change to a file git tracks under
+    # `scratchpad/` -- a committed deliverable -- is an edit of work, and still refuses.
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    deliverable = worktree / "scratchpad" / "report.md"
+    deliverable.parent.mkdir(exist_ok=True)
+    deliverable.write_text("the committed report\n")
+    _git("add", "scratchpad/report.md", cwd=worktree)
+    _git("commit", "-qm", "a deliverable under scratchpad/", cwd=worktree)
+    deliverable.write_text("an edit nothing committed\n")
+    (worktree / "scratchpad" / "notes.md").write_text("scratch\n")
+    _finished_previous_run(cache, "DONE")
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 1
+        assert "worktree is dirty" in result.stdout, result.stdout
+        assert "scratchpad/report.md" in result.stdout, result.stdout
+        assert (worktree / "scratchpad" / "notes.md").is_file()
+        assert _archived_scratch(cache) == []
+    finally:
+        _stop(environment)
+
+
+# ---------------------------------------------------------------------------------------------
+# A FINISHED RUN'S SCRATCH IS NOT THE NEXT RUN'S DIRT EITHER (#75). The diary is not the only file
+# a run leaves in `scratchpad/`: the worker's RULES send intermediate results there, and a run that
+# ended BLOCKED on the host #75 came from left a script, a commit message draft and a
+# `__pycache__/` there -- no diary at all. `git status` reported the one collapsed `?? scratchpad/`,
+# #18's "the diary is the only dirty path" did not match, and two unrelated dispatches were refused
+# until a human moved the directory out by hand. Once `.state` records the run's end and nothing is
+# alive, every UNTRACKED file under `scratchpad/` is that run's leftover and is archived with the
+# diary; anything dirty elsewhere, or tracked, still refuses and moves nothing.
+# ---------------------------------------------------------------------------------------------
+
+
+def _archived_scratch(cache):
+    diaries = cache / "diaries"
+    if not diaries.is_dir():
+        return []
+    return sorted(
+        path.relative_to(archive).as_posix()
+        for archive in diaries.glob("*.scratchpad")
+        for path in archive.rglob("*")
+        if path.is_file()
+    )
+
+
+def _stray_scratch(worktree):
+    """The shape #75 observed: a finished run's `scratchpad/` holding no diary, only scratch."""
+    scratchpad = worktree / "scratchpad"
+    (scratchpad / "__pycache__").mkdir(parents=True, exist_ok=True)
+    (scratchpad / "check_symbols.py").write_text("print('an ad hoc check')\n")
+    (scratchpad / "commit-msg-stage6.txt").write_text("a commit message draft\n")
+    (scratchpad / "__pycache__" / "check_symbols.cpython-312.pyc").write_bytes(b"\x00bytecode")
+
+
+@pytest.mark.parametrize("ending", ["DONE", "CUT_BY_GUARD reason=stall", "BLOCKED reason=push"])
+def test_start_archives_a_finished_runs_stray_scratch_without_a_diary(tmp_path, ending):
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    _stray_scratch(worktree)
+    _finished_previous_run(cache, ending)
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert "started pid" in result.stdout, result.stdout
+        # Archived, not deleted, under the name of the run that wrote them, paths kept.
+        [archive] = sorted((cache / "diaries").glob("*.scratchpad"))
+        assert archive.name.startswith("worker_claude-issue37-"), archive.name
+        assert _archived_scratch(cache) == [
+            "__pycache__/check_symbols.cpython-312.pyc",
+            "check_symbols.py",
+            "commit-msg-stage6.txt",
+        ]
+        assert not (worktree / "scratchpad" / "check_symbols.py").exists()
+        # The ignore file is the driver's own, not the run's scratch (#86): it stays, and keeps
+        # hiding the next run's.
+        assert (worktree / "scratchpad" / ".gitignore").read_text() == "*\n"
+        assert "scratchpad" not in _git_status(worktree)
+    finally:
+        _stop(environment)
+
+
+def test_start_archives_a_finished_runs_diary_and_the_scratch_beside_it(tmp_path):
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    _diary_with_an_uncommitted_line(worktree, tracked=False)
+    (worktree / "scratchpad" / "notes.md").write_text("scratch the run left beside its diary\n")
+    _finished_previous_run(cache, "DONE")
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "started pid" in result.stdout, result.stdout
+        # The diary keeps #18's archive name; the rest lands beside it, under the same run.
+        [diary] = _archived_diaries(cache)
+        assert "still-working" in diary.read_text()
+        assert _archived_scratch(cache) == ["notes.md"]
+        [archive] = sorted((cache / "diaries").glob("*.scratchpad"))
+        assert archive.name.removesuffix(".scratchpad") == diary.name.removesuffix(".progress.log")
+    finally:
+        _stop(environment)
+
+
+def test_start_neither_refuses_nor_archives_stray_scratch_whose_run_never_ended(tmp_path):
+    environment, cache = _parallel_cap_environment(
+        tmp_path, labels_by_issue={"347": ["module:workers"]}
+    )
+    worktree = tmp_path / "worktree"
+    _stray_scratch(worktree)
+    _finished_previous_run(cache, "STARTED")
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "worktree is dirty" not in result.stdout, result.stdout
+        assert (worktree / "scratchpad" / "check_symbols.py").is_file()
+        assert _archived_scratch(cache) == []
+    finally:
+        _stop(environment)
+
+
+def test_branch_archives_a_finished_runs_stray_scratch_before_switching(tmp_path):
+    _remote, worktree = _worktree_with_origin(tmp_path)
+    _stray_scratch(worktree)
+    environment = _branch_environment(tmp_path, worktree)
+    cache = tmp_path / "cache"
+    _finished_previous_run(cache, "BLOCKED reason=push_rejected")
+
+    result = _branch(environment, "task/81-next-issue")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "is now on task/81-next-issue" in result.stdout, result.stdout
+    assert "check_symbols.py" in _archived_scratch(cache)
+
+
+def test_branch_switches_over_scratch_whose_run_never_ended(tmp_path):
+    # The same deadlock on `branch` (#86): scratch with no recorded ending refused the switch.
+    _remote, worktree = _worktree_with_origin(tmp_path)
+    _stray_scratch(worktree)
+    environment = _branch_environment(tmp_path, worktree)
+    cache = tmp_path / "cache"
+    _finished_previous_run(cache, "STARTED")
+
+    result = _branch(environment, "task/81-next-issue")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "is now on task/81-next-issue" in result.stdout, result.stdout
+    assert (worktree / "scratchpad" / "check_symbols.py").is_file()
+    assert _archived_scratch(cache) == []
+
+
+def test_branch_archives_a_finished_runs_diary_before_switching(tmp_path):
+    _remote, worktree = _worktree_with_origin(tmp_path)
+    _diary_with_an_uncommitted_line(worktree, tracked=False)
+    environment = _branch_environment(tmp_path, worktree)
+    cache = tmp_path / "cache"
+    _finished_previous_run(cache, "DONE")
+
+    result = _branch(environment, "task/81-next-issue")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "is now on task/81-next-issue" in result.stdout, result.stdout
+    [archived] = _archived_diaries(cache)
+    assert "still-working" in archived.read_text()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1797,19 +2166,22 @@ if args[:2] == ["label", "list"]:
         {"name": "status:ai-completed"},
         {"name": "status:blocked-on-human"},
     ]))
-if args[:2] == ["project", "item-list"]:
-    # $GH_STUB_BOARD_ITEM is the issue number the board holds an item for; unset, the board holds
-    # none and `mirror_board_column` says so instead of editing anything.
-    on_board = os.environ.get("GH_STUB_BOARD_ITEM")
-    if on_board:
-        out(json.dumps({"items": [{"id": "ITEM1", "content": {"number": int(on_board)}}]}))
-    out(json.dumps({"items": []}))
-if args[:2] == ["project", "view"]:
-    out(json.dumps({"id": "PROJECT1"}))
-if args[:2] == ["project", "field-list"]:
-    out(json.dumps({"fields": [{"id": "FIELD1", "name": "Status", "options": [
+if args[:2] == ["api", "graphql"] and "projectV2(" in " ".join(args):
+    # The board's single-select fields, one bounded query (#27).
+    fields = [{"id": "FIELD1", "name": "Status", "options": [
         {"id": "OPT_DOING", "name": "In progress"},
-    ]}]}))
+    ]}]
+    project = {"id": "PROJECT1", "fields": {"nodes": fields}}
+    out(json.dumps({"data": {"repositoryOwner": {"projectV2": project}}}))
+if args[:2] == ["api", "graphql"]:
+    # The issue's own `projectItems` (#14). $GH_STUB_BOARD_ITEM is the issue number that has an
+    # item on board 1 of `owner`; unset, no issue has one and `mirror_board_column` says so
+    # instead of editing anything.
+    on_board = os.environ.get("GH_STUB_BOARD_ITEM")
+    nodes = []
+    if on_board and f"number={on_board}" in args:
+        nodes = [{"id": "ITEM1", "project": {"number": 1, "owner": {"login": "owner"}}}]
+    out(json.dumps({"data": {"repository": {"issue": {"projectItems": {"nodes": nodes}}}}}))
 if args[:2] == ["project", "item-edit"]:
     out("")
 if args[:2] == ["pr", "list"]:
@@ -1818,6 +2190,11 @@ if args[:2] == ["pr", "create"]:
     out("https://github.com/owner/name/pull/7")
 if args[:2] == ["pr", "view"]:
     out(os.environ.get("GH_STUB_MERGEABLE", "MERGEABLE"))
+issue_path = args[1].split("/") if args[:1] == ["api"] and len(args) > 1 else []
+if len(issue_path) == 5 and issue_path[0] == "repos" and issue_path[3] == "issues":
+    # `issues.py validate` reads the issue over REST since #70, not with `gh issue view`.
+    print(json.dumps({"body": os.environ.get("GH_STUB_BODY", ""), "number": int(issue_path[4])}))
+    sys.exit(0)
 if args[:1] == ["api"]:
     out(json.dumps({"number": 347}))
 
@@ -2234,11 +2611,13 @@ def test_a_cut_stage_leaves_nothing_untracked_and_resume_starts_without_a_human(
         config_path=_config_with_backend_foo(tmp_path) if backend == "foo" else None,
     )
     environment["FAKE_BACKEND_UNTRACKED"] = "price_candidates.py,tests/test_candidates_pricing.py"
-    # The real repository holds the diary in `.git/info/exclude` (PR #406), so a cut leaves it as
-    # the one untracked path `git status` does not report and `resume` is not refused over it --
-    # that refusal is what the diary tests above exercise, on a worktree without the entry.
+    # NO `.git/info/exclude` entry for the diary (#22). The original host keeps one by hand (PR
+    # #406) and this test used to add it too, which hid that `resume` refused every relaunch after
+    # a cut over the diary the cut run itself had written. The fake backend appends to the diary,
+    # so the cut leaves it untracked here, exactly as on a host that never made that manual step.
     exclude = worktree / ".git" / "info" / "exclude"
-    exclude.write_text(exclude.read_text() + "scratchpad/progress.log\n")
+    assert "progress.log" not in exclude.read_text()
+    diary = worktree / "scratchpad" / "progress.log"
     try:
         with _planner_lock_held(cache):
             started = _start(environment, "347", backend=backend)
@@ -2268,6 +2647,10 @@ def test_a_cut_stage_leaves_nothing_untracked_and_resume_starts_without_a_human(
             assert _wait_until(lambda: _run_is_over(cache, backend)), (
                 "the launcher subshell never exited"
             )
+            # The one thing still dirty is the cut run's own diary -- the case #22 is about.
+            assert "scratchpad/progress.log" not in frozen, frozen
+            diary_before = diary.read_text()
+            assert "still-working" in diary_before
             resumed = _resume(environment, backend)
             assert resumed.returncode == 0, resumed.stdout + resumed.stderr
             assert "worktree is dirty" not in resumed.stdout, resumed.stdout
@@ -2275,6 +2658,8 @@ def test_a_cut_stage_leaves_nothing_untracked_and_resume_starts_without_a_human(
             # Reached the backend -- proof `resume` accepted the tree the cut left, with no
             # manual `git add` and no `--force` anywhere in this test.
             assert "started pid" in resumed.stdout, resumed.stdout
+            # And the diary is where the cut left it, for the monitor and the resumed run.
+            assert diary.read_text().startswith(diary_before)
             if backend == "foo":
                 # The class on `foo` named the model, and the run's own events are `foo`'s.
                 assert "model:     foo-model-1" in started.stdout, started.stdout
@@ -2418,6 +2803,23 @@ def test_a_guard_cut_freezes_the_file_the_stage_never_added(tmp_path, monkeypatc
         482,
         "status:doing",
     )
+
+
+def test_a_guard_cut_leaves_the_runs_scratch_out_of_the_freeze(tmp_path, monkeypatch):
+    # #417's sweep took every untracked file but the diary, scratch drafts included, into the
+    # cut's WIP commit on the PR branch. Hidden since #86 -- also on a worktree whose run started
+    # before `start` hid it, which is this one -- they stay on disk and out of the commit.
+    worktree, statefile = _cut_worktree(tmp_path, monkeypatch)
+    (worktree / "scratchpad" / "notes.md").write_text("a draft the stage wrote for itself\n")
+
+    agent_guard.cut_run("claude", "stall", worktree=worktree, statefile=statefile, main=ROOT)
+
+    frozen = _frozen_paths(worktree)
+    assert "price_candidates.py" in frozen, frozen
+    assert not [path for path in frozen if path.startswith("scratchpad/")], frozen
+    assert (worktree / "scratchpad" / "notes.md").is_file()
+    assert "scratchpad" not in _newest_commit_body(worktree)
+    assert _work_left_behind(worktree) == []
 
 
 def test_a_guard_cut_on_a_tree_with_nothing_to_freeze_writes_no_commit(tmp_path, monkeypatch):
@@ -3048,6 +3450,34 @@ def test_start_accepts_a_branch_whose_name_carries_this_issues_number(tmp_path):
         _stop(environment)
 
 
+def test_start_accepts_a_hyphenated_prefix_and_its_refusal_names_the_shape(tmp_path):
+    """agent-os#16: the planner branched `agent-os/37-gradle-skeleton` and `start 37` refused it
+    while telling it to use "a branch naming #37" -- which it was. The anchoring that stops a wrong
+    branch is on the number (`/<issue>` then `-`, `/` or the end), not on the prefix being letters
+    only; so a hyphenated prefix passes, a hyphenated prefix does NOT let `…/387-close-the-390-gap`
+    through for #390, and the refusal spells out the shape it accepts instead of paraphrasing it."""
+    (tmp_path / "accepted").mkdir()
+    environment, _cache, _worktree = _base_check_environment(
+        tmp_path / "accepted", branch="agent-os/347-the-work"
+    )
+    try:
+        result = _start(environment, "347")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "started pid" in result.stdout
+    finally:
+        _stop(environment)
+
+    (tmp_path / "refused").mkdir()
+    environment, cache, _worktree = _base_check_environment(
+        tmp_path / "refused", branch="agent-os/387-close-the-390-gap"
+    )
+    refused = _start(environment, "390")
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert "refusing to dispatch" in refused.stdout
+    assert "<word>/390-<slug>" in refused.stdout, refused.stdout
+    assert list(cache.iterdir()) == []
+
+
 def test_start_accepts_the_worktree_sitting_on_the_base_the_issue_names(tmp_path):
     # `Base: feature/340-parent` -- a stacked issue, whose work does not belong on the trunk. The
     # same resolution `open-pr` uses, so the gate and the pull request cannot disagree.
@@ -3434,6 +3864,54 @@ def test_init_links_venv_and_env_from_the_host_root_when_present(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (worktree / ".venv").is_symlink()
     assert (worktree / ".env").is_symlink()
+
+
+def _with_project_keys(environment, tmp_path, **keys):
+    """`config.example.yaml`, which the suite already loads, with `keys` set under `project:`."""
+    data = yaml.safe_load(EXAMPLE_CONFIG.read_text())
+    data["project"].update(keys)
+    config = tmp_path / "agents-provisioned.yaml"
+    config.write_text(yaml.safe_dump(data, sort_keys=False))
+    environment["AGENTS_CONFIG_PATH"] = str(config)
+
+
+def test_init_links_the_configured_paths_and_runs_the_setup_command_in_the_worktree(tmp_path):
+    """agent-os#41: a monorepo keeps its environment under subdirectories, not a root `.venv`."""
+    root = _minimal_host_root(tmp_path)
+    (root / "backend").mkdir()
+    (root / "backend" / ".venv").mkdir()
+    worktree = tmp_path / "worktree"
+    environment = _init_environment(tmp_path, root, worktree)
+    _with_project_keys(
+        environment,
+        tmp_path,
+        worktree_links=["backend/.venv", ".env"],
+        worktree_setup_command='printf "%s" "$PWD" > provisioned-by-setup',
+    )
+
+    result = _init(environment)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (worktree / "backend" / ".venv").is_symlink()
+    assert (worktree / "backend" / ".venv").resolve() == (root / "backend" / ".venv").resolve()
+    assert not (worktree / ".venv").exists(), "a root .venv the host did not list was linked"
+    assert (worktree / "provisioned-by-setup").read_text() == str(worktree)
+
+
+def test_init_refuses_and_removes_the_worktree_when_the_setup_command_fails(tmp_path):
+    root = _minimal_host_root(tmp_path)
+    worktree = tmp_path / "worktree"
+    environment = _init_environment(tmp_path, root, worktree)
+    _with_project_keys(environment, tmp_path, worktree_setup_command="exit 5")
+
+    result = _init(environment)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "project.worktree_setup_command failed" in result.stdout, result.stdout
+    assert not worktree.exists()
+    # A rerun starts from nothing again instead of calling a half-provisioned tree initialized.
+    _with_project_keys(environment, tmp_path, worktree_setup_command="")
+    again = _init(environment)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "created" in again.stdout, again.stdout
 
 
 def test_init_refuses_when_the_fetch_fails_and_creates_nothing(tmp_path):
@@ -3973,6 +4451,90 @@ def test_open_pr_stops_and_leaves_the_issue_alone_when_the_push_is_rejected(work
     assert state == "BLOCKED reason=push_rejected branch=claude/348-pr", state
     recorded = calls.read_text() if calls.is_file() else ""
     assert "labels[]=status:ai-completed" not in recorded, recorded
+    # ... but never silently in `doing` (#61): the issue says why and waits for a human.
+    assert "labels[]=status:blocked-on-human" in recorded, recorded
+    posted = [line for line in recorded.splitlines() if "/comments\t-X\tPOST" in line]
+    assert len(posted) == 1, recorded
+    assert "rejected" in recorded
+    assert "pr\tcreate" not in recorded
+
+
+def _reject_pushes_like_github_without_workflows_permission(remote):
+    """GitHub's own refusal, as the remote says it: a pre-receive hook on the local bare origin
+    prints the message a GitHub App without `workflows` permission gets, and declines the push."""
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo 'refusing to allow a GitHub App to create or update workflow "
+        "`.github/workflows/ci.yml` without `workflows` permission' >&2\n"
+        "exit 1\n"
+    )
+    hook.chmod(0o755)
+
+
+def test_open_pr_classifies_a_workflows_permission_rejection_and_asks_a_human(worker_at_its_end):
+    """A stale branch pushed by an App without `workflows` permission is refused because its tree
+    differs from the default branch under `.github/workflows/` (#61). That is not a diverged
+    remote: it used to be read as one, end in `BLOCKED reason=push_rejected`, and leave finished
+    work in `doing` with no pull request, no comment and no `blocked-on-human`."""
+    environment, _worktree, remote, cache, calls = worker_at_its_end
+    _reject_pushes_like_github_without_workflows_permission(remote)
+
+    result = _open_pr(environment)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "was ahead" not in result.stdout, result.stdout
+    assert "workflows" in result.stdout, result.stdout
+    state = (cache / "worker_claude.state").read_text().splitlines()
+    assert state[0] == "BLOCKED reason=workflows_permission branch=claude/348-pr", state
+    assert state[1] == "issue=348 label=status:blocked-on-human", state
+
+    recorded = calls.read_text()
+    assert "pr\tcreate" not in recorded, recorded
+    assert "labels[]=status:ai-completed" not in recorded, recorded
+    assert "labels[]=status:blocked-on-human" in recorded, recorded
+    posted = [line for line in recorded.splitlines() if "/comments\t-X\tPOST" in line]
+    assert len(posted) == 1, recorded
+    # The comment quotes GitHub and says what unblocks it.
+    assert "refusing to allow a GitHub App to create or update workflow" in recorded
+    assert "merge `origin/main` into `claude/348-pr`" in recorded, recorded
+    assert "workflows: write" in recorded
+
+
+def test_open_pr_names_the_conflict_when_the_stale_branch_is_refused(worker_at_its_end):
+    """The conflict path is the one that pushes a stale branch, so it is the one that hits the
+    workflows refusal: the comment names the conflicting paths the human has to resolve."""
+    environment, worktree, remote, cache, calls = worker_at_its_end
+    (worktree / "README.md").write_text("the worker's line\n")
+    _git("add", "README.md", cwd=worktree)
+    _git("commit", "-qm", "the worker rewrote the readme", cwd=worktree)
+    _advance_the_base(
+        remote, path="README.md", contents="somebody else's line\n", subject="the base rewrote it"
+    )
+    _reject_pushes_like_github_without_workflows_permission(remote)
+
+    result = _open_pr(environment)
+    assert result.returncode == 1, result.stdout + result.stderr
+    state = (cache / "worker_claude.state").read_text().splitlines()[0]
+    assert state == "BLOCKED reason=workflows_permission branch=claude/348-pr", state
+    recorded = calls.read_text()
+    assert "- `README.md`" in recorded, recorded
+    assert "labels[]=status:blocked-on-human" in recorded, recorded
+
+
+def test_open_pr_clears_a_previous_blocked_line_when_it_succeeds(worker_at_its_end):
+    """A human fixes what blocked `open-pr` and runs it again: the pull request opens, and the
+    earlier `BLOCKED` line must not outlive it -- `write_state_marker` preserves line 1 (#61)."""
+    environment, _worktree, _remote, cache, calls = worker_at_its_end
+    (cache / "worker_claude.state").write_text(
+        "BLOCKED reason=workflows_permission branch=claude/348-pr\n"
+        "issue=348 label=status:blocked-on-human\n"
+    )
+
+    result = _open_pr(environment)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pr\tcreate" in calls.read_text()
+    state = (cache / "worker_claude.state").read_text().splitlines()
+    assert state == ["DONE", "issue=348 label=status:ai-completed"], state
 
 
 def test_resume_leaves_a_label_a_human_set_on_a_live_issue_alone(tmp_path):

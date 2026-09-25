@@ -617,3 +617,55 @@ def test_the_bookkeeping_is_replaced_whole_never_written_in_place(tmp_path, monk
     assert target == path and source.parent == path.parent and source != path
     assert json.loads(path.read_text())["last_quota_status"] == "exhausted"
     assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
+# ---- a stream event whose top-level `message` is a string (#37) ---------------------------------
+
+# What Claude Code writes when it refuses a tool call: `message` is the refusal's text, not an
+# API message object carrying `usage` and `content`.
+PERMISSION_DENIED_EVENT = {
+    "type": "system",
+    "subtype": "permission_denied",
+    "tool_name": "Bash",
+    "decision_reason_type": "safetyCheck",
+    "decision_reason": "Dangerous rm operation on statically-unresolvable target",
+    "message": "Dangerous rm operation on statically-unresolvable target",
+}
+
+
+def test_a_string_message_event_still_counts_the_usage_of_the_other_events():
+    parser = agent_guard.backend_stream_parser(None)
+    summary = parser.turn_usage(
+        [_assistant("before", tokens=7), PERMISSION_DENIED_EVENT, _assistant("after", tokens=11)]
+    )
+    assert (summary.turns, summary.context, summary.output_tokens) == (2, 11, 18)
+
+
+def test_a_role_log_with_a_permission_denied_event_is_still_read(tmp_path):
+    now = datetime.now(UTC)
+    events = [_assistant("working"), PERMISSION_DENIED_EVENT, *REJECTED_RUN]
+    log = _role_log(tmp_path, "20260918T084846Z", events, age_seconds=30, now=now)
+
+    assert agent_guard.role_run_quota_status(log) == "exhausted"
+
+
+def test_a_permission_denied_event_does_not_kill_the_tick(tmp_path, monkeypatch):
+    now = datetime.now(UTC)
+    events = [_assistant("working"), PERMISSION_DENIED_EVENT, *REJECTED_RUN]
+    _role_log(tmp_path, "20260918T084846Z", events, age_seconds=30, now=now)
+    monkeypatch.setattr(
+        agent_guard,
+        "_tick_backend",
+        lambda backend, *, main, now=None: agent_guard.TickResult(backend, f"{backend}: idle"),
+    )
+    monkeypatch.setattr(agent_guard, "_agents_paused", lambda *, main: True)
+
+    agent_guard.tick(main=tmp_path, now=now)
+
+    assert _verdict(tmp_path, now).status == "exhausted"
+
+
+def test_a_json_line_that_is_not_an_object_is_skipped_like_a_torn_one(tmp_path):
+    log = tmp_path / "run.log"
+    log.write_text('"a bare string"\n[1, 2]\n{"type": "result"}\nnot json\n')
+    assert agent_guard.read_events(log) == [{"type": "result"}]

@@ -24,6 +24,14 @@ from typing import Literal, Protocol, runtime_checkable
 QuotaStatus = Literal["allowed", "exhausted"]
 
 
+def event_message(event: dict) -> dict:
+    """The API message object an event carries, or `{}` when it carries none. Not every event's
+    top-level `message` is one: Claude Code's `system/permission_denied` puts the refusal's TEXT
+    there, and reading `usage` or `content` off that string killed every guard tick (#37)."""
+    message = event.get("message")
+    return message if isinstance(message, dict) else {}
+
+
 @dataclass
 class UsageSummary:
     session_id: str

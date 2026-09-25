@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -204,6 +205,17 @@ def test_the_renderer_refuses_a_placeholder_nothing_answered():
     with pytest.raises(KeyError) as failure:
         render_prompt("validator", {})
     assert "__WORKTREE__" in str(failure.value)
+
+
+@pytest.mark.parametrize("role", PROMPT_ROLES)
+def test_no_template_names_a_script_under_the_hosts_own_scripts_directory(role):
+    """`scripts/` is the host's directory, not this package's: a path under it in a template is a
+    file one host happens to have, and a worker on any other host reads an instruction it cannot
+    follow (agent-os#11, `scripts/debug.py`). A host-owned command reaches a prompt as a config
+    value (`__TEST_COMMAND__`) or through the host's own paragraph at `__PROJECT_EXTRAS__`."""
+    template = (PROMPTS_DIR / f"{role}.md").read_text()
+    host_script_paths = sorted(set(re.findall(r"(?<![\w./-])scripts/[\w./-]+", template)))
+    assert not host_script_paths, f"prompts/{role}.md names host script(s) {host_script_paths}"
 
 
 def test_an_unknown_role_has_no_template_and_says_so():

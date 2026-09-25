@@ -8,19 +8,13 @@ rename with no shim breaks a run in flight.
 It re-executes the mechanism on ITS OWN interpreter and adds no behaviour and no argument of its
 own. That interpreter is what `bash agent_os/bootstrap.sh` builds: without it the resolver falls
 back to `python3`, which fails on the import unless that one happens to carry the mechanism's
-dependencies -- so the bootstrap is a prerequisite of this path, not an optimisation.
-
-Workaround titanarq/agent-os#27 (docs/runbooks/operations.md): the one thing it does add is a
-default `AGENT_OS_PYTHON` of `scripts/agent_os_patches/python`, the interpreter wrapper that runs
-`-m agent_os.issues` with cheap board lookups; every child process inherits it. Drop that line
-once agent-os#27 is fixed and the subtree is pulled."""
+dependencies -- so the bootstrap is a prerequisite of this path, not an optimisation."""
 
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "agent_os"))
-os.environ.setdefault("AGENT_OS_PYTHON", os.path.join(ROOT, "scripts", "agent_os_patches", "python"))
 from agent_os.cli import agent_os_python
 
 os.execvp(agent_os_python(), [agent_os_python(), "-m", "agent_os.issues", *sys.argv[1:]])

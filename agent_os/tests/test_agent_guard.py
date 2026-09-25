@@ -36,6 +36,7 @@ from agent_os.guard import (
     read_state_marker,
     repeated_tool_calls,
     stall_detected,
+    turns_since_commit,
     unparsable_cutoff_lines,
     write_state_line1,
 )
@@ -559,6 +560,159 @@ def test_stall_detected_qwen_path_resets_the_counter_on_a_new_commit():
     assert tier is None
     assert updated.commit_count == 2
     assert updated.turn_count_at_commit == 10
+
+
+def test_turns_since_commit_qwen_path_never_goes_negative_on_another_processs_anchor():
+    """#52's unit-level repro: a previous run's anchor (turn 12, 5 commits) against a new
+    process at turn 3 with no commit yet. It returned -9."""
+    since, updated = turns_since_commit(
+        [], [], 3, StallBookkeeping(commit_count=5, turn_count_at_commit=12)
+    )
+    assert since == 3
+    assert (updated.commit_count, updated.turn_count_at_commit) == (0, 0)
+
+
+def test_turns_since_commit_qwen_path_keeps_the_quota_memory_across_a_commit():
+    """A commit re-anchors the counter and nothing else: the quota memory the same tick compares
+    against must not be dropped by it, nor the warning marker."""
+    bookkeeping = StallBookkeeping(
+        commit_count=1, turn_count_at_commit=2, warned_at_turn_count=7, last_quota_status="allowed"
+    )
+    _, updated = turns_since_commit([], [_naive(2026, 9, 14), _naive(2026, 9, 15)], 10, bookkeeping)
+    assert (updated.commit_count, updated.turn_count_at_commit) == (2, 10)
+    assert updated.last_quota_status == "allowed"
+    assert updated.warned_at_turn_count == 7
+
+
+def test_scoped_to_run_resets_the_stall_fields_of_another_run_and_keeps_the_quota():
+    previous = StallBookkeeping(
+        commit_count=5,
+        turn_count_at_commit=12,
+        warned_at_turn_count=9,
+        last_quota_status="exhausted",
+        run_identity="issue=14 startref=aaa pid=100",
+    )
+    scoped = agent_guard.scoped_to_run(previous, "issue=19 startref=bbb pid=200")
+    assert scoped == StallBookkeeping(
+        last_quota_status="exhausted", run_identity="issue=19 startref=bbb pid=200"
+    )
+    assert agent_guard.scoped_to_run(previous, previous.run_identity) is previous
+
+
+def _stall_tick_fixture(tmp_path: Path, monkeypatch, *, turns: int, commits: int) -> Path:
+    """A live Qwen run of issue #19 at `turns` turns with `commits` commits since its start ref,
+    no progress.log declaration past its grace, and a guard that records instead of cutting."""
+    cache = tmp_path / ".cache"
+    worktree = tmp_path / "example-qwen"
+    worktree.mkdir()
+    cache.mkdir()
+    monkeypatch.setenv("WORKER_CACHE_DIR", str(cache))
+    monkeypatch.setenv("WORKER_WORKTREE", str(worktree))
+    (cache / "worker_qwen.state").write_text("STARTED\n")
+    (cache / "worker_qwen.issue").write_text("19\n")
+    (cache / "worker_qwen.startref").write_text("bbb\n")
+    (cache / "worker_qwen.pid").write_text("200\n")
+    (cache / "worker_qwen.jsonl").write_text(
+        "".join(json.dumps(_assistant_event()) + "\n" for _ in range(turns))
+    )
+    body = f"{VALID_BODY}\n\n<!-- budget: mechanical-qwen -->"
+    monkeypatch.setattr(
+        agent_guard.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout=body, stderr=""),
+    )
+    monkeypatch.setattr(agent_guard, "_is_alive", lambda pidfile: True)
+    monkeypatch.setattr(
+        agent_guard,
+        "_commit_timestamps",
+        lambda tree, startref: [_naive(2026, 9, 24, 10, minute) for minute in range(commits)],
+    )
+    monkeypatch.setattr(
+        agent_guard,
+        "load_task_classes",
+        lambda: {"mechanical-qwen": _qwen_task_class(commit_warn_turns=8, commit_cut_turns=15)},
+    )
+    monkeypatch.setattr(agent_guard, "post_stall_warning", lambda *args, **kwargs: None)
+    return cache / "agent_guard_qwen.json"
+
+
+def test_tick_backend_does_not_measure_a_new_run_from_the_previous_runs_anchor(
+    monkeypatch, tmp_path
+):
+    """#52 as observed: #14's run left `commit_count=5, turn_count_at_commit=12` behind, #19 was
+    dispatched with a new start ref, and at its turn 9 with no commit the tick said `-7 turns`."""
+    bookkeeping_file = _stall_tick_fixture(tmp_path, monkeypatch, turns=9, commits=0)
+    bookkeeping_file.write_text(
+        json.dumps(
+            {
+                "commit_count": 5,
+                "turn_count_at_commit": 12,
+                "warned_at_turn_count": 9,
+                "last_quota_status": "allowed",
+            }
+        )
+    )
+
+    result = agent_guard._tick_backend("qwen", main=tmp_path)
+
+    assert result.message == "qwen: alive, 9 turns since last commit (class mechanical-qwen)"
+    saved = json.loads(bookkeeping_file.read_text())
+    assert saved["commit_count"] == 0
+    assert saved["turn_count_at_commit"] == 0
+    # 9 turns is past the warn threshold of 8: this run's warning is its own, not suppressed by
+    # the previous run's marker at the same turn count.
+    assert saved["warned_at_turn_count"] == 9
+    assert saved["last_quota_status"] == "allowed"
+    assert saved["run_identity"] == "issue=19 startref=bbb pid=200"
+
+
+def test_tick_backend_counts_a_new_runs_first_commits_below_the_previous_runs_count(
+    monkeypatch, tmp_path
+):
+    """#52 effect 2: the previous run's `commit_count=5` hid this run's commits 1..5, so a worker
+    that had just committed was measured from turn 12 and cut once `turns - 12` crossed the cut."""
+    bookkeeping_file = _stall_tick_fixture(tmp_path, monkeypatch, turns=30, commits=2)
+    bookkeeping_file.write_text(
+        json.dumps(
+            {
+                "commit_count": 5,
+                "turn_count_at_commit": 12,
+                "warned_at_turn_count": None,
+                "last_quota_status": "allowed",
+                "run_identity": "issue=14 startref=aaa pid=100",
+            }
+        )
+    )
+    cuts: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        agent_guard, "cut_run", lambda backend, reason, **kwargs: cuts.append((backend, reason))
+    )
+
+    result = agent_guard._tick_backend("qwen", main=tmp_path)
+
+    assert cuts == []
+    assert result.message == "qwen: alive, 0 turns since last commit (class mechanical-qwen)"
+    saved = json.loads(bookkeeping_file.read_text())
+    assert (saved["commit_count"], saved["turn_count_at_commit"]) == (2, 30)
+
+
+def test_tick_backend_keeps_the_same_runs_anchor_between_ticks(monkeypatch, tmp_path):
+    bookkeeping_file = _stall_tick_fixture(tmp_path, monkeypatch, turns=6, commits=1)
+    bookkeeping_file.write_text(
+        json.dumps(
+            {
+                "commit_count": 1,
+                "turn_count_at_commit": 4,
+                "warned_at_turn_count": None,
+                "last_quota_status": "allowed",
+                "run_identity": "issue=19 startref=bbb pid=200",
+            }
+        )
+    )
+
+    result = agent_guard._tick_backend("qwen", main=tmp_path)
+
+    assert result.message == "qwen: alive, 2 turns since last commit (class mechanical-qwen)"
 
 
 # ---- repeated_tool_calls ----
@@ -1110,6 +1264,8 @@ def _stub_tick(
     dispatchable=(),
     refinable=(),
     without_worktree=None,
+    dirty_worktree=None,
+    dirt=None,
     orphans=(),
     dead_runs=(),
     unreviewed=(),
@@ -1122,8 +1278,17 @@ def _stub_tick(
     monkeypatch.setattr(agent_guard, "_agents_paused", lambda *, main: paused)
     monkeypatch.setattr(agent_guard, "_check_human_replies", lambda *, main: list(woken))
     monkeypatch.setattr(agent_guard, "_is_alive", lambda pidfile: alive)
-    scan = agent_guard.DispatchableScan(list(dispatchable), dict(without_worktree or {}))
+    scan = agent_guard.DispatchableScan(
+        list(dispatchable), dict(without_worktree or {}), dict(dirty_worktree or {})
+    )
     monkeypatch.setattr(agent_guard, "dispatchable_scan", lambda *, main: scan)
+    # The tick reads every backend's worktree for dirt (#86): a fact about this machine's disk, so
+    # every tick test says what it is -- clean unless the test hands a listing per backend.
+    monkeypatch.setattr(
+        agent_guard,
+        "backend_worktree_dirt",
+        lambda backend, *, main: list((dirt or {}).get(backend, [])),
+    )
     monkeypatch.setattr(agent_guard, "dispatchable_issues", lambda *, main: list(scan.issues))
     # `tick` always calls `_write_refine_pending_event_if_due`, which reads the REAL
     # `planner.refiner_unattended` unless a test overrides `load_planner_config` itself -- and the
@@ -1692,6 +1857,8 @@ def _worktrees_present(monkeypatch, present=True):
         "backend_worktree_present",
         (lambda backend: present) if isinstance(present, bool) else (lambda b: present[b]),
     )
+    # And clean: a present worktree is then read for dirt (#86), which is the same kind of fact.
+    monkeypatch.setattr(agent_guard, "backend_worktree_dirt", lambda backend, *, main: [])
 
 
 def test_dispatchable_issues_keeps_only_what_a_worker_could_actually_start_on(
@@ -2046,7 +2213,11 @@ def test_the_page_counts_only_the_backends_it_names(monkeypatch, tmp_path):
     line = agent_guard._page_missing_worktree_if_due(scan, main=tmp_path, now=first)
     assert line is not None
     assert len(paged) == 3
-    assert "claude" not in line and "qwen" in line
+    # The line spells qwen's worktree path, and that path says `claude` whenever the checkout sits
+    # under `.claude/worktrees/`. What this measures is which backends the line names, so that
+    # path is taken out first.
+    named = line.replace(agent_guard.BACKEND_WORKTREES["qwen"], "<qwen's worktree>")
+    assert "claude" not in named and "qwen" in named
     assert paged[2] == render_human_message(
         "backend_worktree_missing",
         backend="qwen",
@@ -2074,6 +2245,229 @@ def test_a_missing_worktree_page_nobody_can_render_still_marks_the_backend_paged
     assert line is not None and "qwen" in line  # the English journal line still names it
     marker = agent_guard.cache_dir(tmp_path) / "guard" / "paged-missing-worktree-qwen"
     assert marker.is_file()
+
+
+# ---- #86: an idle backend worktree that is dirty is not dispatched to, and pages once per
+# listing -- the refusal of `worker_task.sh start`/`resume`/`branch` that no event clears ----
+
+
+def _git_in(repository: Path, *arguments: str) -> None:
+    subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
+
+
+def _backend_worktree(monkeypatch, tmp_path, *, alive=False) -> Path:
+    """A real git repository with one commit, configured as qwen's worktree and idle unless told
+    otherwise. Liveness is stubbed, never read off `cache_dir`: see `_stub_tick` on why a real
+    `.cache` must never leak into a guard test."""
+    worktree = tmp_path / "qwen-worktree"
+    worktree.mkdir()
+    _git_in(worktree, "init", "-q", "-b", "main")
+    _git_in(worktree, "config", "user.email", "test@example.invalid")
+    _git_in(worktree, "config", "user.name", "test")
+    (worktree / "README.md").write_text("tracked\n")
+    _git_in(worktree, "add", "README.md")
+    _git_in(worktree, "commit", "-qm", "initial")
+    monkeypatch.setattr(agent_guard, "BACKEND_WORKTREES", {"qwen": str(worktree)})
+    monkeypatch.setattr(agent_guard, "_is_alive", lambda pidfile: alive)
+    return worktree
+
+
+def test_backend_worktree_dirt_leaves_out_the_env_link_and_untracked_scratch(monkeypatch, tmp_path):
+    worktree = _backend_worktree(monkeypatch, tmp_path)
+    (tmp_path / "host.env").write_text("SECRET=1\n")
+    (worktree / ".env").symlink_to(tmp_path / "host.env")
+    (worktree / "scratchpad").mkdir()
+    (worktree / "scratchpad" / "progress.log").write_text("a diary line\n")
+    (worktree / "scratchpad" / "notes.md").write_text("a draft\n")
+    # The driver's own link and the run's scratch, as `uncommitted_work` reads them: clean.
+    assert agent_guard.backend_worktree_dirt("qwen", main=tmp_path) == []
+
+    (worktree / "README.md").write_text("an edit nobody committed\n")
+    (worktree / "stray.py").write_text("print('untracked work')\n")
+    assert agent_guard.backend_worktree_dirt("qwen", main=tmp_path) == [
+        " M README.md",
+        "?? stray.py",
+    ]
+
+
+def test_backend_worktree_dirt_counts_a_real_env_file_and_a_tracked_scratch_file(
+    monkeypatch, tmp_path
+):
+    # Narrow on purpose, like the driver: only the SYMLINK is the driver's own, and only UNTRACKED
+    # scratch is hidden -- a diary git tracks still refuses `start`, so it is still dirt here.
+    worktree = _backend_worktree(monkeypatch, tmp_path)
+    (worktree / "scratchpad").mkdir()
+    (worktree / "scratchpad" / "progress.log").write_text("tracked diary\n")
+    _git_in(worktree, "add", "scratchpad/progress.log")
+    _git_in(worktree, "commit", "-qm", "an old branch that tracked the diary")
+    (worktree / "scratchpad" / "progress.log").write_text("tracked diary\nand a new line\n")
+    (worktree / ".env").write_text("A_REAL_FILE=1\n")
+    assert agent_guard.backend_worktree_dirt("qwen", main=tmp_path) == [
+        " M scratchpad/progress.log",
+        "?? .env",
+    ]
+
+
+def test_backend_worktree_dirt_is_nothing_while_a_run_is_alive_or_without_a_worktree(
+    monkeypatch, tmp_path
+):
+    worktree = _backend_worktree(monkeypatch, tmp_path, alive=True)
+    (worktree / "README.md").write_text("a live run's work in progress\n")
+    assert agent_guard.backend_worktree_dirt("qwen", main=tmp_path) == []
+    # No worktree is #392's condition, paged on its own; not also dirt.
+    monkeypatch.setattr(agent_guard, "_is_alive", lambda pidfile: False)
+    monkeypatch.setattr(agent_guard, "BACKEND_WORKTREES", {"qwen": str(tmp_path / "gone")})
+    assert agent_guard.backend_worktree_dirt("qwen", main=tmp_path) == []
+    assert agent_guard.backend_worktree_dirt("unconfigured", main=tmp_path) == []
+
+
+def test_backend_worktree_dirt_reports_a_git_status_that_fails_instead_of_reading_it_clean(
+    monkeypatch, tmp_path
+):
+    # The driver refuses over a worktree git cannot read (its `git status` fails, the refusal
+    # follows); reading that as clean would announce issues the driver will not start.
+    worktree = tmp_path / "broken-worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {tmp_path / 'nowhere'}\n")
+    monkeypatch.setattr(agent_guard, "BACKEND_WORKTREES", {"qwen": str(worktree)})
+    monkeypatch.setattr(agent_guard, "_is_alive", lambda pidfile: False)
+    [entry] = agent_guard.backend_worktree_dirt("qwen", main=tmp_path)
+    assert entry.startswith("(git status failed: "), entry
+
+
+def test_dispatchable_excludes_an_issue_whose_backend_worktree_is_dirty(monkeypatch, tmp_path):
+    # The driver would refuse it with `worktree is dirty`; announcing it as dispatchable woke a
+    # planner run that tried, was refused, and was woken again at the next idle wake (#86).
+    _one_qwen_ready(monkeypatch, (389, 388))
+    monkeypatch.setattr(agent_guard, "backend_worktree_present", lambda backend: True)
+    reads: list[str] = []
+
+    def dirt(backend, *, main):
+        reads.append(backend)
+        return ["?? stray.py"] if backend == "qwen" else []
+
+    monkeypatch.setattr(agent_guard, "backend_worktree_dirt", dirt)
+    scan = agent_guard.dispatchable_scan(main=tmp_path)
+    assert scan.issues == []
+    assert scan.dirty_worktree == {"qwen": [389, 388]}
+    assert scan.without_worktree == {}
+    assert reads == ["qwen"]  # one `git status` per backend, not one per issue
+
+
+def _dirt_by_backend(monkeypatch) -> dict[str, list[str]]:
+    listing: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        agent_guard,
+        "backend_worktree_dirt",
+        lambda backend, *, main: list(listing.get(backend, [])),
+    )
+    return listing
+
+
+def test_a_dirty_worktree_pages_once_per_listing_and_again_after_it_was_clean(
+    monkeypatch, tmp_path
+):
+    listing = _dirt_by_backend(monkeypatch)
+    paged: list[str] = []
+    monkeypatch.setattr(agent_guard, "notify", lambda message, *, main: paged.append(message))
+    scan = agent_guard.DispatchableScan([], {}, {"qwen": [389, 388]})
+
+    listing["qwen"] = ["?? stray.py"]
+    lines = agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+    assert paged == [
+        render_human_message(
+            "backend_worktree_dirty",
+            backend="qwen",
+            worktree=agent_guard.BACKEND_WORKTREES["qwen"],
+            paths="?? stray.py",
+            issue_count=2,
+        )
+    ]
+    assert any("is dirty and idle: ?? stray.py" in line for line in lines), lines
+    assert "paged: qwen worktree dirty" in lines
+
+    # The same listing on the next tick is the planner's retries' worth of spam: not paged, but
+    # still journaled so the condition is visible where the guard's output goes.
+    lines = agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+    assert len(paged) == 1
+    assert any("is dirty and idle" in line for line in lines), lines
+    assert "paged: qwen worktree dirty" not in lines
+
+    # A changed listing is news.
+    listing["qwen"] = ["?? stray.py", " M README.md"]
+    agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+    assert len(paged) == 2 and "README.md" in paged[1]
+
+    # Clean resets the dedup: the very listing paged last, coming back later, pages again.
+    listing["qwen"] = []
+    assert agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path) == []
+    marker = agent_guard.cache_dir(tmp_path) / "guard" / "paged-dirty-worktree-qwen"
+    assert not marker.exists()
+    listing["qwen"] = ["?? stray.py", " M README.md"]
+    agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+    assert len(paged) == 3
+
+
+def test_a_dirty_worktree_holding_no_ready_issue_back_still_pages(monkeypatch, tmp_path):
+    # The changes-requested `resume` of an issue in review is refused over the same dirt, and no
+    # ready issue shows it: every backend is read, not only those in `scan.dirty_worktree`.
+    listing = _dirt_by_backend(monkeypatch)
+    listing["qwen"] = [" M README.md"]
+    paged: list[str] = []
+    monkeypatch.setattr(agent_guard, "notify", lambda message, *, main: paged.append(message))
+    agent_guard._page_dirty_worktree_if_due(agent_guard.DispatchableScan([], {}), main=tmp_path)
+    assert len(paged) == 1 and "README.md" in paged[0]
+
+
+def test_a_dirty_worktree_listing_is_capped_at_five_entries_in_the_page(monkeypatch, tmp_path):
+    listing = _dirt_by_backend(monkeypatch)
+    listing["qwen"] = [f"?? file{index}.py" for index in range(7)]
+    paged: list[str] = []
+    monkeypatch.setattr(agent_guard, "notify", lambda message, *, main: paged.append(message))
+    agent_guard._page_dirty_worktree_if_due(agent_guard.DispatchableScan([], {}), main=tmp_path)
+    assert "?? file4.py (+2 more)" in paged[0]
+    assert "file5" not in paged[0]
+
+
+def test_a_dirty_worktree_page_nobody_can_render_still_marks_the_listing_paged(
+    monkeypatch, tmp_path, capsys
+):
+    _no_messages_configured(monkeypatch)
+    listing = _dirt_by_backend(monkeypatch)
+    listing["qwen"] = ["?? stray.py"]
+    paged: list[str] = []
+    monkeypatch.setattr(agent_guard, "notify", lambda message, *, main: paged.append(message))
+    scan = agent_guard.DispatchableScan([], {}, {"qwen": [389]})
+
+    lines = agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+
+    assert paged == []
+    assert "no page for the dirty worktree" in capsys.readouterr().out
+    assert any("is dirty and idle" in line for line in lines), lines
+    marker = agent_guard.cache_dir(tmp_path) / "guard" / "paged-dirty-worktree-qwen"
+    assert marker.read_text() == "?? stray.py\n"
+    # And the next tick does not retry the render.
+    agent_guard._page_dirty_worktree_if_due(scan, main=tmp_path)
+    assert "no page for the dirty worktree" not in capsys.readouterr().out
+
+
+def test_the_tick_journals_and_pages_a_dirty_idle_worktree(monkeypatch, tmp_path, capsys):
+    _stub_tick(
+        monkeypatch,
+        results=_idle_results(),
+        alive=False,
+        dispatchable=[],
+        dirty_worktree={"qwen": [389]},
+        dirt={"qwen": ["?? stray.py"]},
+    )
+    paged: list[str] = []
+    monkeypatch.setattr(agent_guard, "notify", lambda message, *, main: paged.append(message))
+    agent_guard.tick(main=tmp_path, now=_utc(2026, 9, 25, 12, 0, 0))
+    printed = capsys.readouterr().out
+    assert "backend qwen worktree" in printed and "?? stray.py" in printed
+    assert len(paged) == 1 and "?? stray.py" in paged[0]
+    # Nothing dispatchable was announced, so no planner run is spent on a refusal.
+    assert agent_guard.pending_events(tmp_path) == []
 
 
 def test_refinable_issues_keeps_only_status_refine_issues_that_fail_validate(monkeypatch, tmp_path):
@@ -2109,6 +2503,113 @@ def test_refinable_issues_keeps_only_status_refine_issues_that_fail_validate(mon
         _gh_issue_list_stub(refine, [{"number": n} for n in (61, 62, 63)]),
     )
     assert agent_guard.refinable_issues(main=tmp_path) == [61]
+
+
+def test_refinable_issues_come_in_refine_queue_order_not_gh_list_order(monkeypatch, tmp_path):
+    # `gh issue list` answers newest first; the refiner must see the issue closest to dispatch
+    # first instead -- auto-ready parent, then priority, then unblocked, then oldest (#32).
+    vocabulary = agent_guard.PROJECT.labels
+    refine = [
+        {
+            "number": number,
+            "state": "OPEN",
+            "labels": [{"name": agent_guard.REFINE_LABEL}, *[{"name": n} for n in extra]],
+            "body": "x",
+            **({"parent": {"number": parent}} if parent else {}),
+        }
+        for number, extra, parent in [
+            (83, [vocabulary.priorities[3]], 3),
+            (74, [vocabulary.priorities[2]], 2),
+            (15, [vocabulary.priorities[0]], None),
+            (14, [vocabulary.priorities[0]], 2),
+        ]
+    ]
+    monkeypatch.setattr(
+        agent_guard.subprocess,
+        "run",
+        _gh_issue_list_stub(refine, [{"number": n} for n in (2, 3, 14, 15, 74, 83)]),
+    )
+    looked_up: list[int] = []
+
+    def parent_labels(number, *, main):
+        looked_up.append(number)
+        return {vocabulary.auto_ready} if number == 2 else set()
+
+    monkeypatch.setattr(agent_guard, "_gh_issue_labels", parent_labels)
+    assert agent_guard.refinable_issues(main=tmp_path) == [14, 74, 15, 83]
+    assert sorted(looked_up) == [2, 3]  # one lookup per parent, not per child
+
+
+def test_refine_pending_names_the_head_of_the_refine_queue(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_guard, "load_planner_config", lambda: _planner_config())
+    monkeypatch.setattr(agent_guard, "refinable_issues", lambda *, main: list(range(14, 30)))
+    outcome = agent_guard._write_refine_pending_event_if_due(
+        main=tmp_path, now=_utc(2026, 9, 14, 10, 0, 0)
+    )
+    assert "#14, #15" in outcome.line and "#23" in outcome.line and "#24" not in outcome.line
+
+
+def _refiner_summary_comment(author, created_at):
+    return {
+        "author": {"login": author},
+        "body": "<!-- refiner-summary -->\n@someone\n\nSplit into two children.\n\n## Doubts\n...",
+        "createdAt": created_at,
+    }
+
+
+def _plain_comment(author, created_at, body="an answer"):
+    return {"author": {"login": author}, "body": body, "createdAt": created_at}
+
+
+def test_refinable_issues_drops_an_issue_whose_refiner_doubt_the_human_already_answered(
+    monkeypatch, tmp_path
+):
+    # agent-os#72: the refiner split a feature, posted its summary with a doubt and parked it; the
+    # human answered and put `status:refine` back. The feature's own body never conforms (a feature
+    # has no template shape), so without reading the comments every idle wake named it again, and
+    # the planner -- told never to refine an issue twice -- re-asked the answered question.
+    refine = [
+        {
+            "number": 84,
+            "state": "OPEN",
+            "labels": [{"name": agent_guard.REFINE_LABEL}],
+            "body": "a feature",
+            "comments": [
+                _refiner_summary_comment(_BOT, "2026-09-24T09:06:40Z"),
+                _plain_comment(_HUMAN, "2026-09-24T10:36:32Z"),
+            ],
+        },
+        # A summary nobody answered yet stays named: the planner's one doubt for the human.
+        {
+            "number": 85,
+            "state": "OPEN",
+            "labels": [{"name": agent_guard.REFINE_LABEL}],
+            "body": "a feature",
+            "comments": [
+                _plain_comment(_HUMAN, "2026-09-24T08:00:00Z", body="please refine this"),
+                _refiner_summary_comment(_BOT, "2026-09-24T09:06:40Z"),
+                _plain_comment(_BOT, "2026-09-24T11:02:06Z", body="waiting for you"),
+            ],
+        },
+        # Never refined: named as always.
+        {
+            "number": 86,
+            "state": "OPEN",
+            "labels": [{"name": agent_guard.REFINE_LABEL}],
+            "body": "x",
+            "comments": [],
+        },
+    ]
+    commands: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        return _gh_issue_list_stub(refine, [{"number": n} for n in (84, 85, 86)])(cmd, **kwargs)
+
+    monkeypatch.setattr(agent_guard.subprocess, "run", run)
+    assert agent_guard.refinable_issues(main=tmp_path) == [85, 86]
+    listing = next(cmd for cmd in commands if "--label" in cmd)
+    assert "comments" in listing[listing.index("--json") + 1].split(",")
 
 
 def test_refinable_issues_empty_when_no_issue_carries_the_refine_label(monkeypatch, tmp_path):

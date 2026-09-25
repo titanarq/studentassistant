@@ -1,0 +1,29 @@
+# The host's own CI, rendered by `agent-os-install` from `agent_os/templates/ci-host.yml` with
+# `project.test_command` when the host has no `.github/workflows/ci-host.yml` yet.
+#
+# It runs on EVERY pull request, with no path filter, because the control plane's merge
+# condition 1 counts zero checks on a PR's head SHA as not met
+# (agent_os/docs/adr/2026-09-24-a-pr-with-no-checks-fails-the-ci-condition-and-every-host-ships-a-ci.md):
+# `ci-agent-os.yml` only fires on `agent_os/**`, so without this file a host-only PR reports no
+# check and can never be merged in the human's name.
+#
+# A starting point, not the host's whole CI: add whatever setup the test command needs (a
+# toolchain, a service container, dependencies) before its step. A host that already has CI
+# reporting on every pull request sets `project.install_host_ci: false` instead of taking this.
+name: host-tests
+
+on:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: the host's test command
+        run: __TEST_COMMAND__

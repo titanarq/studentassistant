@@ -4,7 +4,7 @@ Real git in temporary directories (a bare origin, a "main checkout" clone and a 
 next to it, laid out as `<main>/../studentassistant-<backend>`), a fake `gh` that prints canned
 REST output. No network. Run with the mechanism's interpreter:
 
-    agent_os/.venv/bin/pytest scripts/agent_os_patches -q
+    agent_os/.venv/bin/pytest scripts/tests -q
 """
 
 import os

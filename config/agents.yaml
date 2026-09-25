@@ -20,7 +20,15 @@ project:
     planner_run_cap_reached: "[studentassistant] El planificador ha agotado su tope diario de ejecuciones ({runs}/{cap}) y no despachará nada más hoy; {pending} evento(s) esperan a mañana: {context}"
     backend_worktree_missing: "[studentassistant] Backend sin worktree: {backend} no tiene worktree en {worktree} y {issue_count} incidencia(s) lista(s) no pueden avanzar hasta que la crees"
     unreviewed_pull_request: "[studentassistant] Revisión perdida: la PR #{pr} de la incidencia #{issue} no tiene revisión ni un {role} en marcha — puede haber muerto sin dejar rastro"
+    backend_worktree_dirty: "[studentassistant] Backend bloqueado: el worktree {worktree} de {backend} tiene trabajo sin confirmar que ninguna ejecución limpiará ({paths}); {issue_count} incidencia(s) lista(s) esperan y ninguna ejecución en él puede empezar ni reanudarse hasta que lo confirmes o lo limpies"
   test_command: scripts/test.sh
+  # agent-os#41: provision every agent worktree (validator worktree + `worker_task.sh <b> init`).
+  # Replaces the default [.venv, .env]: this monorepo has no root .venv; backend/.venv is built.
+  worktree_links: [.env]
+  worktree_setup_command: "cd backend && uv sync --frozen"
+  # agent-os#50: ci.yml already reports on every PR (its always-on `ci` job, the required check),
+  # so do not let agent-os-install add a second ci-host.yml.
+  install_host_ci: false
   prompt_extras:
     worker: config/agent_prompts/worker.md
     refiner: config/agent_prompts/refiner.md

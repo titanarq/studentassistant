@@ -31,13 +31,15 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import shutil
 
+import pytest
 import yaml
 
 _THIS_PACKAGE = pathlib.Path(__file__).resolve().parents[1]
 os.environ.setdefault("AGENTS_CONFIG_PATH", str(_THIS_PACKAGE / "config.example.yaml"))
 
-from agent_os.cli import AGENT_OS_DIR
+from agent_os.cli import AGENT_OS_DIR, host_root
 
 # The HOST project this helper used to patch a copy of: since #512 the source is the mechanism's
 # own shipped example, not a host's real file, so this fixture behaves identically whichever
@@ -90,7 +92,47 @@ def config_with_no_host_text(tmp_path, name="agents-without-host-text.yaml"):
     data["project"]["merge_audit_exempt_paths"] = []
     data["project"]["worker_environment"] = {}
     data["project"]["prompt_extras"] = {}
+    data["project"]["lint_commands"] = []
     data["mechanism"]["own_paths"] = []
     path = pathlib.Path(tmp_path) / name
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     return path
+
+
+# The directories the suite could leak a real `.cache/` into (agent-os#25). One is the host root the
+# drivers resolve (`host_root()`, the checkout the cwd belongs to). The other is this package's own
+# directory. In this repository they are the same path; they differ when `agent_os/` is vendored
+# into a host. Only a root with NO `.cache` at session start is watched. Where one already exists
+# (a host's live checkout, where real runs keep their state), a new entry cannot be told apart from
+# a live agent's own write, so the guard is off there. A fresh clone, a worktree and CI always
+# start without one, and those are where this suite is meant to be judged.
+_WATCHED_CACHES = [
+    root / ".cache"
+    for root in dict.fromkeys((host_root(), AGENT_OS_DIR))
+    if not (root / ".cache").exists()
+]
+
+
+@pytest.fixture(autouse=True)
+def _no_cache_leaks_into_the_checkout(request):
+    """Fail the test that leaves a `.cache/` in the checkout (agent-os#25). A test that runs a
+    driver must move every write into `tmp_path` through `WORKER_CACHE_DIR`, `PLANNER_CACHE_DIR`
+    or `AGENT_CACHE_DIR`. A test that forgot used to leave `planner/`, `planner.lock` and the like
+    in the real `.cache`, and the run was still green. Once the failure is recorded, the leaked
+    directory is removed (only a directory this session saw absent), so the next test is judged
+    on its own writes."""
+    yield
+    leaked = [cache for cache in _WATCHED_CACHES if cache.exists()]
+    if not leaked:
+        return
+    listing = {
+        str(cache): sorted(str(path.relative_to(cache)) for path in cache.rglob("*"))
+        for cache in leaked
+    }
+    for cache in leaked:
+        shutil.rmtree(cache, ignore_errors=True)
+    pytest.fail(
+        f"{request.node.nodeid} wrote a .cache/ into the checkout (agent-os#25): {listing}. "
+        "Point WORKER_CACHE_DIR / PLANNER_CACHE_DIR / AGENT_CACHE_DIR at tmp_path.",
+        pytrace=False,
+    )

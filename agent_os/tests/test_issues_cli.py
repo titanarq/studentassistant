@@ -5,8 +5,10 @@ fixed labels and the repository, both read from `config/agents.yaml`, the key-li
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
+import urllib.parse
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +22,7 @@ from agent_os.lib import (
     ProjectConfig,
     load_project,
     render_human_message,
+    replace_blocker,
 )
 
 # --------------------------------------------------------------------------------------------
@@ -281,18 +284,126 @@ def test_gh_json_returns_none_for_empty_stdout():
         assert issues.gh_json("label", "create", "x") is None
 
 
+# The exact text `gh` printed on a host under concurrent load (#70). It is GitHub's answer when the
+# GraphQL bucket of the login is empty -- a quota separate from the REST `core` one that the
+# top-level `gh api rate_limit` `.rate` reports, which is why that read `remaining: 5000` at the
+# same moment.
+GRAPHQL_EXHAUSTED = "GraphQL: API rate limit already exceeded for user ID 1234567."
+
+
+def _rate_limit_resources(*, graphql_remaining: int, core_remaining: int = 5000) -> str:
+    """What `gh api rate_limit --jq .resources` prints: one bucket per API, each its own quota."""
+    return json.dumps(
+        {
+            "core": {"limit": 5000, "remaining": core_remaining, "reset": 1790320000},
+            "graphql": {"limit": 5000, "remaining": graphql_remaining, "reset": 1790319600},
+            "search": {"limit": 30, "remaining": 30, "reset": 1790316060},
+        }
+    )
+
+
+def _fake_gh(failures: list[str], *, resources: str | None = None, stdout: str = '{"ok": true}'):
+    """A `subprocess.run` for `gh`: `gh api rate_limit` answers `resources` (fails when None);
+    every other command fails once per entry of `failures`, with that stderr, then succeeds."""
+    calls: list[list[str]] = []
+    pending = list(failures)
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["gh", "api", "rate_limit"]:
+            if resources is None:
+                return _completed(returncode=1, stderr="HTTP 502")
+            return _completed(stdout=resources)
+        if pending:
+            return _completed(returncode=1, stderr=pending.pop(0))
+        return _completed(stdout=stdout)
+
+    return run, calls
+
+
 def test_gh_json_retries_on_rate_limit_then_succeeds():
-    responses = [
-        _completed(returncode=1, stderr="HTTP 403: API rate limit exceeded"),
-        _completed(returncode=0, stdout='{"ok": true}'),
-    ]
+    run, calls = _fake_gh(
+        ["HTTP 403: API rate limit exceeded"], resources=_rate_limit_resources(graphql_remaining=10)
+    )
     with (
-        patch("agent_os.issues.subprocess.run", side_effect=responses) as run,
+        patch("agent_os.issues.subprocess.run", side_effect=run),
         patch("agent_os.issues.time.sleep") as sleep,
     ):
         assert issues.gh_json("issue", "list") == {"ok": True}
-        assert run.call_count == 2
-        sleep.assert_called_once()
+    assert [call for call in calls if call[:3] != ["gh", "api", "rate_limit"]] == [
+        ["gh", "issue", "list"],
+        ["gh", "issue", "list"],
+    ]
+    sleep.assert_called_once()
+
+
+def test_an_exhausted_graphql_quota_fails_at_once_naming_the_bucket_and_its_reset():
+    # #70: the host saw this error while REST kept working and read it as a false positive; the
+    # old loop slept 1+2+4+8+16 s against a quota that resets up to an hour later and then failed
+    # with gh's text alone. The failure now says which quota is empty and when it refills.
+    run, calls = _fake_gh(
+        [GRAPHQL_EXHAUSTED] * 6, resources=_rate_limit_resources(graphql_remaining=0)
+    )
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep") as sleep,
+        pytest.raises(SystemExit) as exited,
+    ):
+        issues.gh_json("issue", "view", "1", "--json", "body")
+    message = str(exited.value.code)
+    assert "graphql: 0 of 5000 left, resets at 2026-09-2" in message
+    assert "core:" not in message  # the REST bucket, full, is not blamed
+    assert GRAPHQL_EXHAUSTED in message
+    sleep.assert_not_called()
+    assert calls.count(["gh", "issue", "view", "1", "--json", "body"]) == 1
+
+
+def test_a_rate_limit_with_quota_left_is_transient_and_retried():
+    run, _ = _fake_gh([GRAPHQL_EXHAUSTED], resources=_rate_limit_resources(graphql_remaining=4000))
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep") as sleep,
+    ):
+        assert issues.gh_json("issue", "list") == {"ok": True}
+    sleep.assert_called_once()
+
+
+def test_a_rate_limit_whose_quota_cannot_be_read_is_still_retried():
+    run, _ = _fake_gh([GRAPHQL_EXHAUSTED], resources=None)
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep") as sleep,
+    ):
+        assert issues.gh_json("issue", "list") == {"ok": True}
+    sleep.assert_called_once()
+
+
+def test_a_secondary_rate_limit_waits_at_least_the_minute_github_asks_for():
+    secondary = (
+        "You have exceeded a secondary rate limit. Please wait a few minutes before you try "
+        "again. (HTTP 403)"
+    )
+    run, calls = _fake_gh([secondary], resources=_rate_limit_resources(graphql_remaining=4000))
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep") as sleep,
+    ):
+        assert issues.gh_json("issue", "list") == {"ok": True}
+    assert sleep.call_args.args[0] >= 60
+    # A secondary limit is not a quota: reading the buckets would answer nothing about it.
+    assert not [call for call in calls if call[:3] == ["gh", "api", "rate_limit"]]
+
+
+def test_a_403_that_is_not_a_rate_limit_fails_without_retrying():
+    run, calls = _fake_gh(["HTTP 403: Resource not accessible by integration"])
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep") as sleep,
+        pytest.raises(SystemExit),
+    ):
+        issues.gh_json("issue", "list")
+    sleep.assert_not_called()
+    assert len(calls) == 1
 
 
 def test_gh_json_exits_on_non_rate_limit_failure():
@@ -449,6 +560,69 @@ def test_create_refuses_a_template_and_a_body_file_at_once():
         )
 
 
+def _created_title(title, *, issue_type="task", template=None):
+    """The title `cmd_create` sends to GitHub, every `gh` call mocked."""
+    created = {"number": 9, "id": 99, "html_url": "u"}
+    with (
+        patch.object(issues, "repo_name", return_value="owner/name"),
+        patch.object(issues, "ensure_fixed_labels", return_value=set()),
+        patch.object(issues, "ensure_labels"),
+        patch.object(issues, "create_issue", return_value=created) as create,
+        patch.object(issues, "add_to_board", return_value=[]),
+    ):
+        issues.cmd_create(
+            argparse.Namespace(
+                type=None if template else issue_type,
+                title=title,
+                parent=None,
+                body_file=None,
+                template=template,
+                label=None,
+            )
+        )
+    return create.call_args[0][1]
+
+
+@pytest.mark.parametrize(
+    "issue_type,prefixed", [("task", "[task] Split it"), ("bug", "[bug] Split it")]
+)
+def test_create_prefixes_the_title_the_types_template_declares(
+    shipped_issue_templates, issue_type, prefixed
+):
+    """#15: the refiner's `create --type task --title T` produced `T`, not the `[task] T` the
+    template's front matter declares and every hand-written task carries."""
+    assert _created_title("Split it", issue_type=issue_type) == prefixed
+
+
+def test_create_from_a_template_also_prefixes_the_title(shipped_issue_templates):
+    assert _created_title("Split it", template="task") == "[task] Split it"
+
+
+@pytest.mark.parametrize("title", ["[task] Split it", "[task]Split it", "[Task] Split it"])
+def test_create_never_prefixes_a_title_that_already_carries_the_prefix(
+    shipped_issue_templates, title
+):
+    assert _created_title(title) == title
+
+
+def test_prefixing_twice_is_prefixing_once(shipped_issue_templates):
+    assert _created_title(_created_title("Split it")) == "[task] Split it"
+
+
+def test_the_prefix_comes_from_the_hosts_template_never_from_the_code(shipped_issue_templates):
+    task = shipped_issue_templates / "task.md"
+    task.write_text(task.read_text().replace("title: '[task] '", "title: 'TASK: '"))
+    assert _created_title("Split it") == "TASK: Split it"
+
+
+def test_a_type_with_no_template_or_no_title_in_it_keeps_its_title(shipped_issue_templates):
+    # `epic` and `feature` have no template; a template may declare no `title:` at all.
+    assert _created_title("Group them", issue_type="epic") == "Group them"
+    bug = shipped_issue_templates / "bug.md"
+    bug.write_text(bug.read_text().replace("title: '[bug] '\n", ""))
+    assert _created_title("Split it", issue_type="bug") == "Split it"
+
+
 def test_create_from_a_template_sends_the_scaffold_as_the_body_and_infers_the_type(
     shipped_issue_templates,
 ):
@@ -458,6 +632,7 @@ def test_create_from_a_template_sends_the_scaffold_as_the_body_and_infers_the_ty
         patch.object(issues, "ensure_fixed_labels", return_value=set()),
         patch.object(issues, "ensure_labels"),
         patch.object(issues, "create_issue", return_value=created) as create,
+        patch.object(issues, "add_to_board", return_value=[]),
     ):
         issues.cmd_create(
             argparse.Namespace(
@@ -472,6 +647,113 @@ def test_create_from_a_template_sends_the_scaffold_as_the_body_and_infers_the_ty
     _repo, _title, body, labels = create.call_args[0]
     assert labels == ["type:bug"]
     assert "## Definition of done" in body
+
+
+# ---- create puts the new issue on the board (#23) --------------------------------------------
+
+
+def _create_on_board(labels=None, *, board=5, item_add=None, mirror=None):
+    """Runs `cmd_create` with every `gh` call mocked and `project.board_number = board`. Returns
+    `(gh_calls, mirror_calls)`: every `gh_json` call made (the board's `item-add` among them) and
+    the arguments `mirror_board_column` was called with. `item_add` answers the `item-add`, or
+    raises when it is an exception -- `gh_json` exits on a failed `gh`."""
+    project = _project(
+        board_number=board, board_columns={"ready": "Ready for AI", "refine": "Backlog"}
+    )
+    created = {"number": 9, "id": 99, "html_url": "https://github.invalid/owner/name/issues/9"}
+    calls = []
+
+    def fake_gh(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("project", "item-add"):
+            if isinstance(item_add, BaseException):
+                raise item_add
+            return item_add if item_add is not None else {"id": "PVTI_new"}
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    with (
+        patch.object(issues, "repo_name", return_value="owner/name"),
+        patch.object(issues, "load_project", return_value=project),
+        patch.object(issues, "ensure_fixed_labels", return_value=set()),
+        patch.object(issues, "ensure_labels"),
+        patch.object(issues, "create_issue", return_value=created),
+        patch.object(issues, "gh_json", side_effect=fake_gh),
+        patch.object(
+            issues, "mirror_board_column", side_effect=mirror, return_value="board:    mirrored"
+        ) as board_column,
+    ):
+        issues.cmd_create(
+            argparse.Namespace(
+                type="task",
+                title="t",
+                parent=None,
+                body_file=None,
+                template=None,
+                label=labels,
+            )
+        )
+    return calls, board_column.call_args_list
+
+
+def test_create_adds_the_new_issue_to_the_configured_board():
+    calls, _ = _create_on_board()
+    (item_add,) = [args for args in calls if args[:2] == ("project", "item-add")]
+    assert item_add[2] == "5"
+    assert item_add[item_add.index("--owner") + 1] == "owner"
+    assert item_add[item_add.index("--url") + 1] == "https://github.invalid/owner/name/issues/9"
+
+
+def test_create_sets_the_column_of_its_initial_status_label_on_the_new_item(capsys):
+    _, mirrored = _create_on_board(["status:ready"])
+    (call,) = mirrored
+    assert call.args == ("owner/name", 9, "Ready for AI", 5)
+    # The item `item-add` just returned, not a lookup that may not see it yet.
+    assert call.kwargs == {"item": "PVTI_new"}
+    assert "board:    mirrored" in capsys.readouterr().out
+
+
+def test_create_without_a_status_label_adds_the_item_and_leaves_its_column_alone(capsys):
+    calls, mirrored = _create_on_board(["p2"])
+    assert [args[:2] for args in calls] == [("project", "item-add")]
+    assert mirrored == []
+    assert "board:    added #9 to project 5" in capsys.readouterr().out
+
+
+def test_a_board_that_refuses_the_item_never_fails_the_create(capsys):
+    _, mirrored = _create_on_board(
+        ["status:ready"], item_add=SystemExit("gh project item-add failed:\nno such project")
+    )
+    out = capsys.readouterr().out
+    assert "created #9" in out
+    assert "board:    #9 not added to project 5" in out
+    assert mirrored == []
+
+
+def test_a_column_that_cannot_be_set_never_fails_the_create(capsys):
+    _, mirrored = _create_on_board(
+        ["status:ready"], mirror=SystemExit("project owner/5 has no single-select field")
+    )
+    out = capsys.readouterr().out
+    assert len(mirrored) == 1
+    assert "board:    column not mirrored: project owner/5 has no single-select field" in out
+
+
+def test_create_with_no_board_configured_makes_no_board_call():
+    calls, mirrored = _create_on_board(["status:ready"], board=0)
+    assert calls == [] and mirrored == []
+
+
+def test_mirror_board_column_uses_the_item_it_is_given_without_looking_it_up():
+    with (
+        patch.object(issues, "board_item_id") as lookup,
+        patch.object(issues, "board_status_field", return_value=("PVT", "F2", {"Ready": "O1"})),
+        patch.object(issues, "gh_json") as edit,
+    ):
+        line = issues.mirror_board_column("owner/name", 9, "Ready", 5, item="PVTI_new")
+    lookup.assert_not_called()
+    args = edit.call_args[0]
+    assert args[args.index("--id") + 1] == "PVTI_new"
+    assert line == "board:    Ready"
 
 
 # ---- update --body-file: the refiner's own way to rewrite a body in place --------------------
@@ -556,14 +838,47 @@ def test_update_without_body_file_leaves_the_body_untouched():
 
 
 def _validate(body, *, open_numbers=()):
-    """`validate_issue` with `gh issue view` mocked to return `body` and `gh issue list` to return
-    `open_numbers`. Never shells out."""
-    listing = [{"number": n} for n in open_numbers]
+    """`validate_issue` with the issue's REST read mocked to return `body` and the open-issue
+    listing to return `open_numbers`. Never shells out."""
     with (
         patch.object(issues, "gh_json_dict", return_value={"body": body}),
-        patch.object(issues, "gh_json", return_value=listing),
+        patch.object(issues, "gh_text", return_value="\n".join(map(str, open_numbers))),
     ):
         return issues.validate_issue("owner/name", 1)
+
+
+def test_validate_reads_over_rest_and_works_with_the_graphql_quota_exhausted():
+    # #70: `validate` is what `worker_task.sh start` runs before every dispatch, and it was
+    # GraphQL-only (`gh issue view --json`, `gh issue list --json`); a host whose GraphQL bucket
+    # was empty could not dispatch at all while REST had its whole quota left.
+    blocked = VALID_BODY.replace("## Dependencies\nsomething", "## Dependencies\nBlocked by #40")
+    issue = {"body": blocked, "labels": [{"name": "type:task"}], "number": 1}
+
+    def run(args, **kwargs):
+        if args[:2] in (["gh", "issue"], ["gh", "pr"], ["gh", "label"]) or "graphql" in args:
+            return _completed(returncode=1, stderr=GRAPHQL_EXHAUSTED)
+        if args[:3] == ["gh", "api", "repos/owner/name/issues/1"]:
+            return _completed(stdout=json.dumps(issue))
+        if args[:2] == ["gh", "api"] and args[2].startswith("repos/owner/name/issues?"):
+            assert "--paginate" in args
+            return _completed(stdout="40\n41\n")
+        return _completed(returncode=1, stderr=f"unexpected {args}")
+
+    with (
+        patch("agent_os.issues.subprocess.run", side_effect=run),
+        patch("agent_os.issues.time.sleep"),
+    ):
+        assert issues.validate_issue("owner/name", 1) == ["blocked by #40, which is still open"]
+
+
+def test_the_open_issue_listing_leaves_pull_requests_out():
+    # REST's issue listing also returns every open pull request; a `Blocked by #N` naming a PR is
+    # not an open issue, exactly as `gh issue list` never listed one.
+    with patch.object(issues, "gh_text", return_value="3\n7\n") as listing:
+        assert issues.open_issue_numbers("owner/name") == {3, 7}
+    args = listing.call_args.args
+    assert args[1].startswith("repos/owner/name/issues?state=open")
+    assert "select(.pull_request == null)" in args[args.index("--jq") + 1]
 
 
 def test_validate_issue_passes_on_a_template_shaped_body():
@@ -593,7 +908,7 @@ def test_validate_issue_reports_an_open_blocker_and_accepts_a_closed_one():
 def test_validate_issue_skips_the_open_listing_when_nothing_blocks():
     with (
         patch.object(issues, "gh_json_dict", return_value={"body": VALID_BODY}),
-        patch.object(issues, "gh_json") as listing,
+        patch.object(issues, "gh_text") as listing,
     ):
         assert issues.validate_issue("owner/name", 1) == []
         listing.assert_not_called()
@@ -607,7 +922,7 @@ def test_validate_issue_refuses_a_feature_or_an_epic_as_not_a_brief(type_label):
     }
     with (
         patch.object(issues, "gh_json_dict", return_value=view),
-        patch.object(issues, "gh_json") as listing,
+        patch.object(issues, "gh_text") as listing,
     ):
         assert issues.validate_issue("owner/name", 336) == [
             f"#336 is {type_label}, not a brief: only type:task and type:bug issues are validated"
@@ -656,6 +971,15 @@ def review_pages_in_a_temporary_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(issues, "REVIEW_PAGES_DIR", tmp_path / "paged-review")
 
 
+@pytest.fixture(autouse=True)
+def board_field_asked_afresh():
+    """`board_status_field` answers once per process (#27); a test's board must never be the one
+    a previous test's fake answered."""
+    issues.board_status_field.cache_clear()
+    yield
+    issues.board_status_field.cache_clear()
+
+
 def _move(state, held_labels, *, issue_state="OPEN", pages=None, title="A title"):
     """Runs `cmd_move` with every `gh` call mocked. Returns `(fields, board_line)`: what would
     have been PATCHed onto the issue, and what the board mirror printed. `pages` collects whatever
@@ -665,13 +989,13 @@ def _move(state, held_labels, *, issue_state="OPEN", pages=None, title="A title"
         "labels": [{"name": name} for name in held_labels],
         "state": issue_state,
         "title": title,
-        "url": "https://github.invalid/owner/name/issues/7",
+        "html_url": "https://github.invalid/owner/name/issues/7",
     }
     sent = pages if pages is not None else []
     with (
         patch.object(issues, "repo_name", return_value="owner/name"),
         patch.object(issues, "gh_json_dict", return_value=current),
-        patch.object(issues, "existing_labels", return_value=set()),
+        patch.object(issues, "label_exists", return_value=False),
         patch.object(issues, "ensure_labels") as ensure,
         patch.object(issues, "update_issue") as update,
         patch.object(issues, "mirror_board_column", return_value="board:    mirrored") as board,
@@ -679,7 +1003,7 @@ def _move(state, held_labels, *, issue_state="OPEN", pages=None, title="A title"
             issues, "page_human", side_effect=lambda message: sent.append(message) is None
         ),
     ):
-        issues.cmd_move(argparse.Namespace(number=7, state=state))
+        issues.cmd_move(argparse.Namespace(numbers=[7], state=state))
     return update.call_args[0][2], board.call_args, ensure.call_args
 
 
@@ -769,13 +1093,13 @@ def test_a_page_that_fails_neither_fails_the_move_nor_burns_the_once_per_issue_m
     with (
         patch.object(issues, "repo_name", return_value="owner/name"),
         patch.object(issues, "gh_json_dict", return_value=current),
-        patch.object(issues, "existing_labels", return_value=set()),
+        patch.object(issues, "label_exists", return_value=False),
         patch.object(issues, "ensure_labels"),
         patch.object(issues, "update_issue") as update,
         patch.object(issues, "mirror_board_column", return_value="board:    mirrored"),
         patch.object(issues, "page_human", return_value=False),
     ):
-        issues.cmd_move(argparse.Namespace(number=7, state="review"))
+        issues.cmd_move(argparse.Namespace(numbers=[7], state="review"))
     # The label was written all the same -- that is the move, and it already happened.
     assert update.call_args[0][2]["labels"] == ["status:review"]
     assert "nobody was paged" in capsys.readouterr().out
@@ -790,7 +1114,7 @@ def test_a_template_move_cannot_render_is_reported_and_leaves_the_move_standing(
     with (
         patch.object(issues, "repo_name", return_value="owner/name"),
         patch.object(issues, "gh_json_dict", return_value=current),
-        patch.object(issues, "existing_labels", return_value=set()),
+        patch.object(issues, "label_exists", return_value=False),
         patch.object(issues, "ensure_labels"),
         patch.object(issues, "update_issue") as update,
         patch.object(issues, "mirror_board_column", return_value="board:    mirrored"),
@@ -801,7 +1125,7 @@ def test_a_template_move_cannot_render_is_reported_and_leaves_the_move_standing(
         ),
         patch.object(issues, "page_human") as page,
     ):
-        issues.cmd_move(argparse.Namespace(number=7, state="review"))
+        issues.cmd_move(argparse.Namespace(numbers=[7], state="review"))
     assert update.call_args[0][2]["labels"] == ["status:review"]
     page.assert_not_called()
     assert "not sent" in capsys.readouterr().out
@@ -857,15 +1181,9 @@ def test_mirror_board_column_says_so_instead_of_failing_when_the_issue_is_not_on
 
 
 def test_mirror_board_column_edits_the_status_option_of_that_item():
-    fields = {
-        "fields": [
-            {"id": "F1", "name": "Title", "type": "ProjectV2Field"},
-            {"id": "F2", "name": "Status", "options": [{"id": "O1", "name": "Review"}]},
-        ]
-    }
     with (
         patch.object(issues, "board_item_id", return_value="ITEM"),
-        patch.object(issues, "gh_json_dict", side_effect=[{"id": "PVT"}, fields]),
+        patch.object(issues, "board_status_field", return_value=("PVT", "F2", {"Review": "O1"})),
         patch.object(issues, "gh_json") as edit,
     ):
         line = issues.mirror_board_column("owner/name", 7, "Review", 1)
@@ -878,15 +1196,333 @@ def test_mirror_board_column_edits_the_status_option_of_that_item():
     assert line == "board:    Review"
 
 
-def test_board_item_id_matches_the_issue_number_in_this_repository():
-    listing = {
-        "items": [
-            {"id": "OTHER", "content": {"number": 7, "repository": "someone/else"}},
-            {"id": "MINE", "content": {"number": 7, "repository": "owner/name"}},
-        ]
+def _project_items(*nodes: tuple[str, int, str]) -> dict:
+    """What `gh api graphql` answers for an issue's `projectItems`: (item id, board, owner)."""
+    return {
+        "data": {
+            "repository": {
+                "issue": {
+                    "projectItems": {
+                        "nodes": [
+                            {"id": item, "project": {"number": board, "owner": {"login": login}}}
+                            for item, board, login in nodes
+                        ]
+                    }
+                }
+            }
+        }
     }
-    with patch.object(issues, "gh_json", return_value=listing):
-        assert issues.board_item_id("owner", 1, "owner/name", 7) == "MINE"
+
+
+def _board_gh(issue_side: dict, listing: dict | None = None):
+    """A `gh_json` that answers the issue-side query and, if anything asks, the board listing --
+    empty by default, which is what an org Project v2 returned in #14 for items it did hold."""
+
+    def fake(*args, **_kwargs):
+        if args[:2] == ("api", "graphql"):
+            return issue_side
+        if args[:2] == ("project", "item-list"):
+            return listing if listing is not None else {"items": [], "totalCount": 0}
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    return fake
+
+
+def test_board_item_id_finds_the_item_the_board_listing_leaves_out():
+    """#14: `gh project item-list` on an org Project v2 came back with zero items while every
+    issue's `projectItems` named its item on that board, so every `move` skipped the mirror."""
+    fake = _board_gh(_project_items(("PVTI_mine", 2, "owner")))
+    with patch.object(issues, "gh_json", side_effect=fake):
+        assert issues.board_item_id("owner", 2, "owner/name", 37) == "PVTI_mine"
+
+
+def test_board_item_id_picks_the_item_on_this_board_of_this_owner():
+    fake = _board_gh(
+        _project_items(
+            ("OTHER_BOARD", 3, "owner"), ("OTHER_OWNER", 2, "else"), ("MINE", 2, "owner")
+        )
+    )
+    with patch.object(issues, "gh_json", side_effect=fake):
+        assert issues.board_item_id("owner", 2, "owner/name", 7) == "MINE"
+
+
+def test_board_item_id_is_none_when_the_issue_is_on_no_board():
+    with patch.object(issues, "gh_json", side_effect=_board_gh(_project_items())):
+        assert issues.board_item_id("owner", 2, "owner/name", 7) is None
+
+
+def test_board_item_id_asks_for_that_issue_of_that_repository():
+    seen = []
+
+    def fake(*args, **kwargs):
+        seen.append(args)
+        return _project_items(("MINE", 2, "owner"))
+
+    with patch.object(issues, "gh_json", side_effect=fake):
+        issues.board_item_id("owner", 2, "owner/name", 7)
+    (args,) = seen
+    assert args[:2] == ("api", "graphql")
+    assert "owner=owner" in args and "name=name" in args and "number=7" in args
+
+
+# ---- what a move costs on the GraphQL quota (#27) --------------------------------------------
+# `gh`'s GraphQL quota is 5000 points an hour, per user, shared by every host and every tool the
+# human runs. Before #27 one no-op `move` cost ~224 points on a 91-item board: `project
+# field-list` and `project item-list` page the whole board, so the price grew with it, and 70
+# moves could not fit in an hour. These tests stand a fake `gh` in for the real one and count
+# what reaches GitHub's GraphQL API, whatever the board's size.
+
+BOARD_COLUMNS = {"refine": "Backlog", "ready": "Ready for AI", "review": "Review"}
+
+
+def _board_fields_answer(status_name: str = "Status") -> dict:
+    """What the one board query answers: the project's id and its fields, one single-select."""
+    return {
+        "data": {
+            "repositoryOwner": {
+                "projectV2": {
+                    "id": "PVT_board",
+                    "fields": {
+                        "nodes": [
+                            {"id": "F_title", "name": "Title"},
+                            {
+                                "id": "F_status",
+                                "name": status_name,
+                                "options": [
+                                    {"id": f"O_{column}", "name": column}
+                                    for column in BOARD_COLUMNS.values()
+                                ],
+                            },
+                        ]
+                    },
+                }
+            }
+        }
+    }
+
+
+class CountingGh:
+    """A stand-in for the `gh` binary, at the `_gh` seam: answers every call `move` makes and
+    records it as GraphQL or REST. A call that would page the whole board (`item-list`,
+    `field-list`, `project view`) is refused outright, so a lookup whose cost grows with the board
+    can never pass by accident."""
+
+    BOARD_PAGING = frozenset(
+        {("project", "item-list"), ("project", "field-list"), ("project", "view")}
+    )
+
+    def __init__(self):
+        self.missing_labels: set[str] = set()
+        self.failing_patches: set[int] = set()
+        self.graphql: list[tuple] = []
+        self.rest: list[tuple] = []
+
+    @staticmethod
+    def is_graphql(args: tuple) -> bool:
+        if args[0] == "api":
+            return args[1] == "graphql"
+        # `label create` is REST; every other `gh <noun> <verb>` is GraphQL underneath.
+        return args[:2] != ("label", "create")
+
+    def __call__(self, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess:
+        if args[:2] in self.BOARD_PAGING:
+            raise AssertionError(f"pages the whole board: {args}")
+        (self.graphql if self.is_graphql(args) else self.rest).append(args)
+        if args[:2] == ("api", "graphql"):
+            query = next(arg for arg in args if arg.startswith("query="))
+            if "projectItems" in query:
+                number = int(next(arg for arg in args if arg.startswith("number=")).split("=")[1])
+                return self.json(_project_items((f"PVTI_{number}", 5, "owner")))
+            if "projectV2(" in query:
+                return self.json(_board_fields_answer())
+            raise AssertionError(f"unexpected graphql query: {query}")
+        if args[:2] == ("project", "item-edit"):
+            return self.json({"id": "edited"})
+        if args[:2] == ("label", "create"):
+            return _completed()
+        if args[0] == "api" and "/labels/" in args[1]:
+            name = urllib.parse.unquote(args[1].rsplit("/", 1)[1])
+            if name in self.missing_labels:
+                return _completed(returncode=1, stderr="gh: Not Found (HTTP 404)")
+            return self.json({"name": name})
+        if args[0] == "api" and "/issues/" in args[1]:
+            number = int(args[1].rsplit("/", 1)[1])
+            if "PATCH" in args:
+                if number in self.failing_patches:
+                    return _completed(returncode=1, stderr="gh: Gone (HTTP 410)")
+                return self.json({"number": number})
+            return self.json(
+                {
+                    "number": number,
+                    "labels": [{"name": "type:task"}, {"name": "status:ready"}],
+                    "state": "open",
+                    "title": f"Issue {number}",
+                    "html_url": f"https://github.invalid/owner/name/issues/{number}",
+                    "url": f"https://api.github.invalid/repos/owner/name/issues/{number}",
+                }
+            )
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    @staticmethod
+    def json(data) -> subprocess.CompletedProcess:
+        return _completed(stdout=json.dumps(data))
+
+
+@pytest.fixture
+def counting_gh(monkeypatch):
+    """A fresh `CountingGh` wired in for `gh`, with a board configured and no real sleeps."""
+    fake = CountingGh()
+    monkeypatch.setattr(issues, "_gh", fake)
+    monkeypatch.setattr(issues.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(issues, "repo_name", lambda: "owner/name")
+    monkeypatch.setattr(
+        issues, "load_project", lambda: _project(board_number=5, board_columns=BOARD_COLUMNS)
+    )
+    return fake
+
+
+def _move_many(numbers, state):
+    issues.cmd_move(argparse.Namespace(numbers=list(numbers), state=state))
+
+
+def test_one_move_costs_three_graphql_requests_whatever_the_boards_size(counting_gh, capsys):
+    """The board's field, the issue's item, the edit: nothing else touches GraphQL. The issue and
+    its labels are read and written over REST, which draws on the separate core quota."""
+    _move_many([7], "refine")
+    kinds = [args[:2] for args in counting_gh.graphql]
+    assert kinds == [("api", "graphql"), ("api", "graphql"), ("project", "item-edit")]
+    assert "board:    Backlog" in capsys.readouterr().out
+
+
+def test_move_reads_the_issue_over_rest_not_with_gh_issue_view(counting_gh):
+    _move_many([7], "refine")
+    assert ("api", "repos/owner/name/issues/7") in [args[:2] for args in counting_gh.rest]
+    assert not [args for args in counting_gh.graphql if args[:2] == ("issue", "view")]
+
+
+def test_move_checks_its_one_label_over_rest_not_by_listing_every_label(counting_gh):
+    _move_many([7], "refine")
+    assert not [args for args in counting_gh.graphql if args[:2] == ("label", "list")]
+    assert ("api", "repos/owner/name/labels/status%3Arefine") in [
+        args[:2] for args in counting_gh.rest
+    ]
+    assert not [args for args in counting_gh.rest if args[:2] == ("label", "create")]
+
+
+def test_move_creates_its_label_only_when_github_says_it_is_not_there(counting_gh):
+    counting_gh.missing_labels.add("status:refine")
+    _move_many([7], "refine")
+    (create,) = [args for args in counting_gh.rest if args[:2] == ("label", "create")]
+    assert create[2] == "status:refine"
+
+
+def test_a_bulk_move_resolves_the_board_field_and_the_label_once(counting_gh, capsys):
+    """N issues in one invocation: two GraphQL requests each (the item, the edit) plus one for the
+    board's field, shared by all of them -- never the board's size, never N field lookups."""
+    numbers = list(range(1, 21))
+    _move_many(numbers, "refine")
+    field_lookups = [args for args in counting_gh.graphql if "projectV2(" in " ".join(args)]
+    assert len(field_lookups) == 1
+    assert len(counting_gh.graphql) == 1 + 2 * len(numbers)
+    label_checks = [args for args in counting_gh.rest if "/labels/" in args[1]]
+    assert len(label_checks) == 1
+    patched = [args[1] for args in counting_gh.rest if "PATCH" in args]
+    assert patched == [f"repos/owner/name/issues/{number}" for number in numbers]
+    out = capsys.readouterr().out
+    assert out.count("board:    Backlog") == len(numbers)
+    assert "#1\n" in out and "#20\n" in out
+
+
+def test_a_bulk_move_goes_on_past_an_issue_that_fails_and_exits_non_zero(counting_gh, capsys):
+    counting_gh.failing_patches.add(2)
+    with pytest.raises(SystemExit) as exit_info:
+        _move_many([1, 2, 3], "refine")
+    assert "#2" in str(exit_info.value.code)
+    assert "#1" not in str(exit_info.value.code)
+    patched = [args[1] for args in counting_gh.rest if "PATCH" in args]
+    assert patched[-1] == "repos/owner/name/issues/3"
+    assert "HTTP 410" in capsys.readouterr().out
+
+
+def test_a_single_move_that_fails_still_exits_with_what_gh_said(counting_gh):
+    counting_gh.failing_patches.add(7)
+    with pytest.raises(SystemExit, match="HTTP 410"):
+        _move_many([7], "refine")
+
+
+def test_the_board_field_is_asked_for_in_one_bounded_query(counting_gh):
+    fields = issues.board_status_field("owner", 5)
+    assert fields == (
+        "PVT_board",
+        "F_status",
+        {column: f"O_{column}" for column in BOARD_COLUMNS.values()},
+    )
+    (query,) = counting_gh.graphql
+    assert "number=5" in query and "owner=owner" in query
+
+
+def test_the_board_field_is_asked_for_once_per_process(counting_gh):
+    issues.board_status_field("owner", 5)
+    issues.board_status_field("owner", 5)
+    assert len(counting_gh.graphql) == 1
+
+
+def test_a_board_whose_column_field_has_another_name_falls_back_to_its_first_single_select(
+    monkeypatch,
+):
+    monkeypatch.setattr(issues, "gh_json", lambda *args, **kwargs: _board_fields_answer("Stage"))
+    assert issues.board_status_field("owner", 5)[1] == "F_status"
+
+
+def test_a_board_with_no_single_select_field_exits_with_a_reason(monkeypatch):
+    answer = _board_fields_answer()
+    answer["data"]["repositoryOwner"]["projectV2"]["fields"]["nodes"] = [{"id": "F", "name": "T"}]
+    monkeypatch.setattr(issues, "gh_json", lambda *args, **kwargs: answer)
+    with pytest.raises(SystemExit, match="no single-select field"):
+        issues.board_status_field("owner", 5)
+
+
+def test_a_board_that_does_not_exist_exits_with_a_reason(monkeypatch):
+    missing = {"data": {"repositoryOwner": {"projectV2": None}}}
+    monkeypatch.setattr(issues, "gh_json", lambda *args, **kwargs: missing)
+    with pytest.raises(SystemExit, match="no project owner/5"):
+        issues.board_status_field("owner", 5)
+
+
+def test_the_full_label_listing_create_and_load_use_is_rest_too(monkeypatch):
+    """`ensure_fixed_labels` (create, update, load) lists every label once per invocation: over
+    REST, every page, not `gh label list`, which is GraphQL."""
+    seen = []
+
+    def gh(*args, input_text=None):
+        seen.append(args)
+        return _completed(stdout="type:task\nstatus:doing\n")
+
+    monkeypatch.setattr(issues, "_gh", gh)
+    assert issues.existing_labels("owner/name") == {"type:task", "status:doing"}
+    ((command, path, *rest),) = seen
+    assert (command, path) == ("api", "repos/owner/name/labels?per_page=100")
+    assert "--paginate" in rest
+
+
+def test_a_label_check_that_fails_for_another_reason_than_404_exits(monkeypatch):
+    monkeypatch.setattr(
+        issues, "_gh", lambda *args, **kwargs: _completed(returncode=1, stderr="HTTP 502")
+    )
+    with pytest.raises(SystemExit, match="HTTP 502"):
+        issues.label_exists("owner/name", "status:refine")
+
+
+def test_the_cli_still_takes_one_number_and_now_also_takes_several(monkeypatch):
+    seen = []
+    monkeypatch.setattr(issues, "cmd_move", seen.append)
+    for argv in (["move", "7", "review"], ["move", "2", "3", "4", "refine"]):
+        monkeypatch.setattr(issues.sys, "argv", ["issues", *argv])
+        issues.main()
+    assert [(args.numbers, args.state) for args in seen] == [
+        ([7], "review"),
+        ([2, 3, 4], "refine"),
+    ]
 
 
 # ---- the brief a worker starts from ----------------------------------------------------------
@@ -947,3 +1583,101 @@ def test_cmd_brief_writes_the_assembled_file(tmp_path):
         )
     text = output.read_text()
     assert "## Supplement" in text and "Extra context." in text
+
+
+# ---- supersede: the refiner's split, closed out deterministically (#39) ----------------------
+
+
+def test_replace_blocker_rewrites_the_original_line_to_every_child_in_its_indentation():
+    body = "## Dependencies\n  Blocked by #15\nBlocked by #3\n\n## Definition of done\nx\n"
+    assert replace_blocker(body, 15, [84, 85]) == (
+        "## Dependencies\n  Blocked by #84\n  Blocked by #85\nBlocked by #3\n\n"
+        "## Definition of done\nx\n"
+    )
+
+
+def test_replace_blocker_never_duplicates_a_child_the_body_already_lists():
+    body = "## Dependencies\nBlocked by #84\nBlocked by #15"
+    assert replace_blocker(body, 15, [84, 85]) == "## Dependencies\nBlocked by #84\nBlocked by #85"
+
+
+def test_replace_blocker_leaves_a_body_that_does_not_name_the_original_alone():
+    assert replace_blocker("## Dependencies\nBlocked by #150\nsee #15", 15, [84]) is None
+
+
+def _supersede(rows, *, original_state="OPEN", original_labels=(), routes=None, children=(84, 85)):
+    """`supersede` against a fake tracker: `gh issue view` of the original, `gh issue list` of the
+    open issues, every write recorded. Never shells out."""
+    view = {"state": original_state, "labels": [{"name": n} for n in original_labels]}
+    calls = []
+
+    def fake_gh_json(*args, **_kwargs):
+        calls.append(("gh", args))
+        return rows if args[:2] == ("issue", "list") else {}
+
+    def fake_update(repo, number, fields):
+        calls.append(("update", number, fields))
+        return {}
+
+    with (
+        patch.object(issues, "gh_json_dict", return_value=view),
+        patch.object(issues, "gh_json", side_effect=fake_gh_json),
+        patch.object(issues, "update_issue", side_effect=fake_update),
+    ):
+        lines = issues.supersede("owner/name", 15, list(children), routes or {})
+    return lines, calls
+
+
+SPLIT_ROWS = [
+    {"number": 15, "body": "the original"},
+    {"number": 84, "body": "child a"},
+    {"number": 85, "body": "child b"},
+    {"number": 20, "body": "## Dependencies\nBlocked by #15\n"},
+    {"number": 21, "body": "## Dependencies\nBlocked by #15\nBlocked by #3\n"},
+    {"number": 22, "body": "## Dependencies\nnone\n"},
+]
+
+
+def test_supersede_repoints_every_dependent_comments_on_it_and_closes_the_original():
+    lines, calls = _supersede(SPLIT_ROWS, routes={21: [85]})
+    updates = {call[1]: call[2] for call in calls if call[0] == "update"}
+    assert updates[20] == {"body": "## Dependencies\nBlocked by #84\nBlocked by #85\n"}
+    assert updates[21] == {"body": "## Dependencies\nBlocked by #85\nBlocked by #3\n"}
+    assert updates[15] == {"state": "closed", "state_reason": "not_planned"}
+    assert 22 not in updates
+    comments = {
+        call[1][1]: call[1][-1] for call in calls if call[0] == "gh" and call[1][0] == "api"
+    }
+    assert "#15 was split into #84, #85" in comments["repos/owner/name/issues/20/comments"]
+    assert comments["repos/owner/name/issues/15/comments"] == "body=Superseded by #84, #85."
+    # The dependents are repointed before the original closes: a run cut in between leaves every
+    # dependent still blocked, never unblocked early.
+    order = [call[1] for call in calls if call[0] == "update"]
+    assert order[-1] == 15
+    assert lines[-1] == "closed #15 as not planned, superseded by #84, #85"
+
+
+def test_supersede_run_twice_changes_nothing_the_second_time():
+    rewritten = [dict(row) for row in SPLIT_ROWS if row["number"] != 15]
+    for row in rewritten:
+        row["body"] = row["body"].replace("#15", "#84")
+    lines, calls = _supersede(rewritten, original_state="CLOSED")
+    assert [call for call in calls if call[0] == "update"] == []
+    assert lines == ["#15 was already closed"]
+
+
+def test_supersede_refuses_a_child_that_is_not_an_open_issue():
+    with pytest.raises(SystemExit, match="#99 is not an open issue"):
+        _supersede(SPLIT_ROWS, children=(84, 99))
+
+
+def test_supersede_refuses_a_feature_whose_children_are_its_parts():
+    feature = issues.type_labels()["feature"]
+    with pytest.raises(SystemExit, match="only a split task or bug"):
+        _supersede(SPLIT_ROWS, original_labels=(feature,))
+
+
+def test_parse_routes_refuses_a_child_outside_the_split():
+    with pytest.raises(SystemExit, match="#7 is not one of the --by children"):
+        issues.parse_routes(["21=7"], [84, 85])
+    assert issues.parse_routes(["#21=#85, 84"], [84, 85]) == {21: [85, 84]}
