@@ -519,8 +519,8 @@ Routes registered today:
   - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
 - **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
-    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `suspended`, `warnings`); `new_limit` 0-100,
-    default 10 new items a day. 500 when a material cannot be read.
+    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `suspended`, `warnings`);
+    `new_limit` 0-100, default 10 new items a day. 500 when a material cannot be read.
   - `POST .../practice/reviews`, body `PracticeAnswer` (`item`, `rating`, `given`,
     `self_assessed`) -> `ReviewOutcome` (`review`, `state`), appended to `study/practice.jsonl`
     and committed with the sitting's batch (`note_change()`). 404 an item no longer in the
