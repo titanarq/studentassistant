@@ -3,6 +3,7 @@
 from studentassistant.llm.caching import cache_stable_prefix, cached_block, system_blocks
 from studentassistant.llm.client import LLMClient, backoff_delay, get_client
 from studentassistant.llm.cost import CostStatus, LedgerBinding, cost_status, estimate_usd
+from studentassistant.llm.credentials import find_ant_profile
 from studentassistant.llm.errors import (
     CostCapError,
     CostCapReachedError,
@@ -65,6 +66,7 @@ __all__ = [
     "content_hash",
     "cost_status",
     "estimate_usd",
+    "find_ant_profile",
     "get_client",
     "load_prompt",
     "no_sleep",
