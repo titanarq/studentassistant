@@ -124,6 +124,19 @@ Routes registered today:
     publishing nothing. The check and the store are serialised per session, so concurrent
     uploads of one new id store it once. A session that ends between the check and the event is
     409 (the source file may stay; the observer never sees it without its event).
+- `GET /api/vault/status` (`server/vault_status.py`, web-only, not phone protocol) -> the vault's
+  sync state without blocking anything: `host`, `pending_changes`, `pending_commits`,
+  `last_commit_at`, `last_push_at`, `last_push_failure` (`kind`, `message`, `at`), `last_sync`
+  (`outcome`, `message`, `conflicts`, `at`), `host_warning` (another PC's open claim on the vault
+  as of the last pull: `host`, `session_id`, `subject`, `topic`, `claimed_at`, Spanish
+  `message`) and `divergence` (`paths`, `local_commit`, `remote_commit`, `detected_at`, Spanish
+  `message`), null when absent. It opens the vault (pull + active-host check) if nothing had.
+  `GET /api/vault/divergence?path=` -> `{path, local, remote}`, both sides' text of one diverging
+  path; 404 for a path not diverging. A vault that cannot be opened is 503.
+- Session start/end and the active host (ADR-0002, `vault/active.py`): after the start's pull,
+  `SessionService` checks `.sa/active.yaml` into `host_warning` (logged, never refused), claims it
+  for its host once the session exists, checkpoints (`sesión <id> iniciada en <host>`) and calls
+  `GitSync.request_push()`; the end releases the claim before its checkpoint and push.
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
