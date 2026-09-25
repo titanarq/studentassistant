@@ -893,6 +893,108 @@ describe("the student's buttons", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("sends no prepare_notes on plain Terminar", async () => {
+    renderScreen();
+    await open();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Terminar" }));
+    });
+    const post = sent.find((call) => call.path === END_PATH);
+    expect(post).toBeDefined();
+    expect(JSON.parse(post?.init.body as string)).not.toHaveProperty("prepare_notes");
+  });
+
+  describe("Terminar y preparar apuntes (#271)", () => {
+    const GENERATION_PATH = `/api/subjects/${SESSION.subject_id}/topics/${SESSION.topic_id}/notes/generation`;
+    const POLL_MS = 1_000;
+
+    function generation(status: string, extra: Record<string, unknown> = {}) {
+      return jsonResponse({
+        subject_id: SESSION.subject_id,
+        topic_id: SESSION.topic_id,
+        status,
+        ...extra,
+      });
+    }
+
+    for (const start of ["started", "running"] as const) {
+      it(`ends with prepare_notes and follows a generation that is ${start}`, async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        try {
+          const ended = vi.fn();
+          const answers = [generation("running"), generation("done", { version: 4 })];
+          backend({
+            [END_PATH]: () => jsonResponse({ ...ENDED, notes_generation: start }),
+            [GENERATION_PATH]: () => answers.shift() ?? generation("done", { version: 4 }),
+          });
+          renderScreen({ onEnded: ended, notesPollMs: POLL_MS });
+          await open();
+
+          await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
+          });
+          const post = sent.find((call) => call.path === END_PATH);
+          expect(JSON.parse(post?.init.body as string)).toEqual({
+            client_time_ms: NOW,
+            reason: "button",
+            prepare_notes: true,
+          });
+          // The devices are given back, and the screen stays to follow the generation.
+          expect(fakes.videoTrack.readyState).toBe("ended");
+          expect(ended).not.toHaveBeenCalled();
+          expect(await screen.findByText(/Preparando los apuntes…/)).toBeInTheDocument();
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(POLL_MS);
+          });
+          expect(screen.getByText(/Preparando los apuntes…/)).toBeInTheDocument();
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(POLL_MS);
+          });
+          expect(screen.getByText("Los apuntes están listos (versión 4).")).toBeInTheDocument();
+          expect(screen.getByRole("link", { name: "Abrir los apuntes" })).toHaveAttribute(
+            "href",
+            "/subjects/biologia/topics/fotosintesis/notes",
+          );
+          const polls = sent.filter((call) => call.path === GENERATION_PATH).length;
+          expect(polls).toBe(2);
+
+          // A final status stops the polling.
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+          });
+          expect(sent.filter((call) => call.path === GENERATION_PATH)).toHaveLength(polls);
+
+          fireEvent.click(screen.getByRole("button", { name: "Volver" }));
+          expect(ended).toHaveBeenCalledWith({ ...ENDED, notes_generation: start });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    }
+
+    it("says so when the backend cannot prepare notes, and polls nothing", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        backend({ [END_PATH]: () => jsonResponse({ ...ENDED, notes_generation: "unavailable" }) });
+        renderScreen({ notesPollMs: POLL_MS });
+        await open();
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
+        });
+        expect(
+          await screen.findByText(/El servidor no puede preparar los apuntes ahora/),
+        ).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+        });
+        expect(sent.some((call) => call.path === GENERATION_PATH)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("says in Spanish when the backend will not end the session, and stays on the page", async () => {
     backend({ [END_PATH]: () => jsonResponse({ detail: "La sesión ya está terminada." }, 409) });
     renderScreen();
