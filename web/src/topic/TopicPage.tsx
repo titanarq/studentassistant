@@ -8,6 +8,7 @@ import {
   type TopicSummary,
 } from "../desk/api";
 import MaterialsPanel from "../materials/MaterialsPanel";
+import BookTitleForm from "./BookTitleForm";
 import PdfUploadForm from "./PdfUploadForm";
 import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
@@ -21,7 +22,8 @@ import WebSearchPanel from "./WebSearchPanel";
  * preview and download each material; a generation reloads the card), and the PDF upload (#149), after which the card is
  * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
  * the card is reloaded too, "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
- * "Añadir una página web" (`WebPageForm`, #62), after storing one.
+ * "Añadir una página web" (`WebPageForm`, #62), after storing one, and "Libro de texto"
+ * (`BookTitleForm`, #214), the title book pages are cited with.
  */
 export default function TopicPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [subjectName, setSubjectName] = useState(subjectId);
@@ -75,6 +77,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
           <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
           <WebSearchPanel subjectId={subjectId} topicId={topicId} onKept={refresh} />
           <WebPageForm subjectId={subjectId} topicId={topicId} onAdded={refresh} />
+          <BookTitleForm subjectId={subjectId} topicId={topicId} />
         </>
       )}
     </main>
