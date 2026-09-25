@@ -31,6 +31,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   conversations/observer-<session-id>.jsonl  observer role conversation
   conversations/editor.jsonl                 editor role conversation
   notes/apuntes.md                           master notes (ADR-0005)
+  notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
   ledger.jsonl                               LLM usage and cost per call
 ```
@@ -196,8 +197,13 @@ when it has not been written yet (a symlink or non-UTF-8 file is a `NotesError`,
 `list_generated(vault, subject_slug, topic_slug)` returns the sorted vault-relative POSIX paths of
 every file under `generated/`, subdirectories included and symlinks skipped; an empty list when
 the directory does not exist. `notes_path(...)` and `generated_directory(...)` give the paths.
-Nothing here writes or runs git; writing notes and generated material belongs to the editor and
-generators tasks.
+`write_notes(vault, subject_slug, topic_slug, text)` writes `notes/apuntes.md` atomically
+(creating `notes/`, secret guard included) and removes a leftover draft;
+`write_notes_draft(...)` writes `notes/borrador.md` (a generation the editor's validator
+rejected), leaving `apuntes.md` untouched; `read_notes_draft(...)` and `notes_draft_path(...)`
+mirror the notes ones. Both writers return the path, refuse an unknown topic like the readers and
+a symlinked `notes/` or file with `NotesError`. Nothing here runs git (the editor commits and
+tags through `GitSync`); writing generated material belongs to the generators tasks.
 
 ### Reading with ids from outside
 Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `list_generated`)
@@ -447,9 +453,7 @@ from their own module (`studentassistant.vault.github`, `studentassistant.vault.
 `studentassistant.vault.index`).
 
 ### Not written yet
-As of issues #21, #117, #119 and #135 no code reads or writes these parts of the layout:
-- **notes** -- writing `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005
-  (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
+As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
 - Also unwritten: `state/digest.md`;

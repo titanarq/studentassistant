@@ -46,6 +46,7 @@ from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
+from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
 from studentassistant.server.read_routes import read_router
@@ -119,10 +120,11 @@ def create_app(
     `llm_transport` turns the live observer on (`observer/live.py`): with one, and `[observer]
     enabled` in `llm_settings` (default: the configured settings, which also give the observer
     role's model, the cost caps and the prices), every session is observed through that transport
-    -- `serve` passes the real Anthropic one, tests a `FakeClaude`. The same transport drives the
-    page transcriber (`sources/transcriber.py`, `[sources] transcription_enabled`), which
-    transcribes every stored capture. Without one no Claude call is
-    ever made, so an app built by a test never reaches the network.
+    -- `serve` passes the real Anthropic one, tests a `FakeClaude`. Without one no Claude call is
+    ever made, so an app built by a test never reaches the network. The same transport gives
+    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client, and
+    drives the page transcriber (`sources/transcriber.py`, `[sources] transcription_enabled`),
+    which transcribes every stored capture.
     """
     install_log_redaction()
     if (
@@ -167,8 +169,11 @@ def create_app(
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
     app.state.observer = None
     app.state.transcriber = None
+    app.state.notes = None
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
+        # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
+        app.state.notes = NotesGenerator(llm_settings, llm_transport)
         if sources.transcription_enabled:
             app.state.transcriber = PageTranscriber(
                 app.state.bus,
@@ -228,6 +233,7 @@ def create_app(
     app.include_router(pdf_upload_router())
     app.include_router(search_router())
     app.include_router(vault_status_router())
+    app.include_router(notes_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

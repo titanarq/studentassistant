@@ -49,7 +49,8 @@ is no background loop.
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
 `gateway` (the `SessionGateway` of the session WebSocket), `recorder` (`None` unless one was
-given) and `observer` (the `ObserverLoop`, `None` without an `llm_transport`).
+given), `observer` (the `ObserverLoop`, `None` without an `llm_transport`) and `notes` (the
+`NotesGenerator` of the notes generation route, `None` without an `llm_transport`).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -241,6 +242,21 @@ Routes registered today:
   between `\x02` and `\x03`. A vault that cannot be opened is 503 (`"No se puede abrir la
   bóveda."`), an index that could not be opened 503 (`"El índice de búsqueda no está
   disponible."`). Needs the bearer check like every non-exempt route.
+- `POST /api/subjects/{subject_id}/topics/{topic_id}/notes/generate` (`server/notes_routes.py`,
+  `notes_router()`): "prepárame el tema", web-only, not phone protocol. Optional JSON body
+  `{"confirm_over_cap": false}`. Opens the vault through the `SessionService`, builds
+  `get_client("editor", ...)` over the app's `llm_transport` and `llm_settings` bound to the
+  topic's ledger (`LedgerBinding(vault, subject, topic)`), and awaits
+  `editor.generate.generate_notes` with the session service's `GitSync`; answers 200 with its
+  `GenerationResult` (`docs/modules/editor.md`: valid notes committed and tagged
+  `<subject>/<topic>/apuntes-vN`, or a draft with `warning` and `errors`). The `notes.generated`
+  event is published on the bus (persisted, origin `editor`) when the topic's session is the
+  active one (else it is only in `conversations/editor.jsonl`). One generation per topic at a
+  time. Errors, Spanish `detail`: no `llm_transport` 503 (`"La generación de apuntes no está
+  disponible: ..."`), an unknown topic 404, a generation of the topic already running 409, a
+  reached cost cap 409 (`"Se ha alcanzado el límite de gasto ... Confirma ..."`) until the body
+  says `confirm_over_cap`, a Claude refusal or failure 502, a vault that cannot be opened 503.
+  Needs the bearer check like every non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative

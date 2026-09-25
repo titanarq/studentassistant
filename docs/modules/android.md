@@ -85,11 +85,86 @@ Thin capture client (ADR-0001), Spanish UI:
   `Route.CAPTURE`. A 409 (another session open) is `SessionFailure.Conflict`; a 409 or 404 also
   refreshes the topic list so the session that is really open shows "Continuar".
 - Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
-  paired backends); `Route.CAPTURE` shows `CapturePlaceholderScreen` (subject, topic, session id)
-  until the capture screen replaces it, reading the session from `SessionHolder`.
+  paired backends); `Route.CAPTURE` shows the capture screen (below) for the session in
+  `SessionHolder`, and goes back home when there is none.
+
+## Capture screen (#42)
+
+Package `capture`. The screen for one open session: CameraX preview, microphone in the STT mode
+the backend picks (ADR-0008), live transcript, pending-doubts counter and the session buttons.
+
+- **`CaptureScreen(viewModel, onLeave, onEnded)`**: asks for `CAMERA` and `RECORD_AUDIO` at runtime
+  (Spanish rationale; the session starts once the microphone is granted, the preview once the
+  camera is), keeps the screen on (`View.keepScreenOn`) while shown, shows the back camera's
+  CameraX `Preview`, the transcript (partials grey, finals black, auto-scrolled), the connection
+  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, and the
+  buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
+  **Terminar** (asks for confirmation). Back ("Salir") leaves the session open: the home screen
+  offers "Continuar".
+- **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
+  transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
+  (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
+  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
+  `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
+  modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
+  `endFailure`). `start()` opens the socket; when `hello.ack` names the mode it starts the
+  `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
+  `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
+  `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops
+  socket and mic. Buttons: `important()` -> `button important`; `toggleSource()` -> `button
+  switch_source` with `book`/`notes` (starts on `notes`); `capture()` calls `StillCapture` with
+  `trigger: button`; a server `command capture_now` calls it with `trigger: command` and its
+  `command_id`, then answers `ack`. `end()` sends `button end_session`, then `POST
+  /api/sessions/{id}/end` (`reason: button`); success, 404 or 409 clear the `SessionHolder` and end
+  the screen, any other failure keeps the session running with `endFailure` shown.
+- **`StillCapture`** (`fun interface`, `capture(trigger, commandId)`) is the hook for android
+  still capture (#46); `AppContainer.stillCapture` defaults to `NoStillCapture`, which does nothing.
+- **`SessionConnection(scope, socketFactory, url, token, clock, capabilities, resume)`**: the
+  protocol v1 socket client. Sends `hello` (`stt: client`, `stt_provider: android-speech`,
+  `audio_format` pcm16/16 kHz/mono, since the app can stream), waits for `hello.ack` and exposes
+  `state: StateFlow<ConnectionState>` (`Connecting`, `Connected(sttMode, clockOffsetMs)`,
+  `Reconnecting(attempt, reason)`, `Failed(ConnectionFailure)`, `Stopped`) and `events:
+  SharedFlow<ServerEvent>`. Reconnects on a drop with back-off 0.5/1/2/5/10 s, resending from
+  in-memory buffers (the disk spool is android-offline): finals until the backend echoes their
+  `transcript.final` (same `segment_id`; the backend ignores a final it already has), buttons /
+  markers / acks queued while offline (at most 100), audio frames until the server `ack`'s
+  `audio_seq` covers them (at most 600, ~60 s; when the backend already acknowledges more frames
+  than this connection produced -- a restarted app on a resumed session -- the buffered frames are
+  renumbered after that `seq`). Partials are dropped while offline. A close with 4404 (session not
+  active, e.g. the backend restarted) runs `resume` (`POST .../resume`) and reconnects; a refused
+  handshake (`HTTP 40x`) is `Failed(Unauthorized)`, a 1008 close or an invalid server message
+  `Failed(Refused(reason))`; `retry()` tries again. All state lives on one coroutine fed by a
+  channel, so socket callbacks and callers never race.
+- **`SessionSocket` / `SessionSocketFactory`**: the socket seam. `OkHttpSessionSocketFactory` opens
+  `baseUrl + ws_path` with `Authorization: Bearer <token>` on its own OkHttp client (no read
+  timeout, 10 s pings); tests use a scripted fake.
+- **`ClientTranscriber`** (ADR-0008's client-side interface: `providerId`, `language`,
+  `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
+  scope)`**, the default: continuous recognition by chaining one-utterance rounds of a
+  `RecognizerEngine`, restarted at once after a result or silence and after 0.25/0.5/1/2/5 s when
+  the recognizer fails; `Partial`s and one `Final` per utterance with client timestamps (start at
+  the first sign of speech, end at the latest hypothesis); a round that ends without a result
+  settles its last partial as the final (also on `stop()`); segment ids `and-<random 8>-<n>`, so
+  they stay unique within a session across app restarts; a missing permission or recognizer stops
+  it with `TranscriberError`. **`AndroidSpeechRecognizerEngine`** is the `SpeechRecognizer` side:
+  `es-ES`, free-form, partial results, `EXTRA_PREFER_OFFLINE`, main thread only. The manifest
+  declares `RECORD_AUDIO` and a `<queries>` entry for `android.speech.RecognitionService`
+  (package visibility on Android 11+).
+- **`AudioStreamer(source, clock, dispatcher)`** (server STT mode): reads an `AudioSource` in 100
+  ms frames (1600 samples) off the main thread and hands each to `SessionConnection.sendAudio`
+  with the client time of its first sample (the wall clock at the first frame plus the samples
+  read since). **`AudioRecordSource`** is the microphone: `AudioRecord`, `VOICE_RECOGNITION`, 16
+  kHz mono PCM16. Frames are encoded by `protocol.AudioFrame`.
+- Known gaps: the microphone is not paused when the app goes to the background (Android silences
+  it); nothing here is spooled to disk (android-offline).
 
 ## Tests
-JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes.
+JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
+capture tests use `capture/Fakes.kt` (test sources): `FakeSessionSocketFactory` (the test plays the
+backend: open, receive, drop, close), `FakeRecognizerEngine`, `FakeTranscriber`, `FakeAudioSource`
+and `FakeClock`. View-model tests give their `BackendStore` a scope on an
+`UnconfinedTestDispatcher`, never `Dispatchers.IO`: store work left on IO outlives the test and
+resumes on `Dispatchers.Main` after `MainDispatcherRule` reset it, failing a later `runTest`.
 
 ## Build and test
 - `bash scripts/test.sh android` runs the JVM unit tests (`./gradlew test` in `android/`);

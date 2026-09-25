@@ -31,8 +31,12 @@ from studentassistant.vault.notes import (
     NotesError,
     generated_directory,
     list_generated,
+    notes_draft_path,
     notes_path,
     read_notes,
+    read_notes_draft,
+    write_notes,
+    write_notes_draft,
 )
 from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secret
 from studentassistant.vault.session_models import (
@@ -207,6 +211,7 @@ __all__ = [
     "list_subjects",
     "list_topics",
     "looks_like_secret",
+    "notes_draft_path",
     "notes_path",
     "notes_tag_name",
     "pending_review_path",
@@ -217,6 +222,7 @@ __all__ = [
     "read_jsonl",
     "read_ledger",
     "read_notes",
+    "read_notes_draft",
     "read_observer_snapshot",
     "read_session_transcript",
     "read_source",
@@ -230,6 +236,8 @@ __all__ = [
     "subject_directory",
     "topic_directory",
     "topics_directory",
+    "write_notes",
+    "write_notes_draft",
     "write_observer_snapshot",
     "write_pending_review",
 ]

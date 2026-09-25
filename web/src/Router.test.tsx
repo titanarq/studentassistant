@@ -52,3 +52,12 @@ it("renders the notes viewer at the topic's /notes path", async () => {
   );
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar los apuntes");
 });
+
+it("renders the pending-doubts panel at the topic's /pending path", async () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/pending" />);
+
+  expect(screen.getByRole("heading", { name: "Dudas pendientes" })).toBeInTheDocument();
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar las dudas");
+});
