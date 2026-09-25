@@ -9,16 +9,12 @@ always be rebuilt from the log (ADR-0003). Pure code: the vault stores it (`load
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.observer.fold import TopicEvent, fold_into
-from studentassistant.observer.state import EventRef, TopicState
-
-# Bumped whenever the fold's meaning changes: a snapshot of another version is folded again from
-# scratch rather than trusted.
-STATE_VERSION = 2
-# 2 (#55): pending items carry kind/text/refs/created_by/status, duplicates merge (aliases).
+from studentassistant.observer.state import STATE_VERSION, EventRef, TopicState
 
 
 class ObserverSnapshot(BaseModel):
@@ -63,6 +59,18 @@ def advance_snapshot(
 def fold_from(snapshot: ObserverSnapshot, tail: Iterable[TopicEvent]) -> TopicState:
     """The state after folding `tail` onto `snapshot`: equal to `fold` over all the events."""
     return advance_snapshot(snapshot, tail).state
+
+
+def compaction_payload(snapshot: ObserverSnapshot) -> dict[str, Any]:
+    """The payload of the `COMPACTED_EVENT_KIND` event that replaces the events `snapshot` folded.
+
+    Only the state and its version: the event's own place in the log is the cursor, and folding
+    the compacted log from scratch yields `snapshot.state` again at that event.
+    """
+    return {
+        "state_version": snapshot.state_version,
+        "state": snapshot.state.model_dump(mode="json"),
+    }
 
 
 def snapshot_of(events: Iterable[TopicEvent]) -> ObserverSnapshot:

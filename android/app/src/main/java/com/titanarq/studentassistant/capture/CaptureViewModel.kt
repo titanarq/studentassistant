@@ -29,8 +29,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -100,6 +102,10 @@ class CaptureViewModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(CaptureUiState(open.subjectName, open.topicName))
     val state: StateFlow<CaptureUiState> = _state.asStateFlow()
+
+    /** This session's captures for the thumbnail strip, oldest first, with their upload state. */
+    val shots: StateFlow<List<CaptureShot>> =
+        stillCapture.shots.stateIn(viewModelScope, SharingStarted.WhileSubscribed(SHOTS_STOP_TIMEOUT_MS), emptyList())
 
     private var connection: SessionConnection? = null
     private var jobs: List<Job> = emptyList()
@@ -191,9 +197,14 @@ class CaptureViewModel(
         connection?.retry()
     }
 
-    /** "Capturar": a burst of stills (#46). */
+    /** "Capturar": a burst of stills, uploaded in the background. */
     fun capture() {
         if (_state.value.phase == CapturePhase.RUNNING) stillCapture.capture(CaptureTrigger.BUTTON, null)
+    }
+
+    /** A tap on a failed thumbnail: upload it again (same `capture_id`). */
+    fun retryShot(captureId: String) {
+        stillCapture.retry(captureId)
     }
 
     /** "Importante": flags this moment. */
@@ -310,6 +321,8 @@ class CaptureViewModel(
 
         /** How long «Micrófono en pausa» stays after returning to the foreground. */
         const val PAUSE_NOTICE_MS: Long = 4_000
+
+        private const val SHOTS_STOP_TIMEOUT_MS = 5_000L
 
         private val ENDED_STATUSES = setOf(404, 409)
 

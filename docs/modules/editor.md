@@ -16,11 +16,13 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30 and #61: the master notes format of ADR-0005, in
+What exists today, after issues #30, #61 and #68: the master notes format of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
-itself), and "prepárame el tema", the first version of the notes, in
-`studentassistant.editor.inputs` and `studentassistant.editor.generate`. The edit loop, doubts
-resolution and "¿por qué?" are later issues.
+itself), "prepárame el tema", the first version of the notes, in
+`studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
+ops in `studentassistant.editor.edits` and the doubts resolution in
+`studentassistant.editor.doubts`. The conversational edit loop (#63) and "¿por qué?" are later
+issues.
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -167,3 +169,87 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
 - Entry point: the server's `POST /api/subjects/{s}/topics/{t}/notes/generate`
   (`docs/modules/server.md`). The voice command "ya está, prepárame el tema" does not exist yet
   (the command grammar is stt's).
+- `assemble_input(..., instruction=None)`: `instruction` replaces the closing request, so another
+  task (the doubts resolution) reads the same, cached, input.
+
+### Edit ops -- `edits.py`
+Pure code (no vault, no LLM): how the editor changes notes it already wrote, by section anchor and
+block number, instead of rewriting them. Meant for the edit loop (#63) as well.
+- `EditOp` (flat, so it can be a strict tool input): `op` in `EDIT_OP_NAMES` --
+  `replace_block` (`section`, `block`, `text`), `insert_after` (`section`, `block` -- `0` = before
+  the first block --, `text`), `delete_block` (`section`, `block`), `replace_section` (`section`,
+  `text`: the whole body; the heading and its anchor stay). `section` is the anchor without `#`;
+  blocks are numbered from 1 within their section as the validator numbers them, and every number
+  of one edit refers to the notes before any op of it. `text` is Markdown blocks with no section
+  heading.
+- `NewFootnote` (`label`, `definition` -- what follows `[^label]: `): appended to the run of
+  definitions ending the document (one is started when there is none); the same label with the
+  same definition is a no-op, with another definition an error.
+- `apply_edits(notes, ops, footnotes=()) -> str`: every other byte unchanged; new blocks are
+  separated by blank lines. Raises `EditError` (`errors`: Spanish, for re-asking) listing every
+  unknown anchor, missing block, two ops on one block, `replace_section` mixed with other ops of
+  its section, a heading inside a text or a clashing footnote label; nothing is applied then. The
+  result is not validated here: callers run `validate`.
+- `describe_sections(notes) -> str`: the block map (`#anchor -- heading`, then `bloque N (kind):
+  opening words`) sent to the editor so it can address blocks.
+
+### Doubts resolution -- `doubts.py`
+The observer's pending doubts (#55) worked through after the notes exist, with the `editor` role
+and the `editor_doubts` prompt, over `assemble_input` with a task instruction (so the sources are
+read from the cache). Every call goes through `llm.structured` (strict tool) and is recorded in
+`conversations/editor.jsonl` (`context` with `reason` `doubts_review`/`doubt_answer`, `user`,
+`assistant`, `validation`, then `pending.reviewed` or `pending.resolved`).
+- `await review_doubts(vault, subject, topic, *, client, sync, host=None, digest=None,
+  confirm_over_cap=False, ...) -> ReviewResult` (tool `resolve_doubts`, `DoubtsReviewOutput`: one
+  `DoubtDecision` per open doubt plus `footnotes`). `auto_resolve` needs a `resolution` and at
+  least one `Evidence` (`source_id` from the catalogue, or `sessions/<id>#t=HH:MM:SS-HH:MM:SS` of a
+  topic session, and a `quote`) and may carry `edits`; `ask` needs a `question` and 1-3
+  `suggestions`, or for a `contradiction` at least two `options` (`SourceOption`: citable
+  `source_id`, `says`), and no edits. Every open doubt must get one decision, and the edits of all
+  auto-resolutions together must apply and leave notes that pass `validate`. A failing answer is
+  sent back (a `tool_result` error with the Spanish list) at most `MAX_REASKS` (2) times; past that
+  nothing is auto-resolved, every doubt becomes a question (the editor's own question when it was
+  a valid one) and the result has a Spanish `warning`. No open doubt: no call. No notes yet:
+  `NotesMissingError`. `ReviewResult`: `auto_resolved`, `asked` (ids), `notes_changed`,
+  `session_id`, `commit`, `attempts`, `warning`, `model`.
+- `await answer_doubt(vault, subject, topic, pending_id, answer, *, client, sync, ...) ->
+  ResolutionResult` (tool `apply_decision`, `DecisionOutput`: `resolution`, `edits`,
+  `footnotes`). `DoubtAnswer`: `suggestion` (1-based, into the latest question's suggestions),
+  `answer` (free text, up to 2000 characters, alone or as a comment), `source_id` (one of the
+  question's `options`: the source that is right in a contradiction; the others become
+  `discarded`) and `keep_discarded` (only with `source_id`: the editor adds a note with the other
+  version, cited to its source -- "En tus apuntes pone 1791"). An answer that does not fit is
+  `InvalidAnswerError` before any call. The edits are checked like the review's and re-asked; past
+  the re-asks the decision is still recorded (resolution = the student's decision), the notes
+  untouched, with a `warning`. Without notes yet no call is made. The item's `resolution` is the
+  editor's one-sentence summary.
+- `await dismiss_doubt(vault, subject, topic, pending_id, *, sync, host=None) ->
+  ResolutionResult`: closed as `dismissed`, no call.
+- `list_doubts(vault, subject, topic) -> DoubtsQueue` (blocking, reads only): `open_count`,
+  `current` (the first open doubt: the one to ask next, one at a time) and `items`, each a `Doubt`
+  -- `item` (the observer's `PendingItem`), `question` (the latest `DoubtQuestion` of its id or
+  merged ids: `question`, `suggestions`, `options`, `asked_at`) and `outcome` (`DoubtOutcome`, see
+  below) --, open ones first.
+- **Events** (ADR-0003). Closing a doubt writes an `observer.state_op` `resolve_pending` event
+  (status `auto_resolved`, origin `editor`; or `resolved`/`dismissed`, origin `user`) -- what closes
+  the item in the observer's fold -- followed by `PENDING_RESOLVED_KIND = "pending.resolved"`
+  whose payload is the `DoubtOutcome` (`pending_id`, `status`, `resolution`, `evidence`, `answer`,
+  `suggestion`, `chosen_source`, `discarded`, `keep_discarded`, `notes_changed`, `warning`); a
+  question is `PENDING_QUESTION_KIND = "pending.question"` (origin `editor`, payload the
+  `DoubtQuestion`). They go to a **review session**: a session of the topic started and ended at
+  once for them (`vault.start_session`/`end_session`, no transcript, no lifecycle events), so they
+  fold after every study session before it; it shows in the topic's session list with no
+  minutes. While the topic has an unended session nothing is sent or written
+  (`OpenSessionError`), since that session's later events would fold before the review's. Then
+  `review/pending.yaml` and the snapshot are regenerated (`load_observer_snapshot`), and the notes
+  (`vault.write_notes`, when edited) and the events are committed with a Spanish summary
+  (`Dudas de <s>/<t> revisadas: ...`, `Duda resuelta en ...`, `Duda descartada en ...`); no notes
+  tag is created.
+- Errors (`DoubtError`, Spanish messages): `UnknownDoubtError`, `DoubtClosedError`,
+  `InvalidAnswerError`, `OpenSessionError`, `NotesMissingError`; plus the llm errors as in
+  `generate_notes`, with nothing written.
+- Limitation: a student's answer is not a source of the catalogue, so the edits it leads to cite
+  the sources the doubt is about (the page with the illegible word); an explanation found in no
+  source needs `[^ia]` in `ampliado` or stays out of the notes in `estricto`.
+- Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/doubts...`
+  (`docs/modules/server.md`).

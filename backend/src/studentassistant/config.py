@@ -113,6 +113,27 @@ class VaultGitSettings(BaseModel):
     active_host_stale_seconds: float = Field(default=DEFAULT_ACTIVE_HOST_STALE_SECONDS, gt=0)
 
 
+class VaultPurgeSettings(BaseModel):
+    """What `studentassistant purge` may drop from a topic whose notes were accepted (ADR-0003).
+
+    Every kind can be switched off; nothing the current notes cite, no transcript and no notes
+    history is ever a candidate, whatever is set here.
+    """
+
+    # Only purge a topic once its notes carry a version tag
+    # `<subject-slug>/<topic-slug>/apuntes-vN`.
+    require_notes_tag: bool = True
+    # The stills of a burst other than the one kept as the page
+    # (`sources/<kind>/page-NNN.burstK.*`, any source kind).
+    burst_originals: bool = True
+    # `conversations/observer-<session-id>.jsonl` of ended sessions (already rolled over).
+    observer_conversations: bool = True
+    # Session events already folded into the observer snapshot, replaced by that snapshot.
+    folded_events: bool = True
+    # Files under `generated/` last committed more than this many days ago; unset keeps them all.
+    generated_max_age_days: int | None = Field(default=None, ge=1)
+
+
 class VaultSettings(BaseModel):
     """Where the private git repository holding every piece of content lives (ADR-0002)."""
 
@@ -124,6 +145,7 @@ class VaultSettings(BaseModel):
     # setup`, unset until then.
     repo: str | None = None
     git: VaultGitSettings = Field(default_factory=VaultGitSettings)
+    purge: VaultPurgeSettings = Field(default_factory=VaultPurgeSettings)
     # Where the derived search/listing index lives; never inside the vault.
     index_path: Path = DEFAULT_INDEX_PATH
 
@@ -316,6 +338,12 @@ DEFAULT_CAPTURE_LONG_EDGE = 2400
 DEFAULT_CAPTURE_JPEG_QUALITY = 85
 DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
 DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS = 10.0
+# Page transcription (`studentassistant.sources.transcriber`, role `transcriber`).
+DEFAULT_TRANSCRIPTION_CONCURRENCY = 2
+DEFAULT_TRANSCRIPTION_ATTEMPTS = 3
+DEFAULT_TRANSCRIPTION_RETRY_SECONDS = 5.0
+DEFAULT_TRANSCRIPTION_GRACE_SECONDS = 2.0
+DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE = 0.3
 
 
 class SourcesSettings(BaseModel):
@@ -340,6 +368,20 @@ class SourcesSettings(BaseModel):
         default=DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS, ge=0
     )
     capture_window_after_seconds: float = Field(default=DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS, ge=0)
+    # Page transcription: off, `serve` never transcribes a page. A page waits until its transcript
+    # window has passed (plus `transcription_grace_seconds`, for the last final to arrive); at
+    # most `transcription_concurrency` pages go to Claude at once; a failed one is tried up to
+    # `transcription_attempts` times, `transcription_retry_seconds` (doubling) apart.
+    transcription_enabled: bool = True
+    transcription_concurrency: int = Field(default=DEFAULT_TRANSCRIPTION_CONCURRENCY, ge=1)
+    transcription_attempts: int = Field(default=DEFAULT_TRANSCRIPTION_ATTEMPTS, ge=1)
+    transcription_retry_seconds: float = Field(default=DEFAULT_TRANSCRIPTION_RETRY_SECONDS, ge=0)
+    transcription_grace_seconds: float = Field(default=DEFAULT_TRANSCRIPTION_GRACE_SECONDS, ge=0)
+    # A detected page covering less of the still than this share may have been cropped wrong
+    # (a box on the page taken for the sheet): the original still goes to Claude too.
+    transcription_min_crop_share: float = Field(
+        default=DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE, ge=0, le=1
+    )
 
 
 # The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final

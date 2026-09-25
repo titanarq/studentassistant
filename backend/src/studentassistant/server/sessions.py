@@ -24,7 +24,8 @@ sessions, and again before every session start; a `conflict` refuses the start
 (`VaultSyncConflictError`), while an unreachable remote or refused credentials are only logged
 (offline-first). While the app is serving (`startup()` .. `shutdown()`, the app's lifespan) the
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
-flushes whatever is still pending.
+flushes whatever is still pending. `add_on_open(hook)` hooks are called with the vault once it is
+first opened, pulled and scanned (the page transcriber's server-start catch-up, #181).
 
 One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
 (`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
@@ -213,6 +214,7 @@ class SessionService:
         self._end_hook_timeout = end_hook_timeout
         self._before_ended: list[EndHook] = []
         self._before_close: list[EndHook] = []
+        self._on_open: list[Callable[[Vault], object]] = []
         self._index: VaultIndex | None = None
         self._index_interval = index_interval
         self._index_runner: asyncio.Task[None] | None = None
@@ -288,6 +290,14 @@ class SessionService:
         pipeline's `drain()`). Hooks run in the order they were added.
         """
         self._before_close.append(hook)
+
+    def add_on_open(self, hook: Callable[[Vault], object]) -> None:
+        """Call `hook(vault)` once the vault is open (pulled and scanned), on the event loop.
+
+        For background work over the whole vault at server start (the page transcriber's
+        catch-up, #181). It must not block: schedule a task. A failure is logged.
+        """
+        self._on_open.append(hook)
 
     async def _run_end_hooks(self, hooks: list[EndHook], session_id: str, stage: str) -> None:
         for hook in hooks:
@@ -625,6 +635,11 @@ class SessionService:
                 self._vault = vault
                 self._loaded = True
                 self._start_runner()
+                for hook in self._on_open:
+                    try:
+                        hook(vault)
+                    except Exception:
+                        logger.exception("vault open hook %r failed", hook)
         assert self._vault is not None
         return self._vault
 

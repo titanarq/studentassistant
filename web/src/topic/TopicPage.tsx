@@ -8,13 +8,15 @@ import {
   type TopicSummary,
 } from "../desk/api";
 import PdfUploadForm from "./PdfUploadForm";
+import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
 
 /**
  * `/subjects/<subject>/topics/<topic>`: the topic page, reached from the study desk. It shows
  * "<subject> / <topic>" (names from the subject and topic lists, ids until they arrive), the
  * topic card from the read API's summary, and the PDF upload (#149), after which the card is
- * reloaded so the new source is counted.
+ * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
+ * the card is reloaded too.
  */
 export default function TopicPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [subjectName, setSubjectName] = useState(subjectId);
@@ -62,7 +64,10 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
         <p role="alert">No se pudo cargar el resumen del tema: {describeFailure(summary)}</p>
       )}
       {(summary === null || summary.kind !== "not-found") && (
-        <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
+        <>
+          <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={refresh} />
+          <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
+        </>
       )}
     </main>
   );

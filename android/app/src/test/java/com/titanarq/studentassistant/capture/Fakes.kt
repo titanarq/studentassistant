@@ -2,10 +2,12 @@ package com.titanarq.studentassistant.capture
 
 import com.titanarq.studentassistant.Clock
 import com.titanarq.studentassistant.protocol.AudioFrame
+import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.ClientEvent
 import com.titanarq.studentassistant.protocol.ServerEvent
 import com.titanarq.studentassistant.protocol.decodeClientEvent
 import com.titanarq.studentassistant.protocol.encodeServerEvent
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /** A settable clock. */
 class FakeClock(var now: Long = 1_000_000L) : Clock {
@@ -150,5 +152,20 @@ class FakeAudioSource(
 
     override fun close() {
         closed = true
+    }
+}
+
+/** Records every capture trigger and retry; the test sets [shots]. */
+class FakeStillCapture : StillCapture {
+    val captures = mutableListOf<Pair<CaptureTrigger, String?>>()
+    val retries = mutableListOf<String>()
+    override val shots = MutableStateFlow<List<CaptureShot>>(emptyList())
+
+    override fun capture(trigger: CaptureTrigger, commandId: String?) {
+        captures += trigger to commandId
+    }
+
+    override fun retry(captureId: String) {
+        retries += captureId
     }
 }

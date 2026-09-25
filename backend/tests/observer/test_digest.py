@@ -174,3 +174,15 @@ def test_the_vault_digest_file_round_trips_and_refuses_an_unknown_topic(
         write_topic_digest(tmp_vault, topic[0], "no-existe", "x")
     with pytest.raises(TopicNotFoundError):
         read_topic_digest(tmp_vault, topic[0], "no-existe")
+
+
+def test_a_compacted_session_is_described_from_the_state_without_status(
+    topic_events: list[TopicEvent],
+) -> None:
+    state = fold(topic_events)
+    later = [(sid, e) for sid, e in topic_events if sid == SECOND_SESSION]
+    text = render_digest("Matemáticas II", "Derivadas", later, state)
+
+    first = text.split("### Sesión ")[1]
+    assert first.startswith("1 — 24/09/2026\n")
+    assert "- Conceptos nuevos: límite del cociente incremental" in first

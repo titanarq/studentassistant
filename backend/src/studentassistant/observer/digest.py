@@ -14,7 +14,9 @@ writes it through `studentassistant.vault.write_topic_digest` only when it chang
 `session.ended` is in the log) that does it for the ending session's topic. `topic_digest` is the
 reader the observer loop and the editor are given: the stored digest, `None` before the first.
 
-Dates come from the session ids (`YYYYMMDD-HHMMSS`, UTC), lengths from the events' `t`.
+Dates come from the session ids (`YYYYMMDD-HHMMSS`, UTC), lengths from the events' `t`. A session
+whose events the vault purge folded into a compaction (#31) is still described from the state, but
+without its status, length or sources, which only its events held.
 """
 
 from __future__ import annotations
@@ -63,6 +65,8 @@ class _SessionDigest:
     """What one session contributed, collected from the log and the fold."""
 
     session_id: str
+    logged: bool = False
+    """Whether any of its events is still in the log (a purge leaves an earlier session's empty)."""
     ended: bool = False
     last_t: int = 0
     segments: int = 0
@@ -109,6 +113,7 @@ def _sessions(events: Sequence[TopicEvent], state: TopicState) -> list[_SessionD
 
     for session_id, event in events:
         digest = of(session_id)
+        digest.logged = True
         digest.last_t = max(digest.last_t, event.t)
         if event.kind == SESSION_ENDED_KIND:
             digest.ended = True
@@ -192,9 +197,11 @@ def _summary(sessions: list[_SessionDigest], state: TopicState) -> str:
 
 
 def _session_block(number: int, session: _SessionDigest) -> list[str]:
-    status = "terminada" if session.ended else "sin terminar"
-    minutes = round(session.last_t / 60000)
-    lines = [f"### Sesión {number} — {session_date(session.session_id)} ({status}, {minutes} min)"]
+    heading = f"### Sesión {number} — {session_date(session.session_id)}"
+    if session.logged:
+        status = "terminada" if session.ended else "sin terminar"
+        heading += f" ({status}, {round(session.last_t / 60000)} min)"
+    lines = [heading]
     if session.is_empty:
         return [*lines, "", "Sin contenido registrado."]
     lines.append("")

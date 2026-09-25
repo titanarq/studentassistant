@@ -19,6 +19,11 @@ from studentassistant.vault import Origin, SourceKind
 
 PendingStatus = Literal["open", "auto_resolved", "resolved", "dismissed"]
 
+# Bumped whenever the fold's meaning changes: a snapshot of another version is folded again from
+# scratch rather than trusted, and a compacted log written by a newer version is refused.
+STATE_VERSION = 2
+# 2 (#55): pending items carry kind/text/refs/created_by/status, duplicates merge (aliases).
+
 
 class _StateModel(BaseModel):
     model_config = ConfigDict(extra="forbid")

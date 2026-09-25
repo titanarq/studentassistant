@@ -12,15 +12,22 @@
 #   - `.cache/worker_<backend>.issue` names an issue, and
 #   - that issue is CLOSED on GitHub (an open issue is a run still in flight: never touch it).
 # `clean_stale_worker.sh` itself is the guard against the other two dangers named in issue #18's
-# workaround (operations.md): it separately refuses when the worktree carries any uncommitted
-# file besides the diary, or any commit on HEAD not yet on `origin/main` -- both checked again
-# here first so a GitHub hiccup or an ineligible worktree never even shells out to `gh issue view`
-# or touches the worktree. It only ever detaches HEAD and deletes branches already MERGED into
-# origin/main (`--merged`), so an unmerged branch is never at risk from either script.
+# workaround (operations.md): it refuses when the worktree carries any uncommitted file outside
+# scratchpad/, or when HEAD is not proven merged into origin/main. "Merged" is squash-aware
+# (#187): ancestry, else a merged pull request of the branch containing HEAD (one REST call),
+# else no content difference from origin/main in the paths the branch touched -- so a
+# squash-merged issue is cleaned and real unmerged work is still refused.
+#
+# GitHub is read over REST only (`gh api`), never GraphQL: one call for the issue state here and
+# at most one pull-request lookup in `clean_stale_worker.sh`, and only for a worktree that is not
+# already idle.
+#
+# Usage: scripts/clean_stale_workers_if_closed.sh [--dry-run]   (--dry-run is passed through:
+# every check runs, nothing in a worktree is touched).
 #
 # Idempotent and quiet: nothing eligible (no issue file, issue still open, worktree already idle,
 # or already cleaned) prints nothing and exits 0. Only an actual cleanup, or a real refusal
-# (uncommitted work / unpushed commits, which `clean_stale_worker.sh` reports on its own),
+# (uncommitted work / unmerged commits, which `clean_stale_worker.sh` reports on its own),
 # writes anything. Safe to run every 5 minutes forever; running it twice in a row after a
 # cleanup is a no-op the second time (the worktree is already detached at origin/main with no
 # diary, so the "nothing eligible" check above skips it).
@@ -29,7 +36,13 @@
 # subtree is pulled (see docs/runbooks/operations.md).
 set -uo pipefail
 
-main=$(cd "$(dirname "$0")/.." && pwd)
+dry_run=()
+[ "${1:-}" = "--dry-run" ] && dry_run=(--dry-run)
+
+here=$(cd "$(dirname "$0")" && pwd)
+# SA_STALE_MAIN: the main checkout whose .cache/ and sibling worktrees are read (default: this
+# script's own checkout) -- lets a lane worktree dry-run its copy against the live workers.
+main=${SA_STALE_MAIN:-$(cd "$here/.." && pwd)}
 cd "$main" || exit 1
 
 # shellcheck source=agent_os/bin/agent_task.sh
@@ -56,16 +69,17 @@ for backend in $backends; do
   # Nothing to clean if the worktree is already idle (detached, no diary) -- the common case on
   # every tick between cleanups. Skip quietly rather than re-running the heavier checks below.
   branch=$(git -C "$wt" symbolic-ref -q --short HEAD || true)
-  [ -n "$branch" ] || [ -f "$wt/scratchpad/progress.log" ] || continue
+  [ -n "$branch" ] || [ -d "$wt/scratchpad" ] || continue
 
-  state=$("$gh_bin" issue view "$issue" --repo "$repo" --json state -q .state 2>/dev/null) || {
+  state=$("$gh_bin" api "repos/$repo/issues/$issue" --jq .state 2>/dev/null) || {
     echo "clean_stale_workers_if_closed: could not read state of #$issue ($backend), skipping" >&2
     status=1
     continue
   }
-  [ "$state" = "CLOSED" ] || continue
+  [ "$state" = "closed" ] || continue
 
-  "$main/scripts/clean_stale_worker.sh" "$backend" || status=1
+  SA_STALE_MAIN="$main" SA_STALE_GH="$gh_bin" SA_STALE_REPO="$repo" "$here/clean_stale_worker.sh" "${dry_run[@]}" "$backend" \
+    || status=1
 done
 
 exit $status
