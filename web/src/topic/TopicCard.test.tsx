@@ -121,3 +121,27 @@ it("links the quiz item to the quiz page", () => {
     "/subjects/historia/topics/revolucion-francesa/quiz",
   );
 });
+
+it("links the flashcards deck and CSV for download", () => {
+  const root = "subjects/historia/topics/revolucion-francesa/generated";
+  render(
+    <TopicCard
+      summary={summary({
+        generated: [`${root}/flashcards.apkg`, `${root}/flashcards.csv`, `${root}/flashcards.yaml`],
+      })}
+    />,
+  );
+
+  expect(field("Material")).toHaveTextContent("✓ Flashcards");
+  const files = "/api/subjects/historia/topics/revolucion-francesa/generated/files";
+  const anki = screen.getByRole("link", { name: "flashcards (Anki)" });
+  expect(anki).toHaveAttribute("href", `${files}/flashcards.apkg`);
+  expect(anki).toHaveAttribute("download");
+  expect(screen.getByRole("link", { name: "flashcards (CSV)" })).toHaveAttribute("href", `${files}/flashcards.csv`);
+  expect(screen.queryByRole("link", { name: /yaml/ })).toBeNull();
+});
+
+it("has no downloads section without downloadable files", () => {
+  render(<TopicCard summary={summary()} />);
+  expect(screen.queryByText("Descargas", { selector: "dt" })).toBeNull();
+});

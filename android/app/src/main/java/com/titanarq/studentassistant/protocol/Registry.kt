@@ -49,6 +49,7 @@ val MESSAGE_CODECS: Map<String, MessageCodec> = mapOf(
     "server.transcript.final" to server<TranscriptFinal>(),
     "server.command" to server<Command>(),
     "server.notice" to server<Notice>(),
+    "server.stt.status" to server<SttStatus>(),
     "server.ack" to server<ServerAck>(),
     "rest.pair.request" to rest<PairRequest>(),
     "rest.pair.response" to rest<PairResponse>(),
@@ -67,6 +68,8 @@ val MESSAGE_CODECS: Map<String, MessageCodec> = mapOf(
     "rest.sessions.captures.request" to rest<CaptureUploadRequest>(),
     "rest.sessions.captures.response" to rest<CaptureUploadResponse>(),
     "rest.search.response" to rest<SearchResponse>(),
+    "rest.topics.web_pages.create.request" to rest<WebPageAddRequest>(),
+    "rest.topics.web_pages.create.response" to rest<WebPageAddResponse>(),
 )
 
 /** The codec for a message name such as `client.hello`; [NoSuchElementException] if none. */

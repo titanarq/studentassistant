@@ -197,7 +197,7 @@ function WebSource({ subjectId, topicId, source }: { subjectId: string; topicId:
     <>
       {url !== null && (
         <p className="source-caption">
-          Copia de{" "}
+          Fuente externa: copia de{" "}
           <a href={url} target="_blank" rel="noopener noreferrer">
             {url}
           </a>

@@ -192,11 +192,16 @@ it("shows a transcript excerpt with its timestamps", async () => {
   expect(lines[1]).toHaveTextContent("02:50 hacia mil setecientos cincuenta");
 });
 
-it("shows a web snapshot with the URL it was taken from", async () => {
+it("shows a web snapshot, marked as an external source, with the URL it was taken from", async () => {
   renderPage();
-  await openRef("Fuente: Web: 001-maquina-de-vapor.md");
+  const [ref] = await screen.findAllByRole("link", { name: "Fuente externa (web): Web: 001-maquina-de-vapor.md" });
+  expect(ref.closest("sup")).toHaveClass("notes-ref-web");
+  const footnotes = screen.getByRole("region", { name: "Fuentes" });
+  expect(within(footnotes).getByText(/fuente externa/)).toBeInTheDocument();
+  await openRef("Fuente externa (web): Web: 001-maquina-de-vapor.md");
 
   const panel = await screen.findByRole("dialog");
+  expect(await within(panel).findByText(/Fuente externa: copia de/)).toBeInTheDocument();
   expect(await within(panel).findByText(/motor de combustión externa/)).toBeInTheDocument();
   expect(await within(panel).findByRole("link", { name: /wikipedia/ })).toHaveAttribute(
     "href",

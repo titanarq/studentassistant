@@ -6,7 +6,9 @@ import { type TopicSummary, topicPath } from "../desk/api";
  * The notes item, once a version exists, links to the notes viewer (`<topic path>/notes`), and
  * the pending item to the pending-doubts panel (`<topic path>/pending`); beside the notes item,
  * "versiones" links to the notes version history (`<topic path>/versions`); "Quiz" links to the
- * quiz page (`<topic path>/quiz`), where it can be generated and taken.
+ * quiz page (`<topic path>/quiz`), where it can be generated and taken. Generated files meant to
+ * be taken elsewhere (the Anki deck, a CSV, a PDF...) are listed under "Descargas" as links to
+ * `GET /api<topic path>/generated/files/<name>`.
  */
 
 /** Generated material in the card's order, recognised by the file name under `generated/`. */
@@ -17,6 +19,28 @@ export const MATERIALS: { label: string; stem: RegExp; page?: string }[] = [
   { label: "Examen", stem: /^(exam|examen|exercises|ejercicios)\b/i },
   { label: "Diapositivas", stem: /^(slides|diapositivas)\b/i },
 ];
+
+/** Generated files offered for download, by extension, with the label shown beside the name. */
+const DOWNLOADS: Record<string, string> = { apkg: "Anki", csv: "CSV", pdf: "PDF", pptx: "PowerPoint" };
+
+interface Download {
+  name: string;
+  label: string;
+}
+
+/** The downloadable files among `generated` (vault-relative paths), by their name under `generated/`. */
+export function downloads(generated: string[]): Download[] {
+  const found: Download[] = [];
+  for (const path of generated) {
+    const at = path.indexOf("/generated/");
+    if (at < 0) continue;
+    const name = path.slice(at + "/generated/".length);
+    const dot = name.lastIndexOf(".");
+    const label = dot > 0 ? DOWNLOADS[name.slice(dot + 1).toLowerCase()] : undefined;
+    if (label !== undefined) found.push({ name, label: `${name.slice(0, dot)} (${label})` });
+  }
+  return found;
+}
 
 function hasMaterial(generated: string[], stem: RegExp): boolean {
   return generated.some((path) => stem.test(path.slice(path.lastIndexOf("/") + 1)));
@@ -53,6 +77,8 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
       {page === undefined ? label : <a href={`${base}/${page}`}>{label}</a>}
     </span>
   ));
+  const files = downloads(generated);
+  const filesBase = `/api${base}/generated/files`;
   return (
     <section aria-label="Resumen del tema">
       <dl>
@@ -84,6 +110,21 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
           )}
           {materials}
         </dd>
+        {files.length > 0 && (
+          <>
+            <dt>Descargas</dt>
+            <dd>
+              {files.map(({ name, label }, index) => (
+                <span key={name}>
+                  {index > 0 && "  "}
+                  <a href={`${filesBase}/${name.split("/").map(encodeURIComponent).join("/")}`} download>
+                    {label}
+                  </a>
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
       </dl>
     </section>
   );

@@ -15,6 +15,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.WebPageAddRequest
+import com.titanarq.studentassistant.protocol.WebPageAddResponse
 
 /**
  * Where and as whom to call a paired backend: its base URL (`http://host:port`, no trailing
@@ -114,4 +116,16 @@ interface BackendClient {
         metadata: CaptureUploadRequest,
         images: List<CaptureImageBytes>,
     ): BackendResult<CaptureUploadResponse>
+
+    /**
+     * `POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages`: the backend fetches the page
+     * and stores it as a web source of the topic (201), or answers the snapshot it already has
+     * (200, `already_kept`). The fetch goes through Claude, so the call may take a while.
+     */
+    suspend fun addWebPage(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+        request: WebPageAddRequest,
+    ): BackendResult<WebPageAddResponse>
 }

@@ -71,6 +71,25 @@ No price or cap lives anywhere but these config defaults.
   (`strict_tool`) with `tool_choice: auto` and the `structured-output` prompt as instruction;
   the input is parsed with `json` and validated with Pydantic; one re-ask carrying the error,
   then `StructuredOutputError`. `RefusalError` on `stop_reason: refusal`.
+- Server-side web tools (`web.py`): `web_search_tool(settings=None, *, max_uses=None,
+  allowed_domains=None, blocked_domains=None)` and `web_fetch_tool(settings=None, *, max_uses=None,
+  max_content_tokens=None)` are the tool definitions, their `type` from `[llm] web_search_tool` /
+  `web_fetch_tool` (defaults `web_search_20260209` / `web_fetch_20260209`, the dynamic-filtering
+  versions; never declare `code_execution` next to them). `run_server_tools(client, messages, *,
+  max_continuations=5, **create) -> ServerToolRun` (`responses`, `messages`, `final`, `content`)
+  calls `create` and, while the answer stops with `pause_turn`, sends it again with the paused
+  assistant turn appended (no extra user message), each call its own ledger entry.
+  `parse_web_results(content) -> WebToolResults` reads the blocks: `queries` (from
+  `server_tool_use`), `hits` (`WebSearchHit`: `url`, `title`, `page_age`, each URL once),
+  `documents` (`FetchedDocument`: `url`, `title`, `retrieved_at`, `media_type`, `text` for a text
+  document, `data` for a base64 one such as a PDF) and the `error_code`s of failed searches and
+  fetches (a server tool error is an HTTP 200 whose result block holds an error object).
+  `Usage.web_search_requests` / `web_fetch_requests` come from `usage.server_tool_use`; each web
+  search adds `[llm] web_search_usd_per_thousand` (default 10.0 USD per 1,000) / 1000 to
+  `estimate_usd(..., web_search_usd_per_thousand=)` and so to the ledger entry and the caps; a
+  fetch costs only its tokens. Tests script them with `web_search_blocks(query, hits, *,
+  error_code=None)` and `web_fetch_blocks(url, text, *, title, media_type, data, error_code)`
+  inside `FakeClaude.reply(LLMResponse(content=...))`.
 - `check_api_key(api_key=None, *, timeout=15.0, sdk=None)` -- one free, unretried
   `GET /v1/models?limit=1` (no tokens, no ledger, no cap) proving a key works, for
   `studentassistant doctor --api-call`; raises `LLMAPIError` (401/403 = refused) or

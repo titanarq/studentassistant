@@ -56,6 +56,7 @@ class EventDecodingTest {
         is TranscriptFinal -> "transcript.final"
         is Command -> "command"
         is Notice -> "notice"
+        is SttStatus -> "stt.status"
         is ServerAck -> "ack"
     }
 

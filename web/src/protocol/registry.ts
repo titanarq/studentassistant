@@ -18,6 +18,7 @@ export interface MessageTypes {
   "server.transcript.final": server.TranscriptFinal;
   "server.command": server.Command;
   "server.notice": server.Notice;
+  "server.stt.status": server.SttStatus;
   "server.ack": server.ServerAck;
   "rest.pair.request": rest.PairRequest;
   "rest.pair.response": rest.PairResponse;
@@ -36,6 +37,8 @@ export interface MessageTypes {
   "rest.sessions.captures.request": rest.CaptureUploadRequest;
   "rest.sessions.captures.response": rest.CaptureUploadResponse;
   "rest.search.response": rest.SearchResponse;
+  "rest.topics.web_pages.create.request": rest.WebPageAddRequest;
+  "rest.topics.web_pages.create.response": rest.WebPageAddResponse;
 }
 
 export type MessageName = keyof MessageTypes;
@@ -52,6 +55,7 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "server.transcript.final": server.decodeTranscriptFinal,
   "server.command": server.decodeCommand,
   "server.notice": server.decodeNotice,
+  "server.stt.status": server.decodeSttStatus,
   "server.ack": server.decodeServerAck,
   "rest.pair.request": rest.decodePairRequest,
   "rest.pair.response": rest.decodePairResponse,
@@ -70,6 +74,8 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "rest.sessions.captures.request": rest.decodeCaptureUploadRequest,
   "rest.sessions.captures.response": rest.decodeCaptureUploadResponse,
   "rest.search.response": rest.decodeSearchResponse,
+  "rest.topics.web_pages.create.request": rest.decodeWebPageAddRequest,
+  "rest.topics.web_pages.create.response": rest.decodeWebPageAddResponse,
 };
 
 export function isMessageName(name: string): name is MessageName {

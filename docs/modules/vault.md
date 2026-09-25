@@ -32,6 +32,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   review/pending.yaml                        pending-review items and their resolution
   conversations/observer-<session-id>.jsonl  observer role conversation
   conversations/editor.jsonl                 editor role conversation
+  conversations/web-search.jsonl             web searches: queued, results, failed, kept (sources, #59)
   notes/apuntes.md                           master notes (ADR-0005)
   notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
@@ -158,7 +159,8 @@ imports it and runs no git.
 
 ### Conversations -- `conversations.py`
 An LLM role's conversation (ADR-0003) is `conversations/<name>.jsonl` under its topic, `name` being
-lowercase letters, digits and hyphens (`observer-<session-id>`, `editor`); anything else is a
+lowercase letters, digits and hyphens (`observer-<session-id>`, `editor`, `web-search`: the
+topic's web search log, `search.*` records with a `detail`, written by `sources.web`); anything else is a
 `ConversationError`. `ConversationRecord` is one line: `time` (timezone-aware, kept in UTC), `kind`
 (the role's choice; the observer writes `context`, `user`, `assistant`, `status`), `message?` (the
 API message it carries), `model?`, `prompt_hash?`, `usage?` (token counts) and `detail?`.

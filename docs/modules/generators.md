@@ -134,3 +134,78 @@ history. REST: `server/quiz_routes.py` (`docs/modules/server.md`); web: `src/qui
   it. Values of `-o` are JSON when they parse (`size=10`, `split=true`), text otherwise.
 - REST (`server/generators_routes.py`, see `docs/modules/server.md`): `GET /api/generators`,
   `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`.
+
+## Flashcards -- `flashcards.py` (kind `flashcards`, #76)
+
+Options `size` (1-100, default 20: at most that many cards). Claude (prompt
+`prompts/generator_flashcards.md`, tool `record_flashcards`) returns `DraftDeck`: cards with a
+Spanish `front` (question), `back` (answer), `anchors` and, optionally, the `id` of an earlier card
+it restates. Files under `generated/`:
+
+- `flashcards.yaml` (`FlashcardsFile`: `deck` = `<subject name>::<topic title>`, `deck_id`,
+  `cards`: `id`, `front`, `back`, `anchors`) -- read back by the next generation;
+- `flashcards.csv` (`id,anverso,reverso,secciones`, the section titles joined with `; `);
+- `flashcards.apkg` (genanki, built in memory): one deck per topic, note type `ANKI_MODEL_ID`
+  (fields Anverso, Reverso, Apuntes; `$..$`/`$$..$$` as MathJax, `**bold**`, line breaks), tags
+  the subject and topic slugs.
+
+Stable ids, so re-importing the deck into Anki updates the notes instead of duplicating them:
+`deck_id_for(subject, topic)` is derived from the slugs, the note type id is fixed, and each
+note's GUID is `guid_for(subject, topic, card id)`. A card's `id` (`c<8 hex>[-n]`) is kept across
+generations (`assign_ids`): the previous cards are shown to Claude, whose reused `id` is kept when
+it is an earlier card's and not given twice; else a card whose normalized front equals an earlier
+card's takes its id; else a new id from the front's hash. Items are the card ids with their
+anchors. The web downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
+
+## Exercises and mock exam -- `exam.py` (kind `examen`, #77)
+
+Options `exercises` (0-30, default 6), `questions` (1-20, default 5), `total_points` (default 10)
+and `duration_minutes` (10-300, default 60). Claude (prompt `prompts/generator_exam.md`, tool
+`record_exam`) returns `DraftExam`: the exam's `instructions`, the practice `exercises` and the
+`exam` questions, each a `DraftQuestion` (`statement`, `difficulty` `baja|media|alta`, `points`
+(exam questions), worked `solution`, `rubric` of `RubricCriterion` (`criterion`, `points`),
+`anchors`). The prompt asks for Unicode mathematics rather than LaTeX, since the output is
+printed. Files under `generated/`, the statements apart from the solutions:
+
+- `examen.md` -- the statements: exercises (with their difficulty), then the exam with its
+  duration, total points, instructions and every question's points;
+- `examen-soluciones.md` -- solutions, rubrics as a `Criterio | Puntos` table, and the note
+  sections each item comes from;
+- `examen.pdf`, `examen-soluciones.pdf` -- the same as A4 PDFs (`render_pdf`: PyMuPDF `Story`
+  over HTML rendered from the same data; `**bold**`, `*italic*`, `- ` and `1. ` lists, any
+  `$..$` left as LaTeX source in monospace), the exam with a name/date line, a box to answer each
+  question sized by its points, and `<title> · Página i de n` at the foot of every page.
+
+Extra items beyond the options are cut, questions without points, questions not adding up to
+`total_points` and rubrics not adding up to their question's points are kept and reported as
+Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
+web lists the two PDFs under "Descargas" through `GET .../generated/files/{name}` (#76).
+
+## Slides -- `slides.py` (kind `diapositivas`, #78)
+
+Options `size` (1-40, default 12: at most that many slides besides the cover) and `export`
+(default true). Claude (prompt `prompts/generator_slides.md`, tool `record_slides`) returns
+`DraftDeck`: `title`, optional `subtitle`, and `slides` with a Spanish `title`, `bullets`, optional
+speaker `notes`, `anchors` and, optionally, the `image` id of a figure. Figures
+(`collect_figures`) are the source pages the notes cite: notes/book page images (the cropped
+`page-NNN.page.jpg` when stored) and PDF pages (their `page-NNN.pKKK.jpg` thumbnail), offered as
+`f1`, `f2`... with their citation text and the sections citing them; Claude does not see them.
+Files under `generated/`:
+
+- `diapositivas.md` -- Marp Markdown (`render_markdown`): front matter `marp: true`, a cover
+  (title, subtitle, subject name), one slide per draft; a figure is a `![bg right:40% contain]`
+  background linked relative to the deck and credited in the slide's `_footer` ("Imagen: Libro,
+  página 12"); speaker notes as HTML comments;
+- `diapositivas/figura-NN.<ext>` -- the figures shown, copied from the sources;
+- `diapositivas.pdf`, `diapositivas.pptx` -- exported by Marp CLI (`MarpExporter`: run in a
+  temporary directory with `--allow-local-files --pdf|--pptx --output <file>`, its process group
+  killed on a timeout). A missing `marp`, a failure or a timeout is a Spanish warning and the
+  Markdown is still stored (an older PDF/PPTX is then removed, never left stale).
+
+Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["marp"]`, e.g.
+`["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
+(unset: Marp finds Chrome/Chromium itself). Marp needs Node and a Chromium-based browser; it is
+not a Python dependency. Items are the slides (`d01`, `d02`...) with their anchors. The web lists
+the PDF/PPTX under Descargas through `GET .../generated/files/{name}`. Tests use a stand-in
+exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
+`@pytest.mark.integration` (`SA_TEST_MARP`).

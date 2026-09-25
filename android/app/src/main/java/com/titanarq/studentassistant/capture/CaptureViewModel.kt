@@ -11,6 +11,7 @@ import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.ClientAck
 import com.titanarq.studentassistant.protocol.Command
 import com.titanarq.studentassistant.protocol.CommandName
+import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
 import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.ServerEvent
@@ -18,6 +19,8 @@ import com.titanarq.studentassistant.protocol.SessionEndReason
 import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SourceKind
 import com.titanarq.studentassistant.protocol.SttMode
+import com.titanarq.studentassistant.protocol.SttState
+import com.titanarq.studentassistant.protocol.SttStatus
 import com.titanarq.studentassistant.protocol.TranscriptClientFinal
 import com.titanarq.studentassistant.protocol.TranscriptClientPartial
 import com.titanarq.studentassistant.protocol.TranscriptFinal
@@ -87,6 +90,12 @@ data class CaptureUiState(
     val micPaused: Boolean = false,
     /** The offline spool is close to its cap: the oldest audio is about to be dropped. */
     val spoolNearCap: Boolean = false,
+    /**
+     * Since protocol 1.5 (#222), server STT mode: the backend's own recognizer is not transcribing
+     * (its last degraded `stt.status`); null while it works. A new `hello.ack` clears it, since the
+     * backend repeats a status that still holds right after it.
+     */
+    val sttWarning: SttStatus? = null,
 )
 
 /**
@@ -375,6 +384,8 @@ class CaptureViewModel(
             is TranscriptPartial -> showLine(TranscriptLine(event.segmentId, event.text, final = false))
             is TranscriptFinal -> showLine(TranscriptLine(event.segmentId, event.text, final = true))
             is Notice -> _state.update { it.copy(pendingCount = event.pendingCount) }
+            is HelloAck -> _state.update { it.copy(sttWarning = null) }
+            is SttStatus -> _state.update { it.copy(sttWarning = event.takeIf { e -> e.state != SttState.OK }) }
             is ServerAck -> event.captureIds?.let(stillCapture::confirmReceived)
             is Command -> when (event.command) {
                 CommandName.CAPTURE_NOW -> {

@@ -1,7 +1,13 @@
 {
   "type": "hello.ack",
-  "protocol_version": "1.3",
+  "protocol_version": "1.5",
   "stt_mode": "client",
   "clock_offset_ms": -350,
-  "server_time_ms": 1790251199650
+  "server_time_ms": 1790251199650,
+  "vocabulary_hints": [
+    "Historia",
+    "La Restauración",
+    "sufragio censitario",
+    "turno pacífico"
+  ]
 }

@@ -20,6 +20,10 @@ import {
 } from "./decode";
 import { protocolVersion } from "./rest";
 
+/** Since 1.4: the most terms `vocabulary_hints` carries, and the longest term. */
+export const VOCABULARY_HINTS_MAX_ITEMS = 50;
+export const VOCABULARY_HINT_MAX_CHARS = 100;
+
 /** Reply to the client `hello`: negotiated version, chosen STT mode and clock offset. */
 export interface HelloAck {
   type: "hello.ack";
@@ -32,6 +36,8 @@ export interface HelloAck {
   /** Backend clock minus the client clock read in `hello`; may be negative. */
   clock_offset_ms: number;
   server_time_ms: number;
+  /** Since 1.4: domain terms (subject, topic, concepts) a recognizer may be biased towards. */
+  vocabulary_hints?: string[];
 }
 
 interface NormalisedSegment {
@@ -67,6 +73,23 @@ export interface Notice {
   type: "notice";
   pending_count: number;
   server_time_ms: number;
+  /** Since 1.4: the session's new vocabulary hints, replacing the previous list. */
+  vocabulary_hints?: string[];
+}
+
+/** Since 1.5: the longest `stt.status` detail. */
+export const STT_STATUS_DETAIL_MAX_CHARS = 300;
+
+/**
+ * Since 1.5: the backend's own STT provider (server STT mode) changed between working and
+ * degraded. `ok` clears any warning; `reconnecting` and `unavailable` mean the audio is not being
+ * transcribed, and `detail` says so in Spanish.
+ */
+export interface SttStatus {
+  type: "stt.status";
+  state: "ok" | "reconnecting" | "unavailable";
+  detail?: string;
+  server_time_ms: number;
 }
 
 /** The backend stored audio up to a frame `seq` and/or the listed captures. */
@@ -77,11 +100,22 @@ export interface ServerAck {
   server_time_ms: number;
 }
 
-export type ServerEvent = HelloAck | TranscriptPartial | TranscriptFinal | Command | Notice | ServerAck;
+export type ServerEvent =
+  | HelloAck
+  | TranscriptPartial
+  | TranscriptFinal
+  | Command
+  | Notice
+  | SttStatus
+  | ServerAck;
 
 // Decoders
 
 const sessionMs = int({ min: 0 });
+const vocabularyHints = array(str({ minLength: 1, maxLength: VOCABULARY_HINT_MAX_CHARS }), {
+  minItems: 1,
+  maxItems: VOCABULARY_HINTS_MAX_ITEMS,
+});
 
 export const decodeHelloAck: Decoder<HelloAck> = refine(
   object(
@@ -92,7 +126,7 @@ export const decodeHelloAck: Decoder<HelloAck> = refine(
       clock_offset_ms: int(),
       server_time_ms: epochMs,
     },
-    { audio_format: decodeAudioFormat },
+    { audio_format: decodeAudioFormat, vocabulary_hints: vocabularyHints },
   ),
   (h) =>
     (h.stt_mode === "server") !== (h.audio_format !== undefined)
@@ -127,11 +161,23 @@ export const decodeCommand: Decoder<Command> = object({
   server_time_ms: epochMs,
 });
 
-export const decodeNotice: Decoder<Notice> = object({
-  type: literal("notice"),
-  pending_count: int({ min: 0 }),
-  server_time_ms: epochMs,
-});
+export const decodeNotice: Decoder<Notice> = object(
+  {
+    type: literal("notice"),
+    pending_count: int({ min: 0 }),
+    server_time_ms: epochMs,
+  },
+  { vocabulary_hints: vocabularyHints },
+);
+
+export const decodeSttStatus: Decoder<SttStatus> = object(
+  {
+    type: literal("stt.status"),
+    state: literal("ok", "reconnecting", "unavailable"),
+    server_time_ms: epochMs,
+  },
+  { detail: str({ minLength: 1, maxLength: STT_STATUS_DETAIL_MAX_CHARS }) },
+);
 
 export const decodeServerAck: Decoder<ServerAck> = refine(
   object(
@@ -151,6 +197,7 @@ export const decodeServerEvent: Decoder<ServerEvent> = discriminated<ServerEvent
   "transcript.final": decodeTranscriptFinal,
   command: decodeCommand,
   notice: decodeNotice,
+  "stt.status": decodeSttStatus,
   ack: decodeServerAck,
 });
 

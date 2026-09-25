@@ -84,8 +84,16 @@ export default function NotesView({
     const definition = definitions.get(label);
     if (definition === undefined) return `Fuente ${label} sin definir`;
     const provenance = parseProvenance(label, definition);
-    return label === IA_LABEL ? "Ampliado por la IA" : `Fuente: ${provenance.text}`;
+    if (label === IA_LABEL) return "Ampliado por la IA";
+    return provenance.kind === "web" ? `Fuente externa (web): ${provenance.text}` : `Fuente: ${provenance.text}`;
   };
+  // Web snapshots are external sources (#59): marked apart from the student's own notes and books.
+  const isExternal = (label: string): boolean => {
+    const definition = definitions.get(label);
+    return definition !== undefined && parseProvenance(label, definition).kind === "web";
+  };
+  const refClass = (label: string): string =>
+    label === IA_LABEL ? "notes-ref notes-ref-ia" : isExternal(label) ? "notes-ref notes-ref-web" : "notes-ref";
 
   const inline = (nodes: Inline[], key = ""): ReactNode[] =>
     nodes.map((node, index) => {
@@ -121,7 +129,7 @@ export default function NotesView({
           seen.set(node.label, n);
           const number = numbers.get(node.label) ?? "?";
           return (
-            <sup key={k} className={node.label === IA_LABEL ? "notes-ref notes-ref-ia" : "notes-ref"}>
+            <sup key={k} className={refClass(node.label)}>
               <a
                 id={refId(node.label, n)}
                 href={`#${defId(node.label)}`}
@@ -276,7 +284,12 @@ export default function NotesView({
             {cited.map((label) => {
               const provenance = parseProvenance(label, definitions.get(label) as string);
               return (
-                <li key={label} id={defId(label)} value={label === IA_LABEL ? undefined : Number(numbers.get(label))}>
+                <li
+                  key={label}
+                  id={defId(label)}
+                  className={provenance.kind === "web" ? "notes-footnote-external" : undefined}
+                  value={label === IA_LABEL ? undefined : Number(numbers.get(label))}
+                >
                   <span className="notes-footnote-number">[{numbers.get(label)}]</span>{" "}
                   <a
                     href={`#${defId(label)}`}
@@ -287,6 +300,7 @@ export default function NotesView({
                   >
                     {provenance.text}
                   </a>
+                  {provenance.kind === "web" && <span className="notes-external-tag"> · fuente externa</span>}
                 </li>
               );
             })}

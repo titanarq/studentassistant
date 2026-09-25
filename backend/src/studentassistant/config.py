@@ -33,6 +33,8 @@ DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
 DEFAULT_RECORDINGS_DIR = Path("~/.cache/studentassistant/recordings")
 # The derived SQLite index of the vault (ADR-0002): a cache, rebuildable from the vault at any time.
 DEFAULT_INDEX_PATH = Path("~/.cache/studentassistant/index.sqlite3")
+# `eval run`: the student's recorded sessions with reference notes; never in the code repo.
+DEFAULT_EVAL_PATH = Path("~/StudentAssistant/evals")
 
 # The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
 DEFAULT_API_KEY_FILE_NAME = "secrets.env"
@@ -256,6 +258,13 @@ def _default_prices() -> dict[str, LlmPrice]:
     return {model: LlmPrice(**price) for model, price in DEFAULT_LLM_PRICES.items()}
 
 
+# Claude's server-side web search and web fetch tools: the dynamic-filtering versions (Opus 4.6+,
+# Sonnet 4.6+), and the web search price (USD per 1,000 searches).
+DEFAULT_WEB_SEARCH_TOOL = "web_search_20260209"
+DEFAULT_WEB_FETCH_TOOL = "web_fetch_20260209"
+DEFAULT_WEB_SEARCH_USD_PER_THOUSAND = 10.0
+
+
 class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
@@ -272,6 +281,11 @@ class LlmSettings(BaseModel):
     # `[llm.prices."<model id>"]`: a configured table is merged over the defaults, key by key, so
     # adding a model or changing one price keeps the rest.
     prices: dict[str, LlmPrice] = Field(default_factory=_default_prices)
+    # Claude's server-side web tools (`studentassistant.llm.web`): the tool versions sent, and the
+    # price of each web search (USD per thousand searches; a web fetch costs only its tokens).
+    web_search_tool: str = DEFAULT_WEB_SEARCH_TOOL
+    web_fetch_tool: str = DEFAULT_WEB_FETCH_TOOL
+    web_search_usd_per_thousand: float = Field(default=DEFAULT_WEB_SEARCH_USD_PER_THOUSAND, ge=0)
 
     @field_validator("api_key_file")
     @classmethod
@@ -309,6 +323,10 @@ DEFAULT_WHISPER_DEVICE = "auto"
 DEFAULT_GOOGLE_SPEECH_MODEL = "latest_long"
 # Server mode: seconds of audio queued for the provider past which superseded partials are dropped.
 DEFAULT_STT_MAX_BACKLOG_SECONDS = 10.0
+# Vocabulary hints (#54): at most this many terms (subject, topic, observer concepts), and this many
+# characters joined with ", ". `max_terms = 0` turns them off. The protocol caps terms at 50.
+DEFAULT_STT_VOCABULARY_MAX_TERMS = 30
+DEFAULT_STT_VOCABULARY_MAX_CHARS = 500
 
 
 class SttSettings(BaseModel):
@@ -325,6 +343,10 @@ class SttSettings(BaseModel):
     # Server mode: when more than this many seconds of audio wait for the provider, partials that a
     # newer segment supersedes are dropped (finals never are). `SA_STT__MAX_BACKLOG_SECONDS`.
     max_backlog_seconds: float = Field(default=DEFAULT_STT_MAX_BACKLOG_SECONDS, gt=0)
+    # Vocabulary hints sent to the provider and the capture client: the most terms (0 = off, at
+    # most 50) and characters. `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`.
+    vocabulary_max_terms: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_TERMS, ge=0, le=50)
+    vocabulary_max_chars: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_CHARS, ge=1)
 
     def provider_options(self, name: str | None = None) -> dict[str, Any]:
         """The options table of `name` (the configured provider by default); empty when absent."""
@@ -348,6 +370,12 @@ DEFAULT_TRANSCRIPTION_ATTEMPTS = 3
 DEFAULT_TRANSCRIPTION_RETRY_SECONDS = 5.0
 DEFAULT_TRANSCRIPTION_GRACE_SECONDS = 2.0
 DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE = 0.3
+# Web search (`studentassistant.sources.web`, "busca esto en Internet").
+DEFAULT_WEB_SEARCH_ROLE = "observer"
+DEFAULT_WEB_SEARCH_MAX_USES = 3
+DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS = 30_000
+DEFAULT_WEB_SEARCH_CONCURRENCY = 1
 
 
 class SourcesSettings(BaseModel):
@@ -386,6 +414,20 @@ class SourcesSettings(BaseModel):
     transcription_min_crop_share: float = Field(
         default=DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE, ge=0, le=1
     )
+    # Web search: off, no search is ever run. `web_search_role` is the `[llm.roles.<role>]` whose
+    # client searches and fetches; one search runs at most `web_search_max_uses` searches and
+    # offers at most `web_search_max_results` pages; a kept page is fetched with at most
+    # `web_fetch_max_content_tokens` of content. With `web_auto_keep`, the pages Claude marks as
+    # relevant are kept as sources at once, without waiting for the student.
+    web_search_enabled: bool = True
+    web_search_role: Literal["observer", "transcriber", "editor", "generator"] = (
+        DEFAULT_WEB_SEARCH_ROLE
+    )
+    web_search_max_uses: int = Field(default=DEFAULT_WEB_SEARCH_MAX_USES, ge=1)
+    web_search_max_results: int = Field(default=DEFAULT_WEB_SEARCH_MAX_RESULTS, ge=1, le=20)
+    web_fetch_max_content_tokens: int = Field(default=DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS, ge=1000)
+    web_search_concurrency: int = Field(default=DEFAULT_WEB_SEARCH_CONCURRENCY, ge=1)
+    web_auto_keep: bool = False
 
 
 # The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final
@@ -395,6 +437,24 @@ DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS = 30.0
 DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS = 200
 DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS = 80_000
 DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
+
+
+DEFAULT_MARP_COMMAND = ["marp"]
+DEFAULT_MARP_TIMEOUT_SECONDS = 180.0
+
+
+class GeneratorsSettings(BaseModel):
+    """The study-material generators (`[generators]`, `SA_GENERATORS__*`)."""
+
+    # The Marp CLI the slides generator exports PDF/PPTX with (`npm install -g
+    # @marp-team/marp-cli`); a list, so `["npx", "--yes", "@marp-team/marp-cli"]` works too.
+    marp_command: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_MARP_COMMAND), min_length=1
+    )
+    # How long one Marp export (PDF or PPTX) may take before it is abandoned.
+    marp_timeout_seconds: float = Field(default=DEFAULT_MARP_TIMEOUT_SECONDS, gt=0)
+    # The Chromium-based browser Marp renders with; unset, Marp finds one itself.
+    marp_browser_path: Path | None = None
 
 
 class ObserverSettings(BaseModel):
@@ -498,6 +558,25 @@ def write_vault_config(vault_path: Path, repo: str) -> bool:
     return True
 
 
+DEFAULT_EVAL_SPEED = 4.0
+
+
+class EvalSettings(BaseModel):
+    """`studentassistant eval run`: where the eval set lives and how its sessions are replayed."""
+
+    model_config = ConfigDict(validate_default=True)
+
+    # One directory per case (recording + reference); every run's report goes to `runs/` in it.
+    path: Path = DEFAULT_EVAL_PATH
+    # How many times faster than recorded each session is replayed.
+    speed: float = Field(default=DEFAULT_EVAL_SPEED, gt=0)
+
+    @field_validator("path")
+    @classmethod
+    def expand_user(cls, path: Path) -> Path:
+        return path.expanduser()
+
+
 class Settings(BaseSettings):
     """The whole backend configuration."""
 
@@ -513,6 +592,8 @@ class Settings(BaseSettings):
     stt: SttSettings = Field(default_factory=SttSettings)
     sources: SourcesSettings = Field(default_factory=SourcesSettings)
     observer: ObserverSettings = Field(default_factory=ObserverSettings)
+    eval: EvalSettings = Field(default_factory=EvalSettings)
+    generators: GeneratorsSettings = Field(default_factory=GeneratorsSettings)
 
     @classmethod
     def settings_customise_sources(

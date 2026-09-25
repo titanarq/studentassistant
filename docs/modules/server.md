@@ -264,6 +264,25 @@ Routes registered today:
   a key, a body that is not multipart, a missing/empty/repeated `file`, or any other part 422; an
   unknown subject or topic 404 (checked before the body is read); a vault that cannot be opened
   503. No active session is needed. Needs the bearer check like every non-exempt route.
+- Web search (`server/web_search_routes.py`, `web_search_router()`, #59), through
+  `app.state.web_searcher` (`sources.web_searcher.WebSearcher`, built with an `llm_transport` and
+  `[sources] web_search_enabled`, started and stopped by the lifespan):
+  `GET /api/subjects/{s}/topics/{t}/web-searches` -> `{"searches": [WebSearchRecord...]}` newest
+  first (works without a transport); `POST` the same path with `{"query"}` (at most 500
+  characters) -> 202 `{"search_id", "status": "queued"}`, the search running in the background
+  (bound to the active session when it is of that topic); `POST
+  .../web-searches/{search_id}/results/{index}/keep` -> 201 `KeptResponse` (`source_id`,
+  `vault_id`, `title`, `url`) once the page is stored as `sources/web/NNN-<slug>.md`. Refusals in
+  Spanish: unknown topic, search or result 404; no results yet or a reached cost cap 409; empty
+  query, or a page that cannot be kept (a PDF, an error, a key) 422; Claude failure or refusal
+  502; no transport, web search disabled, or no vault 503. See `docs/modules/sources.md`.
+  The same router has `POST /api/subjects/{s}/topics/{t}/web-pages` (#62, a URL pasted in the web
+  UI or shared to the phone): protocol `rest.topics.web_pages.create.request` (`url`, `via`?
+  `url` | `share`) -> 201 `rest.topics.web_pages.create.response` (`source_id`, `vault_id`,
+  `title`, `url`, `already_kept: false`), or 200 with `already_kept: true` when the topic already
+  has that address (nothing fetched); `WebSearcher.keep_url`, bound to the topic's active session
+  like a search. Refusals as for keeping a result (the cost cap with `code:
+  cost_cap_reached`); a body that is not an http(s) `url` 422.
 - `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
   `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
   `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a
@@ -413,6 +432,10 @@ Routes registered today:
   - `POST .../generated/{kind}`, optional body `{"options": {...}, "confirm_over_cap": false}` ->
     `GenerateResult`. Needs `llm_transport` (503 otherwise; `MaterialGenerators`, one run per
     topic and kind); a `generator` client bound to the topic's ledger.
+  - `GET .../generated/files/{name}` -> the bytes of `generated/<name>` (subdirectories allowed)
+    as a download: `Content-Disposition: attachment; filename="<topic>-<file>"`, the media type
+    by extension (`.apkg` octet-stream, `.csv` `text/csv; charset=utf-8`...); 404 when there is
+    no such file or the name is not one (`vault.read_generated`). The web's download links.
   - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
     the same generation running 409, a reached cap 409 `cost_cap_reached` until
     `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.
@@ -581,12 +604,15 @@ another PC left open is seen.
 ### Session WebSocket -- `server/ws.py`
 
 `WS /ws/sessions/{session_id}`, protocol v1 (`protocol/README.md`), served by the
-`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...)` on
+`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...,
+terms_loader=...)` on
 `app.state.gateway` (`ws_router()` mounts it). `sink_factory(stt, clock_offset_s)` builds each
 connection's `TranscriptSink` (default `InMemoryTranscriptSink`, whose `clock_offset` is the
 client-clock reading at session start in seconds); `provider_factory(stt)` builds a session's
-server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms. Tests
-replace all three.
+server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms;
+`terms_loader(open_session)` reads the topic's terms for the vocabulary hints (default: the vault
+through `sessions.open_vault()` and `server.vocabulary.load_topic_terms`, never raising). Tests
+replace them.
 
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
   `authenticate_websocket` (1008 without a valid token or loopback trust).
@@ -604,6 +630,30 @@ replace all three.
   (re)connection takes a new offset from its own `hello`. In `server` mode, a session that
   already received audio also gets an `ack` with its highest contiguous `audio_seq` right after
   `hello.ack`, so a reconnecting client knows where to resume.
+- **Vocabulary hints** (#54, `server/vocabulary.py`): before `hello.ack` the connection reads the
+  topic's terms (`load_topic_terms`: the subject's name, the topic's title, the observer's
+  concepts from `load_observer_snapshot(write_back=False)` and the open pending count; a part that
+  cannot be read is logged and left empty) and builds the hints with
+  `stt.vocabulary_hints_from_settings` (`[stt] vocabulary_max_terms` / `vocabulary_max_chars`).
+  In server mode the session's provider gets them (`set_vocabulary`) at every handshake, whatever
+  the client's version; a client that negotiated 1.4+ gets them in `hello.ack.vocabulary_hints`
+  (left out when empty). The connection also subscribes to `observer.state_op` (`SUBSCRIBED_KINDS`
+  = `FORWARDED_KINDS` + it, never forwarded as such): an `add_concept` whose name changes the
+  hints (`SessionVocabulary.apply_state_op`) hands the new list to the provider and, to a 1.4+
+  client, sends a `notice` with `vocabulary_hints` and the last `pending_count` the connection
+  knows (from the terms or the last forwarded notice). While that count is unknown, the new hints
+  ride on the next forwarded observer `notice`; a forwarded notice carries hints only when they
+  changed since the last ones sent.
+- **STT status** (#222, protocol 1.5): in server mode, after every fed chunk and at each
+  handshake, `SessionGateway.check_stt_status(state, t=...)` reads the provider's `status`
+  (`stt.ProviderStatus`) and maps it to the client's `ok | reconnecting | unavailable` (`idle`
+  and `streaming` are `ok`). When that differs from the last one (`ReceiveState.stt_status`, `ok`
+  at first, so a session that never degrades publishes nothing) it logs it (WARNING when
+  degraded, INFO on recovery) and publishes a persisted `stt.status` event (origin `stt`, `t` the
+  session time of the chunk's end, payload `{"state", "detail"?}`). Each connection forwards it as
+  `SttStatus` to a client that negotiated 1.5+, never the same state twice in a row; a client
+  connecting while the provider is degraded gets the current status right after `hello.ack` (and
+  the resume `ack`). A detail over 300 characters is left out, the state is still sent.
 - **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
   missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
   binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a
@@ -635,7 +685,8 @@ replace all three.
     client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
     offset) and `t` = its session time.
 - **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
-  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`) before
+  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`,
+  `stt.status`) before
   `hello.ack` and sends each as the matching server message (`transcript.*` from the payload
   fields above; `command` from `command_id`, `command`; `notice` from `pending_count`;
   `server_time_ms` from the payload or the clock). A persisted `capture.stored` (the capture

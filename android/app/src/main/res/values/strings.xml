@@ -110,6 +110,8 @@
     <string name="camera_unavailable_capture">No se pudo abrir la cámara.</string>
     <string name="capture_mic_denied">El micrófono no tiene permiso: no se está transcribiendo.</string>
     <string name="capture_mic_paused">Micrófono en pausa</string>
+    <string name="capture_stt_reconnecting">El servidor ha perdido la transcripción y está reintentando; lo que digas mientras tanto no se transcribe</string>
+    <string name="capture_stt_unavailable">La transcripción del servidor no está disponible; lo que digas no se transcribe</string>
     <string name="capture_spool_near_cap">Queda poco espacio para guardar sin conexión: si no vuelve la conexión se perderá el audio más antiguo</string>
     <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
     <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
@@ -129,4 +131,20 @@
     <string name="capture_end_text">Se cerrará la sesión de este tema. Podrás revisar los apuntes en el ordenador.</string>
     <string name="capture_end_confirm">Terminar</string>
     <string name="capture_end_failed">No se pudo terminar la sesión: %1$s</string>
+    <!-- "Compartir -> Student Assistant" (share/ShareScreen.kt, #62) -->
+    <string name="share_label">Guardar en un tema</string>
+    <string name="share_title">Guardar la página en un tema</string>
+    <string name="share_no_link">Lo compartido no contiene ninguna dirección web (http o https).</string>
+    <string name="share_no_backend">No hay ningún ordenador emparejado. Abre Student Assistant y empareja uno primero.</string>
+    <string name="share_no_subjects">Todavía no hay asignaturas. Crea un tema en Student Assistant primero.</string>
+    <string name="share_save_here">Guardar aquí</string>
+    <string name="share_saving">Descargando la página en «%1$s»…</string>
+    <string name="share_saved">Guardada «%1$s» como fuente del tema «%2$s».</string>
+    <string name="share_already_kept">El tema «%2$s» ya tenía esta página («%1$s»).</string>
+    <string name="share_close">Cerrar</string>
+    <string name="share_error_not_found">El ordenador no encuentra ese tema o no sabe guardar páginas web (actualiza el servidor).</string>
+    <string name="share_error_cost_cap">Se ha alcanzado el límite de gasto: no se puede descargar la página ahora.</string>
+    <string name="share_error_not_a_page">No se ha podido guardar: no es una página de texto (si es un PDF, impórtalo como PDF) o no se pudo descargar.</string>
+    <string name="share_error_claude">Claude no ha podido descargar la página. Inténtalo de nuevo.</string>
+    <string name="share_error_unavailable">La descarga de páginas web no está disponible en el ordenador.</string>
 </resources>

@@ -68,6 +68,9 @@ def _run(
         if events is not None:
             events.append((kind, payload))
 
+    # Detecting contradictions is a second call, tested in test_contradictions.py.
+    options.setdefault("detect_contradictions", False)
+
     async def main() -> GenerationResult:
         return await asyncio.wait_for(
             generate_notes(

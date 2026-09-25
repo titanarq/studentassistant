@@ -75,6 +75,7 @@ def map_sdk_error(error: Exception) -> LLMError:
 def response_from_message(message: Any) -> LLMResponse:
     """Our `LLMResponse` from an SDK `Message`."""
     usage = message.usage
+    server_tools = getattr(usage, "server_tool_use", None)
     return LLMResponse(
         model=message.model,
         stop_reason=message.stop_reason,
@@ -84,6 +85,8 @@ def response_from_message(message: Any) -> LLMResponse:
             output_tokens=usage.output_tokens or 0,
             cache_creation_input_tokens=usage.cache_creation_input_tokens or 0,
             cache_read_input_tokens=usage.cache_read_input_tokens or 0,
+            web_search_requests=getattr(server_tools, "web_search_requests", None) or 0,
+            web_fetch_requests=getattr(server_tools, "web_fetch_requests", None) or 0,
         ),
     )
 
