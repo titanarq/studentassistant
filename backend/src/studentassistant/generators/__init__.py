@@ -18,6 +18,7 @@ from studentassistant.generators.base import (
     NotesBasis,
     NoteSection,
 )
+from studentassistant.generators.grounding import UngroundedItem
 from studentassistant.generators.outline import OutlineGenerator as OutlineGenerator
 from studentassistant.generators.registry import (
     GeneratorRegistry,
@@ -61,6 +62,7 @@ __all__ = [
     "NoOptions",
     "NoteSection",
     "NotesBasis",
+    "UngroundedItem",
     "UnknownGeneratorError",
     "artifact_status",
     "default_registry",

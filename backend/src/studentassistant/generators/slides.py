@@ -431,6 +431,9 @@ class SlidesGenerator(Generator):
                 )
                 for index, slide in enumerate(slides)
             ],
+            item_texts={
+                slide_id(index): "\n".join(slide.bullets) for index, slide in enumerate(slides)
+            },
             warnings=warnings,
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,

@@ -121,6 +121,20 @@ class Exam:
     questions: list[Question]
 
 
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def grounding_text(question: Question) -> str:
+    """What of `question` must come from the notes it cites (`generators.grounding`).
+
+    Its statement and rubric criteria, without numbers: the worked solution is left out, since
+    the numbers it computes cannot be judged by word overlap with the notes, and so are the data
+    an exercise states (`a = 3`), which are its own.
+    """
+    text = "\n".join([question.statement, *(item.criterion for item in question.rubric)])
+    return _NUMBER.sub(" ", text)
+
+
 def format_points(points: float) -> str:
     """`2` -> `2 puntos`, `1` -> `1 punto`, `2.5` -> `2,5 puntos` (Spanish decimal comma)."""
     rounded = round(points, 2)
@@ -487,6 +501,10 @@ class ExamGenerator(Generator):
                 ItemProvenance(item=question.id, anchors=question.anchors)
                 for question in [*exam.exercises, *exam.questions]
             ],
+            item_texts={
+                question.id: grounding_text(question)
+                for question in [*exam.exercises, *exam.questions]
+            },
             warnings=warnings,
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,

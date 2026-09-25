@@ -108,6 +108,18 @@ class QuizQuestion(_Strict):
     anchors: list[str] = Field(default_factory=list)
 
 
+def grounding_text(question: QuizQuestion) -> str:
+    """What of `question` must come from the notes it cites (`generators.grounding`).
+
+    Its answer and explanation; for a true/false the answer is only `Verdadero`/`Falso`, so a
+    true statement (the question) is checked with its explanation, and a false one's explanation.
+    """
+    if question.type == "true_false":
+        claim = question.question if question.answer == "Verdadero" else ""
+        return f"{claim}\n{question.explanation}".strip()
+    return f"{question.answer}\n{question.explanation}".strip()
+
+
 class Quiz(_Strict):
     """`generated/quiz.yaml`."""
 
@@ -244,6 +256,7 @@ class QuizGenerator(Generator):
         return GeneratorOutput(
             files={FILE_NAME: dump_quiz(quiz)},
             items=[ItemProvenance(item=q.id, anchors=q.anchors) for q in questions],
+            item_texts={q.id: grounding_text(q) for q in questions},
             warnings=warnings,
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,

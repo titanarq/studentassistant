@@ -55,8 +55,9 @@ register themselves.
   record there.
 - `GeneratorOutput`: `files` (name relative to `generated/` -> `str | bytes`; every name starts
   with `<kind>.`, `<kind>-` or `<kind>/`, and none ends in `.meta.yaml`), `items`
-  (`ItemProvenance`: `item` id, `anchors` without `#`), `warnings` (Spanish), `model`,
-  `prompt_hash`.
+  (`ItemProvenance`: `item` id, `anchors` without `#`), `item_texts` (item id -> the text of it
+  that must come from the notes it cites, checked by the grounding check below), `warnings`
+  (Spanish), `model`, `prompt_hash`.
 - `GeneratorRegistry`: `register(cls)` (decorator; a bad kind, a missing title or a second class
   for a kind is `ValueError`), `unregister(kind)`, `kinds()`, `classes()`, `lookup(kind)`,
   `kind in registry`, `get(kind)` (a new instance, `UnknownGeneratorError` with a Spanish message
@@ -76,14 +77,49 @@ options=None, confirm_over_cap=False, clock=...) -> GenerateResult`:
    `LLMError`) propagate and nothing is written;
 4. items with no anchor, or anchors the notes lack, are **reported, not dropped**: listed in
    `unresolved` (with the missing anchors) and in a Spanish warning;
-5. stored: files the previous run of the kind wrote and this one did not are removed, the files
+5. every item with a text in `item_texts` and at least one anchor the notes have is checked
+   against those sections (see "Grounding check"); those under `grounding_min_support` are
+   **reported, not dropped**: listed in `ungrounded` and in one Spanish warning;
+6. stored: files the previous run of the kind wrote and this one did not are removed, the files
    written, then the manifest `generated/<kind>.meta.yaml` (`ArtifactMeta`: `kind`,
    `generator_version`, `built_at`, `model`, `prompt_hash`, `options`, `notes` (the basis),
-   `files`, `items`, `unresolved`, `warnings`), and one commit `Generar <kind> de <s>/<t>
+   `files`, `items`, `unresolved`, `ungrounded`, `warnings`), and one commit `Generar <kind> de <s>/<t>
    (apuntes vN)`. A final `material.generated` record goes to `conversations/generator.jsonl`.
 
 `GenerateResult`: `subject`, `topic`, `kind`, `files` (vault-relative, the manifest last),
-`removed`, `notes`, `commit`, `items` (count), `unresolved`, `warnings`, `model`.
+`removed`, `notes`, `commit`, `items` (count), `unresolved`, `ungrounded`, `warnings`, `model`.
+
+### Grounding check -- `grounding.py` (#278)
+
+Deterministic, no Claude: every generated item is checked against the note sections it cites, so
+an item whose content the master notes do not hold is reported instead of silently trusted
+(VISION §5.6).
+
+- The text checked is the generator's `item_texts[item]`: quiz -- the answer and the explanation
+  (a true/false: the statement when it is true, plus the explanation; `Verdadero`/`Falso` alone
+  says nothing); flashcards -- the back; examen -- the statement and the rubric criteria, numbers
+  removed (the worked solution is **not** checked: the numbers it computes cannot be judged by word
+  overlap, and neither can the data an exercise states); diapositivas -- the bullets; esquema -- the node's gloss, else its title. An item without a text is not checked.
+- `content_words(text)`: the eval rubric's normalisation (`evals/scoring.py`, reimplemented so
+  generators do not import the eval harness): unreadable-word marks become their word, footnote
+  references, `{#anchor}`s, link targets and punctuation go, accents folded, lower case; words of
+  three letters or more that are not Spanish stop words, numbers always kept. A few words a
+  generated item says about itself or uses to ask for work (`META_WORDS`: respuesta, correcta,
+  verdadero, falso, apuntes, calcula, justifica, plantea...) are not content.
+- `section_text(notes, anchor)`: the cited section's heading title and blocks plus its
+  subsections' (deeper headings that follow it), footnote definitions left out; `None` when the
+  notes lack the anchor.
+- `support(text, sections)`: the share of the text's content words found in the sections, in
+  [0, 1] (4 decimals); a text with no content word claims nothing and scores 1.
+- `find_ungrounded(notes, items, texts, min_support)`: scores each item against the sections of
+  its anchors that resolve; an item with no resolvable anchor is left to `unresolved` and not
+  scored (no double count). Below `min_support` it is an `UngroundedItem` (`item`, `support`,
+  `anchors`: the resolved ones) in the manifest's `ungrounded` and `GenerateResult.ungrounded`,
+  summarised by `ungrounded_warning` ("N elementos no se apoyan claramente en los apuntes: q3
+  (50 %, #reglas), ... Revísalos antes de estudiar con ellos.", the first ten listed).
+- Threshold: `[generators] grounding_min_support` (`SA_GENERATORS__GROUNDING_MIN_SUPPORT`,
+  0-1, default 0.6), passed to `run_generator(..., grounding_min_support=)` by the CLI and the
+  REST route. Manifests written before the check have no `ungrounded` and load as `[]`.
 
 ### Stale detection
 
@@ -289,7 +325,8 @@ Files under `generated/`:
 
 Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["marp"]`, e.g.
 `["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
-(unset: Marp finds Chrome/Chromium itself). Marp needs Node and a Chromium-based browser; it is
+(unset: Marp finds Chrome/Chromium itself); the same section holds `grounding_min_support`
+(see "Grounding check"). Marp needs Node and a Chromium-based browser; it is
 not a Python dependency. Items are the slides (`d01`, `d02`...) with their anchors. The web lists
 the PDF/PPTX in "Material de estudio" (#79) through `GET .../generated/files/{name}`. Tests use a stand-in
 exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is

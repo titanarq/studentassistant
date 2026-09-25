@@ -9,7 +9,8 @@ runs the generator of the kind asked for, checks its output and stores it:
 - the manifest `generated/<kind>.meta.yaml` (`ArtifactMeta`): the generator's version, when and
   with which model it was built, the options, the notes basis, the files, the provenance of every
   item (the note anchors it came from) and the items whose anchors the notes do not have
-  (`unresolved`: reported, never dropped silently);
+  (`unresolved`: reported, never dropped silently) and the items whose text the sections they
+  cite do not clearly hold (`ungrounded`, `generators.grounding`: reported, never dropped);
 
 and commits them in one checkpoint. Every call is recorded in the topic's
 `conversations/generator.jsonl` and, through the client's `LedgerBinding`, in its cost ledger.
@@ -37,6 +38,12 @@ from studentassistant.generators.base import (
     GeneratorOutput,
     ItemProvenance,
     NotesBasis,
+)
+from studentassistant.generators.grounding import (
+    DEFAULT_GROUNDING_MIN_SUPPORT,
+    UngroundedItem,
+    find_ungrounded,
+    ungrounded_warning,
 )
 from studentassistant.generators.registry import GeneratorRegistry, default_registry
 from studentassistant.llm import LLMClient
@@ -129,6 +136,10 @@ class ArtifactMeta(_Strict):
         default_factory=list,
         description="Items with no anchor, or anchors the notes did not have (then listed).",
     )
+    ungrounded: list[UngroundedItem] = Field(
+        default_factory=list,
+        description="Items whose text the sections they cite do not clearly hold, with support.",
+    )
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -144,6 +155,7 @@ class GenerateResult(_Strict):
     commit: str | None = None
     items: int
     unresolved: list[ItemProvenance] = Field(default_factory=list)
+    ungrounded: list[UngroundedItem] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list, description="Spanish, for the student.")
     model: str | None = None
 
@@ -303,12 +315,15 @@ async def run_generator(
     registry: GeneratorRegistry = default_registry,
     options: Mapping[str, Any] | None = None,
     confirm_over_cap: bool = False,
+    grounding_min_support: float = DEFAULT_GROUNDING_MIN_SUPPORT,
     clock: Clock = _utc_now,
 ) -> GenerateResult:
     """Run the generator of `kind` over the topic's notes, store the artifact and commit it.
 
     `client` is a `generator` client (`get_client("generator", ledger=LedgerBinding(...))`; tests
-    use `FakeClaude`); `options` are validated against the generator's `options_model`.
+    use `FakeClaude`); `options` are validated against the generator's `options_model`. An item
+    whose text holds less than `grounding_min_support` of its content words in the sections it
+    cites (`[generators] grounding_min_support`) is reported in `ungrounded`.
 
     Raises:
         UnknownGeneratorError: no generator of `kind` (checked first).
@@ -346,6 +361,14 @@ async def run_generator(
     warnings = list(output.warnings)
     if unresolved:
         warnings.append(_unresolved_warning(unresolved))
+    ungrounded = find_ungrounded(
+        context.notes,
+        [(item.item, item.anchors) for item in output.items],
+        output.item_texts,
+        grounding_min_support,
+    )
+    if ungrounded:
+        warnings.append(ungrounded_warning(ungrounded))
     meta = ArtifactMeta(
         kind=kind,
         generator_version=generator.version,
@@ -357,6 +380,7 @@ async def run_generator(
         files=sorted(output.files),
         items=output.items,
         unresolved=unresolved,
+        ungrounded=ungrounded,
         warnings=warnings,
     )
     label = f"apuntes v{basis.version}" if basis.version else "apuntes sin versión"
@@ -375,6 +399,7 @@ async def run_generator(
         commit=commit,
         items=len(output.items),
         unresolved=unresolved,
+        ungrounded=ungrounded,
         warnings=warnings,
         model=output.model,
     )

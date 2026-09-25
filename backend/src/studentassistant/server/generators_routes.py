@@ -199,6 +199,7 @@ def generators_router() -> APIRouter:
                 registry=registry,
                 options=body.options,
                 confirm_over_cap=body.confirm_over_cap,
+                grounding_min_support=service.settings.generators.grounding_min_support,
             )
         except InvalidOptionsError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

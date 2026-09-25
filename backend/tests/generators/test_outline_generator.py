@@ -95,7 +95,10 @@ def test_writes_esquema_md_with_the_notes_version(topic: ReviseTopic, sync: GitS
     base = f"subjects/{topic.subject}/topics/{topic.topic}/generated"
     assert result.files == [f"{base}/esquema.md", f"{base}/esquema.meta.yaml"]
     assert result.notes.version == 1 and result.commit is not None
-    assert result.items == 6 and result.unresolved == [] and result.warnings == []
+    assert result.items == 6 and result.unresolved == []
+    # Glosses that go beyond the fixture's two-line notes are reported, never dropped.
+    assert [entry.item for entry in result.ungrounded] == ["1.1.1", "1.2", "2.1"]
+    assert len(result.warnings) == 1 and "3 elementos no se apoyan" in result.warnings[0]
     assert _artifact(topic) == GOLDEN.read_text(encoding="utf-8")
 
     meta = read_artifact_meta(topic.vault, topic.subject, topic.topic, KIND)
@@ -141,7 +144,9 @@ def test_nodes_without_a_resolvable_anchor_are_reported(topic: ReviseTopic, sync
         ("1.1", []),
         ("2", ["inventada"]),
     ]
-    [warning] = result.warnings
+    warning = result.warnings[0]
+    # 1.1 (no anchor) and 2 (only a missing anchor) are not scored for grounding as well.
+    assert not {"1.1", "2"} & {entry.item for entry in result.ungrounded}
     assert "2 elementos no citan" in warning and "1.1 (sin ancla)" in warning
     text = _artifact(topic)
     # Kept in the outline, marked instead of linked.

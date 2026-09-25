@@ -1074,6 +1074,7 @@ def generate_command(
                 sync=sync,
                 options=options,
                 confirm_over_cap=confirm_over_cap,
+                grounding_min_support=settings.generators.grounding_min_support,
             )
         )
     except GenerationError as error:

@@ -86,7 +86,12 @@ def test_generates_quiz_yaml_with_provenance(topic: ReviseTopic, sync: GitSync) 
     reply_quiz(fake)
     result = _generate(topic, fake, sync, size=3, difficulty="mixed")
 
-    assert result.items == 3 and result.unresolved == [] and result.warnings == []
+    assert result.items == 3 and result.unresolved == []
+    assert [(entry.item, entry.anchors) for entry in result.ungrounded] == [("q3", ["proximo-dia"])]
+    assert result.warnings == [
+        "1 elemento no se apoya claramente en los apuntes: q3 (50 %, #proximo-dia)."
+        " Revísalos antes de estudiar con ellos."
+    ]
     data = yaml.safe_load(
         (generated_directory(topic.vault, topic.subject, topic.topic) / "quiz.yaml").read_text()
     )
