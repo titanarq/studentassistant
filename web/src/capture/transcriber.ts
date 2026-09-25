@@ -70,4 +70,11 @@ export interface ClientTranscriber {
   start(): Promise<void>;
   /** Ends it for good: no restart and no further segment. */
   stop(): void;
+  /**
+   * Since protocol 1.4 (#227): the session's vocabulary hints, most important first, which replace
+   * the previous list. A recognizer that takes phrase hints biases the recognitions it starts from
+   * then on towards them; one that does not ignores them. Optional, because a transcriber whose
+   * audio goes to the backend has nothing to bias: the backend applies the hints itself.
+   */
+  setVocabularyHints?(hints: readonly string[]): void;
 }

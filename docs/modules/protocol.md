@@ -61,8 +61,8 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.3"`: the web does not use vocabulary hints yet, so it keeps
-  speaking 1.3 and never receives them), `parseVersion`, `checkCompatible` (throws
+- Version: `PROTOCOL_VERSION` (`"1.4"`: the capture page biases the browser recognizer towards
+  the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union

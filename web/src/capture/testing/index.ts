@@ -24,6 +24,8 @@ export interface CaptureFakeOptions {
   media?: MediaFakeOptions;
   /** Which globals offer the Web Speech API; both by default, none for a browser without it. */
   speechGlobals?: SpeechGlobalName[];
+  /** True for a browser whose recognizer takes phrase hints (`SpeechRecognitionPhrase`). */
+  speechPhrases?: boolean;
 }
 
 export interface CaptureFakes extends MediaFakes, SpeechFakes, SocketFakes, AudioFakes {}
@@ -31,7 +33,9 @@ export interface CaptureFakes extends MediaFakes, SpeechFakes, SocketFakes, Audi
 /** Installs every capture fake and returns one `restore()` that takes all of them off again. */
 export function installCaptureFakes(options: CaptureFakeOptions = {}): CaptureFakes {
   const media = installMediaFakes(options.media);
-  const speech = installSpeechRecognitionFake(options.speechGlobals);
+  const speech = installSpeechRecognitionFake(options.speechGlobals, {
+    phrases: options.speechPhrases,
+  });
   const sockets = installWebSocketFake();
   const audio = installAudioFakes();
   const installed = [media, speech, sockets, audio];

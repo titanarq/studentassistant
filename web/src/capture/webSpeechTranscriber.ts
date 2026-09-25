@@ -8,6 +8,13 @@
  * only within one recognition, so the `segment_id` an utterance is minted with lives in a map that
  * a new recognition starts empty. An interim still pending when a recognition ends is dropped: the
  * recognizer never settled it, and inventing a final would put words in the student's mouth.
+ *
+ * Since protocol 1.4 (#227) it also biases the recognizer towards the session's vocabulary hints
+ * where the browser has contextual biasing: each recognition it starts gets them as its `phrases`
+ * (`SpeechRecognitionPhrase`). A browser without that API, or whose service answers
+ * `phrases-not-supported` (Chrome does for a cloud recognition, since it biases on-device only),
+ * recognizes without them, and the student is told nothing: the hints are a help, not a feature.
+ * `SpeechGrammarList` is not used: the specification dropped grammars and no engine applies them.
  */
 
 import { type ClientSegment, type TranscriptKind, WEB_SPEECH_PROVIDER } from "./sessionSocket";
@@ -30,6 +37,19 @@ export const RESTART_DELAY_MS = 300;
 
 /** The two slots a browser offers the Web Speech API in; Chrome only has the prefixed one. */
 const SPEECH_GLOBALS = ["SpeechRecognition", "webkitSpeechRecognition"] as const;
+
+/** The contextual-biasing term's constructor, where a browser has one. */
+const PHRASE_GLOBAL = "SpeechRecognitionPhrase";
+
+/**
+ * The boost every hint gets. The specification's scale runs from 0 (not boosted) to 10 (extremely
+ * likely); the hints are the words a student is likely to say, not words to force, so they get a
+ * moderate lift, and their order is already the backend's ranking.
+ */
+export const VOCABULARY_HINT_BOOST = 2.0;
+
+/** The error a recognition with `phrases` reports when its service cannot bias. */
+const PHRASES_NOT_SUPPORTED = "phrases-not-supported";
 
 /** One alternative of a result; the recognizer reports no confidence while the text is interim. */
 interface SpeechAlternative {
@@ -67,12 +87,19 @@ export interface SpeechRecognitionLike {
   onresult: ((event: SpeechResultEvent) => void) | null;
   onerror: ((event: SpeechErrorEvent) => void) | null;
   onend: ((event: Event) => void) | null;
+  /** Contextual biasing; absent in a browser without it. */
+  phrases?: unknown;
   start(): void;
   abort(): void;
 }
 
 export interface SpeechRecognitionConstructor {
   new (): SpeechRecognitionLike;
+}
+
+/** `SpeechRecognitionPhrase`: one term and its boost in [0, 10]. */
+export interface SpeechRecognitionPhraseConstructor {
+  new (phrase: string, boost?: number): unknown;
 }
 
 /**
@@ -93,6 +120,12 @@ export function speechRecognitionConstructor(): SpeechRecognitionConstructor | n
     if (typeof value === "function") return value as SpeechRecognitionConstructor;
   }
   return null;
+}
+
+/** The browser's `SpeechRecognitionPhrase`, or null where it has no contextual biasing. */
+export function speechRecognitionPhraseConstructor(): SpeechRecognitionPhraseConstructor | null {
+  const value = globalSlot(PHRASE_GLOBAL);
+  return typeof value === "function" ? (value as SpeechRecognitionPhraseConstructor) : null;
 }
 
 /**
@@ -160,6 +193,8 @@ function newSegmentId(): string {
 export interface WebSpeechTranscriberOptions {
   /** The language to recognize; the capture page's Spanish by default. */
   language?: string;
+  /** The vocabulary hints the first recognition starts with (`hello.ack.vocabulary_hints`). */
+  vocabularyHints?: readonly string[];
 }
 
 export class WebSpeechTranscriber implements ClientTranscriber {
@@ -177,11 +212,28 @@ export class WebSpeechTranscriber implements ClientTranscriber {
    * utterance it belongs to.
    */
   private utterances = new Map<number, Utterance>();
+  /** The hints the next recognition starts with; the latest list the page handed over. */
+  private hints: readonly string[];
+  /**
+   * False once the browser's service said `phrases-not-supported`: the recognitions after it start
+   * without phrases, since every one would fail the same way and cost the student a restart.
+   */
+  private biasing = true;
 
   constructor(callbacks: TranscriberCallbacks, options: WebSpeechTranscriberOptions = {}) {
     this.provider = WEB_SPEECH_PROVIDER;
     this.language = options.language ?? WEB_SPEECH_LANGUAGE;
     this.callbacks = callbacks;
+    this.hints = [...(options.vocabularyHints ?? [])];
+  }
+
+  /**
+   * Replaces the hints. The running recognition keeps the ones it started with -- the Web Speech
+   * API reads `phrases` at `start()` -- and the next one, which Chrome starts after every stretch
+   * of silence, uses these.
+   */
+  setVocabularyHints(hints: readonly string[]): void {
+    this.hints = [...hints];
   }
 
   /**
@@ -216,6 +268,7 @@ export class WebSpeechTranscriber implements ClientTranscriber {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
+    this.applyHints(recognition);
     recognition.onresult = (event) => this.onResult(event);
     recognition.onerror = (event) => this.onError(event);
     recognition.onend = () => this.onEnd();
@@ -233,6 +286,22 @@ export class WebSpeechTranscriber implements ClientTranscriber {
         detail: problem instanceof Error ? `${problem.name}: ${problem.message}` : String(problem),
         recoverable: false,
       };
+    }
+  }
+
+  /**
+   * Puts the hints on a recognition that is about to start, where the browser can bias at all. A
+   * browser that has the API but refuses a phrase (it throws) recognizes without hints instead of
+   * failing the session over them.
+   */
+  private applyHints(recognition: SpeechRecognitionLike): void {
+    if (!this.biasing || this.hints.length === 0 || !("phrases" in recognition)) return;
+    const Phrase = speechRecognitionPhraseConstructor();
+    if (Phrase === null) return;
+    try {
+      recognition.phrases = this.hints.map((hint) => new Phrase(hint, VOCABULARY_HINT_BOOST));
+    } catch {
+      this.biasing = false;
     }
   }
 
@@ -288,6 +357,11 @@ export class WebSpeechTranscriber implements ClientTranscriber {
   }
 
   private onError(event: SpeechErrorEvent): void {
+    if (event.error === PHRASES_NOT_SUPPORTED) {
+      // The `end` that follows restarts the recognition, this time without phrases.
+      this.biasing = false;
+      return;
+    }
     const problem = speechProblem(event.error, event.message);
     if (problem === null) return;
     if (problem.recoverable) {

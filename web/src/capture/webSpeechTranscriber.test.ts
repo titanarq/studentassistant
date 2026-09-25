@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ClientEvent, parseClientEvent } from "../protocol";
 import { type ClientSegment, type TranscriptKind, WEB_SPEECH_PROVIDER } from "./sessionSocket";
 import {
+  type FakeBiasingSpeechRecognition,
   type FakeSpeechRecognition,
+  type FakeSpeechRecognitionPhrase,
   installSpeechRecognitionFake,
   type SpeechGlobalName,
   swapGlobal,
@@ -22,6 +24,7 @@ import {
 } from "./transcriber";
 import {
   RESTART_DELAY_MS,
+  VOCABULARY_HINT_BOOST,
   WEB_SPEECH_LANGUAGE,
   WebSpeechTranscriber,
   webSpeechSupported,
@@ -59,15 +62,19 @@ afterEach(() => {
 /** The transcriber on the fake Web Speech API, recording every segment and every problem. */
 function session(
   globals: SpeechGlobalName[] = ["SpeechRecognition", "webkitSpeechRecognition"],
+  options: { phrases?: boolean; vocabularyHints?: readonly string[] } = {},
 ): Harness {
-  const installed = installSpeechRecognitionFake(globals);
+  const installed = installSpeechRecognitionFake(globals, { phrases: options.phrases });
   restores.push(installed.restore);
   const segments: Emitted[] = [];
   const problems: TranscriberProblem[] = [];
-  const transcriber = new WebSpeechTranscriber({
-    onSegment: (segment, kind) => segments.push({ segment, kind }),
-    onProblem: (problem) => problems.push(problem),
-  });
+  const transcriber = new WebSpeechTranscriber(
+    {
+      onSegment: (segment, kind) => segments.push({ segment, kind }),
+      onProblem: (problem) => problems.push(problem),
+    },
+    { vocabularyHints: options.vocabularyHints },
+  );
   return { transcriber, recognitions: installed.recognitions, segments, problems };
 }
 
@@ -486,5 +493,100 @@ describe("stop", () => {
 
     expect(harness.recognitions).toHaveLength(2);
     expect(harness.segments).toHaveLength(1);
+  });
+});
+
+describe("vocabulary hints", () => {
+  const HINTS = ["Biología", "La célula", "mitocondria"];
+
+  /** A session on a browser with contextual biasing, started with the `hello.ack` hints. */
+  function biasing(vocabularyHints: readonly string[] = HINTS): Harness {
+    return session(undefined, { phrases: true, vocabularyHints });
+  }
+
+  function phrasesOf(recognition: FakeSpeechRecognition): FakeSpeechRecognitionPhrase[] {
+    return (recognition as FakeBiasingSpeechRecognition).phrases;
+  }
+
+  function startedWith(recognition: FakeSpeechRecognition): string[][] {
+    return (recognition as FakeBiasingSpeechRecognition).phrasesAtStart;
+  }
+
+  it("starts the recognition with the hello.ack hints as phrases, in their order", async () => {
+    const harness = biasing();
+    await harness.transcriber.start();
+
+    const recognition = current(harness);
+    expect(startedWith(recognition)).toEqual([HINTS]);
+    expect(phrasesOf(recognition).map((phrase) => phrase.boost)).toEqual(
+      HINTS.map(() => VOCABULARY_HINT_BOOST),
+    );
+  });
+
+  it("starts the next recognition with the list a notice replaced them with", async () => {
+    const harness = biasing();
+    await harness.transcriber.start();
+
+    harness.transcriber.setVocabularyHints?.(["Biología", "ribosoma"]);
+    // The running recognition read its phrases at start; the new list waits for the restart.
+    expect(startedWith(current(harness))).toEqual([HINTS]);
+    const next = await endAndRestart(harness);
+
+    expect(startedWith(next)).toEqual([["Biología", "ribosoma"]]);
+    expect(harness.problems).toEqual([]);
+  });
+
+  it("sets no phrases when the session has no hints", async () => {
+    const harness = biasing([]);
+    await harness.transcriber.start();
+
+    expect(startedWith(current(harness))).toEqual([[]]);
+  });
+
+  it("ignores the hints in a browser without contextual biasing, with no error", async () => {
+    const harness = session(undefined, { vocabularyHints: HINTS });
+    await harness.transcriber.start();
+    harness.transcriber.setVocabularyHints?.(["ribosoma"]);
+    await endAndRestart(harness);
+
+    expect(harness.recognitions).toHaveLength(2);
+    for (const recognition of harness.recognitions) {
+      expect("phrases" in recognition).toBe(false);
+    }
+    expect(harness.problems).toEqual([]);
+  });
+
+  it("recognizes without phrases, and says nothing, once the service cannot bias", async () => {
+    const harness = biasing();
+    await harness.transcriber.start();
+
+    current(harness).emitError("phrases-not-supported");
+    const next = await endAndRestart(harness);
+    next.emitResult([{ transcript: "la mitocondria", final: true }]);
+    harness.transcriber.setVocabularyHints?.(["ribosoma"]);
+    const later = await endAndRestart(harness);
+
+    expect(startedWith(next)).toEqual([[]]);
+    expect(startedWith(later)).toEqual([[]]);
+    expect(harness.segments).toHaveLength(1);
+    expect(harness.problems).toEqual([]);
+  });
+
+  it("recognizes without phrases when the browser refuses to build one", async () => {
+    const harness = biasing();
+    restores.push(
+      swapGlobal(
+        "SpeechRecognitionPhrase",
+        class {
+          constructor() {
+            throw new DOMException("no", "SyntaxError");
+          }
+        },
+      ),
+    );
+    await harness.transcriber.start();
+
+    expect(startedWith(current(harness))).toEqual([[]]);
+    expect(harness.problems).toEqual([]);
   });
 });

@@ -19,6 +19,8 @@ import CaptureScreen, { type CaptureScreenProps, captureCapabilities } from "./C
 import type { PcmWorkletChunk } from "./pcmWorklet";
 import {
   type CaptureFakes,
+  FakeBiasingSpeechRecognition,
+  FakeSpeechRecognitionPhrase,
   type FakeWebSocket,
   installCaptureFakes,
   swapGlobal,
@@ -146,13 +148,17 @@ function lastFrame(): SentFrame {
 }
 
 /** The `hello.ack` a backend of protocol v1 answers with, in the STT mode a test asks for. */
-function helloAck(sttMode: "client" | "server" = "client"): string {
+function helloAck(
+  sttMode: "client" | "server" = "client",
+  extra: Record<string, unknown> = {},
+): string {
   const ack: Record<string, unknown> = {
     type: "hello.ack",
     protocol_version: PROTOCOL_VERSION,
     stt_mode: sttMode,
     clock_offset_ms: 12,
     server_time_ms: NOW + 12,
+    ...extra,
   };
   if (sttMode === "server") {
     ack.audio_format = { encoding: "pcm16", sample_rate_hz: 16_000, channels: 1 };
@@ -179,10 +185,14 @@ function renderScreen(props: Partial<CaptureScreenProps> = {}) {
  * running. A test of a camera that refuses passes `cameraStarts` false and waits for its own
  * Spanish sentence instead.
  */
-async function open(sttMode: "client" | "server" = "client", cameraStarts = true): Promise<void> {
+async function open(
+  sttMode: "client" | "server" = "client",
+  cameraStarts = true,
+  ackExtra: Record<string, unknown> = {},
+): Promise<void> {
   await act(async () => {
     socket().serverOpen();
-    socket().serverMessage(helloAck(sttMode));
+    socket().serverMessage(helloAck(sttMode, ackExtra));
   });
   await waitFor(() =>
     expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
@@ -458,6 +468,92 @@ describe("the transcriber hello.ack chose", () => {
     );
     // The camera has nothing to do with the recognizer, so the student can still photograph pages.
     expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
+  });
+});
+
+describe("vocabulary hints", () => {
+  const HINTS = ["Biología", "Fotosíntesis", "clorofila"];
+
+  /** A browser whose recognizer takes phrase hints, in place of the default one without them. */
+  function biasingBrowser(): void {
+    restores.push(swapGlobal("SpeechRecognition", FakeBiasingSpeechRecognition));
+    restores.push(swapGlobal("webkitSpeechRecognition", FakeBiasingSpeechRecognition));
+    restores.push(swapGlobal("SpeechRecognitionPhrase", FakeSpeechRecognitionPhrase));
+  }
+
+  function startedWith(index: number): string[][] {
+    const recognition = fakes.recognitions[index];
+    if (!(recognition instanceof FakeBiasingSpeechRecognition)) {
+      throw new Error(`recognition ${index} is not a biasing one`);
+    }
+    return recognition.phrasesAtStart;
+  }
+
+  /** The browser ending the running recognition, and the page's transcriber starting the next. */
+  async function restartRecognition(): Promise<void> {
+    const count = fakes.recognitions.length;
+    await act(async () => {
+      fakes.recognitions[count - 1].emitEnd();
+    });
+    await waitFor(() => expect(fakes.recognitions).toHaveLength(count + 1));
+  }
+
+  it("biases the recognizer towards the hello.ack hints and the lists notices replace them with", async () => {
+    biasingBrowser();
+    renderScreen();
+    await open("client", true, { vocabulary_hints: HINTS });
+
+    expect(startedWith(0)).toEqual([HINTS]);
+
+    await push({
+      type: "notice",
+      pending_count: 0,
+      server_time_ms: NOW,
+      vocabulary_hints: ["Biología", "estoma"],
+    });
+    await restartRecognition();
+    expect(startedWith(1)).toEqual([["Biología", "estoma"]]);
+
+    // A notice without the field keeps the list it has.
+    await push({ type: "notice", pending_count: 2, server_time_ms: NOW });
+    await restartRecognition();
+    expect(startedWith(2)).toEqual([["Biología", "estoma"]]);
+  });
+
+  it("starts with the list of a notice that arrived before the recognizer did", async () => {
+    biasingBrowser();
+    renderScreen();
+    await act(async () => {
+      socket().serverOpen();
+      socket().serverMessage(helloAck("client", { vocabulary_hints: HINTS }));
+      socket().serverMessage(
+        JSON.stringify({
+          type: "notice",
+          pending_count: 0,
+          server_time_ms: NOW,
+          vocabulary_hints: ["estoma"],
+        }),
+      );
+    });
+    await waitFor(() => expect(fakes.recognitions).toHaveLength(1));
+
+    expect(startedWith(0)).toEqual([["estoma"]]);
+  });
+
+  it("recognizes without the hints, and says nothing, in a browser that cannot take them", async () => {
+    renderScreen();
+    await open("client", true, { vocabulary_hints: HINTS });
+    await push({
+      type: "notice",
+      pending_count: 0,
+      server_time_ms: NOW,
+      vocabulary_hints: ["estoma"],
+    });
+
+    expect(fakes.recognitions).toHaveLength(1);
+    expect("phrases" in fakes.recognitions[0]).toBe(false);
+    expect(fakes.recognitions[0].startCount).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 
