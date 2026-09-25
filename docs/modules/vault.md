@@ -190,8 +190,9 @@ distinct numbers and never overwrite each other. A writer waits at most
 `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
-`put_page_transcription(vault, vault_relative_path, text) -> Path` writes a page's Markdown
-transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf`
+`put_page_transcription(vault, vault_relative_path, text, *, page=None) -> Path` writes a page's
+Markdown transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf` (with
+`page=K`, `page-NNN.pKKK.md`: the transcription of scanned page `K` of a stored PDF, #257)
 (`vault_relative_path` is the page or any file derived from it, checked like `read_source`'s),
 atomically, guarded, under the directory's lock, replacing an earlier one; `SourcePathError` for
 anything else, `SourceNotFoundError` when the page's sidecar is not there.

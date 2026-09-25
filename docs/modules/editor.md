@@ -158,7 +158,9 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   instruction, ending in a second breakpoint so re-asks read it all from the cache. At most
   `max_page_images` images (the API refuses more than 20 of this size per request) and
   `max_attachment_bytes` of base64 attachments (requests are capped at 32 MB) are sent; a PDF past
-  the budget goes as its per-page extracted text; what was left out is in `EditorInput.omitted`.
+  the budget goes as its per-page text (`sources.read_pdf_page_text`: the extracted
+  `page-NNN.pKKK.txt`, or for a scanned page its vision transcription `page-NNN.pKKK.md`, headed
+  `página escaneada, transcrita`; a scanned page not transcribed yet is left out); what was left out is in `EditorInput.omitted`.
   `record_content` is the message with every image/document replaced by
   `{"type": "image_ref"|"document_ref", "source_id": ...}`.
 - **Answer**: plain text, the whole of `notes/apuntes.md` (`notes_text` drops a code fence around
@@ -429,8 +431,9 @@ The editor explains one block of the notes from the sources it cites, looked at 
   system = the prompt and the topic block of `assemble_input`; one user message with the block,
   its footnote definitions (and the labels that cite nothing usable), its whole section as
   context, then every cited source -- a notes/book page as its transcription **and always its
-  image** (the cropped page first), a PDF page as its extracted text `page-NNN.pKKK.txt` (the
-  stored PDF as a document when there is none), a web snapshot as its text (up to 30,000
+  image** (the cropped page first), a PDF page as its extracted text `page-NNN.pKKK.txt`, or when that
+  is empty (a scanned page) its vision transcription `page-NNN.pKKK.md` (`sources.read_pdf_page_text`;
+  the stored PDF as a document when there is neither), a web snapshot as its text (up to 30,000
   characters), a transcript span as that session's segments within 30 s of it (the ones inside
   marked `<- citado`), `[^ia]` said to be the AI's, a source no longer in the topic said so --,
   the topic's pending items (their decisions explain choices) and the question. The answer streams

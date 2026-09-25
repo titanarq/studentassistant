@@ -40,6 +40,7 @@ from studentassistant.sources import PageRange, import_pdf
 from studentassistant.vault import (
     GitSync,
     Vault,
+    put_page_transcription,
     read_conversation,
     read_ledger,
     read_notes,
@@ -424,6 +425,58 @@ def test_a_pdf_past_the_attachment_budget_goes_as_its_page_texts(topic: Generate
     joined = "\n".join(b.get("text", "") for b in assembled.content)
     assert "Página 2 del libro" in joined
     assert "sources/pdf/page-001.pdf" in assembled.omitted
+
+
+def _scanned_pdf() -> bytes:
+    """Page 1 has a text layer; page 2 is an image only (a scanned page)."""
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        document.new_page().insert_text((72, 72), "Página 1 del libro", fontsize=14)
+        picture = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+        picture.clear_with(200)
+        document.new_page().insert_image(pymupdf.Rect(72, 72, 272, 272), pixmap=picture)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def test_a_scanned_pdf_page_past_the_budget_goes_as_its_transcription(
+    topic: GenerateTopic,
+) -> None:
+    imported = import_pdf(topic.vault, topic.subject, topic.topic, "escaneado.pdf", _scanned_pdf())
+    assert [page.has_text for page in imported.pages] == [True, False]
+    pdf_path = imported.path.relative_to(topic.vault.path).as_posix()
+    put_page_transcription(topic.vault, pdf_path, "# Tema 4\n\nLa derivada escaneada.\n", page=2)
+
+    assembled = assemble_input(
+        topic.vault,
+        topic.subject,
+        topic.topic,
+        prompt=load_prompt("editor_generate"),
+        max_attachment_bytes=10,
+    )
+    joined = "\n".join(b.get("text", "") for b in assembled.content)
+    assert "Página 1 del libro" in joined
+    assert (
+        "#### sources/pdf/page-001.pdf#page=2 (página 2 del original, página escaneada,"
+        " transcrita)\n# Tema 4\n\nLa derivada escaneada." in joined
+    )
+
+
+def test_a_scanned_pdf_page_without_transcription_is_left_out(topic: GenerateTopic) -> None:
+    import_pdf(topic.vault, topic.subject, topic.topic, "escaneado.pdf", _scanned_pdf())
+    assembled = assemble_input(
+        topic.vault,
+        topic.subject,
+        topic.topic,
+        prompt=load_prompt("editor_generate"),
+        max_attachment_bytes=10,
+    )
+    joined = "\n".join(b.get("text", "") for b in assembled.content)
+    assert "sources/pdf/page-001.pdf#page=1 (" in joined
+    assert "sources/pdf/page-001.pdf#page=2 (" not in joined
 
 
 def test_a_topic_without_anything_captured_still_assembles(tmp_vault: Vault) -> None:

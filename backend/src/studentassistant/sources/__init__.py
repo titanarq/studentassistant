@@ -15,6 +15,7 @@ from studentassistant.sources.pdf import (
     PageRange,
     PageRangeError,
     PdfImportError,
+    PdfPageText,
     PdfTooLargeError,
     PdfUnreadableError,
     citation_source_id,
@@ -24,6 +25,9 @@ from studentassistant.sources.pdf import (
     pdf_document_block,
     pdf_has_page,
     pdf_page_count,
+    read_pdf_page_text,
+    render_pdf_page,
+    scanned_pages_without_transcription,
 )
 
 __all__ = [
@@ -39,6 +43,7 @@ __all__ = [
     "PageRange",
     "PageRangeError",
     "PdfImportError",
+    "PdfPageText",
     "PdfTooLargeError",
     "PdfUnreadableError",
     "citation_source_id",
@@ -48,4 +53,7 @@ __all__ = [
     "pdf_document_block",
     "pdf_has_page",
     "pdf_page_count",
+    "read_pdf_page_text",
+    "render_pdf_page",
+    "scanned_pages_without_transcription",
 ]

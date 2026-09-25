@@ -24,6 +24,7 @@ from studentassistant.vault import (
     GitSync,
     Vault,
     create_topic,
+    put_page_transcription,
     read_conversation,
     read_notes,
     write_notes,
@@ -239,3 +240,51 @@ def test_a_pdf_page_is_read_as_its_text(tmp_vault: Vault) -> None:
     assert "Página 85 del libro" in text and "página 85 del original" in text
     assert "Página 84 del libro" not in text
     assert not [b for b in fake.requests[0].messages[0]["content"] if b["type"] == "document"]
+
+
+def _scanned_pdf() -> bytes:
+    """Page 1 has a text layer; page 2 is an image only (a scanned page)."""
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        document.new_page().insert_text((72, 72), "Página 1 del libro", fontsize=14)
+        picture = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+        picture.clear_with(200)
+        document.new_page().insert_image(pymupdf.Rect(72, 72, 272, 272), pixmap=picture)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def _cite_pdf_page_2(base: ReviseTopic) -> None:
+    notes = base.notes.replace(
+        "Se escribe $f'(x)$.[^t2]\n", "Se escribe $f'(x)$.[^t2]\n\nDel PDF.[^pdf1]\n"
+    ).replace(
+        "[^p1]: [Apuntes",
+        "[^pdf1]: [PDF, página 2](../sources/pdf/page-001.pdf#page=2)\n[^p1]: [Apuntes",
+    )
+    write_notes(base.vault, base.subject, base.topic, notes)
+
+
+def test_a_scanned_pdf_page_is_read_as_its_transcription(tmp_vault: Vault) -> None:
+    base = make_revise_topic(tmp_vault)
+    imported = import_pdf(tmp_vault, base.subject, base.topic, "escaneado.pdf", _scanned_pdf())
+    pdf_path = imported.path.relative_to(tmp_vault.path).as_posix()
+    put_page_transcription(tmp_vault, pdf_path, "La derivada escaneada.\n", page=2)
+    _cite_pdf_page_2(base)
+    fake = FakeClaude().reply_text("Del PDF escaneado.")
+    _explain(base, fake, BlockAnchor(section="definicion", block=3))
+    text = _texts(fake.requests[0])
+    assert "Transcripción de la página escaneada:\n\nLa derivada escaneada." in text
+    assert not [b for b in fake.requests[0].messages[0]["content"] if b["type"] == "document"]
+
+
+def test_a_scanned_pdf_page_without_transcription_sends_the_document(tmp_vault: Vault) -> None:
+    base = make_revise_topic(tmp_vault)
+    import_pdf(tmp_vault, base.subject, base.topic, "escaneado.pdf", _scanned_pdf())
+    _cite_pdf_page_2(base)
+    fake = FakeClaude().reply_text("Del PDF escaneado.")
+    _explain(base, fake, BlockAnchor(section="definicion", block=3))
+    assert "(Sin texto extraído" in _texts(fake.requests[0])
+    assert [b for b in fake.requests[0].messages[0]["content"] if b["type"] == "document"]

@@ -17,6 +17,10 @@ PDF that looks like it carries a key is 422. An unknown subject or topic is 404 
 the body is read), a vault that cannot be opened 503. Every refusal (`{"detail": "..."}`) stores
 nothing. A stored import answers 201 `PdfImportResponse`.
 
+Kept pages without extractable text (scanned) are then queued for their Claude vision
+transcription (`app.state.pdf_transcriber`, `sources/pdf_transcription.py`, when the app has an
+LLM transport); the response never waits for it, and it lands as `page-NNN.pKKK.md` later.
+
 The route needs no active session: a PDF is a topic's source, not a session's.
 """
 
@@ -44,6 +48,7 @@ from studentassistant.sources import (
     import_pdf,
     parse_page_range,
 )
+from studentassistant.sources.pdf_transcription import ScannedPdfTranscriber
 from studentassistant.vault import (
     SecretRefused,
     SubjectNotFoundError,
@@ -260,6 +265,19 @@ def _response(
     )
 
 
+def _schedule_scanned_pages(
+    request: Request, vault: Vault, subject_id: str, topic_id: str, imported: ImportedPdf
+) -> None:
+    """Queue the vision transcription of the kept pages without text; never waited for."""
+    transcriber: ScannedPdfTranscriber | None = getattr(request.app.state, "pdf_transcriber", None)
+    if transcriber is None:
+        return
+    pdf_path = imported.path.resolve().relative_to(vault.path.resolve()).as_posix()
+    scanned = [(pdf_path, page.page) for page in imported.pages if not page.has_text]
+    if scanned:
+        transcriber.schedule(vault, subject_id, topic_id, scanned)
+
+
 def pdf_upload_router() -> APIRouter:
     """The PDF upload route; the service and the `[sources]` limits are read from `app.state`."""
     router = APIRouter(prefix="/api")
@@ -321,6 +339,7 @@ def pdf_upload_router() -> APIRouter:
             except (SubjectNotFoundError, TopicNotFoundError) as error:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, UNKNOWN_TOPIC_DETAIL) from error
         service.note_change()
+        _schedule_scanned_pages(request, vault, subject_id, topic_id, imported)
         return _response(subject_id, topic_id, vault, imported)
 
     return router
