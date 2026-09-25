@@ -76,7 +76,7 @@ Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, term
 | comprobación | qué mira | si falla |
 |---|---|---|
 | Configuración | que `config.toml` se pueda leer | corrige el valor que indica |
-| Dependencias de Python | que estén instaladas | `uv sync` en `backend/` |
+| Dependencias de Python | que estén instaladas | `uv sync` en `backend/` (con Whisper, `uv sync --extra whisper`) |
 | Voz (STT) | modo y proveedor configurados | revisa `[stt]` en `config.toml` |
 | faster-whisper, CUDA, Modelo de Whisper | solo con `faster-whisper`: instalado, GPU visible, modelo descargado | ver "Whisper en el PC" |
 | Clave de la API de Anthropic | que haya clave (y, con `--api-call`, que Anthropic la acepte) | `setup --api-key-stdin`; `chmod 600` si lo pide |
@@ -93,7 +93,7 @@ transcribirla en el PC con faster-whisper:
 
 ```sh
 cd studentassistant/backend
-uv pip install faster-whisper
+uv sync --extra whisper
 ```
 
 y en `~/.config/studentassistant/config.toml`:
@@ -110,8 +110,8 @@ device = "auto"            # auto: la GPU si hay, si no la CPU (lento); cuda; cp
 ```
 
 Después, `uv run studentassistant setup` descarga el modelo y `doctor` comprueba la GPU y el
-modelo. (Ojo: `uv sync` desinstala lo que no está en `uv.lock`; vuelve a instalar
-faster-whisper si lo lanzas.)
+modelo. (Ojo: un `uv sync` sin `--extra whisper` desinstala faster-whisper; con Whisper,
+usa siempre `uv sync --extra whisper`.)
 
 ## El día a día
 
@@ -122,7 +122,8 @@ journalctl --user -u studentassistant -f           # registro en directo
 uv run studentassistant pair                       # emparejar el móvil (código QR)
 ```
 
-Actualizar: `git pull && uv sync` en `backend/` y `systemctl --user restart studentassistant`.
+Actualizar: `git pull && uv sync` en `backend/` (`uv sync --extra whisper` si usas Whisper en el
+PC) y `systemctl --user restart studentassistant`.
 
 Quitar el servicio:
 
