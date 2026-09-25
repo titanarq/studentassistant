@@ -307,6 +307,10 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
+- `read_file_at(revision, path) -> str | None`: a vault-relative file as committed at a commit
+  or tag (`git cat-file blob`, bytes as stored -- not redacted, it is the vault's own content --
+  decoded as UTF-8), `None` when that revision has no such file or is unknown; `ValueError` for a
+  path outside the vault. The editor's notes versions read old `apuntes.md` with it.
 - `revert_paths(commit, paths, message) -> str | None`: a `git revert` of `commit` restricted to
   the vault-relative `paths` -- each goes back to its content in `commit^` (removed if `commit`
   created it), the other files of `commit` are kept -- committed under `message` after committing
@@ -317,7 +321,8 @@ thread:
   annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
   for that subject and topic (`notes_tag_name`), pushed by the next push;
   `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
-  `commit`) oldest first. A non-slug subject or topic raises `ValueError`. Tags are keyed by
+  `commit`, `tagged_at`, `message` -- the first line of the tag's message) oldest first;
+  `create_notes_tag` returns the new tag as listed. A non-slug subject or topic raises `ValueError`. Tags are keyed by
   subject as well as topic because topic slugs are unique only within a subject (#143): two
   subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
   `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags

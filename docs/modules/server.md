@@ -331,6 +331,25 @@ Routes registered today:
     ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
     nothing to undo or a file changed after that turn 409. Needs the bearer check like every
     non-exempt route.
+- **Notes versions** (`server/versions_routes.py`): thin over `editor.versions`
+  (`docs/modules/editor.md`), over the vault and `GitSync` of the `SessionService`. No Claude
+  call: every route works without `llm_transport`.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/versions` -> `NotesVersions`
+    (`versions`: `{version, tag, commit, tagged_at, message, current}` oldest first; `has_notes`,
+    `changed_since_latest`).
+  - `GET .../notes/versions/diff?from=1&to=2` -> `VersionDiff` (`sections` by anchor: `key`,
+    `anchor`, `title_before`, `title_after`, `level`, `status`
+    `added|removed|changed|unchanged`, `moved`, `renamed`, `diff`; `footnotes`
+    `{added, removed, changed}` labels; the whole `diff`; `identical`). Without `to`, against the
+    current `apuntes.md` (`to_version: null`).
+  - `GET .../notes/versions/{version}` -> `VersionText` (`text` as tagged).
+  - `POST .../notes/versions/{version}/restore`, no body -> `RestoreResult` (`restored_version`,
+    `version` and `tag` of the new `apuntes-vN`, `commit`, `diff`, `notes`, `errors`, `warning`).
+    Holds the topic's notes lock (`NotesGenerator.claim`, when the app has one); `notes.restored`
+    is published on the bus (origin `editor`) when the topic's session is the active one.
+  - Errors, Spanish `detail`: a vault that cannot be opened 503, an unknown topic or version 404,
+    a version below 1 or a diff without `from` 422, no current notes to diff with, the current
+    notes already being that version, or another notes operation of the topic running 409.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).

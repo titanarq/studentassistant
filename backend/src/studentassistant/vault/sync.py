@@ -152,6 +152,9 @@ class NotesTag:
     name: str
     version: int
     commit: str
+    # When the tag was made and the first line of its message (`Apuntes v2 de ...: <title>`).
+    tagged_at: datetime | None = None
+    message: str = ""
 
 
 def notes_tag_name(subject_slug: str, topic_slug: str, version: int) -> str:
@@ -623,16 +626,42 @@ class GitSync:
             "tag",
             "--list",
             f"{prefix}*",
-            "--format=%(refname:short)%09%(*objectname)%09%(objectname)",
+            "--format=%(refname:short)%09%(*objectname)%09%(objectname)%09%(taggerdate:iso-strict)"
+            "%09%(contents:subject)",
         )
         pattern = re.compile(rf"^{re.escape(prefix)}([1-9][0-9]*)$")
         tags = []
         for line in result.stdout.splitlines() if result.ok else []:
-            name, peeled, target = line.split("\t")
+            name, peeled, target, date, message = (line.split("\t", 4) + ["", ""])[:5]
             match = pattern.match(name)
             if match:
-                tags.append(NotesTag(name=name, version=int(match[1]), commit=peeled or target))
+                tags.append(
+                    NotesTag(
+                        name=name,
+                        version=int(match[1]),
+                        commit=peeled or target,
+                        tagged_at=_parse_date(date),
+                        message=message,
+                    )
+                )
         return sorted(tags, key=lambda tag: tag.version)
+
+    def read_file_at(self, revision: str, path: str) -> str | None:
+        """The content of the vault-relative `path` at `revision` (a commit or tag), exactly as
+        committed (not redacted: it is the vault's own content), or `None` when that revision has
+        no such file or is not one of the vault's.
+
+        Raises:
+            ValueError: `path` is not vault-relative.
+            GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
+        """
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            raise ValueError(f"{path!r} is not a vault-relative path")
+        if revision.startswith("-"):
+            raise ValueError(f"{revision!r} is not a revision")
+        with self._git_locked_or_raise():
+            data = self.git.read_blob(f"{revision}:{path}")
+        return None if data is None else data.decode("utf-8", errors="replace")
 
     def create_notes_tag(
         self, subject_slug: str, topic_slug: str, message: str | None = None
@@ -656,8 +685,9 @@ class GitSync:
                 "tag", "--annotate", name, "--message", message or f"apuntes v{version}", "HEAD"
             )
             commit = self.git.check("rev-parse", "HEAD").stdout.strip()
+            listed = [t for t in self._list_tags_locked(subject_slug, topic_slug) if t.name == name]
         self._schedule_push(self.settings.push_debounce_seconds)
-        return NotesTag(name=name, version=version, commit=commit)
+        return listed[0] if listed else NotesTag(name=name, version=version, commit=commit)
 
     # -- reverting one commit's paths ----------------------------------------------------------
 
@@ -731,6 +761,13 @@ class _CommitError(Exception):
 def _sync_kind(result: GitResult) -> SyncOutcome:
     kind = _classify(result)
     return "error" if kind == "rejected" else kind
+
+
+def _parse_date(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
 
 
 def _check_slugs(subject_slug: str, topic_slug: str) -> None:

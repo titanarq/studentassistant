@@ -16,13 +16,14 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30, #61, #68 and #63: the master notes format of ADR-0005, in
+What exists today, after issues #30, #61, #68, #63 and #64: the master notes format of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
 ops in `studentassistant.editor.edits`, the doubts resolution in
 `studentassistant.editor.doubts` and the conversational revision of the notes in
-`studentassistant.editor.revise`. "¿Por qué?" is a later issue.
+`studentassistant.editor.revise`, and the notes versions in `studentassistant.editor.versions`.
+"¿Por qué?" is a later issue.
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -310,3 +311,37 @@ mode, and the student's message.
 - Limitations: a turn is committed as soon as it is applied; when the sync loop happened to commit
   the files first, `commit` is `None` and that turn cannot be undone. Nothing here streams to the
   web itself: that is the server's `POST .../notes/chat` (SSE, `docs/modules/server.md`).
+
+### Notes versions -- `versions.py`
+A version is a `<subject>/<topic>/apuntes-vN` tag (made by "prepárame el tema" and by a restore),
+read through `GitSync.list_notes_tags` and `GitSync.read_file_at`. No Claude call.
+- `list_versions(vault, subject, topic, *, sync) -> NotesVersions` (blocking, reads only):
+  `versions` oldest first (`NotesVersion`: `version`, `tag`, `commit`, `tagged_at`, `message`,
+  `current` -- the current `apuntes.md` is exactly its text), `has_notes`,
+  `changed_since_latest` (revisions or doubts edited the notes after the latest tag).
+- `read_version(vault, subject, topic, version, *, sync) -> VersionText` (`text` as tagged).
+- `diff_versions(vault, subject, topic, from_version, to_version=None, *, sync) -> VersionDiff`:
+  `to_version=None` compares with the current `apuntes.md`. `compare_notes(before, after)` is the
+  pure part. **By section**: sections are matched by anchor (an anchorless one by position), the
+  preamble is the section with key `PREAMBLE_KEY` (`""`); each `SectionDiff` has `status`
+  (`added`, `removed`, `changed`, `unchanged`), `moved` (its place among the sections both sides
+  share changed), `renamed` (heading title changed), both titles, `level` and a unified `diff` of
+  its heading and blocks. Sections come in the newer side's order, a removed one right after the
+  section it followed. The run of footnote definitions is left out of the sections and compared
+  by label (`FootnotesDiff`: `added`, `removed`, `changed`); `diff` is the whole-document unified
+  diff, `identical` whether the texts are equal.
+- `await restore_version(vault, subject, topic, version, *, sync, on_event=None) ->
+  RestoreResult`: writes that version's text as `apuntes.md` (`vault.write_notes`, which drops a
+  draft), commits it (`Apuntes vN de <s>/<t>: restaurada la versión K`) and tags it as the next
+  version -- nothing is rewound; every version stays. The restored text is validated against
+  today's sources and fidelity mode: `errors` and a Spanish `warning` report what no longer holds
+  (a purged source), but the restore is done anyway. `on_event("notes.restored", payload)` gets
+  the result without `notes`. `RestoreResult`: `restored_version`, `version`, `tag`, `commit`,
+  `path`, `diff` (from the notes before), `notes`, `errors`, `warning`.
+- Errors (`VersionError`, Spanish): `UnknownVersionError` (no such version, or its file missing at
+  the tag), `NothingToRestoreError` (the current notes already are that version; nothing
+  written), `VersionError` for a diff against notes that do not exist.
+- A restore changes `apuntes.md`, so undoing an earlier chat turn afterwards is an
+  `UndoConflictError`, like after a regeneration.
+- Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/notes/versions...`
+  (`docs/modules/server.md`).
