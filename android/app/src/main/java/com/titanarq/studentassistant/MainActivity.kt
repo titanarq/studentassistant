@@ -1,6 +1,7 @@
 package com.titanarq.studentassistant
 
 import android.os.Bundle
+import androidx.camera.core.ImageCapture
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -36,7 +37,7 @@ class MainActivity : ComponentActivity() {
         container // resolve it now so a misregistered Application fails at startup
         setContent {
             StudentAssistantTheme {
-                App(container)
+                App(container, (application as StudentAssistantApp).stillCamera.imageCapture)
             }
         }
     }
@@ -44,7 +45,7 @@ class MainActivity : ComponentActivity() {
 
 /** Opens pairing when no backend is stored, else the subjects/topics home; routes between the screens. */
 @Composable
-private fun App(container: AppContainer) {
+private fun App(container: AppContainer, imageCapture: ImageCapture) {
     val backendsViewModel: PairedBackendsViewModel = viewModel(factory = container.pairedBackendsViewModelFactory)
     val stored by backendsViewModel.backends.collectAsStateWithLifecycle()
     var route by rememberSaveable { mutableStateOf<Route?>(null) }
@@ -89,6 +90,7 @@ private fun App(container: AppContainer) {
                     ),
                     onLeave = { route = Route.HOME },
                     onEnded = { route = Route.HOME },
+                    imageCapture = imageCapture,
                 )
             }
         }

@@ -36,6 +36,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -52,7 +53,8 @@ class CaptureViewModelTest {
     private val backend = FakeBackendClient()
     private val sockets = FakeSessionSocketFactory()
     private val transcriber = FakeTranscriber()
-    private val captures = mutableListOf<Pair<CaptureTrigger, String?>>()
+    private val stillCapture = FakeStillCapture()
+    private val captures get() = stillCapture.captures
     private val holder = SessionHolder()
     private var audioSource = FakeAudioSource(totalSamples = 1600 * 2)
     private val open = OpenSession(
@@ -70,7 +72,7 @@ class CaptureViewModelTest {
         socketFactory = sockets,
         transcriberFactory = { transcriber },
         audioStreamerFactory = { AudioStreamer(audioSource, clock, main.dispatcher) },
-        stillCapture = { trigger, commandId -> captures += trigger to commandId },
+        stillCapture = stillCapture,
         reconnectDelaysMs = listOf(100),
     )
 
@@ -170,6 +172,19 @@ class CaptureViewModelTest {
         assertEquals(listOf(CaptureTrigger.COMMAND to "cmd-1"), captures)
         assertEquals(ClientAck("cmd-1", clock.now), sockets.last.sent.last())
         viewModel.leave()
+    }
+
+    @Test
+    fun `the thumbnail strip follows still capture and a tap retries a failed shot`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        val collector = backgroundScope.launch { viewModel.shots.collect {} }
+        val shot = CaptureShot("c-1", "s1", CaptureTrigger.BUTTON, 5, ShotStatus.FAILED)
+        stillCapture.shots.value = listOf(shot)
+        runCurrent()
+        assertEquals(listOf(shot), viewModel.shots.value)
+        viewModel.retryShot("c-1")
+        assertEquals(listOf("c-1"), stillCapture.retries)
+        collector.cancel()
     }
 
     @Test
