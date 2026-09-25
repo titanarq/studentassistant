@@ -63,9 +63,9 @@ token):
   link to the live session view, `/live`). Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer) shows `TopicCard` and `PdfUploadForm`; an
-  unknown topic (404) shows the backend's Spanish detail and no upload form, and a successful
-  upload (`onImported`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
+  <subject name>", the ids until the lists answer) shows `TopicCard`, `PdfUploadForm` and
+  `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
+  and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
@@ -78,6 +78,23 @@ token):
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  `WebSearchPanel` (#59, section "Buscar en Internet"): a "Qué buscar" search box and "Buscar"
+  button (an empty query says "Escribe qué quieres buscar." without calling), then the topic's
+  searches ("Búsquedas del tema", newest first, the ones asked by voice too): "«<query>» (pedida
+  en voz | pedida aquí | pedida por el editor) — Buscando… | <n> páginas | No se encontró nada
+  útil. | No se pudo buscar: <message>", each offered page a link (new tab) with its host, "·
+  recomendada" (`relevant`), "· sin confirmar en la búsqueda" (`found_in_search` false), its
+  summary and "Guardar como fuente" -- once kept, "Guardada como fuente externa (<source_id>)";
+  a refused keep shows "No se ha guardado: <detail>" under the page. While a search is `queued`
+  the list is read again every `pollMs` (2 s). A list that cannot be read is reported as plain
+  text (no `alert`). `webSearchApi.ts`: `fetchWebSearches(s, t)` (`GET .../web-searches` ->
+  `WebSearch[]`: `search_id`, `query`, `requested_by`, `session_id`, `queued_at`, `status`,
+  `results` of `WebResult` `url`/`title`/`summary`/`relevant`/`found_in_search`, `reason`,
+  `message`, `kept` of `KeptResult` `index`/`url`/`source_id`/`kept_by`), `queueWebSearch(s, t,
+  query)` (`POST`, the new `search_id`), `keepWebResult(s, t, searchId, index)` (`POST
+  .../{search_id}/results/{index}/keep` -> `KeptSource` `source_id`/`vault_id`/`title`/`url`), all
+  `ApiResult` (`ok` | `refused` with the Spanish `detail` | `error` | `unreachable`), and
+  `describeApiFailure(result)`.
   The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, followed by
   "(versiones)", a link to the notes version history, and its
   Pendiente item always links to the pending-doubts panel.
@@ -95,13 +112,16 @@ token):
   - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
     its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
     sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
-    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word.
+    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word. Web
+    snapshots are external sources (#59): their references get `notes-ref-web` (green, dotted)
+    and the aria label "Fuente externa (web): <text>" (other sources "Fuente: <text>"), and their
+    definition under "Fuentes" gets `notes-footnote-external` and "· fuente externa".
   - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
     flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
     Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
     `transcription`, else `page-NNN.md`); a PDF page shows `page-NNN.pKKK.jpg` and `.txt`,
     "PDF «<original_name>», página <original page>" and an "Abrir el PDF" link; a web snapshot its
-    text and sidecar `url`; a transcript span its segments with `MM:SS` timestamps
+    text and "Fuente externa: copia de <url> (<fetched_at>)" from its sidecar; a transcript span its segments with `MM:SS` timestamps
     (`GET /api/sessions/{id}/transcript`). Focus moves to the panel title; Escape or "Cerrar"
     closes it and returns the focus to the reference. The panel is fixed to the viewport edge
     (a bottom sheet under 40rem), so it never scrolls or rewraps the notes.
