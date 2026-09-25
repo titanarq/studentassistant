@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field
 
 from studentassistant.llm import CostCapError, LLMError, RefusalError
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.protocol.errors import ErrorCode
+from studentassistant.server.errors import ApiError
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.sources.web import WebSearchRecord, list_web_searches
 from studentassistant.sources.web_searcher import KeepError, WebSearcher
@@ -160,7 +162,9 @@ def web_search_router() -> APIRouter:
         except KeepError as error:
             raise HTTPException(error.status, str(error)) from error
         except CostCapError as error:
-            raise HTTPException(status.HTTP_409_CONFLICT, COST_CAP_DETAIL) from error
+            raise ApiError(
+                status.HTTP_409_CONFLICT, COST_CAP_DETAIL, ErrorCode.COST_CAP_REACHED
+            ) from error
         except RefusalError as error:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, REFUSED_DETAIL) from error
         except LLMError as error:
