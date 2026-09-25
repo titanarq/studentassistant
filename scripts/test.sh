@@ -7,8 +7,8 @@
 #        scripts/test.sh web [vitest args]
 #        scripts/test.sh android [gradle args]   e.g. scripts/test.sh android :app:testDebugUnitTest
 # Never runs integration tests (GPU, network, real Claude) nor instrumented Android tests.
-# Self-provisioning: on a fresh checkout or worktree (e.g. the validator's throwaway worktree,
-# which gets no environment from the agent-os driver) it creates what each suite needs from the
+# Self-provisioning: on a fresh checkout or worktree (CI, a hand-made lane; agent worktrees are
+# also provisioned by project.worktree_setup_command) it creates what each suite needs from the
 # committed lock files -- backend/.venv via `uv sync --frozen`, web/node_modules via `npm ci` --
 # so running this command IS the supported way to get an environment; nothing is linked from
 # another tree. Only the first run needs the network (package download).

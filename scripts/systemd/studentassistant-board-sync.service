@@ -11,6 +11,3 @@ ExecStart=/usr/bin/python3 /home/titan/projects/studentassistant/scripts/board_s
 # next dispatch. Idempotent and silent when there is nothing to do; see
 # scripts/clean_stale_workers_if_closed.sh and docs/runbooks/operations.md.
 ExecStart=/home/titan/projects/studentassistant/scripts/clean_stale_workers_if_closed.sh
-# workaround titanarq/agent-os#32 (docs/runbooks/operations.md, "Refine window"):
-# refills the short, critical-path-ordered status:refine window from the parked backlog.
-ExecStart=/home/titan/projects/studentassistant/agent_os/.venv/bin/python /home/titan/projects/studentassistant/scripts/refine_window.py tick

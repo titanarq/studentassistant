@@ -1,28 +1,30 @@
 # The mechanism's own CI, copied as-is by `agent-os install` when the host has no
-# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 6). A host that already
+# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 7). A host that already
 # runs its own tests job can instead fold these two steps into it, the way a host whose
 # `ci.yml` already exists does -- this file exists so a fresh host has something that works
 # without hand-writing it first.
 name: agent-os
 
-# Only when the mechanism (or this file) changes: no ruleset/branch protection requires this
-# check, so a path filter cannot leave a required check pending.
 on:
+  # Only a PR that changes the mechanism (a `git subtree pull`, a fix on its way back) or this file
+  # runs the mechanism's suite; a host-only PR gets its check from `ci-host.yml`
+  # (agent_os/docs/adr/2026-09-24-a-pr-with-no-checks-fails-the-ci-condition-and-every-host-ships-a-ci.md).
+  # A path-filtered workflow that does not run reports no check at all, so do not make its job a
+  # required status check in branch protection: a host-only PR would wait on it forever.
   pull_request:
     paths:
-      - "agent_os/**"
-      - ".github/workflows/ci-agent-os.yml"
-      - "scripts/agent_os_patches/**"
-      - "scripts/*.py"
-      - "scripts/*.sh"
+      - agent_os/**
+      - .github/workflows/ci-agent-os.yml
 
 jobs:
   tests:
-    # GitHub-hosted only: the repo is public, never self-hosted (docs/runbooks/operations.md).
-    # The image's system python3 (3.12 on ubuntu-24.04) bootstraps the venv.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
       # The mechanism carries its own interpreter (agent_os/docs/AGENT_OS.md §4.1): nothing below needs the
       # host project's own virtualenv to exist.
@@ -32,18 +34,4 @@ jobs:
       # No database, no network, no real backend: the same subset `agent_os/tests/conftest.py`
       # keeps separate from the host's own fixtures, and the run a second host can also make.
       - name: the mechanism's own suite
-        # workaround titanarq/agent-os#17 — remove when fixed
-        # _the_projects_package() assumes the host root has exactly one top-level Python
-        # package; studentassistant (Python package under backend/src, no top-level package) has none, so
-        # these two pre-existing agent_os tests fail here regardless of the host PR's diff.
-        # Node ids below are relative to agent_os/'s own pyproject.toml (rootdir/testpaths),
-        # not to the invocation path -- i.e. "tests/..." not "agent_os/tests/...".
-        run: |
-          agent_os/.venv/bin/pytest agent_os/tests -q \
-            --deselect tests/test_agent_task.py::test_a_role_that_runs_tests_gets_a_worktree_of_its_own_and_pythonpath_at_it \
-            --deselect tests/test_agent_task.py::test_the_environment_the_driver_exports_resolves_the_worktrees_copy_and_not_the_main_checkouts
-
-      # Host-side workaround titanarq/agent-os#27 (docs/runbooks/operations.md): the cheap board
-      # lookups and the interpreter wrapper, against the mechanism they patch. Fake gh, no network.
-      - name: host patches to the mechanism
-        run: agent_os/.venv/bin/pytest scripts/agent_os_patches -q
+        run: agent_os/.venv/bin/pytest agent_os/tests -q
