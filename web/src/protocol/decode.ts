@@ -65,11 +65,14 @@ export function literal<const T extends string | number>(...allowed: T[]): Decod
   };
 }
 
-export function array<T>(item: Decoder<T>, opts: { minItems?: number } = {}): Decoder<T[]> {
+export function array<T>(item: Decoder<T>, opts: { minItems?: number; maxItems?: number } = {}): Decoder<T[]> {
   return (value, path) => {
     if (!Array.isArray(value)) throw new ProtocolDecodeError(path, "expected an array");
     if (opts.minItems !== undefined && value.length < opts.minItems) {
       throw new ProtocolDecodeError(path, `fewer than ${opts.minItems} items`);
+    }
+    if (opts.maxItems !== undefined && value.length > opts.maxItems) {
+      throw new ProtocolDecodeError(path, `more than ${opts.maxItems} items`);
     }
     return value.map((v, i) => item(v, at(path, i)));
   };

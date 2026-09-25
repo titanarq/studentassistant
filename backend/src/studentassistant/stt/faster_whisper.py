@@ -17,8 +17,11 @@ it in a worker thread:
 Options (`[stt.options.faster-whisper]`): `model` (default `large-v3-turbo`), `device` (`auto`:
 CUDA when CTranslate2 sees a device, CPU otherwise; `cuda`; `cpu`), `download_root` (unset: the
 Hugging Face cache), `compute_type` (default `int8_float16` on CUDA, `int8` on CPU), `beam_size`
-(5), `initial_prompt` (vocabulary hints), `partial_interval_seconds` (1.0), `min_silence_ms`
-(600), `max_utterance_seconds` (20.0), `vad_threshold` (0.5).
+(5), `initial_prompt` (a fixed prompt), `hotwords` (fixed hint phrases), `partial_interval_seconds`
+(1.0), `min_silence_ms` (600), `max_utterance_seconds` (20.0), `vad_threshold` (0.5).
+
+Vocabulary hints (#54): the session's hints (`set_vocabulary`) go to Whisper as `hotwords`, after
+the configured `hotwords` when there are any, from the next transcription on.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import importlib
 import logging
 import math
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
@@ -43,6 +46,7 @@ from studentassistant.config import (
 from studentassistant.stt import cuda
 from studentassistant.stt.models import AudioChunk, NormalisedSegment
 from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.vocabulary import SEPARATOR, hotwords_text
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +95,9 @@ class WhisperBackend(Protocol):
         """Speech in `audio` (mono float32 at 16 kHz) as `(start, end)` sample indices."""
         ...
 
-    def transcribe(self, audio: np.ndarray) -> list[Recognised]:
-        """Transcribe `audio`, which is all speech (VAD already applied)."""
+    def transcribe(self, audio: np.ndarray, *, hotwords: str | None = None) -> list[Recognised]:
+        """Transcribe `audio`, which is all speech (VAD already applied), biased towards the
+        comma-separated `hotwords` when given."""
         ...
 
 
@@ -207,24 +212,25 @@ class FasterWhisperBackend:
         spans = self._vad.get_speech_timestamps(audio, options, SAMPLE_RATE)
         return [(int(s["start"]), int(s["end"])) for s in spans]
 
-    def transcribe(self, audio: np.ndarray) -> list[Recognised]:
+    def transcribe(self, audio: np.ndarray, *, hotwords: str | None = None) -> list[Recognised]:
         self.load()
         if not self._cuda_unproven:
-            return self._transcribe(audio)
+            return self._transcribe(audio, hotwords)
         try:
-            recognised = self._transcribe(audio)
+            recognised = self._transcribe(audio, hotwords)
         except RuntimeError as error:
             self._fall_back_to_cpu(error)
-            return self._transcribe(audio)
+            return self._transcribe(audio, hotwords)
         self._cuda_unproven = False
         return recognised
 
-    def _transcribe(self, audio: np.ndarray) -> list[Recognised]:
+    def _transcribe(self, audio: np.ndarray, hotwords: str | None) -> list[Recognised]:
         segments, _info = self._model.transcribe(
             audio,
             language=self.language,
             beam_size=self.beam_size,
             initial_prompt=self.initial_prompt,
+            hotwords=hotwords,
             vad_filter=False,
             condition_on_previous_text=False,
         )
@@ -299,12 +305,26 @@ class FasterWhisperProvider(SpeechToTextProvider):
                 vad_threshold=_float_option(opts, "vad_threshold", DEFAULT_VAD_THRESHOLD),
             )
         self.backend = backend
+        # Configured hint phrases, and what goes to the model: those plus the session's hints.
+        self._fixed_hotwords = str(opts.get("hotwords") or "").strip() or None
+        self._hotwords = self._fixed_hotwords
         # Audio not yet committed as finals, and the session time of its first sample.
         self._audio = np.zeros(0, dtype=np.float32)
         self._origin = 0.0
         self._since_step = 0.0
         self._finished = False
         self._lock = asyncio.Lock()
+
+    @property
+    def hotwords(self) -> str | None:
+        """What the next transcription gets as Whisper `hotwords`."""
+        return self._hotwords
+
+    def set_vocabulary(self, hints: Sequence[str]) -> None:
+        super().set_vocabulary(hints)
+        parts = [p for p in (self._fixed_hotwords, hotwords_text(hints)) if p]
+        # One reference swap: the worker thread reads it at its next transcription.
+        self._hotwords = SEPARATOR.join(parts) if parts else None
 
     async def feed(self, chunk: AudioChunk) -> list[NormalisedSegment]:
         if self._finished:
@@ -380,7 +400,7 @@ class FasterWhisperProvider(SpeechToTextProvider):
             self._drop(max(0, ongoing[0][0] - round(LEADING_PAD_SECONDS * SAMPLE_RATE)))
         else:
             first, cut = complete[0][0], complete[-1][1]
-            for rec in self.backend.transcribe(audio[first:cut]):
+            for rec in self.backend.transcribe(audio[first:cut], hotwords=self._hotwords):
                 out.append(self._segment(first, rec, cut, final=True))
             if ongoing:
                 self._drop(cut)
@@ -390,7 +410,7 @@ class FasterWhisperProvider(SpeechToTextProvider):
         if ongoing:
             start = ongoing[0][0] - (total - len(self._audio))
             start = max(0, start)
-            recognised = self.backend.transcribe(self._audio[start:])
+            recognised = self.backend.transcribe(self._audio[start:], hotwords=self._hotwords)
             text = " ".join(r.text for r in recognised).strip()
             if text:
                 confidences = [r.confidence for r in recognised if r.confidence is not None]

@@ -49,6 +49,9 @@ from studentassistant.protocol.rest import (
 )
 from studentassistant.protocol.server import (
     SERVER_EVENT_ADAPTER,
+    VOCABULARY_HINT_MAX_CHARS,
+    VOCABULARY_HINTS_MAX_ITEMS,
+    VOCABULARY_HINTS_SINCE,
     Command,
     HelloAck,
     Notice,
@@ -75,6 +78,9 @@ __all__ = [
     "MODELS",
     "PROTOCOL_VERSION",
     "SERVER_EVENT_ADAPTER",
+    "VOCABULARY_HINTS_MAX_ITEMS",
+    "VOCABULARY_HINTS_SINCE",
+    "VOCABULARY_HINT_MAX_CHARS",
     "AudioFormat",
     "AudioFrame",
     "AudioFrameError",

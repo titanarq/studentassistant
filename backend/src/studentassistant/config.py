@@ -323,6 +323,10 @@ DEFAULT_WHISPER_DEVICE = "auto"
 DEFAULT_GOOGLE_SPEECH_MODEL = "latest_long"
 # Server mode: seconds of audio queued for the provider past which superseded partials are dropped.
 DEFAULT_STT_MAX_BACKLOG_SECONDS = 10.0
+# Vocabulary hints (#54): at most this many terms (subject, topic, observer concepts), and this many
+# characters joined with ", ". `max_terms = 0` turns them off. The protocol caps terms at 50.
+DEFAULT_STT_VOCABULARY_MAX_TERMS = 30
+DEFAULT_STT_VOCABULARY_MAX_CHARS = 500
 
 
 class SttSettings(BaseModel):
@@ -339,6 +343,10 @@ class SttSettings(BaseModel):
     # Server mode: when more than this many seconds of audio wait for the provider, partials that a
     # newer segment supersedes are dropped (finals never are). `SA_STT__MAX_BACKLOG_SECONDS`.
     max_backlog_seconds: float = Field(default=DEFAULT_STT_MAX_BACKLOG_SECONDS, gt=0)
+    # Vocabulary hints sent to the provider and the capture client: the most terms (0 = off, at
+    # most 50) and characters. `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`.
+    vocabulary_max_terms: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_TERMS, ge=0, le=50)
+    vocabulary_max_chars: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_CHARS, ge=1)
 
     def provider_options(self, name: str | None = None) -> dict[str, Any]:
         """The options table of `name` (the configured provider by default); empty when absent."""

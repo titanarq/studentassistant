@@ -23,6 +23,17 @@
       "type": "integer",
       "minimum": 0,
       "description": "Backend clock, Unix epoch ms, when the message was sent."
+    },
+    "vocabulary_hints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "description": "Since 1.4: present when the session's vocabulary hints changed (the observer extracted a new concept); the whole list, replacing the previous one. Only sent to a client that negotiated 1.4 or higher."
     }
   }
 }
