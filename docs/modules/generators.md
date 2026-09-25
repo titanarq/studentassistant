@@ -151,3 +151,32 @@ Extra items beyond the options are cut, questions without points, questions not 
 `total_points` and rubrics not adding up to their question's points are kept and reported as
 Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
 web lists the two PDFs under "Descargas" through `GET .../generated/files/{name}` (#76).
+
+## Slides -- `slides.py` (kind `diapositivas`, #78)
+
+Options `size` (1-40, default 12: at most that many slides besides the cover) and `export`
+(default true). Claude (prompt `prompts/generator_slides.md`, tool `record_slides`) returns
+`DraftDeck`: `title`, optional `subtitle`, and `slides` with a Spanish `title`, `bullets`, optional
+speaker `notes`, `anchors` and, optionally, the `image` id of a figure. Figures
+(`collect_figures`) are the source pages the notes cite: notes/book page images (the cropped
+`page-NNN.page.jpg` when stored) and PDF pages (their `page-NNN.pKKK.jpg` thumbnail), offered as
+`f1`, `f2`... with their citation text and the sections citing them; Claude does not see them.
+Files under `generated/`:
+
+- `diapositivas.md` -- Marp Markdown (`render_markdown`): front matter `marp: true`, a cover
+  (title, subtitle, subject name), one slide per draft; a figure is a `![bg right:40% contain]`
+  background linked relative to the deck and credited in the slide's `_footer` ("Imagen: Libro,
+  página 12"); speaker notes as HTML comments;
+- `diapositivas/figura-NN.<ext>` -- the figures shown, copied from the sources;
+- `diapositivas.pdf`, `diapositivas.pptx` -- exported by Marp CLI (`MarpExporter`: run in a
+  temporary directory with `--allow-local-files --pdf|--pptx --output <file>`, its process group
+  killed on a timeout). A missing `marp`, a failure or a timeout is a Spanish warning and the
+  Markdown is still stored (an older PDF/PPTX is then removed, never left stale).
+
+Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["marp"]`, e.g.
+`["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
+(unset: Marp finds Chrome/Chromium itself). Marp needs Node and a Chromium-based browser; it is
+not a Python dependency. Items are the slides (`d01`, `d02`...) with their anchors. The web lists
+the PDF/PPTX under Descargas through `GET .../generated/files/{name}`. Tests use a stand-in
+exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
+`@pytest.mark.integration` (`SA_TEST_MARP`).

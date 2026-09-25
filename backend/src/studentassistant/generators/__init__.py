@@ -6,6 +6,7 @@
 # generator module registers itself on `default_registry` and is imported here.
 
 import studentassistant.generators.exam  # noqa: F401 (registers itself)
+import studentassistant.generators.slides  # noqa: F401 (registers itself)
 from studentassistant.generators import flashcards  # noqa: F401 (registers itself)
 from studentassistant.generators.base import (
     CONVERSATION_NAME,

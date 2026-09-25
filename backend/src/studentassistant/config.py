@@ -431,6 +431,24 @@ DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS = 80_000
 DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
 
 
+DEFAULT_MARP_COMMAND = ["marp"]
+DEFAULT_MARP_TIMEOUT_SECONDS = 180.0
+
+
+class GeneratorsSettings(BaseModel):
+    """The study-material generators (`[generators]`, `SA_GENERATORS__*`)."""
+
+    # The Marp CLI the slides generator exports PDF/PPTX with (`npm install -g
+    # @marp-team/marp-cli`); a list, so `["npx", "--yes", "@marp-team/marp-cli"]` works too.
+    marp_command: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_MARP_COMMAND), min_length=1
+    )
+    # How long one Marp export (PDF or PPTX) may take before it is abandoned.
+    marp_timeout_seconds: float = Field(default=DEFAULT_MARP_TIMEOUT_SECONDS, gt=0)
+    # The Chromium-based browser Marp renders with; unset, Marp finds one itself.
+    marp_browser_path: Path | None = None
+
+
 class ObserverSettings(BaseModel):
     """The live observer loop (`[observer]`, `SA_OBSERVER__*`)."""
 
@@ -567,6 +585,7 @@ class Settings(BaseSettings):
     sources: SourcesSettings = Field(default_factory=SourcesSettings)
     observer: ObserverSettings = Field(default_factory=ObserverSettings)
     eval: EvalSettings = Field(default_factory=EvalSettings)
+    generators: GeneratorsSettings = Field(default_factory=GeneratorsSettings)
 
     @classmethod
     def settings_customise_sources(
