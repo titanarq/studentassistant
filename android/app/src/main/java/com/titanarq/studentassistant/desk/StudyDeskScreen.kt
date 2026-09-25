@@ -6,12 +6,17 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,7 +50,8 @@ import com.titanarq.studentassistant.R
 /**
  * A topic's notes on the phone (#83): the backend's web notes page, with the editor chat beside
  * it, in a WebView authenticated by the paired token's cookie. Back goes back in the page history,
- * then [onBack].
+ * then [onBack]. A file input opens the system document picker, and a download goes to the system
+ * download manager with the paired token (#259).
  */
 @Composable
 fun StudyDeskScreen(viewModel: StudyDeskViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
@@ -100,12 +106,51 @@ private fun DeskWebView(
     val context = LocalContext.current
     var canGoBack by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
+    // The page's file input waiting for the document picker; answered exactly once (null = cancelled).
+    val pendingChooser = remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    fun answerChooser(uris: List<Uri>) {
+        pendingChooser.value?.onReceiveValue(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
+        pendingChooser.value = null
+    }
+    val pickOne = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        answerChooser(listOfNotNull(uri))
+    }
+    val pickMany = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        answerChooser(uris)
+    }
     val webView = remember {
         WebView(context).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
+            webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(
+                    view: WebView,
+                    filePathCallback: ValueCallback<Array<Uri>>,
+                    fileChooserParams: FileChooserParams,
+                ): Boolean {
+                    answerChooser(emptyList()) // a picker still open for an earlier input is dropped
+                    pendingChooser.value = filePathCallback
+                    val types = acceptMimeTypes(fileChooserParams.acceptTypes?.toList().orEmpty()).toTypedArray()
+                    return try {
+                        if (fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                            pickMany.launch(types)
+                        } else {
+                            pickOne.launch(types)
+                        }
+                        true
+                    } catch (_: ActivityNotFoundException) {
+                        // No picker on the device: the WebView resets the input when we return false.
+                        pendingChooser.value = null
+                        Toast.makeText(view.context, R.string.desk_file_chooser_failed, Toast.LENGTH_SHORT).show()
+                        false
+                    }
+                }
+            }
+            setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+                startDeskDownload(context, url, contentDisposition, mimeType, ready)
+            }
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     val url = request.url.toString()
@@ -148,6 +193,7 @@ private fun DeskWebView(
     // The token goes into the WebView's cookie jar only while this screen is shown.
     DisposableEffect(webView) {
         onDispose {
+            answerChooser(emptyList())
             webView.stopLoading()
             webView.destroy()
             CookieManager.getInstance().apply {

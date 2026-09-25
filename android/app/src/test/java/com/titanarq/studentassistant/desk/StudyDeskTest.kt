@@ -49,6 +49,7 @@ class StudyDeskTest {
         assertEquals("http://192.168.1.20:8000/subjects/s1/topics/t1/notes", page.url)
         assertEquals("http://192.168.1.20:8000/", page.cookieUrl)
         assertEquals(tokenCookie("sa_secret"), page.cookie)
+        assertEquals("sa_secret", page.token)
         assertFalse(page.toString().contains("sa_secret"))
         assertNull(deskPage("nope", "sa_secret", DeskTopic("s1", "t1", "Tema")))
     }

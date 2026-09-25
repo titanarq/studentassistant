@@ -18,10 +18,11 @@ data class DeskTopic(val subjectId: String, val topicId: String, val topicName: 
 
 /**
  * What the WebView loads: [url], after setting [cookie] for [cookieUrl] (the backend's origin).
- * [cookie] holds the token, so it never appears in [toString].
+ * [token] is the paired token itself, sent as `Authorization: Bearer` on the downloads the page
+ * hands to the system (#259). [cookie] and [token] never appear in [toString].
  */
-data class DeskPage(val url: String, val cookieUrl: String, val cookie: String) {
-    override fun toString(): String = "DeskPage(url=$url, cookieUrl=$cookieUrl, cookie=<redacted>)"
+data class DeskPage(val url: String, val cookieUrl: String, val cookie: String, val token: String) {
+    override fun toString(): String = "DeskPage(url=$url, cookieUrl=$cookieUrl, cookie=<redacted>, token=<redacted>)"
 }
 
 /**
@@ -58,7 +59,7 @@ fun tokenCookie(token: String): String = "$TOKEN_COOKIE=$token; Path=/; HttpOnly
 fun deskPage(baseUrl: String, token: String, topic: DeskTopic): DeskPage? {
     val url = notesPageUrl(baseUrl, topic.subjectId, topic.topicId) ?: return null
     val cookieUrl = backendOrigin(baseUrl) ?: return null
-    return DeskPage(url, cookieUrl, tokenCookie(token))
+    return DeskPage(url, cookieUrl, tokenCookie(token), token)
 }
 
 /**
