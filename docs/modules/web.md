@@ -39,6 +39,7 @@ token):
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
+  `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
   `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, anything else
@@ -58,7 +59,8 @@ token):
   does), and a topic without them shows only its name.
 - `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
   after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
-  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them. Empty states: no
+  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them ("Sesión abierta" is a
+  link to the live session view, `/live`). Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer) shows `TopicCard` and `PdfUploadForm`; an
@@ -217,6 +219,28 @@ token):
     footnote labels under "Fuentes citadas"; identical versions say so.
   - `api.ts`: `fetchVersions`, `fetchVersionDiff(s, t, from, to | null)`, `restoreVersion(s, t,
     n)` -> `ActionResult` (bodies read leniently: `readVersions`, `readDiff`, `readRestore`).
+- `src/live/` (#57): the live session view, `/live` (`← Mesa de estudio`, "Sesión en directo"),
+  read-only, over the backend's `GET /api/live` stream (docs/modules/server.md).
+  - `live.ts`: `subscribeLive(onEvent, onConnection, factory = defaultSource)` opens an
+    `EventSource` on `LIVE_URL` (tests hand a `LiveSourceFactory`, `src/live/testLive.ts`'s
+    `fakeSources()`), reads each event leniently (`parseLiveEvent(name, data)`: an unusable one is
+    dropped) and returns the close function; `onConnection(false)` on an error (the source
+    reconnects by itself), `true` when it opens again. `reduceLive(state, event)` folds the events
+    into a `LiveState` (`phase` `connecting`/`idle`/`live`/`ended`, `session`, `segments`,
+    `partial`, `captures`, `outline`, `openPending`): a snapshot replaces everything, except that a
+    snapshot without a session keeps the last session shown and marks it ended; a final replaces
+    the partial of its segment and a late partial is ignored; captures are updated by id.
+    `outlineTree(sections)` nests the outline (an orphan stays at the top), `contextLabel`,
+    `statusLabel`.
+  - `LivePage`: a `status` region (connecting, "No hay ninguna sesión en marcha...", "La sesión ha
+    terminado.", a lost connection), then "Tema <name>" (a link to the topic page; the name from
+    `fetchTopics`, the id until it answers) with "en marcha" while live; "Transcripción" (a
+    polite `log` of the finals with `MM:SS`, the current partial in italics below), "Esquema"
+    ("<n> dudas por revisar" and the nested sections with "<n> fragmentos"), "Páginas capturadas"
+    (one `article` per capture, "Apuntes, página 3" or "<Apuntes|Libro|PDF|Web|Página> <n>", its
+    time, the `page_path` image through `sourceUrl`, "Transcribiendo…"/"Transcrita"/"No se pudo
+    transcribir: <message>" and the transcription in a `details`). The stream is closed when the
+    page goes away.
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>

@@ -43,6 +43,7 @@ it("lists every subject with its topics, linking each to its topic page", async 
   expect(link.closest("li")).toHaveTextContent("Última sesión: 24 de septiembre de 2026 · 4 dudas por revisar");
   const roman = within(historia).getByRole("link", { name: "El Imperio romano" });
   expect(roman.closest("li")).toHaveTextContent("Sesión abierta");
+  expect(within(historia).getByRole("link", { name: "Sesión abierta" })).toHaveAttribute("href", "/live");
   expect(roman.closest("li")).not.toHaveTextContent("Última sesión");
 
   const fisica = screen.getByRole("region", { name: "Física" });

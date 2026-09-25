@@ -26,7 +26,6 @@ function pendingText(count: number): string {
 
 function TopicRow({ topic }: { topic: Topic }) {
   const details: string[] = [];
-  if (topic.open_session_id !== undefined) details.push("Sesión abierta");
   if (topic.last_session_at_ms !== undefined) {
     details.push(`Última sesión: ${formatDate(topic.last_session_at_ms)}`);
   }
@@ -36,6 +35,12 @@ function TopicRow({ topic }: { topic: Topic }) {
   return (
     <li>
       <a href={topicPath(topic.subject_id, topic.topic_id)}>{topic.name}</a>
+      {topic.open_session_id !== undefined && (
+        <>
+          {" · "}
+          <a href="/live">Sesión abierta</a>
+        </>
+      )}
       {details.length > 0 && <> · {details.join(" · ")}</>}
     </li>
   );

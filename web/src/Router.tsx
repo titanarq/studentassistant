@@ -1,4 +1,5 @@
 import App from "./App";
+import LivePage from "./live/LivePage";
 import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
 import PendingPage from "./pending/PendingPage";
@@ -22,6 +23,7 @@ function decode(segment: string): string | null {
 export default function Router({ pathname = window.location.pathname }: { pathname?: string }) {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/pair") return <PairPage />;
+  if (path === "/live") return <LivePage />;
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
     const subjectId = decode(topic[1]);
