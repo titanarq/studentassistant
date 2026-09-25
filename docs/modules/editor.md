@@ -16,13 +16,14 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30, #61, #68, #63, #64, #69 and #70: the master notes format
+What exists today, after issues #30, #61, #68, #63, #64, #69, #70 and #65: the master notes format
 of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
 ops in `studentassistant.editor.edits`, the doubts resolution in
-`studentassistant.editor.doubts`, the conversational revision of the notes in
+`studentassistant.editor.doubts`, the contradictions between sources in
+`studentassistant.editor.contradictions`, the conversational revision of the notes in
 `studentassistant.editor.revise`, the notes versions in `studentassistant.editor.versions`,
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain` and the subject style guide in
 `studentassistant.editor.style_guide`.
@@ -133,7 +134,13 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   the text shows `sources.original_page`; a book page as `[Libro «<título>», página 83](...)`,
   `page_citation_text`: the page number printed on it or said, `book_page` in its sidecar (#58),
   else its stored number, and the topic's book title when `vault.get_book` has one, also in the
-  heading `## Páginas del libro «<título>»`); the **sources** -- each notes and book page as its
+  heading `## Páginas del libro «<título>»`), grouped by **source role** (`source_role(kind)`,
+  `CitableSource.role`): `### Apuntes del estudiante` (kind `notes`, `STUDENT_SOURCE_KINDS`: they
+  give the notes their structure and emphasis; the transcript is the student's too) and
+  `### Fuentes complementarias` (book, PDF, web: they complement, each cited with its own
+  footnote), followed by `DISAGREEMENT_RULE` (a disagreement between sources is never settled
+  silently); the **sources**, each labelled the same way (`STUDENT_LABEL` under the notes pages'
+  heading, `SUPPLEMENTARY_LABEL` under the book's and in each PDF and web source) -- each notes and book page as its
   transcription (`sources/<kind>/page-NNN.md`, #50, or a sidecar `transcription` string) plus its
   image (the cropped `page-NNN.page.jpg`, else the still) when `needs_image(transcription, meta)`:
   no transcription, a scheme (mermaid block, nested list, arrow), an uncertain word `[[?...]]` or a
@@ -160,12 +167,20 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   `N` one past the highest, so a regeneration is the next version.
   **Still invalid**: `vault.write_notes_draft` (`notes/borrador.md`; `apuntes.md` left as it
   was), committed without a tag; `draft`, `errors` and a Spanish `warning` in the result.
+- **Contradictions** (`detect_contradictions=True`, `host=None`): after a valid version is written
+  and when the topic has at least two citable sources (sessions included), `generate_notes` calls
+  `contradictions.detect_contradictions` (below) with the same client; the ids raised are the
+  result's `contradictions`. An unended session of the topic (`OPEN_SESSION_WARNING`, no call) or
+  any failure of the detection (`DETECTION_FAILED_WARNING`, logged) never loses the written notes:
+  it is the result's `warning`. A draft is not searched.
 - `GenerationResult` (also the `notes.generated` payload): `subject`, `topic`, `draft`, `path`
-  (vault-relative), `version`, `tag`, `commit`, `attempts`, `errors`, `warning`, `model`.
+  (vault-relative), `version`, `tag`, `commit`, `attempts`, `errors`, `warning`, `contradictions`,
+  `model`.
 - **Conversation** `conversations/editor.jsonl`: `context` (model, prompt hash, `detail`: reason
   `generate`, fidelity mode, cited-source ids, sessions, images, documents, omitted, whether a
   previous version and a digest were given), each `user` turn (record form), each `assistant`
-  answer (content, usage), a `validation` per answer (`attempt`, `errors`) and `notes.generated`.
+  answer (content, usage), a `validation` per answer (`attempt`, `errors`), the detection's own
+  records (below) and `notes.generated`.
 - Errors: `CostConfirmationRequiredError` past a cost cap without `confirm_over_cap` (nothing
   sent or written); `RefusalError` on `stop_reason: refusal`; any other `LLMError` once the
   client's retries are spent; the vault's errors for an unknown topic. Nothing is written then.
@@ -266,6 +281,43 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   source needs `[^ia]` in `ampliado` or stays out of the notes in `estricto`.
 - Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/doubts...`
   (`docs/modules/server.md`).
+
+### Contradictions between sources -- `contradictions.py`
+The editor never chooses silently between two sources that disagree (1769 in the notes, 1765 in
+the book): the `editor_generate` and `editor_revise` prompts tell it to write the version of the
+student's notes and the other one, each cited, and the disagreement is raised as a
+`contradiction` pending doubt the student settles through the doubts flow.
+- `await detect_contradictions(vault, subject, topic, *, client, sync, host=None, digest=None,
+  confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB) ->
+  ContradictionsResult`: role `editor`, prompt `editor_contradictions`, over `assemble_input` with
+  a task instruction (listing the topic's known `contradiction` items, open or closed, so they are
+  not repeated), strict tool `report_contradictions` through `llm.structured`
+  (`ContradictionsOutput`: `contradictions`, each a `Contradiction` -- Spanish `text`, `question`,
+  `sides`: `ContradictionSide` with a citable `source_id` from the catalogue or a
+  `sessions/<id>#t=HH:MM:SS-HH:MM:SS` span of a topic session, and what it `says`).
+- **Checks** (`contradiction_errors`): a non-empty text and question, every side citable and
+  saying something, at least two distinct sources. A failing answer is sent back (a `tool_result`
+  error with the Spanish list) at most `MAX_REASKS` (2) times; past that the invalid
+  contradictions are dropped (`dropped`), the valid ones of the last answer kept, with a Spanish
+  `warning`.
+- **Written**: each accepted contradiction is an `observer.state_op` `add_pending` event (origin
+  `editor`, `kind: contradiction`, `pending_id` `contradiccion-<hex>`, `source_refs` every side's
+  source) followed by a `pending.question` (`DoubtQuestion` whose `options` are the sides), in a
+  review session as `doubts.py` writes its events, so `list_doubts` shows it with its options and
+  `answer_doubt(..., DoubtAnswer(source_id=...))` settles it at once (or `review_doubts` asks it
+  again). A contradiction whose set of sources equals an existing `contradiction` item's (open or
+  closed) or an earlier one of the same answer is not added (`duplicates`). Then
+  `review/pending.yaml` and the snapshot are regenerated and one commit is made
+  (`Contradicciones en <s>/<t>: N contradicción(es) nueva(s) entre fuentes`). Nothing accepted: no
+  event, no commit.
+- `ContradictionsResult`: `subject`, `topic`, `raised` (pending ids), `duplicates`, `dropped`,
+  `session_id`, `commit`, `attempts`, `warning`, `model`.
+- **Conversation** `conversations/editor.jsonl`: `context` (reason `contradictions`), `user`,
+  `assistant`, `validation` per call, then `contradictions.detected` (the result).
+- Errors: `OpenSessionError` (an unended session; checked before any call, nothing sent), plus the
+  llm errors as in `generate_notes`, with nothing written but the conversation records.
+- Entry points: `generate_notes` (above); no endpoint of its own -- the raised items surface
+  through the doubts endpoints and UI.
 
 ### Revising the notes in conversation -- `revise.py`
 The student talks to the editor about notes it already wrote ("demasiado resumido", "pon un

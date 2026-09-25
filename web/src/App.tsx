@@ -8,6 +8,7 @@ import {
   topicPath,
 } from "./desk/api";
 import type { Subject, Topic } from "./protocol";
+import { styleGuidePagePath } from "./styleGuide/api";
 
 /**
  * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
@@ -50,6 +51,9 @@ function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadRes
   return (
     <section aria-label={subject.name}>
       <h2>{subject.name}</h2>
+      <p>
+        <a href={styleGuidePagePath(subject.subject_id)}>Guía de estilo</a>
+      </p>
       {topics.kind !== "ok" && (
         <p role="alert">No se pudieron cargar los temas: {describeFailure(topics)}</p>
       )}

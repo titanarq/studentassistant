@@ -11,6 +11,9 @@ Thin: the work is `studentassistant.generators`. The routes open the vault throu
 - `POST .../topics/{topic_id}/generated/{kind}`, optional body `{"options": {...},
   "confirm_over_cap": false}` -> `GenerateResult`. One generation per topic and kind at a time;
   needs an `llm_transport` (503 otherwise), a `generator` client bound to the topic's ledger.
+- `GET .../topics/{topic_id}/generated/files/{name}` -> the bytes of `generated/<name>` as a
+  download (`Content-Disposition: attachment; filename="<topic>-<file>"`), for the web's links to
+  the Anki deck, the CSV...; 404 when there is no such file.
 
 Errors, as `{"detail": "...", "code"?: "..."}` in Spanish: an unknown topic or kind 404, invalid
 options 422, no notes yet or the same generation running 409, a reached cost cap 409
@@ -22,9 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, HTTPException, Path, Request, Response
 from pydantic import BaseModel, Field
 
 from studentassistant.config import Settings
@@ -51,10 +55,12 @@ from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
     GitSync,
+    NotesError,
     SubjectNotFoundError,
     TopicNotFoundError,
     Vault,
     get_topic,
+    read_generated,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +76,13 @@ BUSY_DETAIL = "Ya se está generando ese material para este tema."
 REFUSED_DETAIL = "Claude se ha negado a generar este material."
 FAILED_DETAIL = "No se ha podido generar el material: Claude no ha respondido. Prueba más tarde."
 CONFIRM_SENTENCE = "Confirma para generar el material igualmente."
+NO_FILE_DETAIL = "No existe ese archivo en el material generado del tema."
+MEDIA_TYPES = {
+    ".apkg": "application/octet-stream",
+    ".csv": "text/csv; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".yaml": "application/yaml; charset=utf-8",
+}
 
 BASE = "/api/subjects/{subject_id}/topics/{topic_id}/generated"
 
@@ -202,5 +215,25 @@ def generators_router() -> APIRouter:
             raise HTTPException(status_code=502, detail=FAILED_DETAIL) from error
         finally:
             service.release(subject_id, topic_id, kind)
+
+    @router.get(BASE + "/files/{name:path}")
+    async def generated_file(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, name: str
+    ) -> Response:
+        vault, _sync = await open_topic(request, subject_id, topic_id)
+        try:
+            data = await asyncio.to_thread(read_generated, vault, subject_id, topic_id, name)
+        except NotesError as error:
+            raise HTTPException(status_code=404, detail=NO_FILE_DETAIL) from error
+        if data is None:
+            raise HTTPException(status_code=404, detail=NO_FILE_DETAIL)
+        file_name = name.rsplit("/", 1)[-1]
+        suffix = "." + file_name.rsplit(".", 1)[-1] if "." in file_name else ""
+        media_type = MEDIA_TYPES.get(suffix) or mimetypes.guess_type(file_name)[0]
+        return Response(
+            content=data,
+            media_type=media_type or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{topic_id}-{file_name}"'},
+        )
 
     return router

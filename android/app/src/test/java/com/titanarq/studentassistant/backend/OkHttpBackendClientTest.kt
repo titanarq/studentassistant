@@ -12,6 +12,8 @@ import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.SubjectCreateRequest
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
+import com.titanarq.studentassistant.protocol.WebPageAddRequest
+import com.titanarq.studentassistant.protocol.WebPageVia
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonObject
@@ -87,7 +89,7 @@ class OkHttpBackendClientTest {
 
         val result = client.pair(baseUrl, PairRequest("C", "Pixel", ClientKind.ANDROID, "1.0"))
 
-        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = "1.3"), result)
+        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = "1.5"), result)
     }
 
     @Test
@@ -184,7 +186,7 @@ class OkHttpBackendClientTest {
     fun `a session on another MAJOR version is refused`() = runTest {
         enqueue(sessionJson.replace("\"1.0\"", "\"2.1\""))
 
-        assertEquals(BackendResult.IncompatibleVersion("2.1", "1.3"), client.resumeSession(backend, "s1"))
+        assertEquals(BackendResult.IncompatibleVersion("2.1", "1.5"), client.resumeSession(backend, "s1"))
     }
 
     @Test
@@ -239,6 +241,25 @@ class OkHttpBackendClientTest {
         val result = client.uploadCapture(backend, "s1", metadata, listOf(CaptureImageBytes(byteArrayOf(0))))
 
         assertEquals(CaptureUploadStatus.DUPLICATE, value(result).status)
+    }
+
+    @Test
+    fun `a shared web page is posted to the topic's web-pages`() = runTest {
+        enqueue(
+            """{"source_id":"sources/web/001-la-bastilla.md","vault_id":"subjects/h/topics/t/sources/web/001-la-bastilla.md",""" +
+                """"title":"La Bastilla","url":"https://example.org/b","already_kept":false}""",
+            status = 201,
+        )
+
+        val result = client.addWebPage(backend, "historia", "la revolución", WebPageAddRequest("https://example.org/b", WebPageVia.SHARE))
+
+        assertEquals("sources/web/001-la-bastilla.md", value(result).sourceId)
+        assertFalse(value(result).alreadyKept)
+        val request = taken()
+        assertEquals("POST", request.method)
+        assertEquals("/api/subjects/historia/topics/la%20revoluci%C3%B3n/web-pages", request.path)
+        assertEquals("Bearer $token", request.getHeader("Authorization"))
+        assertEquals(json("""{"url":"https://example.org/b","via":"share"}"""), json(request.body.readUtf8()))
     }
 
     @Test

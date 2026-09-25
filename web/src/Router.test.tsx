@@ -29,6 +29,17 @@ it("renders the study desk at /", () => {
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
 });
 
+it.each(["/capture", "/capture/"])("renders the capture page at %s", (pathname) => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname={pathname} />);
+
+  expect(
+    screen.getByRole("heading", { name: "Capturar una sesión de estudio" }),
+  ).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects", { method: "GET" });
+});
+
 it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/topics/revolucion-industrial/"])(
   "renders the topic page at %s",
   (pathname) => {
@@ -89,4 +100,14 @@ it("renders the live session view at /live, subscribed to the live stream", () =
 
   expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
   expect(opened).toEqual(["/api/live"]);
+});
+
+it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/style-guide" />);
+
+  expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
 });

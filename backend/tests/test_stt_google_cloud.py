@@ -432,3 +432,25 @@ async def test_real_api_transcribes_a_short_spanish_wav() -> None:
     assert text, p.status
     for word in os.environ.get("SA_TEST_SPANISH_WORDS", "").split():
         assert word in text
+
+
+def test_session_hints_join_the_configured_phrases_from_the_next_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeSpeechModule([])
+    monkeypatch.setitem(sys.modules, "google.cloud.speech", fake)
+    client = GoogleSpeechClient(language_code="es-ES", phrases=["clase", "Historia"])
+    provider = GoogleCloudSpeechProvider(client=client)
+
+    provider.set_vocabulary(["Historia", "sufragio censitario"])
+    list(client.stream(iter([b""]), sample_rate=RATE))
+
+    assert provider.vocabulary == ("Historia", "sufragio censitario")
+    phrases = fake.calls["config"].config.speech_contexts[0].phrases
+    assert phrases == ["clase", "Historia", "sufragio censitario"]
+
+
+def test_a_client_without_hints_support_ignores_them() -> None:
+    provider = GoogleCloudSpeechProvider(client=ScriptedClient())
+    provider.set_vocabulary(["x"])
+    assert provider.vocabulary == ("x",)

@@ -35,14 +35,14 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Protocol
 
 from studentassistant.config import DEFAULT_GOOGLE_SPEECH_MODEL, DEFAULT_STT_LANGUAGE
 from studentassistant.stt.models import AudioChunk, NormalisedSegment
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import ProviderStatus, SpeechToTextProvider
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,6 @@ NOT_INSTALLED_MESSAGE = (
     "to use stt.provider = 'google-cloud'"
 )
 
-State = Literal["idle", "streaming", "reconnecting", "unavailable"]
-
 
 class GoogleCloudSetupError(RuntimeError):
     """The provider cannot work at all (library missing, bad credentials); no retry helps."""
@@ -75,14 +73,6 @@ class StreamResult:
     is_final: bool
     end: float | None = None
     confidence: float | None = None
-
-
-@dataclass(frozen=True)
-class ProviderStatus:
-    """How the provider is doing; `detail` is a Spanish sentence for the student when not fine."""
-
-    state: State
-    detail: str | None = None
 
 
 class SpeechStreamClient(Protocol):
@@ -125,6 +115,8 @@ class GoogleSpeechClient:
         self.model = model
         self.credentials_file = credentials_file
         self.phrases = list(phrases or [])
+        # The session's vocabulary hints (#54), after the configured `phrases`; read per stream.
+        self.session_phrases: list[str] = []
         self.automatic_punctuation = automatic_punctuation
         self._speech: Any = None
         self._client: Any = None
@@ -150,15 +142,20 @@ class GoogleSpeechClient:
                 self._speech, self._client = speech, client
             return self._speech, self._client
 
+    def set_vocabulary(self, hints: Sequence[str]) -> None:
+        """The session's hints, used as phrase hints from the next stream on."""
+        self.session_phrases = list(hints)
+
     def stream(self, audio: Iterator[bytes], *, sample_rate: int) -> Iterator[StreamResult]:
         speech, client = self._connect()
+        phrases = list(dict.fromkeys([*self.phrases, *self.session_phrases]))
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=sample_rate,
             language_code=self.language_code,
             model=self.model,
             enable_automatic_punctuation=self.automatic_punctuation,
-            speech_contexts=[speech.SpeechContext(phrases=self.phrases)] if self.phrases else [],
+            speech_contexts=[speech.SpeechContext(phrases=phrases)] if phrases else [],
         )
         streaming = speech.StreamingRecognitionConfig(config=config, interim_results=True)
         requests = (speech.StreamingRecognizeRequest(audio_content=data) for data in audio)
@@ -275,6 +272,14 @@ class GoogleCloudSpeechProvider(SpeechToTextProvider):
         self._retry_at: float | None = None
         self._finished = False
         self._lock = threading.Lock()
+
+    def set_vocabulary(self, hints: Sequence[str]) -> None:
+        """Phrase hints for the next gRPC stream (a running one keeps its config): passed to the
+        client when it takes them (`GoogleSpeechClient.set_vocabulary`)."""
+        super().set_vocabulary(hints)
+        setter = getattr(self.client, "set_vocabulary", None)
+        if callable(setter):
+            setter(list(hints))
 
     @property
     def status(self) -> ProviderStatus:

@@ -1,0 +1,6 @@
+{
+  "type": "stt.status",
+  "state": "reconnecting",
+  "detail": "Se ha perdido la conexión con Google Cloud; se reintenta en 5 s y el audio de mientras no se transcribe.",
+  "server_time_ms": 1790251300000
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.topics.web_pages.create.request.schema.json",
+  "title": "rest.topics.web_pages.create.request",
+  "description": "POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages body: a web page the student gives by its address, stored as a source of the topic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "url"
+  ],
+  "properties": {
+    "url": {
+      "type": "string",
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://\\S+$",
+      "maxLength": 2000
+    },
+    "via": {
+      "description": "How the address arrived: pasted in the web UI (url, the default) or shared to the phone app (share).",
+      "enum": [
+        "url",
+        "share"
+      ]
+    }
+  }
+}

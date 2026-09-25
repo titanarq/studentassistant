@@ -7,7 +7,11 @@ state) and lays it out for one `editor` call:
   subject, topic title, fidelity mode and the subject's style guide. It changes only when the
   prompt, the style guide or the mode does.
 - **First user message**, in this order:
-  1. the catalogue of citable sources, each with the exact footnote definition to cite it;
+  1. the catalogue of citable sources, each with the exact footnote definition to cite it,
+     grouped by role (`source_role`): the student's own notes, which give the notes their
+     structure and emphasis, then the supplementary sources (book, PDF, web), each cited with
+     its own footnote -- and the rule that a disagreement between sources is never settled
+     silently; every source in the body carries the same label;
   2. the sources: every notes and book page (its transcription `page-NNN.md`, plus the page image
      when there is no transcription, it holds a scheme or an uncertain word), every stored PDF (a
      `document` block, or its extracted page texts past the attachment budget) and every web
@@ -33,7 +37,7 @@ import math
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from studentassistant.editor.notes_format import IA_TEXT, FidelityMode, parse_provenance
 from studentassistant.editor.notes_format import FootnoteDefinition as _Definition
@@ -68,6 +72,21 @@ MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024
 FIDELITY_MODES: tuple[FidelityMode, ...] = ("estricto", "ampliado")
 DEFAULT_FIDELITY: FidelityMode = "estricto"
 
+SourceRole = Literal["student", "supplementary"]
+STUDENT_SOURCE_KINDS = frozenset({"notes"})
+"""The kinds that are the student's own notes: they give the notes their structure and emphasis.
+Every other kind (book, PDF, web) complements them. The transcript is the student's too."""
+STUDENT_LABEL = "Apuntes del estudiante: marcan la estructura y el énfasis de los apuntes."
+SUPPLEMENTARY_LABEL = (
+    "Fuente complementaria: completa los apuntes del estudiante sin cambiar su estructura; lo que"
+    " salga de aquí se cita con su propia nota al pie."
+)
+DISAGREEMENT_RULE = (
+    "Si dos fuentes no coinciden en un dato (una fecha, una cifra, una definición), no elijas una"
+    " en silencio: escribe la versión de los apuntes del estudiante y la de la otra fuente, cada"
+    " una citada a la suya."
+)
+
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 PAGE_KIND_TEXT = {"notes": "Apuntes", "book": "Libro"}
 
@@ -87,6 +106,11 @@ class CitableSource:
     kind: str
     definition: str  # `[texto](enlace)`, what follows `[^label]: `
     description: str = ""
+
+    @property
+    def role(self) -> SourceRole:
+        """`student` for the student's own notes, `supplementary` for a book, PDF or web page."""
+        return source_role(self.kind)
 
 
 @dataclass
@@ -293,6 +317,11 @@ def needs_image(transcription: str | None, meta: dict[str, Any] | None = None) -
     return bool(_UNCERTAIN.search(transcription) or _SCHEME.search(transcription))
 
 
+def source_role(kind: str) -> SourceRole:
+    """`student` for a kind of `STUDENT_SOURCE_KINDS`, `supplementary` for any other."""
+    return "student" if kind in STUDENT_SOURCE_KINDS else "supplementary"
+
+
 def _topic_relative(source: StoredSource, prefix: str) -> str:
     return source.path.removeprefix(prefix + "/")
 
@@ -456,8 +485,9 @@ def _add_pdf(
     first, last = meta.get("first_page"), meta.get("last_page")
     pages = f", páginas {first}-{last} del original" if first and last else ""
     builder.text(
-        f"### PDF «{name}» ({source_id}{pages})\nCita la página K de este documento como"
-        f" `{source_id}#page=K`; el catálogo da el número de página del original de cada una.\n"
+        f"### PDF «{name}» ({source_id}{pages})\n{SUPPLEMENTARY_LABEL}\nCita la página K de este"
+        f" documento como `{source_id}#page=K`; el catálogo da el número de página del original"
+        " de cada una.\n"
     )
     block = pdf_document_block(vault, subject_slug, topic_slug, source_id)
     size = len(block["source"]["data"])
@@ -489,7 +519,9 @@ def _add_web(
     url = meta.get("url")
     text = _read_text(vault, source.path) or ""
     origin = f" -- {url}" if url else ""
-    builder.text(f"### Web: {title} ({source_id}{origin})\n\n{text.strip()}\n")
+    builder.text(
+        f"### Web: {title} ({source_id}{origin})\n{SUPPLEMENTARY_LABEL}\n\n{text.strip()}\n"
+    )
 
 
 def _topic_block(
@@ -561,7 +593,8 @@ def assemble_input(
             heading = "Páginas de los apuntes" if kind == "notes" else "Páginas del libro"
             if kind == "book" and book is not None:
                 heading += f" «{_link_safe(book.title)}»"
-            builder.text(f"## {heading}\n")
+            label = STUDENT_LABEL if kind == "notes" else SUPPLEMENTARY_LABEL
+            builder.text(f"## {heading}\n\n{label}\n")
             _add_pages(vault, builder, catalogue, pages, book.title if book else None)
     for source, source_id in sources:
         if source.kind == "pdf":
@@ -575,14 +608,34 @@ def assemble_input(
 
     # The catalogue goes first, before the sources it lists (it depends only on them, so it stays
     # inside the cached prefix); transcript spans are cited as the transcript section explains.
-    listing = "\n".join(
-        f"- `{c.source_id}`{f' {c.description}' if c.description else ''}:"
-        f" `[^etiqueta]: {c.definition}`"
-        for c in catalogue
-    )
+    def listing(role: SourceRole) -> str:
+        return "\n".join(
+            f"- `{c.source_id}`{f' {c.description}' if c.description else ''}:"
+            f" `[^etiqueta]: {c.definition}`"
+            for c in catalogue
+            if c.role == role
+        )
+
+    groups = [
+        f"### {title}\n\n{items}\n"
+        for title, items in (
+            (
+                "Apuntes del estudiante (marcan la estructura y el énfasis; la transcripción de"
+                " lo que dijo también es suya)",
+                listing("student"),
+            ),
+            (
+                "Fuentes complementarias (libro, PDF, web: completan los apuntes, cada una citada"
+                " con su propia nota)",
+                listing("supplementary"),
+            ),
+        )
+        if items
+    ]
+    body = "\n".join(groups) if groups else "(Ninguna.)\n"
     catalogue_text = (
         "## Catálogo de fuentes citables\n\nCopia la definición de nota al pie de la fuente que"
-        f" cites:\n\n{listing or '(Ninguna.)'}\n"
+        f" cites.\n\n{body}\n{DISAGREEMENT_RULE}\n"
     )
     builder.content.insert(body_start, {"type": "text", "text": catalogue_text})
     builder.record.insert(body_start, {"type": "text", "text": catalogue_text})

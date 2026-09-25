@@ -16,8 +16,8 @@
 
 ## Public surface (`from studentassistant.sources import ...`)
 
-What exists today, after issues #34, #44, #50 and #58: PDF import, capture processing, page
-transcription and textbook pages.
+What exists today, after issues #34, #44, #50, #58, #59 and #62: PDF import, capture processing,
+page transcription, textbook pages, web search and web pages by URL.
 
 ### Capture processing -- `captures.py`
 - `store_capture(vault, subject_slug, topic_slug, kind, stills, meta, session_t_ms, settings)
@@ -199,6 +199,83 @@ submodules.
 Import is CPU-bound (PyMuPDF): a server caller runs it in a worker thread, as the web upload
 (`POST /api/subjects/{s}/topics/{t}/sources/pdf`, `server/pdf_upload.py`) does.
 
+### Web search -- `web.py`, `web_searcher.py` (#59)
+Not re-exported by the package root (they import `studentassistant.llm`): import them from their
+submodules. "Busca esto en Internet" runs Claude's server-side web tools through
+`studentassistant.llm` (`web_search_tool`, `web_fetch_tool`, `run_server_tools`; the versions come
+from `[llm] web_search_tool` / `web_fetch_tool`, `*_20260209` by default).
+
+- `search_web(client, query, *, settings, subject=None, topic=None) -> WebSearch` (`query`,
+  `results`, `queries`, `responses`, `prompt_hash`, `model`): one request (prompt
+  `prompts/web_search.md`, system cached) with the web search tool (`max_uses` =
+  `web_search_max_uses`) and a strict `offer_results` tool (`OfferedResults`); `pause_turn` is
+  resumed; no `offer_results` call is re-asked once, then `WebSearchError`. The offered pages are
+  cleaned into `WebResult`s (`url`, `title`, Spanish `summary`, `relevant`, `found_in_search`: the
+  URL is among the search tool's hits): http(s) only, each URL once, at most
+  `web_search_max_results`. Nothing is stored. `RefusalError` on a refusal.
+- `snapshot_page(client, url, *, settings, now=None) -> WebSnapshot` (`url`, `requested_url`,
+  `title`, `text`, `retrieved_at`, `fetched_at`, `media_type`): one request (prompt
+  `prompts/web_fetch.md`) with only the web fetch tool (`max_uses` 1, `max_content_tokens` =
+  `web_fetch_max_content_tokens`); the text is the fetched document of the
+  `web_fetch_tool_result` block, never Claude's rewording. `WebFetchError` (Spanish) for a non-web
+  URL (nothing sent), a fetch error (its `error_code`), a PDF ("impórtalo como PDF") or another
+  binary document, or an empty page.
+- `keep_snapshot(vault, s, t, snapshot, *, result=None, search_id=None, query=None,
+  kept_by="student", session_id=None) -> KeptWebSource` (`path`, `source_id`
+  `sources/web/NNN-<slug>.md`, `title`, `url`) stores it through `vault.put_source` (kind `web`,
+  the slug from the title): `# <title>`, `> Copia de <url>, descargada el YYYY-MM-DD.`, then the
+  text; sidecar `url`, `title`, `fetched_at`, `retrieved_at`, `media_type`, `external: true`,
+  `kept_by` (`student` | `assistant` | `editor`), and when known `requested_url`, `query`,
+  `search_id`, `summary`, `session`, `added_via` (`url` | `share`, a page given by its address,
+  #62). A page that looks like it carries a key: `SecretRefused`,
+  nothing written. The editor reads it as any web snapshot and cites it
+  `[Web: <título>](../sources/web/NNN-<slug>.md)`; the web UI marks those citations as external
+  sources (green, "fuente externa").
+- The topic's search log, `conversations/web-search.jsonl` (`ConversationRecord`s with a
+  `detail`): `search.queued` (`search_id` `ws-YYYYMMDD-HHMMSS-<hex>`, `query`, `requested_by`
+  `voice` | `web` | `editor`, `session_id`), `search.results` (`results`, `queries`, `calls`, plus
+  `model`, `prompt_hash` and the summed `usage`), `search.failed` (`reason` `cost_cap` | `refused`
+  | `error`, `message`), `search.kept` (`index`, `url`, `source_id`, `kept_by`); written with
+  `record_queued` / `record_results` / `record_failed` / `record_kept`. It never holds the search
+  results' encrypted content nor the pages' text. `list_web_searches(vault, s, t) ->
+  [WebSearchRecord]` folds it, newest first (`status` `queued` | `done` | `failed`, `results`,
+  `kept`, ...); `find_web_search(...)` picks one.
+- `WebSearcher(bus, lookup, *, settings, client_factory, on_write=None)`: `start()` subscribes to
+  `voice.command` events (the stt grammar's `web_search` command, payload `query`, #47) and
+  queues a search of the session's topic; `submit(vault, s, t, query, *, requested_by="web",
+  session_id=None) -> search_id` records `search.queued` and returns at once -- the search runs
+  in the background, `web_search_concurrency` at a time, with a client of role
+  `web_search_role` (`default_client_factory(settings, transport)`) bound to the topic's ledger
+  and the asking session, so it is capped (a cap fails it, `reason: cost_cap`) and recorded; the
+  web searches are priced at `[llm] web_search_usd_per_thousand`. At the end it records the
+  results or the failure and, while the asking session is live, publishes
+  `web.search_results` (`search_id`, `query`, `requested_by`, `results`, `model`) or
+  `web.search_failed` (`search_id`, `query`, `reason`, `message`) on it, origin `observer`. With
+  `web_auto_keep` the `relevant` results are kept at once (`kept_by: assistant`).
+  `keep(vault, s, t, search_id, index, *, kept_by="student", session_id=None) -> KeptWebSource`
+  fetches and stores one result, records `search.kept`, calls `on_write` and publishes
+  `web.snapshot_stored` (`search_id`, `index`, `url`, `source_id`, `title`, `kept_by`) on the live
+  session; keeping a result again returns the first snapshot. `UnknownSearchError` (404),
+  `SearchNotDoneError` (409) and `KeepError` (422: not a text page, or a key) carry Spanish
+  messages. `list(vault, s, t)` is `list_web_searches` with a `queued` search no job runs shown as
+  failed, `reason: interrupted` (the server stopped). `stop()` cancels what is running;
+  `wait_idle()` waits for every queued search.
+- `keep_url(vault, s, t, url, *, added_via="url", kept_by="student", session_id=None) ->
+  (KeptWebSource, already_kept)` (#62) keeps a page the student gave by its address (pasted in the
+  web UI: `url`; shared to the phone: `share`) the same way: `snapshot_page` with a client bound
+  to the topic's ledger and `session_id` (the topic's live session, if any), `keep_snapshot`
+  with `added_via` in the sidecar (no `search_id`/`query`/`summary`), `on_write`, and
+  `web.snapshot_stored` (`url`, `source_id`, `title`, `kept_by`, `added_via`) on the live session.
+  No search record is written. An address the topic already has (`web.find_kept_url(vault, s, t,
+  url)`: a web sidecar whose `url` or `requested_url` is it, after trimming) is returned with
+  `already_kept` true and nothing fetched. `NotAWebPageError` (a `KeepError`, 422) for a
+  non-http(s) address; the other refusals as `keep`.
+- Server: `create_app` builds one when it gets an `llm_transport` and `[sources]
+  web_search_enabled`; the routes are `server/web_search_routes.py`
+  (`GET/POST /api/subjects/{s}/topics/{t}/web-searches`, `POST
+  .../web-searches/{search_id}/results/{index}/keep`, see `docs/modules/server.md`). The web topic
+  page's "Buscar en Internet" panel uses them.
+
 ### Size limit and storage policy
 The vault keeps PDFs in plain git, never Git LFS (ADR-0002 leaves LFS an opt-in for later), and
 the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are capped at 32 MB. So:
@@ -220,3 +297,10 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `transcription_retry_seconds` | 5 | first wait between tries, doubled each time |
 | `transcription_grace_seconds` | 2 | extra wait after a capture's transcript window |
 | `transcription_min_crop_share` | 0.3 | a detected page smaller than this share of the still also sends the original |
+| `web_search_enabled` | true | false: no web search is run (the routes answer 503) |
+| `web_search_role` | `observer` | the `[llm.roles.<role>]` that searches and fetches |
+| `web_search_max_uses` | 3 | web searches Claude may run for one request |
+| `web_search_max_results` | 5 | pages one search offers |
+| `web_fetch_max_content_tokens` | 30000 | content a kept page is fetched with |
+| `web_search_concurrency` | 1 | searches running at once; the rest wait |
+| `web_auto_keep` | false | true: the pages Claude marks relevant are kept without asking |

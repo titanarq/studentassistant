@@ -21,15 +21,24 @@ from studentassistant.llm.errors import (
     StructuredOutputError,
     UnknownRoleError,
 )
-from studentassistant.llm.fake import FakeClaude, no_sleep
+from studentassistant.llm.fake import FakeClaude, no_sleep, web_fetch_blocks, web_search_blocks
 from studentassistant.llm.keycheck import check_api_key
 from studentassistant.llm.prompts import Prompt, PromptRegistry, content_hash, load_prompt
 from studentassistant.llm.structured import StructuredResult, strict_tool, structured
 from studentassistant.llm.transport import AnthropicTransport, TextSink, Transport
 from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse, Role, ToolCall, Usage
+from studentassistant.llm.web import (
+    FetchedDocument,
+    ServerToolRun,
+    WebSearchHit,
+    WebToolResults,
+    parse_web_results,
+    run_server_tools,
+    web_fetch_tool,
+    web_search_tool,
+)
 
 __all__ = [
-    "ROLES",
     "AnthropicTransport",
     "CostCapError",
     "CostCapReachedError",
@@ -37,6 +46,7 @@ __all__ = [
     "CostStatus",
     "FakeClaude",
     "FakeClaudeExhaustedError",
+    "FetchedDocument",
     "LLMAPIError",
     "LLMClient",
     "LLMConnectionError",
@@ -51,8 +61,10 @@ __all__ = [
     "Prompt",
     "PromptNotFoundError",
     "PromptRegistry",
+    "ROLES",
     "RefusalError",
     "Role",
+    "ServerToolRun",
     "StructuredOutputError",
     "StructuredResult",
     "TextSink",
@@ -60,6 +72,8 @@ __all__ = [
     "Transport",
     "UnknownRoleError",
     "Usage",
+    "WebSearchHit",
+    "WebToolResults",
     "backoff_delay",
     "cache_stable_prefix",
     "cached_block",
@@ -71,7 +85,13 @@ __all__ = [
     "get_client",
     "load_prompt",
     "no_sleep",
+    "parse_web_results",
+    "run_server_tools",
     "strict_tool",
     "structured",
     "system_blocks",
+    "web_fetch_blocks",
+    "web_fetch_tool",
+    "web_search_blocks",
+    "web_search_tool",
 ]

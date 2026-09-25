@@ -61,6 +61,18 @@ class ProtocolExamplesTest {
         assertEquals(SttMode.CLIENT, ack.sttMode)
         assertEquals(null, ack.audioFormat)
         assertEquals(-350L, ack.clockOffsetMs)
+        assertEquals(
+            listOf("Historia", "La Restauración", "sufragio censitario", "turno pacífico"),
+            ack.vocabularyHints,
+        )
+
+        val notice = decodeServerEvent(SharedExamples.read("server.notice")) as Notice
+        assertEquals(2, notice.pendingCount)
+        assertEquals("caciquismo", notice.vocabularyHints?.get(2))
+
+        val status = decodeServerEvent(SharedExamples.read("server.stt.status")) as SttStatus
+        assertEquals(SttState.RECONNECTING, status.state)
+        assertTrue(status.detail!!.startsWith("Se ha perdido la conexión"))
     }
 
     @Test

@@ -92,6 +92,35 @@ class TopicCreateRequest(ProtocolModel):
     name: Name
 
 
+# POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages
+
+WEB_PAGE_URL_PATTERN = r"^[Hh][Tt][Tt][Pp][Ss]?://\S+$"
+WEB_PAGE_URL_MAX = 2000
+
+
+class WebPageAddRequest(ProtocolModel):
+    """A web page the student gives by its address, to be stored as a source of the topic.
+
+    `via` says how it arrived: pasted in the web UI (`url`, the default) or shared to the phone
+    app (`share`).
+    """
+
+    url: Annotated[str, Field(pattern=WEB_PAGE_URL_PATTERN, max_length=WEB_PAGE_URL_MAX)]
+    via: Literal["url", "share"] | None = None
+
+
+class WebPageAddResponse(ProtocolModel):
+    """The stored snapshot: `source_id` (`sources/web/NNN-<slug>.md`, as provenance cites it),
+    `vault_id` (its vault-relative path), its `title`, the fetched `url`, and `already_kept`
+    when the topic had that page already (nothing was fetched)."""
+
+    source_id: Annotated[str, Field(min_length=1)]
+    vault_id: Annotated[str, Field(min_length=1)]
+    title: str
+    url: Annotated[str, Field(min_length=1)]
+    already_kept: bool
+
+
 # POST /api/sessions, POST /api/sessions/{id}/resume, POST /api/sessions/{id}/end
 
 

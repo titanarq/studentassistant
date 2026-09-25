@@ -3,7 +3,12 @@
 from studentassistant.stt.buffered import BufferedProvider, buffered_provider_from_settings
 from studentassistant.stt.models import AudioChunk, ClientSegment, NormalisedSegment
 from studentassistant.stt.pipeline import EventBus, SessionLookup, TranscriptPipeline
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import (
+    DEGRADED_STATES,
+    ProviderState,
+    ProviderStatus,
+    SpeechToTextProvider,
+)
 from studentassistant.stt.registry import (
     ENTRY_POINT_GROUP,
     NotServerModeError,
@@ -17,8 +22,14 @@ from studentassistant.stt.registry import (
 )
 from studentassistant.stt.sink import InMemoryTranscriptSink, TranscriptSink
 from studentassistant.stt.transcript import TranscriptAssembler
+from studentassistant.stt.vocabulary import (
+    hotwords_text,
+    vocabulary_hints,
+    vocabulary_hints_from_settings,
+)
 
 __all__ = [
+    "DEGRADED_STATES",
     "ENTRY_POINT_GROUP",
     "AudioChunk",
     "BufferedProvider",
@@ -27,6 +38,8 @@ __all__ = [
     "InMemoryTranscriptSink",
     "NormalisedSegment",
     "NotServerModeError",
+    "ProviderState",
+    "ProviderStatus",
     "SessionLookup",
     "SpeechToTextProvider",
     "TranscriptAssembler",
@@ -35,9 +48,12 @@ __all__ = [
     "UnknownProviderError",
     "buffered_provider_from_settings",
     "get_provider",
+    "hotwords_text",
     "provider_class",
     "provider_from_settings",
     "register_provider",
     "registered_providers",
     "unregister_provider",
+    "vocabulary_hints",
+    "vocabulary_hints_from_settings",
 ]

@@ -17,7 +17,17 @@ the student's notes, made legible, complete and well organised.
   scheme and remark on their pages appears in the notes. You may fix spelling, complete a sentence
   the student completed out loud and clarify with what they explained in the transcript.
 - Use the transcript to understand and complete the pages (what an arrow means, an example the
-  student gave aloud); use the textbook, PDFs and web pages only where the student used them.
+  student gave aloud).
+- The catalogue and the sources say which sources are the student's own notes and which are
+  supplementary (textbook pages, PDFs, web pages). The student's notes and what they said give
+  the structure and the emphasis. The supplementary sources complement them -- a definition the
+  student left short, an example, a date, a figure -- without reorganising the topic, and
+  whatever comes from one of them is cited with its own footnote, never with the footnote of a
+  notes page.
+- When two sources disagree on a fact (a date, a figure, a definition, a name), never settle it
+  silently by picking one: write the version of the student's notes and add the other one, each
+  cited to its own source (`...en 1769[^p1] (el libro dice 1765[^b1])`); when neither source is
+  the student's notes, give both versions, each cited. The student will be asked which is right.
 - Where a word is uncertain (`[[?palabra]]`) or illegible (`[[?]]`) in a transcription and neither
   the image nor the transcript settles it, keep the mark as it is: the student will resolve it.
 - Open pending items are doubts the student has not resolved yet. Do not resolve them by guessing:

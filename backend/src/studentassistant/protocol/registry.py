@@ -29,12 +29,15 @@ from studentassistant.protocol.rest import (
     Topic,
     TopicCreateRequest,
     TopicsListResponse,
+    WebPageAddRequest,
+    WebPageAddResponse,
 )
 from studentassistant.protocol.server import (
     Command,
     HelloAck,
     Notice,
     ServerAck,
+    SttStatus,
     TranscriptFinal,
     TranscriptPartial,
 )
@@ -51,6 +54,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "server.transcript.final": TranscriptFinal,
     "server.command": Command,
     "server.notice": Notice,
+    "server.stt.status": SttStatus,
     "server.ack": ServerAck,
     "rest.pair.request": PairRequest,
     "rest.pair.response": PairResponse,
@@ -69,6 +73,8 @@ MODELS: dict[str, type[BaseModel]] = {
     "rest.sessions.captures.request": CaptureUploadRequest,
     "rest.sessions.captures.response": CaptureUploadResponse,
     "rest.search.response": SearchResponse,
+    "rest.topics.web_pages.create.request": WebPageAddRequest,
+    "rest.topics.web_pages.create.response": WebPageAddResponse,
 }
 
 

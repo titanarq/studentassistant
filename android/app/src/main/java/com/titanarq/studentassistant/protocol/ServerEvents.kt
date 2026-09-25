@@ -27,6 +27,8 @@ data class HelloAck(
     /** Backend clock minus the client clock read in `hello`; may be negative. */
     @SerialName("clock_offset_ms") val clockOffsetMs: Long,
     @SerialName("server_time_ms") val serverTimeMs: Long,
+    /** Since 1.4: domain terms (subject, topic, concepts) a recognizer may be biased towards. */
+    @SerialName("vocabulary_hints") val vocabularyHints: List<String>? = null,
 ) : ServerEvent
 
 /** Interim normalised text of an utterance still being spoken. */
@@ -74,6 +76,35 @@ data class Command(
 @SerialName("notice")
 data class Notice(
     @SerialName("pending_count") val pendingCount: Int,
+    @SerialName("server_time_ms") val serverTimeMs: Long,
+    /** Since 1.4: the session's new vocabulary hints, replacing the previous list. */
+    @SerialName("vocabulary_hints") val vocabularyHints: List<String>? = null,
+) : ServerEvent
+
+@Serializable
+enum class SttState {
+    /** Transcribing: the client clears any STT warning. */
+    @SerialName("ok")
+    OK,
+
+    /** The provider lost its service and retries; the audio meanwhile is not transcribed. */
+    @SerialName("reconnecting")
+    RECONNECTING,
+
+    /** The provider cannot work this session at all; no audio is transcribed. */
+    @SerialName("unavailable")
+    UNAVAILABLE,
+}
+
+/**
+ * Since 1.5, server STT mode: the backend's own STT provider changed between working and degraded;
+ * sent once per change. [detail] is a Spanish sentence for the student, present when not [SttState.OK].
+ */
+@Serializable
+@SerialName("stt.status")
+data class SttStatus(
+    val state: SttState,
+    val detail: String? = null,
     @SerialName("server_time_ms") val serverTimeMs: Long,
 ) : ServerEvent
 
