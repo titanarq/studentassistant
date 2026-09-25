@@ -12,6 +12,7 @@ import BookTitleForm from "./BookTitleForm";
 import PdfUploadForm from "./PdfUploadForm";
 import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
+import TopicCostBlock from "./TopicCostBlock";
 import WebPageForm from "./WebPageForm";
 import WebSearchPanel from "./WebSearchPanel";
 
@@ -23,7 +24,8 @@ import WebSearchPanel from "./WebSearchPanel";
  * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
  * the card is reloaded too, "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
  * "Añadir una página web" (`WebPageForm`, #62), after storing one, and "Libro de texto"
- * (`BookTitleForm`, #214), the title book pages are cited with.
+ * (`BookTitleForm`, #214), the title book pages are cited with, and "Coste" (`TopicCostBlock`,
+ * #260), the topic's Claude spend in total and per session, reloaded with the card.
  */
 export default function TopicPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [subjectName, setSubjectName] = useState(subjectId);
@@ -78,6 +80,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
           <WebSearchPanel subjectId={subjectId} topicId={topicId} onKept={refresh} />
           <WebPageForm subjectId={subjectId} topicId={topicId} onAdded={refresh} />
           <BookTitleForm subjectId={subjectId} topicId={topicId} />
+          <TopicCostBlock subjectId={subjectId} topicId={topicId} refreshKey={reload} />
         </>
       )}
     </main>

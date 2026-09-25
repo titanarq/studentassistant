@@ -7,13 +7,16 @@ import {
   type ReadResult,
   topicPath,
 } from "./desk/api";
+import type { ActiveSession } from "./desk/costApi";
+import DeskCost from "./desk/DeskCost";
 import type { Subject, Topic } from "./protocol";
 import { styleGuidePagePath } from "./styleGuide/api";
 
 /**
  * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
  * its page (`/subjects/<s>/topics/<t>`, the topic card) and shows what the topic list carries:
- * an open session, the last session's date and the doubts waiting for review.
+ * an open session, the last session's date and the doubts waiting for review. "Gasto de hoy"
+ * (`DeskCost`, #260) shows today's spend against the caps, and the open session's when there is one.
  */
 
 type Desk =
@@ -23,6 +26,17 @@ type Desk =
 
 function pendingText(count: number): string {
   return count === 1 ? "1 duda por revisar" : `${count} dudas por revisar`;
+}
+
+function openSession(desk: Desk): ActiveSession | undefined {
+  if (desk.state !== "ok") return undefined;
+  for (const { topics } of desk.subjects) {
+    const open = topics.kind === "ok" ? topics.value.find((t) => t.open_session_id !== undefined) : undefined;
+    if (open?.open_session_id !== undefined) {
+      return { subjectId: open.subject_id, topicId: open.topic_id, sessionId: open.open_session_id };
+    }
+  }
+  return undefined;
 }
 
 function TopicRow({ topic }: { topic: Topic }) {
@@ -95,6 +109,7 @@ export default function App() {
   return (
     <main>
       <h1>Mesa de estudio</h1>
+      <DeskCost session={openSession(desk)} />
       {desk.state === "loading" && <p>Cargando asignaturas…</p>}
       {desk.state === "failed" && <p role="alert">{desk.message}</p>}
       {desk.state === "ok" && desk.subjects.length === 0 && (

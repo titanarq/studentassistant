@@ -172,6 +172,18 @@ Routes registered today:
   cannot be opened 503; every `detail` is Spanish. The vault and the caps come from `studentassistant.config`, read on every
   request. The server computes no cost itself. Needs the bearer check like every non-exempt route.
   A local endpoint, not part of protocol v1.
+- `GET /api/subjects/{s}/topics/{t}/cost` (`server/cost.py`, `topic_cost(vault, s, t)`, #260) ->
+  `TopicCost` `{subject_id, topic_id, total, sessions, no_session}`: the topic's ledger
+  (`studentassistant.vault.read_ledger`) summed. Every totals object is `{usd, tokens,
+  input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, calls, unpriced_calls}`
+  (`tokens` the four kinds added; `usd` adds each entry's `estimated_usd` and leaves out the
+  `unpriced_calls`, whose model had no price). `sessions` has one row per session the topic lists
+  (spent or not) and per session id only the ledger names, in id (start) order, each with
+  `session_id` and `started_at_ms` (from `session.yaml`, else the session's first ledger entry);
+  `no_session` sums the calls bound to no session (editor, generators). No price is computed in
+  the server. Path ids follow the protocol's id pattern (422 otherwise); an unknown subject/topic
+  404 (`"No existe ese tema en la bóveda."`), a vault that cannot be opened 503. The vault comes
+  from `studentassistant.config`, read on every request; bearer check like every route.
 - **The web's read API** (`server/read_routes.py`, `read_router()`), read-only, over the vault the
   session service opened (`SessionService.open_vault()`) and only through the vault's public
   readers (ADR-0002), each call in a worker thread. Every route needs the bearer check (none is in

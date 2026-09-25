@@ -198,10 +198,24 @@ token):
   link to the live session view, `/live`); under each subject's name a "Guía de estilo" link to
   its style guide page. Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
+  Under the heading, "Gasto de hoy" (`src/desk/DeskCost.tsx`, #260) reads `GET /api/cost` (with
+  `subject`, `topic` and `session` of the first topic whose list entry carries `open_session_id`,
+  once the lists answer) and shows "Hoy (UTC): <day_usd> USD de <max_usd_per_day> USD" ("(sin
+  límite)" for a null cap) and, with an open session, "Sesión abierta: <session_usd> USD de
+  <max_usd_per_session> USD"; an `alert` banner ("Se ha alcanzado el límite de gasto: el
+  observador está en pausa y el editor pedirá confirmación antes de cada llamada.",
+  `PAUSED_BANNER`) when `observer_paused` or `editor_needs_confirmation` is true, and a `note`
+  when unpriced calls make the spend an underestimate. A failed read is one plain Spanish line
+  (no alert). Caps are changed in the configuration file only.
+- `src/desk/costApi.ts` (#260): `fetchCostStatus(session?)` (`GET /api/cost`, decoded as
+  `CostStatus`) and `fetchTopicCost(s, t)` (`GET /api/subjects/{s}/topics/{t}/cost`, decoded as
+  `TopicCost`: `total`, `sessions[]` with `session_id` and `started_at_ms`, `no_session`), both
+  -> the `ReadResult` of `desk/api.ts` (whose `getJson` it reuses); `formatUsd` ("0,1234 USD",
+  four decimals, always labelled USD, never euros) and `formatTokens`.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
   `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
-  `WebSearchPanel`, `WebPageForm` and `BookTitleForm`; an unknown topic (404) shows the
+  `WebSearchPanel`, `WebPageForm`, `BookTitleForm` and `TopicCostBlock`; an unknown topic (404) shows the
   backend's Spanish detail and none of the forms,
   and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
@@ -216,6 +230,13 @@ token):
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  `TopicCostBlock` (#260, section "Coste", not shown for an unknown topic, reloaded with the
+  card) reads `fetchTopicCost` and shows "Total del tema: <usd> USD · <n> tokens · <n> llamadas",
+  a list "Coste por sesión" with one row per session ("Sesión del <fecha>", or "Sesión <id>" when
+  its start is unknown) and, when there are any, "Fuera de las sesiones (editor, material)" for
+  the calls bound to no session; "Todavía no hay gasto en este tema." when there is nothing, and
+  the `note` "Hay llamadas sin precio conocido: el total se queda corto." (`UNPRICED_WARNING`)
+  when `total.unpriced_calls` > 0.
   `BookTitleForm` (#214, "Libro de texto", not shown for an unknown topic) shows the topic's
   textbook title as `Libro «<title>»` (the title book pages are cited with) or "Este tema aún no
   tiene libro de texto." when none is set, and a "Título del libro" input (`maxLength` 200,
