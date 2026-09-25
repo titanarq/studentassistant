@@ -16,6 +16,13 @@ from studentassistant.evals.cases import (
     read_case,
     read_eval_set,
 )
+from studentassistant.evals.compare import (
+    RunComparison,
+    compare_reports,
+    previous_report,
+    read_report,
+    render_comparison,
+)
 from studentassistant.evals.estimate import CaseEstimate, RoleEstimate, estimate_case
 from studentassistant.evals.run import (
     CaseOutput,
@@ -49,10 +56,15 @@ __all__ = [
     "PageScore",
     "ReferenceSection",
     "RoleEstimate",
+    "RunComparison",
     "SectionScore",
+    "compare_reports",
     "estimate_case",
+    "previous_report",
     "read_case",
     "read_eval_set",
+    "read_report",
+    "render_comparison",
     "render_report",
     "run_case",
     "run_eval",

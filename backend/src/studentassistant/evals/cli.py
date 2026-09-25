@@ -1,4 +1,7 @@
-"""`studentassistant eval run`: score the pipeline on the eval set; the cost is confirmed first."""
+"""`studentassistant eval run`: score the pipeline on the eval set; the cost is confirmed first.
+
+`studentassistant eval compare <run-a> <run-b>`: compare two runs already written, without Claude.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,13 @@ import typer
 
 import studentassistant
 from studentassistant.config import Settings
-from studentassistant.evals.cases import EvalSetError, read_eval_set
+from studentassistant.evals.cases import RUNS_DIR_NAME, EvalSetError, read_eval_set
+from studentassistant.evals.compare import (
+    ReportUnreadableError,
+    compare_reports,
+    read_report,
+    render_comparison,
+)
 from studentassistant.evals.estimate import CaseEstimate, estimate_case
 from studentassistant.evals.run import CaseResult, run_directory, run_eval, write_report
 from studentassistant.install.apikey import export_api_key
@@ -118,10 +127,52 @@ def run_command(
     directory = run_directory(path, datetime.now(UTC))
     typer.echo(f"Evaluando {len(cases)} casos en {directory}:")
     report = asyncio.run(
-        run_eval(cases, directory, settings=settings, transport=transport, on_case=_echo_case)
+        run_eval(
+            cases,
+            directory,
+            settings=settings,
+            transport=transport,
+            on_case=_echo_case,
+            on_warning=lambda message: typer.echo(f"Aviso: {message}"),
+        )
     )
     markdown = write_report(report, directory)
     typer.echo(f"Coste real {report.actual_usd:.2f} USD (estimado {report.estimated_usd:.2f} USD).")
+    if report.comparison is not None:
+        typer.echo(
+            f"Frente a {report.comparison.previous_run}:"
+            f" {report.comparison.regressions} regresiones."
+        )
     typer.echo(f"Informe: {markdown}")
     if any(result.error is not None for result in report.cases):
         raise typer.Exit(code=1)
+
+
+def _run_path(run: str, settings: Settings) -> Path:
+    """A run given as a directory, or as the name of one under `[eval] path`'s `runs/`."""
+    given = Path(run).expanduser()
+    if given.is_dir():
+        return given
+    return settings.eval.path / RUNS_DIR_NAME / run
+
+
+@eval_cli.command("compare")
+def compare_command(
+    run_a: Annotated[str, typer.Argument(help="La ejecución anterior (nombre en runs/ o ruta).")],
+    run_b: Annotated[str, typer.Argument(help="La ejecución nueva (nombre en runs/ o ruta).")],
+) -> None:
+    """Compare two existing runs' reports, per case and per score; Claude is not called."""
+    settings = Settings()
+    try:
+        previous = read_report(_run_path(run_a, settings))
+        current = read_report(_run_path(run_b, settings))
+    except ReportUnreadableError as error:
+        typer.echo(f"No se puede leer el informe {error}")
+        raise typer.Exit(code=1) from error
+    comparison = compare_reports(
+        previous,
+        current,
+        margin=settings.eval.regression_margin,
+        previous_run=Path(run_a).name,
+    )
+    typer.echo(render_comparison(comparison), nl=False)

@@ -566,6 +566,7 @@ def write_vault_config(vault_path: Path, repo: str) -> bool:
 
 
 DEFAULT_EVAL_SPEED = 4.0
+DEFAULT_EVAL_REGRESSION_MARGIN = 0.05
 
 
 class EvalSettings(BaseModel):
@@ -577,6 +578,8 @@ class EvalSettings(BaseModel):
     path: Path = DEFAULT_EVAL_PATH
     # How many times faster than recorded each session is replayed.
     speed: float = Field(default=DEFAULT_EVAL_SPEED, gt=0)
+    # A score that drops by more than this against the previous run is marked a regression.
+    regression_margin: float = Field(default=DEFAULT_EVAL_REGRESSION_MARGIN, ge=0, le=1)
 
     @field_validator("path")
     @classmethod

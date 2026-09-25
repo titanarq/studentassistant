@@ -41,7 +41,11 @@ the `studentassistant` console script.
 - Not built yet: `replay` (server).
 - `studentassistant eval run [--case NAME]... [--yes]` -- the eval set (below, "Evals"): prints
   the estimated cost per case and role, asks before any Claude call (`--yes` does not), runs
-  every case and writes the report; exit 1 when a case could not be replayed.
+  every case and writes the report, compared with the previous run; exit 1 when a case could
+  not be replayed (regressions are reported, never fatal).
+- `studentassistant eval compare <run-a> <run-b>` -- prints the comparison ("Evals",
+  "Comparison") of two existing runs, each a name under `[eval] path`'s `runs/` or a directory;
+  never calls Claude. Exit 1 when either report cannot be read.
 
 ### Install (`studentassistant/install/`)
 The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/runbooks/install.md`.
@@ -112,6 +116,7 @@ The defaults live here and nowhere else:
 | `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
 | `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |
 | `eval.speed` | `4.0`: how many times faster than recorded `eval run` replays each session |
+| `eval.regression_margin` | `0.05`: a score dropping more than this against the previous run is a regression |
 
 ## Evals (`studentassistant/evals/`)
 A small set of the student's real recorded sessions with reference notes, scored whenever prompts
@@ -155,6 +160,16 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
     the notes stayed a draft, and the validator's errors.
   - *Global* per case: the mean of page character accuracy, section agreement, kept and
     supported (those that exist; no notes counts kept and supported as 0).
+- **Comparison** (`compare.py`, `compare_reports` / `previous_report` / `render_comparison`;
+  pure, no Claude). After a run, `run_eval` loads the most recent readable `report.json` among the
+  sibling `runs/<UTC time>/` directories whose name sorts before its own; an unreadable one is
+  named in a warning (log, CLI, `EvalReport.comparison_warnings`, the report) and skipped. Per
+  case present in both runs and per score (page character/word accuracy, section
+  agreement/coverage, kept, supported, global): previous value, new value, delta (`None` when
+  either is missing); a drop larger than `[eval] regression_margin` is a regression. Cases only in
+  one run are listed as added/removed. It is stored as `EvalReport.comparison` (`RunComparison`,
+  optional so older reports still load) and rendered as the "Comparación con la ejecución
+  anterior" section of `report.md`.
 
 ## CI (`.github/workflows/ci.yml`)
 Triggered on every `pull_request` with no `paths` filter, top-level `permissions: contents: read`.
