@@ -49,6 +49,19 @@ interrupts, stays unacknowledged, so the next time the loop opens a session of t
 session, a resume, a restart) it sends those events first, as the catch-up batch. No batch is lost,
 whatever the end hook's timeout.
 
+Context purge (#60): the conversation never grows without bound. After an answered batch whose
+call left the conversation at `context_max_tokens` or more (the call's prompt plus its answer), the
+conversation is dropped and the next call opens a new one: the same system blocks and tool (so the
+cached prefix still hits), then one user turn with the state folded so far (`render_state`), the
+newest `context_tail_segments` answered segment lines and the batch. Nothing is lost, because the
+state is the fold of the events and every dropped batch was acknowledged before the drop, so the
+catch-up is unaffected. The rollover is published as a persisted `observer.context_rolled` event
+(`before_tokens`, and `after_tokens`: the new conversation's first prompt) once the first call of
+the new conversation is answered, and a `context` record (reason `rollover`) marks it in the
+conversation file, which keeps the dropped turns as history and is never read back into context.
+At session end (`flush`) the conversation is always dropped the same way (reason `session_end`,
+`after_tokens: 0`): the next session of the topic starts from snapshot + digest.
+
 The observer reaches the bus only through the protocols below (it never imports
 `studentassistant.server`) and the vault only through `studentassistant.vault`.
 """
@@ -58,6 +71,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -121,6 +135,8 @@ TOOL_DESCRIPTION = (
 )
 PROMPT_NAME = "observer"
 STATUS_EVENT_KIND = "observer.status"
+CONTEXT_ROLLED_EVENT_KIND = "observer.context_rolled"
+"""The persisted event of a context purge (#60): `reason`, `before_tokens`, `after_tokens`..."""
 NOTICE_EVENT_KIND = "notice"
 """The transient bus event the gateway forwards to the phone as the protocol `notice`."""
 SESSION_STARTED = "session.started"
@@ -254,13 +270,29 @@ class _Ask:
     called: bool = False
 
 
+@dataclass(frozen=True)
+class _Rollover:
+    """A context purge whose new conversation has not been answered yet."""
+
+    before_tokens: int
+    dropped_turns: int
+    tail_segments: int
+
+
+def _prompt_tokens(response: LLMResponse) -> int:
+    """Every token of the prompt of a call, cached or not."""
+    usage = response.usage
+    return usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+
+
 @dataclass
 class _Observed:
     session: Session
     client: LLMClient
     snapshot: ObserverSnapshot
     system: list[str]
-    context: str
+    # The text opening the conversation; `None` after a rollover, rendered by the next call.
+    context: str | None
     conversation: list[dict[str, Any]] = field(default_factory=list)
     items: list[BatchItem] = field(default_factory=list)
     # tool_use ids of the last answer, with the result text the next user turn owes each of them.
@@ -272,6 +304,11 @@ class _Observed:
     # failing call is never retried in a loop.
     blocked: bool = False
     batches: int = 0
+    # Context purge (#60): the conversation's size after its newest answer, the batch lines of the
+    # newest answered segments (bounded by `context_tail_segments`) and a pending rollover.
+    context_tokens: int = 0
+    tail: deque[str] = field(default_factory=deque)
+    rollover: _Rollover | None = None
 
     @property
     def id(self) -> str:
@@ -389,6 +426,9 @@ class ObserverLoop:
         if observed is not None and observed.call is None and observed.items:
             self._start_call(observed)
             await self.wait_idle(session_id)
+        observed = self._observed.get(session_id)
+        if observed is not None and observed.call is None:
+            await self._end_context(observed)
 
     def status(self, session_id: str) -> Status | None:
         """`running`, `paused` (a cost cap) or `error` for an observed session, else `None`."""
@@ -459,6 +499,7 @@ class ObserverLoop:
             snapshot=snapshot,
             system=[self.prompt.content, render_topic(subject_name, topic_title, digest)],
             context=render_state(snapshot.state, session_id=session_id, resumed=resumed),
+            tail=deque(maxlen=self.settings.context_tail_segments),
         )
         self._observed[session_id] = observed
         observed.items = self._catch_up_items(observed, catch_up)
@@ -624,6 +665,8 @@ class ObserverLoop:
         observed.batches += 1
         content = self._owed_results(observed)
         if not observed.conversation:
+            if observed.context is None:
+                observed.context = await self._rolled_context(observed)
             content.append({"type": "text", "text": observed.context})
         content.append({"type": "text", "text": render_batch(items, observed.batches)})
         turn = {"role": "user", "content": content}
@@ -638,6 +681,111 @@ class ObserverLoop:
         finally:
             # Answered (even if a re-ask failed): never caught up again.
             await self._acknowledge(observed, _newest(items))
+        observed.tail.extend(item.line for item in items if item.segment)
+        if observed.context_tokens >= self.settings.context_max_tokens:
+            self._roll_over(observed)
+
+    # -- context purge (#60) -----------------------------------------------------------------
+
+    def _roll_over(self, observed: _Observed) -> None:
+        """Drop the conversation; the next call opens a new one from the state and the tail.
+
+        Only between batches: the batch that reached the threshold is answered and acknowledged,
+        so its tool results are owed to nobody and the catch-up never needs the dropped turns.
+        """
+        logger.info(
+            "observer of session %s: context at %d tokens, rolled over to snapshot + digest + tail",
+            observed.id,
+            observed.context_tokens,
+        )
+        observed.rollover = _Rollover(
+            before_tokens=observed.context_tokens,
+            dropped_turns=len(observed.conversation),
+            tail_segments=len(observed.tail),
+        )
+        observed.conversation = []
+        observed.owed_results = []
+        observed.context = None
+
+    async def _rolled_context(self, observed: _Observed) -> str:
+        """The opening text of the conversation after a rollover, recorded as a `context` record.
+
+        Rendered when the next call is made, so it holds every op folded since the rollover.
+        """
+        snapshot = observed.snapshot
+        rollover = observed.rollover
+        await self._record(
+            observed,
+            ConversationRecord(
+                time=self.clock(),
+                kind="context",
+                model=observed.client.model,
+                prompt_hash=self.prompt.hash,
+                detail={
+                    "reason": "rollover",
+                    "before_tokens": None if rollover is None else rollover.before_tokens,
+                    "event_count": snapshot.event_count,
+                    "cursor": None if snapshot.cursor is None else snapshot.cursor.model_dump(),
+                    "tail_segments": len(observed.tail),
+                },
+            ),
+        )
+        return render_state(
+            snapshot.state, session_id=observed.id, resumed=False, rolled=True, tail=observed.tail
+        )
+
+    async def _rolled(self, observed: _Observed, response: LLMResponse) -> None:
+        """The first call after a rollover was answered: publish `observer.context_rolled`."""
+        rollover, observed.rollover = observed.rollover, None
+        assert rollover is not None
+        await self._publish_rolled(
+            observed,
+            {
+                "reason": "threshold",
+                "before_tokens": rollover.before_tokens,
+                "after_tokens": _prompt_tokens(response),
+                "threshold_tokens": self.settings.context_max_tokens,
+                "dropped_turns": rollover.dropped_turns,
+                "tail_segments": rollover.tail_segments,
+            },
+        )
+
+    async def _end_context(self, observed: _Observed) -> None:
+        """At session end the conversation is always dropped (the next session starts afresh)."""
+        if not observed.conversation and observed.rollover is None:
+            return  # no call yet, or already dropped
+        payload = {
+            "reason": "session_end",
+            "before_tokens": observed.context_tokens,
+            "after_tokens": 0,
+            "threshold_tokens": self.settings.context_max_tokens,
+            "dropped_turns": len(observed.conversation),
+            "tail_segments": 0,
+        }
+        observed.conversation = []
+        observed.owed_results = []
+        observed.rollover = None
+        observed.context = None
+        observed.context_tokens = 0
+        await self._record(
+            observed,
+            ConversationRecord(
+                time=self.clock(),
+                kind="context",
+                model=observed.client.model,
+                prompt_hash=self.prompt.hash,
+                detail={"reason": "session_end", "before_tokens": payload["before_tokens"]},
+            ),
+        )
+        await self._publish_rolled(observed, payload)
+
+    async def _publish_rolled(self, observed: _Observed, payload: dict[str, Any]) -> None:
+        try:
+            await self.bus.publish(observed.id, CONTEXT_ROLLED_EVENT_KIND, OBSERVER_ORIGIN, payload)
+        except Exception as error:  # the session ended under the call
+            logger.warning(
+                "observer of session %s: context rollover not recorded: %s", observed.id, error
+            )
 
     async def _answer(
         self, observed: _Observed, items: list[BatchItem], response: LLMResponse
@@ -716,6 +864,7 @@ class ObserverLoop:
             return None
         observed.conversation.append(turn)
         observed.conversation.append(response.assistant_turn())
+        observed.context_tokens = _prompt_tokens(response) + response.usage.output_tokens
         await self._record(
             observed, ConversationRecord(time=self.clock(), kind="user", message=turn)
         )
@@ -732,6 +881,8 @@ class ObserverLoop:
         )
         if observed.status != "running":
             await self._set_status(observed, "running", "", {})
+        if observed.rollover is not None:
+            await self._rolled(observed, response)
         return response
 
     @staticmethod
@@ -891,6 +1042,7 @@ def _with_breakpoint(turn: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "CONTEXT_ROLLED_EVENT_KIND",
     "NOTICE_EVENT_KIND",
     "OBSERVER_KINDS",
     "STATUS_EVENT_KIND",

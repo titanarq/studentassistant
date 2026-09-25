@@ -389,6 +389,8 @@ class SourcesSettings(BaseModel):
 DEFAULT_OBSERVER_BATCH_SEGMENTS = 6
 DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS = 30.0
 DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS = 200
+DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS = 80_000
+DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
 
 
 class ObserverSettings(BaseModel):
@@ -400,6 +402,11 @@ class ObserverSettings(BaseModel):
     batch_speech_seconds: float = Field(default=DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS, gt=0)
     # The most unanswered events a catch-up sends when a session opens (the newest are kept).
     catch_up_max_items: int = Field(default=DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS, ge=0)
+    # Context purge (#60): once the conversation reaches this many tokens (the last call's prompt
+    # plus its answer), it is rolled over to the snapshot + digest + the newest segments.
+    context_max_tokens: int = Field(default=DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS, ge=1)
+    # How many of the newest answered segments the rolled-over conversation repeats.
+    context_tail_segments: int = Field(default=DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS, ge=0)
 
 
 def config_toml_path() -> Path:
