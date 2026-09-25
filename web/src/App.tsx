@@ -9,6 +9,7 @@ import {
 } from "./desk/api";
 import type { ActiveSession } from "./desk/costApi";
 import DeskCost from "./desk/DeskCost";
+import DeskPractice from "./desk/DeskPractice";
 import type { Subject, Topic } from "./protocol";
 import { styleGuidePagePath } from "./styleGuide/api";
 import "./desk/desk.css";
@@ -17,7 +18,8 @@ import "./desk/desk.css";
  * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
  * its page (`/subjects/<s>/topics/<t>`, the topic card) and shows what the topic list carries:
  * an open session, the last session's date and the doubts waiting for review. "Gasto de hoy"
- * (`DeskCost`, #260) shows today's spend against the caps, and the open session's when there is one.
+ * (`DeskCost`, #260) shows today's spend against the caps, and the open session's when there is one;
+ * "Repasos para hoy" (`DeskPractice`, #285) lists the topics with practice due or new today.
  */
 
 type Desk =
@@ -111,6 +113,7 @@ export default function App() {
     <main className="desk">
       <h1>Mesa de estudio</h1>
       <DeskCost session={openSession(desk)} />
+      <DeskPractice />
       {desk.state === "loading" && <p>Cargando asignaturas…</p>}
       {desk.state === "failed" && <p role="alert">{desk.message}</p>}
       {desk.state === "ok" && desk.subjects.length === 0 && (
