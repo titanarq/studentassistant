@@ -15,10 +15,12 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issue #29: the knowledge-state model, its ops, the pure fold, the
-snapshot and the vault-backed loader. The live loop, the pending queue's deduplication, the
-digest and the purge are not written yet. Everything below is re-exported by
-`studentassistant.observer`.
+What exists today, after issues #29 and #51: the knowledge-state model, its ops, the pure fold, the
+snapshot, the vault-backed loader and the live loop. The pending queue's deduplication (#55), the
+digest (#56) and the purge (#60) are not written yet. Everything below except the live loop is
+re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
+(its batch rendering `studentassistant.observer.context`), kept out of the package root so that
+importing the state model never imports the llm module.
 
 ### Event kinds the fold reads -- `ops.py`, `fold.py`
 - `STATE_OP_EVENT_KIND = "observer.state_op"`: the one event kind that carries a state op; its
@@ -80,8 +82,58 @@ discarded and the log folded from scratch when it is unreadable, of another `sta
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
 folded raises and nothing is written. Nothing in `studentassistant.observer` opens a file, runs
-git, imports `studentassistant.llm`/`anthropic` or imports a vault submodule: only the
-`studentassistant.vault` root (checked by `tests/observer/test_boundaries.py`).
+git, imports `anthropic`, `studentassistant.server` or a vault submodule (only the
+`studentassistant.vault` root), and only `live.py` imports `studentassistant.llm` (checked by
+`tests/observer/test_boundaries.py`).
+
+### Live loop -- `live.py`, `context.py`
+`ObserverLoop(bus, lookup, *, settings=ObserverSettings(), client_factory=None, digest=..., clock=...)`
+subscribes to the session bus (`start()`; `stop()` folds what was delivered and waits for the
+calls in flight). `lookup(session_id)` gives an attached session's vault handle
+(`SessionBus.attached`); `client_factory(LedgerBinding)` builds the session's `observer` client
+(`default_client_factory(settings, transport)`: `get_client("observer", ...)` bound to the
+session's ledger, so every call is capped and recorded); `digest(vault, subject, topic)` reads the
+topic digest (none until #56). The server builds one when `create_app` gets an `llm_transport`
+(`serve` passes the real one) and `[observer] enabled`.
+
+- **Input** (`OBSERVER_KINDS`): `transcript.final`, `capture.stored`, `page.transcribed`
+  (`PAGE_TRANSCRIPTION_KIND`: the page transcription, #50, MUST publish it with
+  `payload.capture_id` and `payload.text`), `button`, `marker`, `command`, `observer.state_op` of
+  any origin but `observer` (shown as `student op`), and the lifecycle events. Each becomes one line
+  of the pending batch (`context.batch_item`).
+- **Scope**: the first event of a session loads its topic's snapshot (`load_observer_snapshot`)
+  and builds a fresh conversation: system = the `observer` prompt + the topic block (subject,
+  title, digest); first user turn = the folded state (`render_state`: outline, concepts, captures,
+  source context, open pending items, recent notes -- ids, never the earlier segments' text) and
+  the first batch. Nothing of another topic is ever read. A resumed session, or a new session of
+  the topic, is always rebuilt this way, never from the full history.
+- **Triggers** (`[observer]`, `SA_OBSERVER__*`): `batch_segments` final segments (default 6) or
+  `batch_speech_seconds` of speech (default 30) waiting, or at once for a capture, a page
+  transcription or a `switch_source` button. One call per session is in flight; what arrives
+  meanwhile coalesces into the next batch, which also waits until the ops just published are
+  folded. The consumer never waits for Claude and the bus never waits for the consumer.
+- **Answer**: the strict tool `apply_state_ops` (`ApplyStateOps`: `ops: list[StateOp]`, each
+  op's `op` a required enum; `state_ops_tool()`), `tool_choice: auto`. Each op is parsed and
+  validated in order against the current state; valid ones are published as
+  `observer.state_op` (origin `observer`). Malformed or inapplicable ops, or no tool call, are
+  re-asked once (the errors go back as an `is_error` tool result); what is still invalid is
+  logged and dropped. Every `tool_use` gets its `tool_result` at the start of the next user turn.
+- **Caching**: tools + system are the cached prefix; each request also marks the newest block of
+  the conversation, which grows append-only by one user turn and one answer per call.
+- **Conversation file**: `conversations/observer-<session-id>.jsonl` through
+  `append_conversation_record`: a `context` record (reason `start`/`resume`, the snapshot's
+  `event_count` and `cursor`, model, prompt hash), then each `user` turn and `assistant` answer
+  (model, prompt hash, usage), and `status` changes.
+- **Cost caps**: a reached cap (`CostCapReachedError`, nothing sent) pauses the observer: the batch
+  is kept, `status(session_id)` is `paused` and one `observer.status` event (`status: paused`,
+  `reason`, `cap`, `limit_usd`, `total_usd`) is published; the next new item tries again, and a
+  successful call publishes `status: running`. Any other Claude failure keeps the batch the same
+  way with `status: error`. A failed call is never retried until something new arrives.
+- **Ending**: `flush(session_id)` is registered with `SessionService.add_before_ended` (after the
+  gateway's STT flush, so it sees the last finals): it waits for the call in flight and sends what
+  is still waiting, so its ops land before `session.ended` (bounded by the end hook timeout; a call
+  is shielded, never cancelled). `wait_idle(session_id)` waits without sending; `session.ended`
+  forgets the session.
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

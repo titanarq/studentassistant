@@ -136,6 +136,19 @@ returns the entries in file order (empty without a file, a torn last line ignore
 `ledger_path(...)` gives the path. Pricing and caps are the llm module's; this module never
 imports it and runs no git.
 
+### Conversations -- `conversations.py`
+An LLM role's conversation (ADR-0003) is `conversations/<name>.jsonl` under its topic, `name` being
+lowercase letters, digits and hyphens (`observer-<session-id>`, `editor`); anything else is a
+`ConversationError`. `ConversationRecord` is one line: `time` (timezone-aware, kept in UTC), `kind`
+(the role's choice; the observer writes `context`, `user`, `assistant`, `status`), `message?` (the
+API message it carries), `model?`, `prompt_hash?`, `usage?` (token counts) and `detail?`.
+`append_conversation_record(vault, subject_slug, topic_slug, name, record)` appends it through
+`append_jsonl` (secret guard included), creating `conversations/` on first use;
+`read_conversation(...)` returns the records in file order (empty without a file);
+`conversation_path(...)` and `conversations_directory(...)` give the paths. An unknown subject or
+topic is the usual `SubjectNotFoundError`/`TopicNotFoundError`. The vault knows nothing about
+Claude: it stores what the role hands it.
+
 ### Sources -- `sources.py`
 `put_source(vault, subject_slug, topic_slug, kind, name, content, meta, derived=None)` stores
 bytes or text under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the
@@ -430,8 +443,8 @@ As of issues #21, #117, #119 and #135 no code reads or writes these parts of the
   (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md`, `review/pending.yaml` (the index reads it when present) and
-  `conversations/`; and the retention `purge` described below.
+- Also unwritten: `state/digest.md` and `review/pending.yaml` (the index reads it when present);
+  and the retention `purge` described below. (`conversations/` is written since #51.)
 
 ## Purge
 `studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);

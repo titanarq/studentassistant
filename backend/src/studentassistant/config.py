@@ -342,6 +342,21 @@ class SourcesSettings(BaseModel):
     capture_window_after_seconds: float = Field(default=DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS, ge=0)
 
 
+# The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final
+# segments, or this many seconds of speech, are waiting (a capture or a source switch: at once).
+DEFAULT_OBSERVER_BATCH_SEGMENTS = 6
+DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS = 30.0
+
+
+class ObserverSettings(BaseModel):
+    """The live observer loop (`[observer]`, `SA_OBSERVER__*`)."""
+
+    # Off: `serve` runs no observer and no observer call is ever made.
+    enabled: bool = True
+    batch_segments: int = Field(default=DEFAULT_OBSERVER_BATCH_SEGMENTS, ge=1)
+    batch_speech_seconds: float = Field(default=DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS, gt=0)
+
+
 def config_toml_path() -> Path:
     """The TOML file to read: `SA_CONFIG` when it is set, the default location otherwise."""
     return Path(os.environ.get("SA_CONFIG") or DEFAULT_CONFIG_PATH).expanduser()
@@ -405,6 +420,7 @@ class Settings(BaseSettings):
     llm: LlmSettings = Field(default_factory=LlmSettings)
     stt: SttSettings = Field(default_factory=SttSettings)
     sources: SourcesSettings = Field(default_factory=SourcesSettings)
+    observer: ObserverSettings = Field(default_factory=ObserverSettings)
 
     @classmethod
     def settings_customise_sources(

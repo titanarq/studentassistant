@@ -29,12 +29,15 @@ from pydantic import BaseModel
 
 from studentassistant import __version__
 from studentassistant.config import (
+    ObserverSettings,
     ServerSettings,
     Settings,
     SourcesSettings,
     SttSettings,
     VaultSettings,
 )
+from studentassistant.llm import Transport
+from studentassistant.observer.live import ObserverLoop, default_client_factory
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
@@ -83,6 +86,8 @@ def create_app(
     stt: SttSettings | None = None,
     sources: SourcesSettings | None = None,
     recorder: SessionRecorder | None = None,
+    llm_transport: Transport | None = None,
+    llm_settings: Settings | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app with every route this backend serves.
 
@@ -106,6 +111,12 @@ def create_app(
     gateway and the capture upload; each recording is finished when its session ends (or the app
     shuts down). Without one nothing is recorded. A recorder whose directory is inside the vault is
     refused with `ValueError`: a recording is never vault content.
+
+    `llm_transport` turns the live observer on (`observer/live.py`): with one, and `[observer]
+    enabled` in `llm_settings` (default: the configured settings, which also give the observer
+    role's model, the cost caps and the prices), every session is observed through that transport
+    -- `serve` passes the real Anthropic one, tests a `FakeClaude`. Without one no Claude call is
+    ever made, so an app built by a test never reaches the network.
     """
     install_log_redaction()
     if (
@@ -148,6 +159,19 @@ def create_app(
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
+    app.state.observer = None
+    if llm_transport is not None:
+        llm_settings = llm_settings or Settings()
+        observer_settings: ObserverSettings = llm_settings.observer
+        if observer_settings.enabled:
+            app.state.observer = ObserverLoop(
+                app.state.bus,
+                app.state.bus.attached,
+                settings=observer_settings,
+                client_factory=default_client_factory(llm_settings, llm_transport),
+            )
+            # Registered after the gateway's STT flush, so the observer sees the last finals.
+            app.state.sessions.add_before_ended(app.state.observer.flush)
     if recorder is not None:
         app.state.sessions.add_before_close(
             lambda session_id: asyncio.to_thread(recorder.close, session_id)
@@ -197,12 +221,17 @@ def create_app(
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessions: SessionService = app.state.sessions
     transcripts: TranscriptPipeline = app.state.transcripts
+    observer: ObserverLoop | None = app.state.observer
     transcripts.start()
+    if observer is not None:
+        observer.start()
     await sessions.startup()
     try:
         yield
     finally:
         await transcripts.stop()
+        if observer is not None:
+            await observer.stop()
         await sessions.shutdown()
         recorder: SessionRecorder | None = app.state.recorder
         if recorder is not None:
