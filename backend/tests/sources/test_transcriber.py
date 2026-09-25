@@ -190,12 +190,12 @@ async def test_a_stored_page_is_transcribed_with_pending_items_and_an_event(
     assert done.payload["attempts"] == 1
     ops = [e.payload for e in events(session, STATE_OP_EVENT_KIND)]
     assert [op["pending_id"] for op in ops] == done.payload["pending_ids"]
-    assert all(op["op"] == "add_pending" and op["category"] == "illegible" for op in ops)
+    assert all(op["op"] == "add_pending" and op["kind"] == "illegible" for op in ops)
     assert all(op["capture_ids"] == ["cap-1"] for op in ops)
 
     # The observer's fold takes the pending items, each tied to the page.
     state = load_observer_snapshot(session.vault, *topic_of(session), write_back=False).state
-    assert [(p.id, p.capture_ids) for p in state.open_pending()] == [
+    assert [(p.id, p.refs.pages) for p in state.open_pending()] == [
         (op["pending_id"], ["cap-1"]) for op in ops
     ]
 

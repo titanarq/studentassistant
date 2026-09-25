@@ -73,11 +73,13 @@ submodules.
   answer (`clean_markdown`), and stores it as `page-NNN.md` through
   `vault.put_page_transcription`. `RefusalError` on a refusal, `TranscriptionError` (an
   `LLMError`) on an empty answer; nothing is written then.
-- `find_uncertain(text) -> [UncertainWord(word | None, line)]` lists the `[[?...]]` marks;
-  `pending_ops(uncertain, session_id=, capture_id=, source_kind=, page_number=)` makes one
-  observer `AddPending` per mark: `pending_id` `ill-<session>-<capture>-<n>`, category
-  `illegible`, `capture_ids` `[capture_id]` (the page ref), a Spanish `description` naming the
-  word, the page and its line.
+- `find_uncertain(text) -> [UncertainWord(word | None, line, line_number, column)]` lists the
+  `[[?...]]` marks; `pending_ops(uncertain, session_id=, capture_id=, source_kind=,
+  page_number=)` makes one observer `AddPending` per mark: `pending_id`
+  `ill-<session>-<capture>-<n>`, kind `illegible`, `capture_ids` `[capture_id]` (the page ref), a
+  Spanish `text` naming the word, the page, the mark's line and column, and the line. The line and
+  column keep two marks of one page apart in the pending queue, which never merges texts naming
+  different numbers (`observer.pending.is_duplicate`); the same page transcribed again merges.
 - `PageTranscriber(bus, lookup, *, settings, client_factory, on_write=None)` subscribes to the
   session bus (`start()`/`stop()`; `stop()` cancels what is still running). For each persisted
   `capture.stored` (payload `capture_id`, `source_path`, `page_path`; a repeated id is ignored) it

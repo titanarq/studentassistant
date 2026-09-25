@@ -38,6 +38,7 @@ from studentassistant.vault.secrets import SecretRefused, guard, looks_like_secr
 from studentassistant.vault.session_models import (
     EVENT_SCHEMA_VERSION,
     Event,
+    Origin,
     SessionMeta,
     TranscriptSegment,
     TranscriptWord,
@@ -76,8 +77,10 @@ from studentassistant.vault.sources import (
 from studentassistant.vault.state import (
     SnapshotFileError,
     StateError,
+    pending_review_path,
     read_observer_snapshot,
     write_observer_snapshot,
+    write_pending_review,
 )
 from studentassistant.vault.subjects import (
     StoredSubject,
@@ -145,6 +148,7 @@ __all__ = [
     "LedgerEntry",
     "LedgerError",
     "NoOpenSessionError",
+    "Origin",
     "NotesError",
     "NotesTag",
     "PushFailure",
@@ -205,6 +209,7 @@ __all__ = [
     "looks_like_secret",
     "notes_path",
     "notes_tag_name",
+    "pending_review_path",
     "put_page_transcription",
     "put_source",
     "read_active_host",
@@ -226,4 +231,5 @@ __all__ = [
     "topic_directory",
     "topics_directory",
     "write_observer_snapshot",
+    "write_pending_review",
 ]

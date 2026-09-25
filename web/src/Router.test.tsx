@@ -40,3 +40,15 @@ it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/
     expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
   },
 );
+
+it("renders the notes viewer at the topic's /notes path", async () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/notes" />);
+
+  expect(screen.getByRole("link", { name: "← Tema revolucion-industrial" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-industrial",
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar los apuntes");
+});

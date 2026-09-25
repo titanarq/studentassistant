@@ -1,8 +1,9 @@
 import App from "./App";
 import PairPage from "./pairing/PairPage";
+import NotesPage from "./notes/NotesPage";
 import TopicPage from "./topic/TopicPage";
 
-const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)$/;
+const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes)?$/;
 
 function decode(segment: string): string | null {
   try {
@@ -24,7 +25,11 @@ export default function Router({ pathname = window.location.pathname }: { pathna
     const subjectId = decode(topic[1]);
     const topicId = decode(topic[2]);
     if (subjectId !== null && topicId !== null) {
-      return <TopicPage subjectId={subjectId} topicId={topicId} />;
+      return topic[3] ? (
+        <NotesPage subjectId={subjectId} topicId={topicId} />
+      ) : (
+        <TopicPage subjectId={subjectId} topicId={topicId} />
+      );
     }
   }
   return <App />;

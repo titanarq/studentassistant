@@ -12,6 +12,14 @@ from capture_images import desk_still, encode, flat_still
 
 from studentassistant.config import SourcesSettings
 from studentassistant.llm import FakeClaude, RefusalError, load_prompt
+from studentassistant.observer import (
+    CAPTURE_EVENT_KIND,
+    STATE_OP_EVENT_KIND,
+    AddPending,
+    TopicState,
+    fold,
+    op_payload,
+)
 from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.sources import BurstStill, store_capture
 from studentassistant.sources.transcription import (
@@ -29,6 +37,7 @@ from studentassistant.sources.transcription import (
     transcribe_page,
 )
 from studentassistant.vault import (
+    Event,
     SourceNotFoundError,
     SourcePathError,
     TranscriptSegment,
@@ -101,9 +110,9 @@ def test_the_prompt_asks_for_spanish_markdown_with_the_marks() -> None:
 def test_uncertain_marks_are_found_in_order_with_their_line() -> None:
     text = "# Título\n\nLa [[?mitocondria]] produce [[?]] ATP.\n- otra [[? ribosoma ]]\n[[no]]"
     assert find_uncertain(text) == [
-        UncertainWord("mitocondria", "La [[?mitocondria]] produce [[?]] ATP."),
-        UncertainWord(None, "La [[?mitocondria]] produce [[?]] ATP."),
-        UncertainWord("ribosoma", "- otra [[? ribosoma ]]"),
+        UncertainWord("mitocondria", "La [[?mitocondria]] produce [[?]] ATP.", 3, 4),
+        UncertainWord(None, "La [[?mitocondria]] produce [[?]] ATP.", 3, 29),
+        UncertainWord("ribosoma", "- otra [[? ribosoma ]]", 4, 8),
     ]
     assert find_uncertain("sin dudas") == []
 
@@ -151,7 +160,10 @@ def test_the_request_holds_the_images_first_then_the_context_and_hints() -> None
 
 
 def test_each_uncertain_word_becomes_an_illegible_pending_item_of_the_capture() -> None:
-    marks = [UncertainWord("mitocondria", "La [[?mitocondria]] produce"), UncertainWord(None, "x")]
+    marks = [
+        UncertainWord("mitocondria", "La [[?mitocondria]] produce", 2, 4),
+        UncertainWord(None, "x", 5, 1),
+    ]
     ops = pending_ops(
         marks, session_id="20260925-101010", capture_id="cap-1", source_kind="notes", page_number=3
     )
@@ -159,12 +171,13 @@ def test_each_uncertain_word_becomes_an_illegible_pending_item_of_the_capture() 
         "ill-20260925-101010-cap-1-1",
         "ill-20260925-101010-cap-1-2",
     ]
-    assert {op.category for op in ops} == {"illegible"}
+    assert {op.kind for op in ops} == {"illegible"}
     assert all(op.capture_ids == ["cap-1"] for op in ops)
-    assert ops[0].description == (
-        "Palabra dudosa «mitocondria» en la página 3 (apuntes): «La [[?mitocondria]] produce»"
+    assert ops[0].text == (
+        "Palabra dudosa «mitocondria» en la página 3 (apuntes), línea 2, columna 4:"
+        " «La [[?mitocondria]] produce»"
     )
-    assert ops[1].description == "Palabra ilegible en la página 3 (apuntes): «x»"
+    assert ops[1].text == "Palabra ilegible en la página 3 (apuntes), línea 5, columna 1: «x»"
     long = pending_ops(
         [UncertainWord(None, "a" * 500)],
         session_id="s",
@@ -172,8 +185,40 @@ def test_each_uncertain_word_becomes_an_illegible_pending_item_of_the_capture() 
         source_kind="book",
         page_number=None,
     )
-    assert "una página (libro)" in long[0].description
-    assert len(long[0].description) < 250
+    assert "una página (libro)" in long[0].text
+    assert len(long[0].text) < 250
+
+
+def _fold_pages(*batches: tuple[str, str, list[AddPending]]) -> TopicState:
+    """The observer's fold over, per batch, a stored capture and its pending ops."""
+    events: list[tuple[str, Event]] = []
+    for session_id, capture_id, ops in batches:
+        payloads = [(CAPTURE_EVENT_KIND, {"capture_id": capture_id})]
+        payloads += [(STATE_OP_EVENT_KIND, op_payload(op)) for op in ops]
+        events += [
+            (session_id, Event(seq=seq, t=seq, origin="observer", kind=kind, payload=payload))
+            for seq, (kind, payload) in enumerate(payloads, start=1)
+        ]
+    return fold(events)
+
+
+def test_distinct_marks_of_one_page_stay_distinct_pending_items() -> None:
+    # Marks of one page share the capture ref and have near-identical texts; the pending queue
+    # (#178's merging) must still keep one item per mark, even for two marks on one line.
+    text = "# Tema\n\nLa [[?]] y la [[?]] del núcleo.\n\nOtra [[?]] del núcleo.\n- [[?mitosis]]"
+    marks = find_uncertain(text)
+    ops = pending_ops(
+        marks, session_id="20260925-101010", capture_id="cap-1", source_kind="notes", page_number=3
+    )
+    state = _fold_pages(("20260925-101010", "cap-1", ops))
+    assert sorted(item.id for item in state.open_pending()) == sorted(op.pending_id for op in ops)
+    assert len(ops) == 4
+    # The same page photographed and transcribed again later is the same doubts: merged.
+    again = pending_ops(
+        marks, session_id="20260925-111111", capture_id="cap-9", source_kind="notes", page_number=3
+    )
+    state = _fold_pages(("20260925-101010", "cap-1", ops), ("20260925-111111", "cap-9", again))
+    assert len(state.open_pending()) == 4
 
 
 # -- reading a stored page -------------------------------------------------------------------------
@@ -239,7 +284,7 @@ def test_a_page_is_transcribed_and_stored_next_to_it(
     assert result.text == "# La célula\n\n- La [[?mitocondria]]"
     assert result.path == source_path.replace(".jpg", ".md")
     assert (tmp_vault.path / result.path).read_text(encoding="utf-8") == result.text + "\n"
-    assert result.uncertain == (UncertainWord("mitocondria", "- La [[?mitocondria]]"),)
+    assert result.uncertain == (UncertainWord("mitocondria", "- La [[?mitocondria]]", 3, 6),)
     [request] = fake.requests
     prompt = load_prompt("page_transcription")
     assert request.role == "transcriber"

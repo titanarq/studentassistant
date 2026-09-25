@@ -65,10 +65,13 @@ class TranscriptionError(LLMError):
 
 @dataclass(frozen=True)
 class UncertainWord:
-    """One `[[?...]]` mark of a transcription: the reading (`None` when illegible) and its line."""
+    """One `[[?...]]` mark of a transcription: the reading (`None` when illegible), its line and
+    where it is (1-based line number among the text's lines, 1-based column of the mark)."""
 
     word: str | None
     line: str
+    line_number: int = 0
+    column: int = 0
 
 
 @dataclass(frozen=True)
@@ -103,10 +106,17 @@ class PageTranscription:
 def find_uncertain(text: str) -> list[UncertainWord]:
     """Every `[[?word]]` / `[[?]]` mark of `text`, in order, with the line it is on."""
     found: list[UncertainWord] = []
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), start=1):
         for match in UNCERTAIN_MARK.finditer(line):
             word = match.group(1).strip()
-            found.append(UncertainWord(word=word or None, line=line.strip()))
+            found.append(
+                UncertainWord(
+                    word=word or None,
+                    line=line.strip(),
+                    line_number=number,
+                    column=match.start() + 1,
+                )
+            )
     return found
 
 
@@ -210,7 +220,11 @@ def pending_ops(
     source_kind: str,
     page_number: int | None,
 ) -> list[AddPending]:
-    """One `add_pending` (category `illegible`, the capture as its ref) per uncertain word.
+    """One `add_pending` (kind `illegible`, the capture as its page ref) per uncertain word.
+
+    The text names the mark's line and column in the transcription: the pending queue merges an
+    open item of the same kind whose text is alike, unless the two name different numbers
+    (`observer.pending.is_duplicate`), so two marks of one page, even on one line, stay two items.
 
     Ids are `ill-<session>-<capture>-<n>` (`n` from 1), unique in the topic because a capture id is
     unique in its session and a capture is transcribed once per `capture.stored`.
@@ -223,15 +237,16 @@ def pending_ops(
         line = mark.line
         if len(line) > _LINE_EXCERPT:
             line = line[: _LINE_EXCERPT - 1].rstrip() + "…"
+        at = f"{page}, línea {mark.line_number}, columna {mark.column}"
         if mark.word is None:
-            description = f"Palabra ilegible en {page}: «{line}»"
+            text = f"Palabra ilegible en {at}: «{line}»"
         else:
-            description = f"Palabra dudosa «{mark.word}» en {page}: «{line}»"
+            text = f"Palabra dudosa «{mark.word}» en {at}: «{line}»"
         ops.append(
             AddPending(
                 pending_id=f"ill-{session_id}-{capture_id}-{index}",
-                category="illegible",
-                description=description,
+                kind="illegible",
+                text=text,
                 capture_ids=[capture_id],
             )
         )
