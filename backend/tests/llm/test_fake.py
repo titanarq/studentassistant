@@ -101,3 +101,22 @@ def test_a_malformed_tool_input_is_kept_verbatim(settings: Settings) -> None:
     response = asyncio.run(fake.client("observer", settings=settings).create([]))
 
     assert response.tool_calls[0].input_json == '{"a": '
+
+
+def test_streams_the_text_of_a_reply_when_asked(settings: Settings) -> None:
+    fake = FakeClaude().reply_tool("record_topic", {"topic": "Derivadas"}, text="Vale, apuntado.")
+    fake.reply_text("Hola")
+    client = fake.client("editor", settings=settings)
+    deltas: list[str] = []
+
+    async def on_text(text: str) -> None:
+        deltas.append(text)
+
+    async def run() -> None:
+        response = await client.create([{"role": "user", "content": "Tema"}], on_text=on_text)
+        assert response.text == "Vale, apuntado." and response.tool_calls
+        # Without a sink nothing is streamed.
+        await client.create([{"role": "user", "content": "Hola"}])
+
+    asyncio.run(run())
+    assert deltas == ["Vale, ", "apuntado."]

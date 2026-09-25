@@ -50,7 +50,12 @@ No price or cap lives anywhere but these config defaults.
 - `get_client(role, *, settings=None, transport=None, sleep=asyncio.sleep, ledger=None,
   clock=utc_now) -> LLMClient`; `UnknownRoleError` for any other role.
   `LLMClient.create(messages, *, system=None, tools=None, tool_choice=None, max_tokens=None,
-  cache=True, prompt_hash=None, confirm_over_cap=False) -> LLMResponse` (async).
+  cache=True, prompt_hash=None, confirm_over_cap=False, on_text=None) -> LLMResponse` (async).
+  `on_text` (a `TextSink`, `async (delta: str) -> None`) receives the answer's text deltas as they
+  stream in (`stream.text_stream`), for a live reply; the return value is still the whole final
+  message, and after a transport retry the deltas start again. The client passes `on_text` to
+  `Transport.send(request, on_text=...)` only when given, so a transport with a plain
+  `send(request)` keeps working; `FakeClaude` streams its scripted text blocks word by word.
   Every call streams (`messages.stream` + `get_final_message`), sends `output_config.effort`,
   never sends `thinking`, and refuses a forced `tool_choice` (`any`/`tool`) with `ValueError`.
   `build_request(...)` returns the `LLMRequest` without sending it.

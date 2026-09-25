@@ -12,6 +12,7 @@ assert fake.requests[0].model == "claude-sonnet-5"
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import deque
 from typing import Any
 
@@ -19,6 +20,7 @@ from studentassistant.config import Settings
 from studentassistant.llm.client import LLMClient, Sleep, get_client
 from studentassistant.llm.cost import Clock, LedgerBinding, utc_now
 from studentassistant.llm.errors import FakeClaudeExhaustedError, LLMError
+from studentassistant.llm.transport import TextSink
 from studentassistant.llm.types import LLMRequest, LLMResponse, Usage
 
 
@@ -88,7 +90,8 @@ class FakeClaude:
         """Scripted replies not consumed yet."""
         return len(self._script)
 
-    async def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
+        """The next scripted reply; with `on_text`, its text blocks are streamed word by word."""
         # A deep copy, so later mutation of the caller's lists does not rewrite history.
         self.requests.append(request.model_copy(deep=True))
         await asyncio.sleep(0)
@@ -100,6 +103,11 @@ class FakeClaude:
         if isinstance(item, LLMError):
             raise item
         model = self.model or item.model or request.model
+        if on_text is not None:
+            for block in item.content:
+                if block.get("type") == "text":
+                    for chunk in re.findall(r"\S+\s*|\s+", block.get("text") or ""):
+                        await on_text(chunk)
         return item.model_copy(update={"model": model}, deep=True)
 
     def _response(

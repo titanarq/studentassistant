@@ -98,6 +98,7 @@ from studentassistant.vault.subjects import (
     create_subject,
     get_subject,
     list_subjects,
+    set_style_guide,
     subject_directory,
 )
 from studentassistant.vault.sync import (
@@ -107,6 +108,7 @@ from studentassistant.vault.sync import (
     GitSync,
     NotesTag,
     PushFailure,
+    RevertConflictError,
     SyncResult,
     SyncStatus,
     SystemClock,
@@ -121,6 +123,7 @@ from studentassistant.vault.topics import (
     get_topic,
     list_topics,
     require_topic,
+    set_fidelity_mode,
     topic_directory,
     topics_directory,
 )
@@ -160,6 +163,7 @@ __all__ = [
     "NotesError",
     "NotesTag",
     "PushFailure",
+    "RevertConflictError",
     "SecretRefused",
     "Session",
     "SessionEndedError",
@@ -235,6 +239,8 @@ __all__ = [
     "read_source",
     "read_topic_events",
     "require_topic",
+    "set_fidelity_mode",
+    "set_style_guide",
     "release_active_host",
     "resume_session",
     "sessions_directory",

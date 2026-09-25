@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import anthropic
@@ -15,9 +16,16 @@ from studentassistant.llm.errors import (
 )
 from studentassistant.llm.types import LLMRequest, LLMResponse, Usage
 
+TextSink = Callable[[str], Awaitable[None]]
+"""Receives the text deltas of an answer as they stream in (`LLMClient.create(on_text=...)`)."""
+
 
 class Transport(Protocol):
-    """Sends one request and returns the final message. `FakeClaude` is the test implementation."""
+    """Sends one request and returns the final message. `FakeClaude` is the test implementation.
+
+    A transport that can stream text also accepts `on_text` (a `TextSink`) as a keyword; the client
+    passes it only when its caller asked for the deltas, so a plain `send(request)` stays enough.
+    """
 
     async def send(self, request: LLMRequest) -> LLMResponse: ...
 
@@ -96,10 +104,13 @@ class AnthropicTransport:
             self._sdk = anthropic.AsyncAnthropic(max_retries=0)
         return self._sdk
 
-    async def send(self, request: LLMRequest) -> LLMResponse:
+    async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
         try:
             client = self._client().with_options(max_retries=0)
             async with client.messages.stream(**request.api_params()) as stream:
+                if on_text is not None:
+                    async for text in stream.text_stream:
+                        await on_text(text)
                 message = await stream.get_final_message()
         except Exception as error:  # every SDK failure becomes one of ours
             raise map_sdk_error(error) from error
