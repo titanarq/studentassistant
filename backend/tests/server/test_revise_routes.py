@@ -177,3 +177,57 @@ def test_errors_before_the_stream(
     no_claude = TestClient(make_app(None), base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000))
     assert no_claude.post(_base(topic), json={"message": "Hola"}).status_code == 503
     assert no_claude.get(_base(topic)).status_code == 200
+
+
+def _why(topic: ReviseTopic) -> str:
+    return f"/api/subjects/{topic.subject}/topics/{topic.topic}/notes/why"
+
+
+def test_why_streams_the_explanation_with_its_refs(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    fake.reply_text("Lo escribiste en tu página 1.")
+    response = client.post(
+        _why(topic), json={"section": "definicion", "block": 1, "quote": "Derivada: el límite"}
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = events_of(response)
+    deltas = "".join(data["text"] for kind, data in events if kind == "reply.delta")
+    assert deltas == "Lo escribiste en tu página 1."
+    kind, result = events[-1]
+    assert kind == "result"
+    assert result["reply"] == "Lo escribiste en tu página 1."
+    assert [(ref["label"], ref["kind"]) for ref in result["refs"]] == [
+        ("p1", "notes"),
+        ("t1", "transcript"),
+    ]
+    # Appended to the conversation the chat reads; the notes lock is released.
+    history = client.get(_base(topic)).json()
+    assert [turn["kind"] for turn in history["turns"]] == ["explain"]
+    assert history["turns"][0]["refs"][0]["label"] == "p1"
+    generator = client.app.state.notes  # type: ignore[attr-defined]
+    assert generator.claim(topic.subject, topic.topic)
+    generator.release(topic.subject, topic.topic)
+
+
+def test_why_errors(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> None:
+    assert client.post(_why(topic), json={"section": "definicion"}).status_code == 422
+    unknown = client.post(_why(topic), json={"section": "definicion", "block": 9})
+    assert unknown.status_code == 422 and "No encuentro" in unknown.json()["detail"]
+    bad_anchor = client.post(_why(topic), json={"section": "../x", "block": 1})
+    assert bad_anchor.status_code == 422
+    missing = client.post("/api/subjects/nada/topics/nada/notes/why", json={"block": 1})
+    assert missing.status_code == 404
+
+    generator = client.app.state.notes  # type: ignore[attr-defined]
+    assert generator.claim(topic.subject, topic.topic)
+    busy = client.post(_why(topic), json={"section": "definicion", "block": 1})
+    assert busy.status_code == 409
+    generator.release(topic.subject, topic.topic)
+
+    fake.fail(LLMServerError("down")).fail(LLMServerError("down")).fail(LLMServerError("down"))
+    fake.fail(LLMServerError("down"))
+    failed = client.post(_why(topic), json={"section": "definicion", "block": 1})
+    kind, data = events_of(failed)[-1]
+    assert kind == "error" and data["status"] == 502

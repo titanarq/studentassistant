@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EditorChat from "../chat/EditorChat";
 import { useEditorChat } from "../chat/useEditorChat";
-import { whyQuestion } from "../chat/why";
+import { blockExcerpt, whyQuestion } from "../chat/why";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
 import PrepareTopic from "../topic/PrepareTopic";
 import { fetchNotes, type TopicNotes } from "./api";
@@ -19,8 +19,9 @@ import "./notes.css";
  *
  * Beside the notes (below them at phone width) is the chat with the editor (`EditorChat`, #71):
  * after a turn or an undo that changed the notes they are read again, and the sections the turn
- * touched are highlighted; every block offers "¿Por qué pusiste esto?", which asks the editor in
- * the same chat. A topic without notes yet offers "Prepárame el tema" instead.
+ * touched are highlighted; every block offers "¿Por qué pusiste esto?", which asks the editor
+ * (`POST .../notes/why`, #69) and shows the answer in the same chat, with the block's sources:
+ * each opens in the sources panel. A topic without notes yet offers "Prepárame el tema" instead.
  */
 export default function NotesPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [topicName, setTopicName] = useState(topicId);
@@ -58,16 +59,16 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
     [loadNotes],
   );
   const chat = useEditorChat(subjectId, topicId, onNotesChanged);
-  const { send } = chat;
+  const { ask } = chat;
 
   const askWhy = useCallback(
-    (block: Block, section: string | null) => {
+    (block: Block, section: string | null, number: number) => {
       const question = whyQuestion(block, section);
       if (question === null) return;
-      send(question);
+      ask({ section, block: number, quote: blockExcerpt(block) }, question);
       document.getElementById("editor-chat-heading")?.scrollIntoView?.({ block: "nearest" });
     },
-    [send],
+    [ask],
   );
 
   const tree = useMemo(() => (notes?.kind === "ok" ? parseNotes(notes.value.text) : null), [notes]);
@@ -124,7 +125,7 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
       </main>
       {tree !== null && (
         <aside className="notes-chat" aria-label="Chat con el editor">
-          <EditorChat chat={chat} />
+          <EditorChat chat={chat} onOpenSource={openSource} />
         </aside>
       )}
       {open !== null && (

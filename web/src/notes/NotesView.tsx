@@ -22,8 +22,12 @@ export interface NotesViewProps {
   activeLabel?: string | null;
   /** Anchors of the sections the editor's last turn changed, highlighted. */
   changedSections?: ReadonlySet<string>;
-  /** "¿Por qué pusiste esto?" on a block: the block and the anchor of its section, if any. */
-  onAskWhy?: (block: Block, section: string | null) => void;
+  /**
+   * "¿Por qué pusiste esto?" on a block: the block, the anchor of its section, if any, and its
+   * number in that section as the backend counts blocks (from 1, after the section heading; before
+   * the first section, from the start of the notes, the `# title` included).
+   */
+  onAskWhy?: (block: Block, section: string | null, number: number) => void;
   /** The "¿Por qué?" buttons are disabled (the editor is busy). */
   askDisabled?: boolean;
 }
@@ -224,9 +228,13 @@ export default function NotesView({
 
   const wrap = changedSections !== undefined || onAskWhy !== undefined;
   const headings: { level: number; anchor: string | null }[] = [];
+  let number = 0;
   const body = tree.blocks.map((b, index) => {
     const key = String(index);
     if (!wrap) return block(b, key);
+    if (b.type === "heading" && b.level >= 2) number = 0;
+    else number += 1;
+    const blockNumber = number;
     if (b.type === "heading") {
       while (headings.length > 0 && headings[headings.length - 1].level >= b.level) headings.pop();
       headings.push({ level: b.level, anchor: b.anchor });
@@ -248,7 +256,7 @@ export default function NotesView({
             aria-label="¿Por qué pusiste esto?"
             title="¿Por qué pusiste esto?"
             disabled={askDisabled}
-            onClick={() => onAskWhy(b, section)}
+            onClick={() => onAskWhy(b, section, blockNumber)}
           >
             ¿Por qué?
           </button>

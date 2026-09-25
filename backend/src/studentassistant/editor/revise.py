@@ -96,6 +96,8 @@ EDIT_TOOL = "apply_edits"
 NOTES_EDITED_KIND = "notes.edited"
 NOTES_UNDONE_KIND = "notes.undone"
 REVISION_RECORD = "revision"
+EXPLANATION_RECORD = "explanation"
+"""The conversation record of a "¿Por qué pusiste esto?" answer (`explain.py`)."""
 MAX_REASKS = 2
 """How many times a change that fails the checks is sent back to the editor."""
 MAX_MESSAGE_CHARS = 4000
@@ -207,10 +209,25 @@ class UndoResult(_Strict):
     paths: list[str] = Field(default_factory=list)
 
 
+class ChatRef(_Strict):
+    """A source a "¿Por qué pusiste esto?" answer points to: one footnote of the block."""
+
+    label: str = Field(description="The footnote label in the notes (`p1`), for the sources panel.")
+    kind: str = Field(description="`notes`, `book`, `pdf`, `web`, `transcript` or `ia`.")
+    text: str = Field(description="The footnote's text, e.g. «Apuntes, página 1».")
+    source_id: str | None = None
+    path: str | None = Field(default=None, description="Topic-relative file of the source.")
+
+
 class ChatTurn(_Strict):
-    """One turn of the conversation as the web chat shows it."""
+    """One turn of the conversation as the web chat shows it.
+
+    `kind` is `revise` for a revision turn and `explain` for a "¿Por qué pusiste esto?" answer,
+    whose `refs` are the sources of the block it explains.
+    """
 
     time: datetime
+    kind: Literal["revise", "explain"] = "revise"
     message: str
     reply: str
     applied: bool = False
@@ -218,6 +235,16 @@ class ChatTurn(_Strict):
     changed_sections: list[str] = Field(default_factory=list)
     commit: str | None = None
     undone: bool = False
+    warning: str | None = None
+    refs: list[ChatRef] = Field(default_factory=list)
+
+
+class _ExplanationView(BaseModel):
+    """What the chat reads of an `explanation` record."""
+
+    question: str
+    reply: str
+    refs: list[ChatRef] = Field(default_factory=list)
     warning: str | None = None
 
 
@@ -262,6 +289,25 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[ChatTu
             commit = record.detail.get("undone_commit")
             if isinstance(commit, str):
                 undone.add(commit)
+        if record.kind == EXPLANATION_RECORD and record.detail:
+            try:
+                view = _ExplanationView.model_validate(record.detail)
+            except ValidationError:
+                logger.warning(
+                    "ignoring a malformed explanation record of %s/%s", subject_slug, topic_slug
+                )
+                continue
+            turns.append(
+                ChatTurn(
+                    time=record.time,
+                    kind="explain",
+                    message=view.question,
+                    reply=view.reply,
+                    warning=view.warning,
+                    refs=view.refs,
+                )
+            )
+            continue
         if record.kind != REVISION_RECORD or not record.detail:
             continue
         try:
@@ -347,7 +393,7 @@ def _history_text(turns: list[ChatTurn]) -> str:
         if turn.applied:
             state = " (el estudiante lo deshizo)" if turn.undone else ""
             lines.append(f"[Cambio aplicado: {turn.summary or 'sin resumen'}{state}]")
-        elif turn.warning:
+        elif turn.warning and turn.kind == "revise":
             lines.append("[No se aplicó ningún cambio: no pasó la validación.]")
         lines.append("")
     return "\n".join(lines).rstrip()
@@ -739,12 +785,14 @@ def _short(text: str, width: int = 72) -> str:
 
 __all__ = [
     "EDIT_TOOL",
+    "EXPLANATION_RECORD",
     "MAX_REASKS",
     "NOTES_EDITED_KIND",
     "NOTES_UNDONE_KIND",
     "REPLY_DELTA",
     "REPLY_RESTART",
     "ChatHistory",
+    "ChatRef",
     "ChatTurn",
     "EditsOutput",
     "InvalidMessageError",

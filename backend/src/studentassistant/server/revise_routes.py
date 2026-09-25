@@ -1,7 +1,9 @@
-"""The editor chat API: revise the notes in conversation, read the conversation, undo a turn.
+"""The editor chat API: revise the notes in conversation, read the conversation, undo a turn, and
+"¿Por qué pusiste esto?".
 
-Thin: the work is `studentassistant.editor.revise`. Every route opens the vault through the
-`SessionService` (the pulled vault and its `GitSync`), like the notes and doubts routes.
+Thin: the work is `studentassistant.editor.revise` and `studentassistant.editor.explain`. Every
+route opens the vault through the `SessionService` (the pulled vault and its `GitSync`), like the
+notes and doubts routes.
 
 - `POST .../notes/chat` answers with a Server-Sent Events stream (`text/event-stream`): the
   editor's reply as it is written (`reply.delta`, `reply.restart` on a re-ask), then one `result`
@@ -9,8 +11,13 @@ Thin: the work is `studentassistant.editor.revise`. Every route opens the vault 
   and `code` when the failure has one and the caller speaks it, as in a REST error body).
   The turn runs as its own task, so a client that goes away does not cut a change in half; it
   holds the topic's notes lock (`NotesGenerator.claim`) with "prepárame el tema" and the doubts.
-- `GET .../notes/chat` -> `ChatHistory`; `POST .../notes/chat/undo` -> `UndoResult` (no Claude
-  call, but the notes lock too).
+- `POST .../notes/why` (`WhyRequest`: `section`, `block`, `quote`, `confirm_over_cap`): the
+  editor's explanation of one block from its cited sources, streamed the same way (`reply.delta`,
+  then `result` with the `ExplanationResult` -- `reply` and the block's `refs` for the sources
+  panel -- or `error`); the answer is appended to the editor conversation, the notes unchanged.
+  It holds the notes lock too. A block that is not in the notes is a 422 before the stream.
+- `GET .../notes/chat` -> `ChatHistory` (explanations included, `kind` `explain`);
+  `POST .../notes/chat/undo` -> `UndoResult` (no Claude call, but the notes lock too).
 
 Errors before the stream starts are ordinary HTTP errors, as `{"detail": "..."}` in Spanish: no
 `llm_transport` 503 (chat only), a vault that cannot be opened 503, an unknown topic 404, another
@@ -25,17 +32,26 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.explain import (
+    MAX_QUOTE_CHARS,
+    BlockAnchor,
+    BlockNotFoundError,
+    explain_block,
+    find_block,
+)
+from studentassistant.editor.notes_format import parse
 from studentassistant.editor.revise import (
     MAX_MESSAGE_CHARS,
     ChatHistory,
     InvalidMessageError,
+    ReplySink,
     RevisionError,
     UndoResult,
     chat_history,
@@ -45,6 +61,7 @@ from studentassistant.editor.revise import (
 from studentassistant.llm import (
     CostConfirmationRequiredError,
     LedgerBinding,
+    LLMClient,
     LLMError,
     RefusalError,
     get_client,
@@ -75,6 +92,7 @@ BUSY_DETAIL = "El editor ya está trabajando en los apuntes o las dudas de este 
 REFUSED_DETAIL = "Claude se ha negado a revisar los apuntes de este tema."
 FAILED_DETAIL = "No se han podido revisar los apuntes: Claude no ha respondido. Prueba más tarde."
 NO_NOTES_DETAIL = "Todavía no hay apuntes de este tema: prepáralos antes de revisarlos."
+NO_BLOCK_DETAIL = "Di qué parte de los apuntes quieres que te explique."
 INTERNAL_DETAIL = "No se han podido revisar los apuntes por un error del servidor."
 
 
@@ -85,6 +103,16 @@ class ChatRequest(BaseModel):
     """One message of the student; `confirm_over_cap` proceeds past a reached cost cap."""
 
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    confirm_over_cap: bool = False
+
+
+class WhyRequest(BaseModel):
+    """ "¿Por qué pusiste esto?" on one block: its section anchor (`None`: before the first
+    section), its number in the section and/or the text the student sees (`quote`)."""
+
+    section: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    block: int | None = Field(default=None, ge=1)
+    quote: str | None = Field(default=None, max_length=MAX_QUOTE_CHARS)
     confirm_over_cap: bool = False
 
 
@@ -146,22 +174,16 @@ def revise_router() -> APIRouter:
         vault, _sync = await open_topic(request, subject_id, topic_id)
         return await asyncio.to_thread(chat_history, vault, subject_id, topic_id)
 
-    @router.post("/api/subjects/{subject_id}/topics/{topic_id}/notes/chat")
-    async def chat(
-        request: Request, subject_id: SubjectId, topic_id: TopicId, body: ChatRequest
+    def stream_turn(
+        request: Request,
+        generator: NotesGenerator,
+        vault: Vault,
+        subject_id: str,
+        topic_id: str,
+        what: str,
+        work: Callable[[LLMClient, ReplySink], Awaitable[BaseModel]],
     ) -> StreamingResponse:
-        generator: NotesGenerator | None = request.app.state.notes
-        if generator is None:
-            raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
-        vault, sync = await open_topic(request, subject_id, topic_id)
-        if not body.message.strip():
-            raise HTTPException(status_code=422, detail="Escribe qué quieres cambiar.")
-        notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
-        if not notes or not notes.strip():
-            raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
-        if not generator.claim(subject_id, topic_id):
-            raise HTTPException(status_code=409, detail=BUSY_DETAIL)
-
+        """Run one editor turn as its own task (the notes lock claimed) and stream it as SSE."""
         speaks_codes = caller_speaks_error_codes(request)
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
@@ -176,25 +198,15 @@ def revise_router() -> APIRouter:
                     transport=generator.transport,
                     ledger=LedgerBinding(vault, subject_id, topic_id),
                 )
-                result = await revise_notes(
-                    vault,
-                    subject_id,
-                    topic_id,
-                    body.message,
-                    client=client,
-                    sync=sync,
-                    on_reply=on_reply,
-                    on_event=publisher(request, subject_id, topic_id),
-                    confirm_over_cap=body.confirm_over_cap,
-                )
+                result = await work(client, on_reply)
                 queue.put_nowait(sse("result", result.model_dump(mode="json")))
             except Exception as error:
                 status, detail, code = _error_of(error)
                 if status == 500:
-                    logger.exception("the notes chat of %s/%s failed", subject_id, topic_id)
+                    logger.exception("the notes %s of %s/%s failed", what, subject_id, topic_id)
                 elif status == 502:
                     logger.warning(
-                        "the notes chat of %s/%s failed: %s", subject_id, topic_id, error
+                        "the notes %s of %s/%s failed: %s", what, subject_id, topic_id, error
                     )
                 data: dict[str, Any] = {"status": status, "detail": detail}
                 if code is not None and speaks_codes:
@@ -220,6 +232,82 @@ def revise_router() -> APIRouter:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    async def claim_notes(
+        request: Request,
+        subject_id: str,
+        topic_id: str,
+        invalid: str | None = None,
+        check: Callable[[str], None] | None = None,
+    ) -> tuple[NotesGenerator, Vault, GitSync]:
+        """The checks before a streamed turn (`invalid`: a 422 detail for the body, once the topic
+        is known); claims the notes lock last."""
+        generator: NotesGenerator | None = request.app.state.notes
+        if generator is None:
+            raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
+        vault, sync = await open_topic(request, subject_id, topic_id)
+        if invalid is not None:
+            raise HTTPException(status_code=422, detail=invalid)
+        notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
+        if not notes or not notes.strip():
+            raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
+        if check is not None:
+            check(notes)
+        if not generator.claim(subject_id, topic_id):
+            raise HTTPException(status_code=409, detail=BUSY_DETAIL)
+        return generator, vault, sync
+
+    @router.post("/api/subjects/{subject_id}/topics/{topic_id}/notes/chat")
+    async def chat(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, body: ChatRequest
+    ) -> StreamingResponse:
+        invalid = None if body.message.strip() else "Escribe qué quieres cambiar."
+        generator, vault, sync = await claim_notes(request, subject_id, topic_id, invalid)
+
+        async def work(client: LLMClient, on_reply: ReplySink) -> BaseModel:
+            return await revise_notes(
+                vault,
+                subject_id,
+                topic_id,
+                body.message,
+                client=client,
+                sync=sync,
+                on_reply=on_reply,
+                on_event=publisher(request, subject_id, topic_id),
+                confirm_over_cap=body.confirm_over_cap,
+            )
+
+        return stream_turn(request, generator, vault, subject_id, topic_id, "chat", work)
+
+    @router.post("/api/subjects/{subject_id}/topics/{topic_id}/notes/why")
+    async def why(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, body: WhyRequest
+    ) -> StreamingResponse:
+        pointed = body.block is not None or bool((body.quote or "").strip())
+        invalid = None if pointed else NO_BLOCK_DETAIL
+        anchor = BlockAnchor(section=body.section, block=body.block, quote=body.quote)
+
+        def check(notes: str) -> None:
+            try:
+                find_block(parse(notes), anchor)
+            except BlockNotFoundError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+
+        generator, vault, sync = await claim_notes(request, subject_id, topic_id, invalid, check)
+
+        async def work(client: LLMClient, on_reply: ReplySink) -> BaseModel:
+            return await explain_block(
+                vault,
+                subject_id,
+                topic_id,
+                anchor,
+                client=client,
+                sync=sync,
+                on_reply=on_reply,
+                confirm_over_cap=body.confirm_over_cap,
+            )
+
+        return stream_turn(request, generator, vault, subject_id, topic_id, "why", work)
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/notes/chat/undo")
     async def undo(request: Request, subject_id: SubjectId, topic_id: TopicId) -> UndoResult:
