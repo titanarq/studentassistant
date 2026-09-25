@@ -171,7 +171,14 @@ class LLMClient:
         # The call is done and paid for: a ledger that cannot be written must not lose the answer.
         assert self.ledger is not None
         try:
-            record_call(self.ledger, request, response, self.llm_settings.prices, now=self._clock())
+            record_call(
+                self.ledger,
+                request,
+                response,
+                self.llm_settings.prices,
+                now=self._clock(),
+                web_search_usd_per_thousand=self.llm_settings.web_search_usd_per_thousand,
+            )
         except Exception:
             logger.exception(
                 "could not record a %s call in the ledger of %s/%s",

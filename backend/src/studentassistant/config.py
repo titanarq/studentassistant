@@ -258,6 +258,13 @@ def _default_prices() -> dict[str, LlmPrice]:
     return {model: LlmPrice(**price) for model, price in DEFAULT_LLM_PRICES.items()}
 
 
+# Claude's server-side web search and web fetch tools: the dynamic-filtering versions (Opus 4.6+,
+# Sonnet 4.6+), and the web search price (USD per 1,000 searches).
+DEFAULT_WEB_SEARCH_TOOL = "web_search_20260209"
+DEFAULT_WEB_FETCH_TOOL = "web_fetch_20260209"
+DEFAULT_WEB_SEARCH_USD_PER_THOUSAND = 10.0
+
+
 class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
@@ -274,6 +281,11 @@ class LlmSettings(BaseModel):
     # `[llm.prices."<model id>"]`: a configured table is merged over the defaults, key by key, so
     # adding a model or changing one price keeps the rest.
     prices: dict[str, LlmPrice] = Field(default_factory=_default_prices)
+    # Claude's server-side web tools (`studentassistant.llm.web`): the tool versions sent, and the
+    # price of each web search (USD per thousand searches; a web fetch costs only its tokens).
+    web_search_tool: str = DEFAULT_WEB_SEARCH_TOOL
+    web_fetch_tool: str = DEFAULT_WEB_FETCH_TOOL
+    web_search_usd_per_thousand: float = Field(default=DEFAULT_WEB_SEARCH_USD_PER_THOUSAND, ge=0)
 
     @field_validator("api_key_file")
     @classmethod
@@ -350,6 +362,12 @@ DEFAULT_TRANSCRIPTION_ATTEMPTS = 3
 DEFAULT_TRANSCRIPTION_RETRY_SECONDS = 5.0
 DEFAULT_TRANSCRIPTION_GRACE_SECONDS = 2.0
 DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE = 0.3
+# Web search (`studentassistant.sources.web`, "busca esto en Internet").
+DEFAULT_WEB_SEARCH_ROLE = "observer"
+DEFAULT_WEB_SEARCH_MAX_USES = 3
+DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS = 30_000
+DEFAULT_WEB_SEARCH_CONCURRENCY = 1
 
 
 class SourcesSettings(BaseModel):
@@ -388,6 +406,20 @@ class SourcesSettings(BaseModel):
     transcription_min_crop_share: float = Field(
         default=DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE, ge=0, le=1
     )
+    # Web search: off, no search is ever run. `web_search_role` is the `[llm.roles.<role>]` whose
+    # client searches and fetches; one search runs at most `web_search_max_uses` searches and
+    # offers at most `web_search_max_results` pages; a kept page is fetched with at most
+    # `web_fetch_max_content_tokens` of content. With `web_auto_keep`, the pages Claude marks as
+    # relevant are kept as sources at once, without waiting for the student.
+    web_search_enabled: bool = True
+    web_search_role: Literal["observer", "transcriber", "editor", "generator"] = (
+        DEFAULT_WEB_SEARCH_ROLE
+    )
+    web_search_max_uses: int = Field(default=DEFAULT_WEB_SEARCH_MAX_USES, ge=1)
+    web_search_max_results: int = Field(default=DEFAULT_WEB_SEARCH_MAX_RESULTS, ge=1, le=20)
+    web_fetch_max_content_tokens: int = Field(default=DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS, ge=1000)
+    web_search_concurrency: int = Field(default=DEFAULT_WEB_SEARCH_CONCURRENCY, ge=1)
+    web_auto_keep: bool = False
 
 
 # The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final
