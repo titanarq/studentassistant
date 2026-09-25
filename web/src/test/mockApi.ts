@@ -22,3 +22,36 @@ export function stubApi(routes: Record<string, Route>) {
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+/** One Server-Sent Event as the backend writes it. */
+export function sseEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * A `text/event-stream` response fed by the test: `push` enqueues raw text (an event, or part of
+ * one), `close` ends the stream and `fail` breaks it like a dropped connection.
+ */
+export function streamResponse() {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return {
+    response: new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    push: (text: string) => controller.enqueue(encoder.encode(text)),
+    close: () => controller.close(),
+    fail: () => controller.error(new TypeError("network error")),
+  };
+}
+
+/** A complete `text/event-stream` response made of `events`. */
+export function sseResponse(events: [string, unknown][]): Response {
+  return new Response(events.map(([event, data]) => sseEvent(event, data)).join(""), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}

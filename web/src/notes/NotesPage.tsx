@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import EditorChat from "../chat/EditorChat";
+import { useEditorChat } from "../chat/useEditorChat";
+import { whyQuestion } from "../chat/why";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
+import PrepareTopic from "../topic/PrepareTopic";
 import { fetchNotes, type TopicNotes } from "./api";
-import { parseNotes } from "./markdown";
+import { type Block, parseNotes } from "./markdown";
 import NotesView from "./NotesView";
 import SourcePanel from "./SourcePanel";
 import "./notes.css";
@@ -12,12 +16,26 @@ import "./notes.css";
  * footnote last activated. The panel floats over the page edge (a bottom sheet at phone width),
  * so opening, switching or closing it never reflows the notes nor scrolls them: the reading
  * position stays where it was, and closing gives the focus back to the reference that opened it.
+ *
+ * Beside the notes (below them at phone width) is the chat with the editor (`EditorChat`, #71):
+ * after a turn or an undo that changed the notes they are read again, and the sections the turn
+ * touched are highlighted; every block offers "¿Por qué pusiste esto?", which asks the editor in
+ * the same chat. A topic without notes yet offers "Prepárame el tema" instead.
  */
 export default function NotesPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [topicName, setTopicName] = useState(topicId);
   const [notes, setNotes] = useState<ReadResult<TopicNotes> | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [changed, setChanged] = useState<ReadonlySet<string>>(new Set());
   const trigger = useRef<HTMLElement | null>(null);
+  const reads = useRef(0);
+
+  // Only the latest read is shown, so an older answer never overwrites newer notes.
+  const loadNotes = useCallback(async () => {
+    const read = ++reads.current;
+    const result = await fetchNotes(subjectId, topicId);
+    if (read === reads.current) setNotes(result);
+  }, [subjectId, topicId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,13 +43,32 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
       const topic = result.kind === "ok" ? result.value.find((t) => t.topic_id === topicId) : undefined;
       if (!cancelled && topic) setTopicName(topic.name);
     });
-    fetchNotes(subjectId, topicId).then((result) => {
-      if (!cancelled) setNotes(result);
-    });
+    void loadNotes();
     return () => {
       cancelled = true;
+      reads.current++;
     };
-  }, [subjectId, topicId]);
+  }, [subjectId, topicId, loadNotes]);
+
+  const onNotesChanged = useCallback(
+    (sections: string[]) => {
+      setChanged(new Set(sections));
+      void loadNotes();
+    },
+    [loadNotes],
+  );
+  const chat = useEditorChat(subjectId, topicId, onNotesChanged);
+  const { send } = chat;
+
+  const askWhy = useCallback(
+    (block: Block, section: string | null) => {
+      const question = whyQuestion(block, section);
+      if (question === null) return;
+      send(question);
+      document.getElementById("editor-chat-heading")?.scrollIntoView?.({ block: "nearest" });
+    },
+    [send],
+  );
 
   const tree = useMemo(() => (notes?.kind === "ok" ? parseNotes(notes.value.text) : null), [notes]);
 
@@ -65,12 +102,31 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
           {notes?.kind === "ok" && notes.value.version !== null && ` · versión ${notes.value.version}`}
         </p>
         {notes === null && <p>Cargando los apuntes…</p>}
-        {notes !== null && notes.kind === "not-found" && <p>{notes.detail}</p>}
+        {notes !== null && notes.kind === "not-found" && (
+          <>
+            <p>{notes.detail}</p>
+            <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={() => void loadNotes()} />
+          </>
+        )}
         {notes !== null && notes.kind !== "ok" && notes.kind !== "not-found" && (
           <p role="alert">No se pudieron cargar los apuntes: {describeFailure(notes)}</p>
         )}
-        {tree !== null && <NotesView tree={tree} onOpenSource={openSource} activeLabel={open} />}
+        {tree !== null && (
+          <NotesView
+            tree={tree}
+            onOpenSource={openSource}
+            activeLabel={open}
+            changedSections={changed}
+            onAskWhy={askWhy}
+            askDisabled={chat.busy !== null}
+          />
+        )}
       </main>
+      {tree !== null && (
+        <aside className="notes-chat" aria-label="Chat con el editor">
+          <EditorChat chat={chat} />
+        </aside>
+      )}
       {open !== null && (
         <SourcePanel subjectId={subjectId} topicId={topicId} label={open} definition={definition} onClose={close} />
       )}
