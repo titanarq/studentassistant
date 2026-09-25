@@ -80,3 +80,18 @@ it("uses the singular for one of each", () => {
   expect(field("Sesiones")).toHaveTextContent("✓ 1 (1 min de conversación)");
   expect(field("Pendiente")).toHaveTextContent("1 duda por revisar");
 });
+
+it("links the notes version to the notes viewer", () => {
+  render(<TopicCard summary={summary()} />);
+
+  expect(screen.getByRole("link", { name: "Apuntes v3" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/notes",
+  );
+});
+
+it("has no notes link before the first notes version", () => {
+  render(<TopicCard summary={summary({ notes_version: null })} />);
+
+  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+});
