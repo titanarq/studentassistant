@@ -113,7 +113,10 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   does).
 - `GoogleCloudSpeechProvider` (`stt/google_cloud.py`, entry point `google-cloud`; needs the
   `google-cloud` extra, `uv sync --extra google-cloud`, imported only when the first stream
-  opens) -- Google Cloud Speech-to-Text v1 streaming with interim results. `feed` queues the chunk
+  opens) -- Google Cloud Speech-to-Text v1 streaming with interim results. The session's
+  vocabulary hints (`set_vocabulary`) join the configured `phrases` as phrase hints
+  (`SpeechContext`) from the next gRPC stream on (a running stream keeps its config; streams
+  rotate at `stream_limit_seconds`); a custom client without `set_vocabulary` ignores them. `feed` queues the chunk
   on a gRPC stream a worker thread drives and returns the partials/finals that arrived since the
   previous call (never waits for the network); a segment starts where the stream's previous final
   ended and ends at the result's `result_end_time`, clamped to the audio the stream consumed. A
@@ -160,7 +163,7 @@ device = "auto"                 # auto | cuda | cpu
 # credentials_file = "~/.config/studentassistant/google-stt.json"  # unset: Application Default Credentials
 # language_code = "es-ES"       # default: from stt.language (es -> es-ES)
 model = "latest_long"           # the default
-# phrases = ["derivada", "integral"]  # vocabulary hints
+# phrases = ["derivada", "integral"]  # fixed phrase hints, before the session's hints
 # automatic_punctuation = true
 # stream_limit_seconds = 240.0  # audio per stream before a new one opens
 # retry_seconds = 5.0           # after a failed stream, audio dropped before reconnecting
