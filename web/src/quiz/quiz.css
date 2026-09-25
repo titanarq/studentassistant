@@ -1,0 +1,66 @@
+/* The quiz page: questions, their correction, the score and the generation form. */
+
+.quiz-page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.quiz-meta,
+.quiz-difficulty,
+.quiz-sources {
+  color: #555;
+}
+
+.quiz-warning {
+  color: #8a4b00;
+}
+
+.quiz-questions {
+  padding-left: 0;
+  list-style: none;
+}
+
+.quiz-question fieldset {
+  border: 1px solid #ccc;
+  border-radius: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0.5rem 1rem 1rem;
+}
+
+.quiz-statement {
+  font-weight: 600;
+}
+
+.quiz-options {
+  padding-left: 0;
+  list-style: none;
+}
+
+.quiz-options li {
+  margin: 0.25rem 0;
+}
+
+.quiz-feedback {
+  border-top: 1px solid #eee;
+  margin-top: 0.75rem;
+}
+
+.quiz-right {
+  color: #1d6b2f;
+}
+
+.quiz-wrong {
+  color: #a3261b;
+}
+
+.quiz-generate {
+  margin-top: 2rem;
+  border-top: 1px solid #ccc;
+}
+
+.quiz-generate input[type="number"] {
+  width: 4rem;
+}

@@ -385,6 +385,19 @@ token):
     time, the `page_path` image through `sourceUrl`, "Transcribiendo…"/"Transcrita"/"No se pudo
     transcribir: <message>" and the transcription in a `details`). The stream is closed when the
     page goes away.
+- `src/quiz/` (#75): `QuizPage` at `<topic path>/quiz` (the topic card's "Quiz" links to it;
+  `← Tema <name>` link, heading "Quiz de <name>", "<n> preguntas · dificultad <d> · de los
+  apuntes v<N>", a `note` when the quiz is stale). Each question is a group "Pregunta <n>" with
+  radios (multiple choice, true/false) or a "Tu respuesta" text; "Corregir" shows per question
+  "✓ Correcta" or "✗ Incorrecta. La respuesta es: …", the explanation and "En los apuntes:" links
+  to `<topic path>/notes#<anchor>`; a short answer that does not match (compared like the backend,
+  `normalizeAnswer`) asks "¿La has acertado?" (Sí/No). "Aciertos: <c> de <n>"; "Guardar
+  resultado" (once every short answer is judged) posts the attempt and shows "Resultado guardado:
+  <c> de <n>." with "Repetir el quiz". "Intentos anteriores" lists the latest ten results. The
+  form "Generar un quiz" ("Número de preguntas" 1-30, "Dificultad" Variada/Fácil/Media/Difícil,
+  "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
+  the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->
+  `ActionResult` (read leniently: `readStoredQuiz`, `readResult(s)`).
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>

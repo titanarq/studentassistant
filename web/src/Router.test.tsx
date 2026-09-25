@@ -102,6 +102,14 @@ it("renders the live session view at /live, subscribed to the live stream", () =
   expect(opened).toEqual(["/api/live"]);
 });
 
+it("renders the quiz page at <topic>/quiz", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/quiz" />);
+
+  expect(screen.getByRole("heading", { name: "Quiz de revolucion-industrial" })).toBeInTheDocument();
+});
+
 it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
   const fetchMock = stubFetch();
 

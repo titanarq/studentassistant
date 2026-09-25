@@ -113,6 +113,15 @@ it.each([
   );
 });
 
+it("links the quiz item to the quiz page", () => {
+  render(<TopicCard summary={summary()} />);
+
+  expect(screen.getByRole("link", { name: "Quiz" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/quiz",
+  );
+});
+
 it("links the flashcards deck and CSV for download", () => {
   const root = "subjects/historia/topics/revolucion-francesa/generated";
   render(
