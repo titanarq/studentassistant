@@ -66,6 +66,7 @@ from studentassistant.server.search_routes import search_router
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.style_guide_routes import style_guide_router
+from studentassistant.server.tutor_routes import tutor_router
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.web_search_routes import web_search_router
@@ -280,6 +281,7 @@ def create_app(
     app.include_router(doubts_router())
     app.include_router(revise_router())
     app.include_router(versions_router())
+    app.include_router(tutor_router())
     app.include_router(style_guide_router())
     app.include_router(generators_router())
     app.include_router(live_router())

@@ -28,6 +28,35 @@
   Spanish explanation. The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
+- **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
+  offers "Preguntar al tutor" (section "Estudiar con el tutor"; `SessionPicker`'s optional
+  `onTutor(TutorTopic {subjectId, topicId, subjectName, topicName})`), and `CapturePage` shows
+  `TutorScreen` for that topic instead -- no session is opened; "← Volver" returns to the picker.
+  The student asks by voice ("Preguntar por voz": one Web Speech recognition, `es-ES`, not
+  continuous, its interim text shown as "Lo que te oigo"; pressing again stops it; the final text
+  is sent at once) or types ("Escribe tu pregunta", Enter or "Preguntar", up to 1000 characters).
+  The answer streams ("El tutor está pensando…" until the first delta), each `[^label]` shown as
+  `[label]`, then "Fuentes:" lists its refs (`[label] text`); a "Ver los apuntes del tema" link
+  leads to the notes page and its sources panel. With "Leer las respuestas en voz alta" (on by
+  default where `speechSynthesis` exists) the answer is read aloud in Spanish without the marks,
+  and "Parar de leer" stops it. The topic's earlier questions are shown first. A missing
+  recognition API, a denied microphone, silence, a network or other recognition failure each get
+  their own Spanish sentence (`VOICE_PROBLEMS`) and typing still works; a browser without
+  synthesis says the answers are only written. A reached cost cap offers "Continuar
+  igualmente" (the same question with `confirm_over_cap`).
+  - `api.ts`: `fetchTutorHistory(s, t) -> ReadResult<TutorTurn[]>` (`GET .../tutor`),
+    `askTutor(s, t, question, {confirmOverCap, onDelta}) -> StreamOutcome<TutorAnswer>` (`POST
+    .../tutor`, read with the editor chat's `streamTurn`), `describeTutorFailure`,
+    `readTutorAnswer`, `readTutorHistory`, `tutorPath`.
+  - `voiceQuestion.ts`: `listenForQuestion(callbacks)` (a `VoiceQuestionStarter`:
+    `onInterim`, `onFinal`, `onProblem(VoiceProblemCode)`, `onEnd`; returns `{stop()}`),
+    `voiceQuestionSupported()`; the recognition constructor comes from
+    `capture/webSpeechTranscriber.ts`.
+  - `speech.ts`: `SpeechOutput {supported, speak(text, onEnd?), cancel()}`,
+    `browserSpeechOutput()` (`speechSynthesis`, `es-ES`, a Spanish voice when the browser lists
+    one), `spokenText(reply)` and `shownText(reply)`.
+  - `TutorScreen({subjectId, topicId, subjectName, topicName, onClose?, speech?, listen?,
+    voiceSupported?})`: the last three are the seams tests use.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"

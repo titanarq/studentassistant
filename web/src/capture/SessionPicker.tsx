@@ -32,6 +32,14 @@ export interface OpenedSession {
   topicName: string;
 }
 
+/** The topic the student wants to ask the tutor about (#82), with the names the picker showed. */
+export interface TutorTopic {
+  subjectId: string;
+  topicId: string;
+  subjectName: string;
+  topicName: string;
+}
+
 export interface SessionPickerProps {
   /**
    * Called once with the session the student opened, so the capture screen can take over. Without
@@ -40,6 +48,8 @@ export interface SessionPickerProps {
   onSession?: (opened: OpenedSession) => void;
   /** The client clock the start request's `client_time_ms` is read from. */
   now?: () => number;
+  /** When given, the chosen topic also offers "Preguntar al tutor", which calls it (#82). */
+  onTutor?: (topic: TutorTopic) => void;
 }
 
 type SubjectsState =
@@ -165,7 +175,7 @@ function CreateForm<T>({
   );
 }
 
-export default function SessionPicker({ onSession, now = Date.now }: SessionPickerProps) {
+export default function SessionPicker({ onSession, now = Date.now, onTutor }: SessionPickerProps) {
   const [subjects, setSubjects] = useState<SubjectsState>({ state: "loading" });
   const [subjectsAttempt, setSubjectsAttempt] = useState(0);
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -417,6 +427,26 @@ export default function SessionPicker({ onSession, now = Date.now }: SessionPick
                 : "Continuar la sesión abierta"}
           </button>
           {opening.state === "failed" && <p role="alert">{opening.message}</p>}
+        </section>
+      )}
+
+      {chosenTopic !== undefined && onTutor !== undefined && (
+        <section aria-label="Tutor">
+          <h2>Estudiar con el tutor</h2>
+          <p>Pregúntale por voz sobre este tema: contesta con tus apuntes y tus fuentes.</p>
+          <button
+            type="button"
+            onClick={() =>
+              onTutor({
+                subjectId: chosenTopic.subject_id,
+                topicId: chosenTopic.topic_id,
+                subjectName: subjectName ?? chosenTopic.subject_id,
+                topicName: chosenTopic.name,
+              })
+            }
+          >
+            Preguntar al tutor
+          </button>
         </section>
       )}
     </main>

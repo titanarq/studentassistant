@@ -14,6 +14,8 @@
   record decisions.
 - "¿Por qué pusiste esto?": explain a paragraph from its cited sources.
 - Style guide learning per subject; notes versions (git tags) and diffs.
+- Voice tutor (study mode): answer the student's questions about a topic from its notes and
+  sources, with the refs.
 
 ## Public surface
 What exists today, after issues #30, #61, #68, #63, #64, #69, #70 and #65: the master notes format
@@ -25,8 +27,9 @@ ops in `studentassistant.editor.edits`, the doubts resolution in
 `studentassistant.editor.doubts`, the contradictions between sources in
 `studentassistant.editor.contradictions`, the conversational revision of the notes in
 `studentassistant.editor.revise`, the notes versions in `studentassistant.editor.versions`,
-"¿Por qué pusiste esto?" in `studentassistant.editor.explain` and the subject style guide in
-`studentassistant.editor.style_guide`.
+"¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
+`studentassistant.editor.style_guide` and the voice tutor in `studentassistant.editor.tutor`
+(#82).
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -467,3 +470,32 @@ through `vault.set_style_guide` and is committed at once.
 - Entry points: the server's `GET/PUT /api/subjects/{s}/style-guide` and `POST
   /api/subjects/{s}/style-guide/rules` (`docs/modules/server.md`); a confirmation said in the chat
   goes through `revise_notes` instead.
+
+### The voice tutor -- `tutor.py`
+Study mode (#82): the student asks about a topic out loud -- "¿qué era la derivada?", "ponme un
+ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic already has; role
+`editor`, prompt `editor_tutor`, no tool, nothing of the notes changed.
+- `await ask_tutor(vault, subject, topic, question, *, client, sync=None, on_reply=None,
+  digest=None, confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB)
+  -> TutorAnswer`. The input is `assemble_input` (catalogue, sources, transcript, doubts'
+  decisions, current notes: the cached prefix of the revision chat) with `TUTOR_INSTRUCTION`,
+  then, uncached, the last `HISTORY_TURNS` (6) questions and answers and the question (spaces
+  collapsed). The answer is Spanish plain text meant to be read aloud (short, no Markdown, formulas
+  in words), streamed as `on_reply("reply.delta", {"text", "attempt": 1})`. It cites the current
+  notes' footnote labels (`[^p4]`) after what it takes from them, says so when something is not in
+  the notes nor the sources, and adds outside knowledge only in `ampliado`, saying it is not from
+  the sources.
+- `TutorAnswer`: `subject`, `topic`, `question`, `reply` (with the `[^label]` marks), `refs`
+  (`ChatRef` per label the reply cites that the notes define with a usable provenance, in order
+  of first citation: `cited_refs(document, reply)`), `warning` (empty or cut answer), `model`.
+- `tutor_history(vault, subject, topic) -> TutorHistory` (blocking, reads only): `turns`
+  (`TutorTurn`: `time`, `question`, `reply`, `refs`, `warning`), oldest first.
+- **Conversation** `conversations/tutor.jsonl`, apart from `editor.jsonl` (the editor chat's
+  history and undo never see the tutor): `context` (reason `tutor` plus the input summary),
+  `user`, `assistant`, then one `tutor.answer` record (the `TutorAnswer`); `sync.note_change()`
+  lets the sync loop commit it.
+- Errors: `InvalidMessageError` (empty, or over `MAX_QUESTION_CHARS` = 1000), `NotesMissingError`
+  (nothing sent); `RefusalError` (the records of the call kept, no `tutor.answer`),
+  `CostConfirmationRequiredError` and the llm errors as in `generate_notes`.
+- Entry point: the server's `GET/POST /api/subjects/{s}/topics/{t}/tutor` (SSE,
+  `docs/modules/server.md`).
