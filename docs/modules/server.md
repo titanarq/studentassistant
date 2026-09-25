@@ -635,6 +635,16 @@ replace them.
   knows (from the terms or the last forwarded notice). While that count is unknown, the new hints
   ride on the next forwarded observer `notice`; a forwarded notice carries hints only when they
   changed since the last ones sent.
+- **STT status** (#222, protocol 1.5): in server mode, after every fed chunk and at each
+  handshake, `SessionGateway.check_stt_status(state, t=...)` reads the provider's `status`
+  (`stt.ProviderStatus`) and maps it to the client's `ok | reconnecting | unavailable` (`idle`
+  and `streaming` are `ok`). When that differs from the last one (`ReceiveState.stt_status`, `ok`
+  at first, so a session that never degrades publishes nothing) it logs it (WARNING when
+  degraded, INFO on recovery) and publishes a persisted `stt.status` event (origin `stt`, `t` the
+  session time of the chunk's end, payload `{"state", "detail"?}`). Each connection forwards it as
+  `SttStatus` to a client that negotiated 1.5+, never the same state twice in a row; a client
+  connecting while the provider is degraded gets the current status right after `hello.ack` (and
+  the resume `ack`). A detail over 300 characters is left out, the state is still sent.
 - **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
   missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
   binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a
@@ -666,7 +676,8 @@ replace them.
     client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
     offset) and `t` = its session time.
 - **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
-  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`) before
+  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`,
+  `stt.status`) before
   `hello.ack` and sends each as the matching server message (`transcript.*` from the payload
   fields above; `command` from `command_id`, `command`; `notice` from `pending_count`;
   `server_time_ms` from the payload or the clock). A persisted `capture.stored` (the capture

@@ -137,7 +137,9 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   (Spanish rationale; the session starts once the microphone is granted, the preview once the
   camera is), keeps the screen on (`View.keepScreenOn`) while shown, shows the back camera's
   CameraX `Preview`, the transcript (partials grey, finals black, auto-scrolled), the connection
-  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, and the
+  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, in
+  server STT mode the backend recognizer's warning while degraded (protocol 1.5 `stt.status`,
+  #222: its Spanish `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), and the
   buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
   **Terminar** (asks for confirmation). Back ("Salir") leaves the session open: the home screen
   offers "Continuar".
@@ -147,7 +149,8 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
   `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
   modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
-  `endFailure`). `start()` opens the socket; when `hello.ack` names the mode it starts the
+  `endFailure`, `sttWarning`: the last degraded `SttStatus`, cleared by an `ok` one and by every
+  new `hello.ack`, after which the backend repeats a status that still holds). `start()` opens the socket; when `hello.ack` names the mode it starts the
   `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
   `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
   `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops

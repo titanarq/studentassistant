@@ -18,6 +18,8 @@ import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.SttState
+import com.titanarq.studentassistant.protocol.SttStatus
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
 import com.titanarq.studentassistant.protocol.SessionEndResponse
@@ -97,7 +99,7 @@ class CaptureViewModelTest {
         assertEquals("http://192.168.1.20:8000/ws/sessions/s1", socket.url)
         assertEquals("sa_tok", socket.token)
         assertEquals(
-            Hello("1.3", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
+            Hello("1.5", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
             socket.sent.first(),
         )
         assertEquals(CapturePhase.RUNNING, viewModel.state.value.phase)
@@ -233,6 +235,32 @@ class CaptureViewModelTest {
         assertEquals(1600, sockets.last.frames.first().samples.size)
         // The fake microphone ran dry after two frames: reported as unavailable.
         assertEquals(MicProblem.UNAVAILABLE, viewModel.state.value.micProblem)
+        viewModel.leave()
+    }
+
+    @Test
+    fun `a degraded server recognizer is shown until it recovers or the socket says hello again`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel, SttMode.SERVER)
+        val socket = sockets.last
+        assertNull(viewModel.state.value.sttWarning)
+
+        val lost = SttStatus(SttState.RECONNECTING, "Se ha perdido la conexión; se reintenta en 5 s.", 7)
+        socket.receive(lost)
+        runCurrent()
+        assertEquals(lost, viewModel.state.value.sttWarning)
+
+        socket.receive(SttStatus(SttState.OK, serverTimeMs = 8))
+        runCurrent()
+        assertNull(viewModel.state.value.sttWarning)
+
+        socket.receive(SttStatus(SttState.UNAVAILABLE, serverTimeMs = 9))
+        runCurrent()
+        assertEquals(SttState.UNAVAILABLE, viewModel.state.value.sttWarning?.state)
+        // A new handshake starts clean: the backend repeats a status that still holds after it.
+        socket.receive(HelloAck("1.5", SttMode.SERVER, AudioFormat(), 0, clock.now))
+        runCurrent()
+        assertNull(viewModel.state.value.sttWarning)
         viewModel.leave()
     }
 

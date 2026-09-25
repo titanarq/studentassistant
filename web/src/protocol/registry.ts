@@ -18,6 +18,7 @@ export interface MessageTypes {
   "server.transcript.final": server.TranscriptFinal;
   "server.command": server.Command;
   "server.notice": server.Notice;
+  "server.stt.status": server.SttStatus;
   "server.ack": server.ServerAck;
   "rest.pair.request": rest.PairRequest;
   "rest.pair.response": rest.PairResponse;
@@ -54,6 +55,7 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "server.transcript.final": server.decodeTranscriptFinal,
   "server.command": server.decodeCommand,
   "server.notice": server.decodeNotice,
+  "server.stt.status": server.decodeSttStatus,
   "server.ack": server.decodeServerAck,
   "rest.pair.request": rest.decodePairRequest,
   "rest.pair.response": rest.decodePairResponse,

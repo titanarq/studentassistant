@@ -14,7 +14,7 @@ from studentassistant.protocol import (
 
 
 def test_own_version_is_major_minor() -> None:
-    assert parse_version(PROTOCOL_VERSION) == (1, 4)
+    assert parse_version(PROTOCOL_VERSION) == (1, 5)
 
 
 @pytest.mark.parametrize("bad", ["1", "1.0.0", "v1.0", "01.0", "1.x", ""])
@@ -31,11 +31,11 @@ def test_same_major_negotiates_the_lower_minor() -> None:
 
 def test_different_major_is_refused_with_both_versions() -> None:
     with pytest.raises(IncompatibleProtocolVersionError) as excinfo:
-        check_compatible("2.0", ours="1.4")
+        check_compatible("2.0", ours="1.5")
 
     message = str(excinfo.value)
     assert "2.0" in message
-    assert "1.4" in message
+    assert "1.5" in message
     assert excinfo.value.peer == "2.0"
 
 

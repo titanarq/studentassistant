@@ -75,6 +75,13 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   be taken); `max_terms <= 0` gives `[]`. `vocabulary_hints_from_settings(settings.stt, ...)`
   takes the caps from `[stt]`; `hotwords_text(hints)` joins them (`None` when empty). `stt` only
   assembles: the server gathers the terms (vault + observer) and never lets `stt` import them.
+- `ProviderStatus(state, detail=None)` (`stt/provider.py`, frozen; `degraded` is true for
+  `reconnecting` / `unavailable`, `DEGRADED_STATES`), `ProviderState` = `idle | streaming |
+  reconnecting | unavailable`. `SpeechToTextProvider.status` (#222) says whether the provider is
+  transcribing; cheap and thread-safe to read, never raises. The default is always `idle`;
+  `BufferedProvider.status` is the wrapped provider's; `FakeProvider.set_status(state, detail)`
+  scripts it. The gateway reads it after every chunk and tells the capture client of each change
+  (protocol 1.5 `stt.status`, `docs/modules/server.md`).
 - `SpeechToTextProvider.set_vocabulary(hints)` -- replace the session's hints at any time (before
   the first chunk or between chunks); the latest list is in `vocabulary` (a tuple, `()` at first).
   The default only stores them; a provider that can bias recognition applies them from its next
@@ -127,7 +134,8 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   detail)`, `state` in `idle | streaming | reconnecting | unavailable`, `detail` a Spanish
   sentence) turns `reconnecting` when a stream fails (the audio of the next `retry_seconds` is
   dropped and counted in `dropped_seconds`, then a new stream opens) and `unavailable` when the
-  library or the credentials are missing (all audio dropped from then on). `finish` half-closes
+  library or the credentials are missing (all audio dropped from then on); the capture client is
+  told (protocol 1.5 `stt.status`). `finish` half-closes
   the stream and waits at most `finish_timeout_seconds` for its last results. `client=` takes any
   `SpeechStreamClient` (`stream(audio, *, sample_rate) -> Iterator[StreamResult]`, blocking) for
   tests; `GoogleSpeechClient` is the real one.
