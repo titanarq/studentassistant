@@ -12,7 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 from ws_harness import WsHarness
 
 from studentassistant.config import SttSettings
-from studentassistant.protocol import IncompatibleProtocolVersionError, model_for
+from studentassistant.protocol import PROTOCOL_VERSION, IncompatibleProtocolVersionError, model_for
 from studentassistant.server.sessions import SESSION_STARTED
 from studentassistant.server.ws import CLOSE_PROTOCOL_VIOLATION, CLOSE_UNKNOWN_SESSION
 
@@ -59,7 +59,7 @@ def test_hello_ack_in_server_mode_names_the_audio_format(ws: WsHarness) -> None:
 def test_a_newer_minor_is_negotiated_down(ws: WsHarness) -> None:
     with ws.connect() as socket:
         socket.send_json(ws.hello(protocol_version="1.7"))
-        assert socket.receive_json()["protocol_version"] == "1.1"
+        assert socket.receive_json()["protocol_version"] == PROTOCOL_VERSION
 
 
 def test_the_clock_offset_may_be_negative(ws: WsHarness) -> None:

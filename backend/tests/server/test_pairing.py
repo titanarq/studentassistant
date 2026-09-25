@@ -9,6 +9,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from studentassistant.config import ServerSettings
+from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.protocol.rest import PairResponse
 from studentassistant.server.pairing import CODE_TTL_SECONDS, PairingCodes, base_url
 
@@ -67,7 +68,7 @@ def test_pairing_redeems_the_code_and_returns_a_token(
 
     assert response.status_code == 200
     paired = PairResponse.model_validate(response.json())
-    assert paired.protocol_version == "1.1"
+    assert paired.protocol_version == PROTOCOL_VERSION
     assert len(paired.token) >= 43
     assert local.app.state.devices.verify_token(paired.token).id == paired.device_id  # type: ignore[attr-defined]
 

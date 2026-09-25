@@ -90,7 +90,8 @@ def test_review_then_answer_then_dismiss(
     assert {i["id"]: i["status"] for i in pending["items"]}["p-5"] == "dismissed"
 
     again = client.post(f"{_base(topic)}/p-5/dismiss")
-    assert again.status_code == 409 and again.json()["detail"] == "Esa duda ya está cerrada."
+    assert again.status_code == 409
+    assert again.json() == {"detail": "Esa duda ya está cerrada.", "code": "doubt_closed"}
 
 
 def test_errors(client: TestClient, fake: FakeClaude, topic: DoubtsTopic) -> None:
@@ -98,6 +99,7 @@ def test_errors(client: TestClient, fake: FakeClaude, topic: DoubtsTopic) -> Non
     assert client.get("/api/subjects/nada/topics/nada/doubts").status_code == 404
     bad = client.post(f"{_base(topic)}/p-4/answer", json={"suggestion": 1})
     assert bad.status_code == 422 and "sugerida" in bad.json()["detail"]
+    assert "code" not in bad.json()  # only the refusals a client branches on carry one
     assert client.post(f"{_base(topic)}/p-4/answer", json={"suggestion": 9}).status_code == 422
 
     for _ in range(4):  # every attempt of the client's retries
@@ -111,6 +113,7 @@ def test_an_unended_session_blocks_the_doubts(client: TestClient, topic: DoubtsT
     start_session(topic.vault, topic.subject, topic.topic, host="pc", protocol_version="1.1")
     response = client.post(f"{_base(topic)}/p-4/dismiss")
     assert response.status_code == 409 and "sesión sin terminar" in response.json()["detail"]
+    assert response.json()["code"] == "session_open"
 
 
 def test_without_a_transport_only_listing_and_dismissing_work(

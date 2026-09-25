@@ -118,7 +118,8 @@ token):
     .../notes/chat` and reads its stream (`reply.delta` -> `onDelta(text, attempt)`,
     `reply.restart` -> `onRestart(attempt)`) -> `ChatOutcome` = `ActionResult<RevisionResult>`
     (an error before the stream or an `error` event is `refused` with its status and Spanish
-    `detail`, `overCap` for a reached cost cap) `| {kind: "interrupted"}` when the stream ends or
+    `detail` and `code`, `overCap` when the code is `cost_cap_reached`, never read from the
+    wording) `| {kind: "interrupted"}` when the stream ends or
     breaks before `result`/`error`; `fetchChatHistory -> ReadResult<ChatHistory>` (`GET
     .../notes/chat`), `undoLastTurn -> ActionResult<UndoResult>` (`POST .../notes/chat/undo`),
     `describeChatFailure`. Bodies are read leniently (`readRevision`, `readHistory`, `readUndo`).
@@ -167,10 +168,10 @@ token):
     .../doubts/review` and says what it did (`describeReview`: "El editor ha resuelto 2 dudas con
     tus fuentes y tiene 1 pregunta para ti.").
   - Refusals show the backend's Spanish `detail` (409 closed doubt, unended session, another
-    operation running, no notes yet; 422; 502; 503). A closed or unknown doubt (409/404) makes the
-    page read the queue again. A reached cost cap (the 409 whose detail starts "Se ha alcanzado el
-    límite de gasto") offers "Continuar igualmente", which repeats the same request with
-    `confirm_over_cap: true`.
+    operation running, no notes yet; 422; 502; 503). The page branches on the error body's `code`
+    (protocol 1.2, never on the wording of `detail`): an unknown doubt (404) or a closed one
+    (`doubt_closed`) makes the page read the queue again; a reached cost cap (`cost_cap_reached`)
+    offers "Continuar igualmente", which repeats the same request with `confirm_over_cap: true`.
   - `PendingCard`: an `article` "<kind label>: <text>" with the status, a per-kind hint while
     open, what it refers to (`describeRefs`: pages, conversation fragments, sources), merged
     duplicates, the resolution once closed, and its `children` (the form or the pick button).
@@ -179,10 +180,10 @@ token):
   - `doubts.ts`: `fetchDoubts -> ReadResult<DoubtsQueue>` (strict `decodeDoubtsQueue`: items
     `{item, question, outcome}`), `reviewDoubts(s, t, confirmOverCap)`, `answerDoubt(s, t, id,
     answer, confirmOverCap)`, `dismissDoubt(s, t, id)` -> `ActionResult<T>` = `{kind: "ok", value}
-    | {kind: "refused", status, detail, overCap} | {kind: "error", status} | {kind:
+    | {kind: "refused", status, detail, code, overCap} | {kind: "error", status} | {kind:
     "unreachable"}` (results read leniently: `ReviewResult` {`auto_resolved`, `asked`,
     `notes_changed`, `warning`}, `ResolutionResult` {`pending_id`, `status`, `resolution`,
-    `notes_changed`, `warning`}), `describeActionFailure`, `describeReview`, `isOverCap`, and the
+    `notes_changed`, `warning`}), `describeActionFailure`, `describeReview`, `isOverCap(code)`, and the
     generic `postAction(path, body, read)`.
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component

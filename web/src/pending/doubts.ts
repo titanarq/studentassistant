@@ -11,12 +11,13 @@
  *   in a contradiction) and `POST .../doubts/{id}/dismiss`.
  *
  * The writes answer an `ActionResult`: a refusal keeps the backend's Spanish `detail` (a closed
- * doubt, an unended session, another operation running, a reached cost cap are 409), and
- * `overCap` marks the one refusal a retry with `confirm_over_cap` can get past.
+ * doubt, an unended session, another operation running, a reached cost cap are 409) and its
+ * machine-readable `code` (protocol 1.2: `doubt_closed`, `session_open`, `cost_cap_reached`, or
+ * `null`); `overCap` marks the one refusal a retry with `confirm_over_cap` can get past.
  */
 
 import { type ReadResult, topicPath } from "../desk/api";
-import { type Decoder, ProtocolDecodeError } from "../protocol";
+import { type Decoder, type ErrorCode, errorCode, ProtocolDecodeError } from "../protocol";
 import { array, int, object, str } from "../protocol/decode";
 import { decodePendingItem, eventRef, type EventRef, nullable, type PendingItem } from "./api";
 
@@ -104,8 +105,8 @@ export interface ResolutionResult {
 
 export type ActionResult<T> =
   | { kind: "ok"; value: T }
-  /** A non-2xx answer with a Spanish `detail`; `overCap` when confirming would get past it. */
-  | { kind: "refused"; status: number; detail: string; overCap: boolean }
+  /** A non-2xx answer with a Spanish `detail` and its `code`; `overCap` when confirming would get past it. */
+  | { kind: "refused"; status: number; detail: string; code: ErrorCode | null; overCap: boolean }
   /** Any other non-2xx status, or a 2xx body that is not what was asked. */
   | { kind: "error"; status: number }
   /** The request never got an answer (backend down, network error). */
@@ -201,9 +202,9 @@ export function describeReview(result: ReviewResult): string {
   return `El editor ${parts.join(" y ")}.`;
 }
 
-/** A reached cost cap: the one 409 a retry with `confirm_over_cap` gets past. */
-export function isOverCap(status: number, detail: string): boolean {
-  return status === 409 && detail.startsWith("Se ha alcanzado el límite de gasto");
+/** A reached cost cap: the one refusal a retry with `confirm_over_cap` gets past. */
+export function isOverCap(code: ErrorCode | null): boolean {
+  return code === "cost_cap_reached";
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -235,7 +236,8 @@ export async function postAction<T>(
   if (!response.ok) {
     const detail = (json as { detail?: unknown } | undefined)?.detail;
     if (typeof detail === "string" && detail !== "") {
-      return { kind: "refused", status: response.status, detail, overCap: isOverCap(response.status, detail) };
+      const code = errorCode(json);
+      return { kind: "refused", status: response.status, detail, code, overCap: isOverCap(code) };
     }
     return { kind: "error", status: response.status };
   }

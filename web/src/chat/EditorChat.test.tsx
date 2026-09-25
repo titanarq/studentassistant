@@ -170,7 +170,7 @@ it("offers to continue past a reached cost cap", async () => {
     "/api/subjects/historia/topics": TOPICS,
     [`${BASE}/notes`]: notesSequence(NOTES, EDITED),
     [CHAT]: jsonResponse(history()),
-    [`POST ${CHAT}`]: () => (posts++ === 0 ? sseResponse([["error", { status: 409, detail }]]) : sseResponse([["result", revision()]])),
+    [`POST ${CHAT}`]: () => (posts++ === 0 ? sseResponse([["error", { status: 409, detail, code: "cost_cap_reached" }]]) : sseResponse([["result", revision()]])),
   });
   const chat = await renderPage();
   fireEvent.change(within(chat).getByLabelText("Mensaje para el editor"), { target: { value: "Pon un ejemplo" } });

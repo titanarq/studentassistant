@@ -90,8 +90,9 @@ Routes registered today:
     `received_capture_ids` lists the captures already stored for the session (the `capture_id`s
     of its `capture.stored` events, in log order; see the capture upload below), so a resuming
     client re-uploads only the rest.
-  - Errors, as `{"detail": "..."}`: an unknown subject, topic or session is 404; another session
-    active or unended (start, resume) is 409 with its id in `X-Open-Session-Id`; resuming or
+  - Errors, as `{"detail": "...", "code"?: "..."}` (see "Error bodies" below): an unknown
+    subject, topic or session is 404; another session active or unended (start, resume) is 409
+    `session_open` with its id in `X-Open-Session-Id`; resuming or
     ending an ended session is 409; a start refused because pulling the vault hit a conflict is
     409 with the conflicting paths in `detail`; a vault that cannot be opened is 503.
 - `POST /api/sessions/{id}/captures` (`server/captures.py`, `captures_router()`): one burst of
@@ -261,7 +262,8 @@ Routes registered today:
   active one (else it is only in `conversations/editor.jsonl`). One generation per topic at a
   time. Errors, Spanish `detail`: no `llm_transport` 503 (`"La generación de apuntes no está
   disponible: ..."`), an unknown topic 404, a generation of the topic already running 409, a
-  reached cost cap 409 (`"Se ha alcanzado el límite de gasto ... Confirma ..."`) until the body
+  reached cost cap 409 `cost_cap_reached` (`"Se ha alcanzado el límite de gasto ... Confirma
+  ..."`) until the body
   says `confirm_over_cap`, a Claude refusal or failure 502, a vault that cannot be opened 503.
   Needs the bearer check like every non-exempt route.
 - **The doubts API** (`server/doubts_routes.py`, `doubts_router()`), web-only, not phone
@@ -288,11 +290,12 @@ Routes registered today:
     `notes_changed`, `session_id`, `commit`, `attempts`, `warning`, `model`).
   - `POST .../doubts/{pending_id}/dismiss`, no body -> `ResolutionResult` with `status`
     `dismissed`; never calls Claude, so it works without `llm_transport`.
-  - Errors, Spanish `detail`: an unknown topic or doubt 404 (`"No existe esa duda en este
-    tema."`); a doubt already closed (`"Esa duda ya está cerrada."`), a topic with an unended
-    session (`"Este tema tiene una sesión sin terminar: ..."`), a review before the notes exist,
-    another doubts or notes operation of the topic running, or a reached cost cap until the body
-    says `confirm_over_cap` 409; an answer that does not fit the question 422; no
+  - Errors, Spanish `detail` plus `code` where noted: an unknown topic or doubt 404 (`"No existe
+    esa duda en este tema."`); a doubt already closed (`doubt_closed`, `"Esa duda ya está
+    cerrada."`), a topic with an unended session (`session_open`, `"Este tema tiene una sesión
+    sin terminar: ..."`), a review before the notes exist, another doubts or notes operation of
+    the topic running, or a reached cost cap (`cost_cap_reached`) until the body says
+    `confirm_over_cap` 409; an answer that does not fit the question 422; no
     `llm_transport` 503 for review and answer; a Claude refusal or failure 502; a vault that
     cannot be opened 503. Needs the bearer check like every non-exempt route.
 - **The editor chat API** (`server/revise_routes.py`, `revise_router()`), web-only, not phone
@@ -313,8 +316,9 @@ Routes registered today:
       streamed text), `applied`, `summary`, `changed_sections`, `diff` (unified diff of
       `apuntes.md`), `notes` (the new text when changed), `fidelity_mode`, `style_rules`,
       `commit`, `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
-      "..."}` (a reached cost cap 409 until the body says `confirm_over_cap`, a Claude refusal or
-      failure 502); the stream then ends.
+      "...", "code"?: "..."}` (a reached cost cap 409 `cost_cap_reached`, built with
+      `cost_cap_error`, until the body says `confirm_over_cap`; a Claude refusal or failure 502);
+      `code` is gated like a REST error body (`speaks_error_codes`); the stream then ends.
     The turn runs in its own task: a client that disconnects does not cut the change in half.
   - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, message, reply, applied, summary,
     changed_sections, commit, undone, warning}`, oldest first; `can_undo`). Reads only; works
@@ -327,6 +331,17 @@ Routes registered today:
     ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
     nothing to undo or a file changed after that turn 409. Needs the bearer check like every
     non-exempt route.
+- **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
+  REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
+  (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
+  A route raises `ApiError(status, detail, code, headers=None)` (an `HTTPException`) or
+  `cost_cap_error(error, then)` (409 `cost_cap_reached` from a `CostConfirmationRequiredError`;
+  `then` ends the Spanish sentence, e.g. `"Confirma para continuar igualmente."`); the handler
+  `install_error_handler(app)` puts in `create_app` answers it, adding `code` only when
+  `speaks_error_codes(principal.protocol_version)` (negotiated version >= 1.2; the PC itself
+  always), so a device paired as 1.0/1.1 keeps the plain body. Every new coded refusal (e.g. the
+  editor's revision routes) adds its code to `ErrorCode` and the protocol README and raises
+  `ApiError`; uncoded errors stay plain `HTTPException`s.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative

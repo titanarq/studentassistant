@@ -169,7 +169,7 @@ it("explains a review refused with 409 and confirms past a cost cap", async () =
     [DOUBTS]: jsonResponse(doubts([doubt()])),
     [`POST ${DOUBTS}/review`]: () =>
       ++calls === 1
-        ? jsonResponse({ detail: cap }, 409)
+        ? jsonResponse({ detail: cap, code: "cost_cap_reached" }, 409)
         : jsonResponse({ auto_resolved: ["p1"], asked: [], notes_changed: true, warning: null }),
   });
   render(<PendingPage subjectId="historia" topicId="revolucion-francesa" />);

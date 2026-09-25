@@ -100,7 +100,9 @@ it("dismisses the doubt", async () => {
 });
 
 it("shows a closed doubt's 409 in Spanish and asks for the queue again", async () => {
-  stubApi({ [`POST ${BASE}/p1/answer`]: jsonResponse({ detail: "Esa duda ya está cerrada." }, 409) });
+  stubApi({
+    [`POST ${BASE}/p1/answer`]: jsonResponse({ detail: "Esa duda ya está cerrada.", code: "doubt_closed" }, 409),
+  });
   const { onResolved, onStale } = renderResolver();
 
   fireEvent.click(screen.getByRole("button", { name: "14 de julio de 1789" }));
@@ -115,7 +117,8 @@ it("repeats the same answer with confirm_over_cap past a reached cost cap", asyn
   const cap = "Se ha alcanzado el límite de gasto de la sesión (1.20 de 1.00 USD). Confirma para continuar igualmente.";
   let calls = 0;
   const fetchMock = stubApi({
-    [`POST ${BASE}/p1/answer`]: () => (++calls === 1 ? jsonResponse({ detail: cap }, 409) : jsonResponse(resolution())),
+    [`POST ${BASE}/p1/answer`]: () =>
+      ++calls === 1 ? jsonResponse({ detail: cap, code: "cost_cap_reached" }, 409) : jsonResponse(resolution()),
   });
   const { onResolved, onStale } = renderResolver();
 
@@ -150,4 +153,17 @@ it("names the sources in Spanish", () => {
   expect(sourceLabel("sources/pdf/001-tema.p082.jpg")).toBe("El PDF, página 82");
   expect(sourceLabel("sources/web/001-bastilla.md")).toBe("Una página web");
   expect(sourceLabel("sessions/2026-09-24-1030#t=00:01:00-00:02:00")).toBe("Lo que dijiste en clase");
+});
+
+it("keeps the queue on a 409 that is not a closed doubt", async () => {
+  const busy = "El editor ya está trabajando en los apuntes o las dudas de este tema.";
+  stubApi({ [`POST ${BASE}/p1/answer`]: jsonResponse({ detail: busy }, 409) });
+  const { onResolved, onStale } = renderResolver();
+
+  fireEvent.click(screen.getByRole("button", { name: "14 de julio de 1789" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(busy);
+  expect(screen.queryByRole("button", { name: "Continuar igualmente" })).not.toBeInTheDocument();
+  expect(onStale).not.toHaveBeenCalled();
+  expect(onResolved).not.toHaveBeenCalled();
 });

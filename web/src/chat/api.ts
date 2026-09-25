@@ -7,6 +7,7 @@
 
 import { type ReadResult, topicPath } from "../desk/api";
 import { type ActionResult, isOverCap, postAction } from "../pending/doubts";
+import { errorCode } from "../protocol";
 import { readSse } from "./sse";
 
 /** What the chat uses of the editor's `RevisionResult`, the `result` event of a turn. */
@@ -164,7 +165,8 @@ function parseData(data: string): unknown {
  * `POST .../notes/chat`: sends one message and reads the turn's stream. Errors before the stream
  * (404, 409 busy or no notes, 422, 503) come back as `refused` with the backend's Spanish `detail`;
  * an `error` event inside the stream as `refused` with its own status (a reached cost cap is
- * `overCap`, so the caller can repeat the message with `confirmOverCap`).
+ * `overCap` by its `code` `cost_cap_reached`, so the caller can repeat the message with
+ * `confirmOverCap`).
  */
 export async function sendChatMessage(
   subjectId: string,
@@ -183,15 +185,16 @@ export async function sendChatMessage(
     return { kind: "unreachable" };
   }
   if (!response.ok || response.body === null) {
-    let detail: string | null = null;
+    let body: unknown = null;
     try {
-      const body: unknown = await response.json();
-      detail = isObject(body) ? optionalText(body.detail) : null;
+      body = await response.json();
     } catch {
-      detail = null;
+      body = null;
     }
+    const detail = isObject(body) ? optionalText(body.detail) : null;
     if (detail === null) return { kind: "error", status: response.status };
-    return { kind: "refused", status: response.status, detail, overCap: isOverCap(response.status, detail) };
+    const code = errorCode(body);
+    return { kind: "refused", status: response.status, detail, code, overCap: isOverCap(code) };
   }
 
   let outcome: ChatOutcome | null = null;
@@ -211,10 +214,11 @@ export async function sendChatMessage(
       } else if (event === "error") {
         const status = typeof payload.status === "number" ? payload.status : 500;
         const detail = optionalText(payload.detail);
+        const code = errorCode(payload);
         outcome =
           detail === null
             ? { kind: "error", status }
-            : { kind: "refused", status, detail, overCap: isOverCap(status, detail) };
+            : { kind: "refused", status, detail, code, overCap: isOverCap(code) };
       }
     });
   } catch {
