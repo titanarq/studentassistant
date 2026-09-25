@@ -137,8 +137,16 @@ def check_whisper(stt: SttSettings) -> list[Check]:
     checks = [Check("faster-whisper", "ok", "instalado")]
     if options.device != "cpu":
         devices = whisper.cuda_devices()
-        if devices:
-            checks.append(Check("CUDA", "ok", f"{devices} GPU disponible(s)"))
+        problem = whisper.cuda_libraries_error() if devices else None
+        if devices and problem is None:
+            detail = f"{devices} GPU disponible(s), cuBLAS y cuDNN cargan"
+            checks.append(Check("CUDA", "ok", detail))
+        elif devices:
+            status = "fallo" if options.device == "cuda" else "aviso"
+            fallback = "" if options.device == "cuda" else ": se usará la CPU (lento)"
+            checks.append(
+                Check("CUDA", status, f"{problem}{fallback}; {whisper.CUDA_LIBRARIES_HINT}")
+            )
         elif options.device == "cuda":
             checks.append(Check("CUDA", "fallo", "device = cuda, pero no se ve ninguna GPU CUDA"))
         else:

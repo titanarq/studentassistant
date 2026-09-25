@@ -32,6 +32,8 @@ faster-whisper = "studentassistant.stt.faster_whisper:FasterWhisperProvider"
 [project.optional-dependencies]
 whisper = [
     "faster-whisper>=1.2.1",
+    "nvidia-cublas-cu12>=12,<13 ; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12>=9,<10 ; sys_platform == 'linux'",
 ]
 
 [build-system]
