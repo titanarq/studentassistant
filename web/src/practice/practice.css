@@ -1,0 +1,66 @@
+/* The practice page: one flashcard or quiz question at a time, its answer and the rating. */
+
+.practice-page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.practice-meta,
+.practice-kind,
+.practice-progress,
+.practice-sources {
+  color: #555;
+}
+
+.practice-warning {
+  color: #8a4b00;
+}
+
+.practice-card {
+  border: 1px solid #ccc;
+  border-radius: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.5rem 1rem 1rem;
+}
+
+.practice-prompt {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.practice-answer {
+  border-top: 1px solid #eee;
+  padding-top: 0.75rem;
+  white-space: pre-wrap;
+}
+
+.practice-options {
+  padding-left: 0;
+  list-style: none;
+}
+
+.practice-options li {
+  margin: 0.25rem 0;
+}
+
+.practice-ratings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.practice-feedback {
+  border-top: 1px solid #eee;
+  margin-top: 0.75rem;
+}
+
+.practice-right {
+  color: #1d6b2f;
+}
+
+.practice-wrong {
+  color: #a3261b;
+}

@@ -131,3 +131,11 @@ it("renders the preview of a generated Markdown file at <topic>/material/<name>"
   );
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el material");
 });
+
+it("renders the practice page at <topic>/practice", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/practice" />);
+
+  expect(screen.getByRole("heading", { name: "Practicar revolucion-industrial" })).toBeInTheDocument();
+});

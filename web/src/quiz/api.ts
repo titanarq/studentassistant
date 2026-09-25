@@ -154,7 +154,7 @@ export function quizPath(subjectId: string, topicId: string): string {
   return `/api${topicPath(subjectId, topicId)}/quiz`;
 }
 
-async function getAction<T>(path: string, read: (body: unknown) => T | null): Promise<ActionResult<T>> {
+export async function getAction<T>(path: string, read: (body: unknown) => T | null): Promise<ActionResult<T>> {
   let response: Response;
   try {
     response = await fetch(path);

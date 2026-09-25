@@ -63,7 +63,7 @@ token):
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`,
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../practice` -> `PracticePage`,
   `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
@@ -399,6 +399,19 @@ token):
   "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
   the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->
   `ActionResult` (read leniently: `readStoredQuiz`, `readResult(s)`).
+- `src/practice/` (#81): `PracticePage` at `<topic path>/practice` (the topic card's "Práctica" ->
+  "Practicar con repetición espaciada" links to it; heading "Practicar <name>", "<d> para repasar
+  · <n> nuevas · <l> de <t> ya vistas", the backend's warnings as `note`s). One `article` at a
+  time: a flashcard ("Mostrar respuesta", its back and "En los apuntes:" links, then the ratings
+  "Otra vez"/"Difícil"/"Bien"/"Fácil") or a quiz question (radios or "Tu respuesta", "Comprobar",
+  "✓ Correcta"/"✗ Incorrecta…" -- a short answer that does not match asks "¿La has acertado?" --,
+  the explanation, then "Difícil"/"Bien"/"Fácil" for a right answer or "Siguiente" for a wrong
+  one). Each review is posted at once; the `status` line says when the item comes back ("Bien:
+  volverá en 6 días."), an item rated "Otra vez" is asked again at the end of the session, a
+  refusal is an `alert` and keeps the item. With nothing left: "¡Hecho! Has repasado…" or "No
+  tienes nada que repasar ahora." with "Próximo repaso: <fecha>", and "Volver a comprobar".
+  `api.ts`: `fetchPractice`, `sendReview` -> `ActionResult` (read leniently: `readQueue`,
+  `readOutcome`), `describeInterval`.
 - `src/materials/` (#79): `MaterialsPanel`, section "Material de estudio" on the topic page, over
   `GET .../generated` (`MaterialsStatus`) and `GET /api/generators` (only for each kind's
   description). One item per kind in the order of study (`STUDY_ORDER`: esquema, quiz, flashcards,
