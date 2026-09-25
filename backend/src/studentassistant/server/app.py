@@ -61,6 +61,7 @@ from studentassistant.server.search_routes import search_router
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.vault_status import vault_status_router
+from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.ws import SessionGateway, ws_router
 from studentassistant.sources.transcriber import PageTranscriber
 from studentassistant.sources.transcriber import (
@@ -251,6 +252,7 @@ def create_app(
     app.include_router(notes_router())
     app.include_router(doubts_router())
     app.include_router(revise_router())
+    app.include_router(versions_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

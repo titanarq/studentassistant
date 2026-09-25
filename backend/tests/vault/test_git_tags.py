@@ -72,3 +72,33 @@ def test_subject_and_topic_slugs_are_required(sync: GitSync, subject: str, topic
         sync.create_notes_tag(subject, topic)
     with pytest.raises(ValueError):
         sync.list_notes_tags(subject, topic)
+
+
+def test_a_listed_tag_says_when_it_was_made_and_its_message(sync: GitSync) -> None:
+    tag = sync.create_notes_tag(
+        "fisica", "cinematica", "Apuntes v1 de fisica/cinematica: Tema\n\nmás"
+    )
+
+    assert tag.message == "Apuntes v1 de fisica/cinematica: Tema"
+    assert tag.tagged_at is not None and tag.tagged_at.tzinfo is not None
+    assert sync.list_notes_tags("fisica", "cinematica") == [tag]
+
+
+def test_read_file_at_returns_a_file_as_committed_at_a_tag(tmp_vault: Vault, sync: GitSync) -> None:
+    path = tmp_vault.path / "nota.md"
+    secret_like = "https://usuario:clave@example.com/x\r\nlínea\n"
+    path.write_bytes(secret_like.encode())
+    tag = sync.create_notes_tag("fisica", "cinematica")
+    path.write_text("después\n", encoding="utf-8")
+    sync.checkpoint("cambio")
+
+    assert sync.read_file_at(tag.name, "nota.md") == secret_like
+    assert sync.read_file_at(tag.commit, "nota.md") == secret_like
+    assert sync.read_file_at("HEAD", "nota.md") == "después\n"
+    assert sync.read_file_at(tag.commit, "no-existe.md") is None
+    assert sync.read_file_at("no-such-revision", "nota.md") is None
+    for bad in ("", "/etc/passwd", "../fuera.md"):
+        with pytest.raises(ValueError):
+            sync.read_file_at("HEAD", bad)
+    with pytest.raises(ValueError):
+        sync.read_file_at("--output=x", "nota.md")

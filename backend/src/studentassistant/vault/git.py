@@ -129,6 +129,22 @@ class GitRunner:
             stderr=redact(completed.stderr),
         )
 
+    def read_blob(self, spec: str, timeout: float | None = None) -> bytes | None:
+        """The bytes of the object `spec` (`<revision>:<path>`), unredacted; `None` when there
+        is no such object or git fails."""
+        try:
+            completed = subprocess.run(
+                ["git", "cat-file", "blob", spec],
+                cwd=self.root,
+                env=self._environment(),
+                capture_output=True,
+                timeout=timeout or self.timeout,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        return completed.stdout if completed.returncode == 0 else None
+
     def check(self, *args: str, timeout: float | None = None) -> GitResult:
         """Run `git <args>` and raise `GitCommandError` when it fails."""
         result = self.run(*args, timeout=timeout)
