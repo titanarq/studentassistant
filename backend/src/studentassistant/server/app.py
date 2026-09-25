@@ -48,6 +48,7 @@ from studentassistant.server.read_routes import read_router
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
+from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.ws import SessionGateway, ws_router
 from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
 from studentassistant.vault import GitSync, Vault
@@ -160,6 +161,7 @@ def create_app(
     app.include_router(captures_router())
     app.include_router(read_router())
     app.include_router(pdf_upload_router())
+    app.include_router(vault_status_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
