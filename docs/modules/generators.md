@@ -97,14 +97,15 @@ an item whose content the master notes do not hold is reported instead of silent
 
 - The text checked is the generator's `item_texts[item]`: quiz -- the answer and the explanation
   (a true/false: the statement when it is true, plus the explanation; `Verdadero`/`Falso` alone
-  says nothing); flashcards -- the back; examen -- the worked solution; diapositivas -- the
-  bullets; esquema -- the node's gloss, else its title. An item without a text is not checked.
+  says nothing); flashcards -- the back; examen -- the statement and the rubric criteria, numbers
+  removed (the worked solution is **not** checked: the numbers it computes cannot be judged by word
+  overlap, and neither can the data an exercise states); diapositivas -- the bullets; esquema -- the node's gloss, else its title. An item without a text is not checked.
 - `content_words(text)`: the eval rubric's normalisation (`evals/scoring.py`, reimplemented so
   generators do not import the eval harness): unreadable-word marks become their word, footnote
   references, `{#anchor}`s, link targets and punctuation go, accents folded, lower case; words of
   three letters or more that are not Spanish stop words, numbers always kept. A few words a
-  generated item says about itself (`META_WORDS`: respuesta, correcta, verdadero, falso,
-  apuntes...) are not content.
+  generated item says about itself or uses to ask for work (`META_WORDS`: respuesta, correcta,
+  verdadero, falso, apuntes, calcula, justifica, plantea...) are not content.
 - `section_text(notes, anchor)`: the cited section's heading title and blocks plus its
   subsections' (deeper headings that follow it), footnote definitions left out; `None` when the
   notes lack the anchor.
@@ -118,9 +119,7 @@ an item whose content the master notes do not hold is reported instead of silent
   (50 %, #reglas), ... Revísalos antes de estudiar con ellos.", the first ten listed).
 - Threshold: `[generators] grounding_min_support` (`SA_GENERATORS__GROUNDING_MIN_SUPPORT`,
   0-1, default 0.6), passed to `run_generator(..., grounding_min_support=)` by the CLI and the
-  REST route. Manifests written before the check have no `ungrounded` and load as `[]`. Worked
-  solutions that compute new numbers score lower (numbers count), which is intended: the student
-  checks them.
+  REST route. Manifests written before the check have no `ungrounded` and load as `[]`.
 
 ### Stale detection
 

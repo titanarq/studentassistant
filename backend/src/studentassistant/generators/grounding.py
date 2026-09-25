@@ -11,8 +11,8 @@ Words are compared as the eval rubric compares them (`evals/scoring.py`, same id
 the generators do not import the eval harness): unreadable-word marks become their word, footnote
 references, heading anchors, link targets and punctuation go, accents are folded, everything is
 lower-cased; content words are the words of three letters or more that are not Spanish stop words
-(numbers always count). A few words every generated explanation uses about itself ("respuesta",
-"correcta", "apuntes"...) are not content either.
+(numbers always count). A few words every generated item uses about itself ("respuesta",
+"correcta", "apuntes"...) or to ask for work ("calcula", "justifica"...) are not content either.
 
 A cited section's text is its heading and blocks plus those of its subsections (the deeper
 headings that follow it), since citing `#tema` cites what is under it; footnote definitions (the
@@ -63,10 +63,15 @@ STOPWORDS = frozenset(_STOPWORDS_TEXT.split())
 _META_WORDS_TEXT = """
 respuesta respuestas correcta correcto correctas correctos incorrecta incorrecto
 incorrectas incorrectos verdadero verdadera falso falsa opcion opciones apuntes
-seccion secciones pregunta preguntas enunciado
+seccion secciones pregunta preguntas enunciado ejercicio ejercicios paso pasos resultado
+calcula calcular define definir explica explicar demuestra demostrar justifica justificar
+razona razonar plantea plantear escribe escribir indica indicar halla hallar obten obtener
+resuelve resolver nombra nombrar toma tomar aplica aplicar identifica identificar describe
+describir compara comparar comprueba comprobar
 """
 META_WORDS = frozenset(_META_WORDS_TEXT.split())
-"""Words a generated item says about itself, not about the topic: never content."""
+"""Words a generated item says about itself or asks the student to do (an exam statement's or
+rubric's "calcula", "justifica"), not about the topic: never content."""
 
 
 class _Strict(BaseModel):

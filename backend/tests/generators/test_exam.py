@@ -164,9 +164,9 @@ def test_it_writes_the_statements_and_the_solutions_apart(
     names = [path.rsplit("/", 1)[-1] for path in result.files]
     assert sorted(names[:-1]) == sorted([EXAM_MD, SOLUTIONS_MD, EXAM_PDF, SOLUTIONS_PDF])
     assert names[-1] == f"{KIND}.meta.yaml"
-    # The worked solutions go beyond the fixture's two-line notes: reported, kept.
-    assert [entry.item for entry in result.ungrounded] == ["e1", "p1", "p2"]
-    assert len(result.warnings) == 1 and "3 elementos no se apoyan" in result.warnings[0]
+    # Worked solutions (their computed numbers) are not checked, only statements and rubrics.
+    assert result.ungrounded == []
+    assert result.warnings == []
     assert result.items == 3
 
     exam = _text(topic, EXAM_MD)
@@ -276,11 +276,23 @@ def test_extra_items_are_cut_and_points_that_do_not_add_up_are_reported(
         "Claude ha propuesto 3 preguntas de examen; se guardan las 2 primeras.",
         "Las preguntas del examen suman 9 puntos, no 10 puntos.",
         "Los criterios de la pregunta 1 suman 4 puntos, no 3 puntos.",
-        result.warnings[-1],
     ]
-    assert [entry.item for entry in result.ungrounded] == ["e1", "e2", "p1", "p2"]
     assert result.items == 4
     assert "Una pregunta de más." not in _text(topic, EXAM_MD)
+
+
+def test_a_statement_the_cited_section_does_not_hold_is_reported(
+    topic: ReviseTopic, fake: FakeClaude
+) -> None:
+    off_topic = _question(
+        "Enuncia el teorema fundamental del cálculo integral.",
+        "Si F es primitiva de f continua, ∫_a^b f = F(b) − F(a) = 42.",
+        points=10,
+        rubric=[{"criterion": "Relaciona integral y primitiva", "points": 10}],
+    )
+    result = _generate(topic, fake, drafted_questions=[off_topic], questions=1)
+    assert [entry.item for entry in result.ungrounded] == ["p1"]
+    assert "1 elemento no se apoya claramente" in result.warnings[-1]
 
 
 def test_unscored_questions_and_unknown_anchors_are_reported(
