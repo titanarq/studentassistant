@@ -64,6 +64,9 @@ is where a subject lives whether or not it exists yet. The three first ones retu
 a frozen dataclass of `slug` and `subject`. Refusals are a `SubjectError`: `SubjectNotFoundError`
 (no such subject directory) and `SubjectFileError` (its `subject.yaml` missing or not readable as a
 `Subject`).
+`set_style_guide(vault, slug, style_guide)` replaces the subject's `style_guide` (blank or `None`
+clears it), keeping the other fields; the editor's revision loop appends the student's general
+preferences with it.
 
 ### Topics -- `topics.py`
 `create_topic(vault, subject_slug, title)` writes
@@ -71,7 +74,9 @@ a frozen dataclass of `slug` and `subject`. Refusals are a `SubjectError`: `Subj
 `fidelity_mode` at its default; `list_topics(vault, subject_slug)` sorts by slug;
 `get_topic(vault, subject_slug, topic_slug)` reads one; `topics_directory(vault, subject_slug)` and
 `topic_directory(vault, subject_slug, topic_slug)` give the paths. The three first ones return a
-`StoredTopic`, a frozen dataclass of `slug` and `topic`. Refusals are a `TopicError`
+`StoredTopic`, a frozen dataclass of `slug` and `topic`.
+`set_fidelity_mode(vault, subject_slug, topic_slug, mode)` records `estricto` or `ampliado`
+(anything else `ValueError`) in `topic.yaml`, keeping the other fields. Refusals are a `TopicError`
 (`TopicNotFoundError`, `TopicFileError`), or the subject errors above when the subject the topic is
 asked for under is not there or not readable.
 
@@ -269,6 +274,12 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
+- `revert_paths(commit, paths, message) -> str | None`: a `git revert` of `commit` restricted to
+  the vault-relative `paths` -- each goes back to its content in `commit^` (removed if `commit`
+  created it), the other files of `commit` are kept -- committed under `message` after committing
+  what is pending; `None` when nothing differs. `RevertConflictError` (`path`) when a path is not,
+  at HEAD, what `commit` left (a later change would be lost), `ValueError` for an unknown commit
+  or a path outside the vault. The editor's undo of a revision turn.
 - `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
   annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
   for that subject and topic (`notes_tag_name`), pushed by the next push;

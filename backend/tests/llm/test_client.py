@@ -297,6 +297,19 @@ def test_the_real_transport_streams_and_maps_usage(settings: Settings) -> None:
     assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_the_real_transport_streams_the_text_deltas(settings: Settings) -> None:
+    recorder = Recorder(stream_ok("Hola, Ana", "claude-opus-5-5"))
+    client = get_client("editor", settings=settings, transport=sdk_transport(recorder))
+    deltas: list[str] = []
+
+    async def on_text(text: str) -> None:
+        deltas.append(text)
+
+    response = asyncio.run(client.create(USER, on_text=on_text))
+
+    assert deltas == ["Hola, Ana"] and response.text == "Hola, Ana"
+
+
 @pytest.mark.parametrize(
     ("response", "error_type"),
     [

@@ -34,11 +34,13 @@ import re
 import threading
 import time
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from studentassistant.config import VaultGitSettings
+from studentassistant.vault.errors import VaultError
 from studentassistant.vault.git import GitIdentity, GitResult, GitRunner
 from studentassistant.vault.vault import ACTIVE_HOST_MERGE_DRIVER, MAIN_BRANCH, Vault
 
@@ -590,6 +592,52 @@ class GitSync:
         self._schedule_push(self.settings.push_debounce_seconds)
         return NotesTag(name=name, version=version, commit=commit)
 
+    # -- reverting one commit's paths ----------------------------------------------------------
+
+    def revert_paths(self, commit: str, paths: Sequence[str], message: str) -> str | None:
+        """Undo what `commit` did to `paths` (vault-relative) and commit that under `message`.
+
+        A `git revert` restricted to `paths`: each one goes back to its content in the parent of
+        `commit` (and is removed if `commit` created it), so the other files `commit` happened to
+        carry -- a ledger line, a conversation record -- are kept. Pending changes are committed
+        first. Refused, with nothing changed, when a path changed after `commit`: undoing it then
+        would also discard the later change.
+
+        Returns the new commit (`None` when there was nothing to undo).
+
+        Raises:
+            RevertConflictError: a path is not, at HEAD, what `commit` left.
+            ValueError: `commit` is not a commit of the vault, or a path is outside it.
+            GitCommandError: git failed.
+        """
+        relative = list(dict.fromkeys(paths))
+        for path in relative:
+            if path.startswith("/") or ".." in path.split("/") or not path:
+                raise ValueError(f"{path!r} is not a vault-relative path")
+        with self._git_lock:
+            if not self.git.run("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}").ok:
+                raise ValueError(f"{commit!r} is not a commit of the vault")
+            self._commit(None)
+
+            def blob(revision: str, path: str) -> str | None:
+                result = self.git.run("rev-parse", "--verify", "--quiet", f"{revision}:{path}")
+                return result.stdout.strip() if result.ok else None
+
+            changed = []
+            for path in relative:
+                if blob("HEAD", path) != blob(commit, path):
+                    raise RevertConflictError(path)
+                if blob(f"{commit}^", path) != blob(commit, path):
+                    changed.append(path)
+            if not changed:
+                return None
+            for path in changed:
+                if blob(f"{commit}^", path) is None:
+                    self.git.check("rm", "--quiet", "--", path)
+                else:
+                    self.git.check("checkout", f"{commit}^", "--", path)
+            return self._commit(message)
+
     # -- scheduling ----------------------------------------------------------------------------
 
     async def run(self, interval: float = 1.0) -> None:
@@ -597,6 +645,14 @@ class GitSync:
         while True:
             await asyncio.to_thread(self.run_due)
             await asyncio.sleep(interval)
+
+
+class RevertConflictError(VaultError):
+    """A path changed after the commit being undone; `path` names it."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"{path} changed after the commit being undone")
+        self.path = path
 
 
 class _CommitError(Exception):
@@ -623,6 +679,7 @@ __all__ = [
     "GitSync",
     "NotesTag",
     "PushFailure",
+    "RevertConflictError",
     "SyncResult",
     "SyncStatus",
     "SystemClock",

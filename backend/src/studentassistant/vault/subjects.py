@@ -29,7 +29,7 @@ from yaml import YAMLError
 
 from studentassistant.vault.files import read_yaml, write_yaml_atomic
 from studentassistant.vault.models import Subject
-from studentassistant.vault.slugs import slugify, unique_slug
+from studentassistant.vault.slugs import is_slug, slugify, unique_slug
 from studentassistant.vault.vault import Vault, VaultError
 
 SUBJECTS_DIRNAME = "subjects"
@@ -110,6 +110,27 @@ def get_subject(vault: Vault, slug: str) -> StoredSubject:
             f"the vault at {vault.path} has no subject {slug!r}: {directory} is not a directory"
         )
     return StoredSubject(slug=slug, subject=_read_subject_file(directory / SUBJECT_FILE_NAME))
+
+
+def set_style_guide(vault: Vault, slug: str, style_guide: str | None) -> StoredSubject:
+    """Replace the subject's `style_guide` in its `subject.yaml` (`None` or blank clears it).
+
+    Every other field is kept as read; nothing is rewritten when the guide is the same.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError: as `get_subject` (a value that is not a slug is
+            not found).
+        OSError: the file cannot be written.
+    """
+    if not is_slug(slug):
+        raise SubjectNotFoundError(f"{slug!r} is not a subject slug")
+    stored = get_subject(vault, slug)
+    guide = style_guide if style_guide and style_guide.strip() else None
+    if stored.subject.style_guide == guide:
+        return stored
+    subject = stored.subject.model_copy(update={"style_guide": guide})
+    write_yaml_atomic(subject_directory(vault, slug) / SUBJECT_FILE_NAME, subject)
+    return StoredSubject(slug=slug, subject=subject)
 
 
 def _subjects_root(vault: Vault) -> Path:

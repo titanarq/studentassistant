@@ -288,6 +288,38 @@ Routes registered today:
     says `confirm_over_cap` 409; an answer that does not fit the question 422; no
     `llm_transport` 503 for review and answer; a Claude refusal or failure 502; a vault that
     cannot be opened 503. Needs the bearer check like every non-exempt route.
+- **The editor chat API** (`server/revise_routes.py`, `revise_router()`), web-only, not phone
+  protocol, for the chat beside the notes (the web client is #71): thin over `editor.revise`
+  (`docs/modules/editor.md`), over the vault and `GitSync` of the `SessionService`. A turn and an
+  undo hold the topic's notes lock with "prepárame el tema" and the doubts
+  (`NotesGenerator.claim`); a turn calls the `editor` role through `llm_transport`, bound to the
+  topic's ledger. `notes.edited` / `notes.undone` are published on the bus (persisted, origin
+  `editor`) when the topic's session is the active one.
+  - `POST /api/subjects/{subject_id}/topics/{topic_id}/notes/chat`, body `{"message": "Esto está
+    demasiado resumido", "confirm_over_cap": false}` (`message` 1-4000 characters) -> a
+    Server-Sent Events stream (`text/event-stream`, `Cache-Control: no-cache`), each event
+    `event: <name>` plus one line of JSON `data:`:
+    - `reply.delta` `{"text": "...", "attempt": 1}`: the editor's reply as it is written;
+    - `reply.restart` `{"attempt": 2}`: the change was sent back to the editor; drop the reply
+      streamed so far, a new one follows;
+    - then exactly one of `result` -- the `RevisionResult`: `reply` (authoritative; replaces the
+      streamed text), `applied`, `summary`, `changed_sections`, `diff` (unified diff of
+      `apuntes.md`), `notes` (the new text when changed), `fidelity_mode`, `style_rules`,
+      `commit`, `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
+      "..."}` (a reached cost cap 409 until the body says `confirm_over_cap`, a Claude refusal or
+      failure 502); the stream then ends.
+    The turn runs in its own task: a client that disconnects does not cut the change in half.
+  - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, message, reply, applied, summary,
+    changed_sections, commit, undone, warning}`, oldest first; `can_undo`). Reads only; works
+    without `llm_transport`.
+  - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
+    `notes_changed`, `diff`, `notes`, `paths`): reverts the latest applied turn not yet undone
+    (again for the one before). No Claude call.
+  - Errors before the stream, Spanish `detail`: no `llm_transport` 503 (chat), a vault that cannot
+    be opened 503, an unknown topic 404, no notes yet 409 (`"Todavía no hay apuntes de este tema:
+    ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
+    nothing to undo or a file changed after that turn 409. Needs the bearer check like every
+    non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative

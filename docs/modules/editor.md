@@ -16,13 +16,13 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30, #61 and #68: the master notes format of ADR-0005, in
+What exists today, after issues #30, #61, #68 and #63: the master notes format of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
-ops in `studentassistant.editor.edits` and the doubts resolution in
-`studentassistant.editor.doubts`. The conversational edit loop (#63) and "¿por qué?" are later
-issues.
+ops in `studentassistant.editor.edits`, the doubts resolution in
+`studentassistant.editor.doubts` and the conversational revision of the notes in
+`studentassistant.editor.revise`. "¿Por qué?" is a later issue.
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -178,17 +178,23 @@ block number, instead of rewriting them. Meant for the edit loop (#63) as well.
 - `EditOp` (flat, so it can be a strict tool input): `op` in `EDIT_OP_NAMES` --
   `replace_block` (`section`, `block`, `text`), `insert_after` (`section`, `block` -- `0` = before
   the first block --, `text`), `delete_block` (`section`, `block`), `replace_section` (`section`,
-  `text`: the whole body; the heading and its anchor stay). `section` is the anchor without `#`;
+  `text`: the whole body; the heading and its anchor stay), `move_section` (`section`, `after`:
+  the section and its subsections -- the deeper headings after it -- go after section `after` and
+  its subsections, or first when `after` is empty or null; moves apply in the order given, after
+  the block ops, and the final run of footnote definitions stays last). `section` is the anchor
+  without `#`;
   blocks are numbered from 1 within their section as the validator numbers them, and every number
   of one edit refers to the notes before any op of it. `text` is Markdown blocks with no section
   heading.
 - `NewFootnote` (`label`, `definition` -- what follows `[^label]: `): appended to the run of
   definitions ending the document (one is started when there is none); the same label with the
-  same definition is a no-op, with another definition an error.
+  same definition is a no-op, with another definition an error. A definition an edit orphans (a
+  label cited before and nowhere after, e.g. the `[^ia]` of a deleted paragraph) is removed.
 - `apply_edits(notes, ops, footnotes=()) -> str`: every other byte unchanged; new blocks are
   separated by blank lines. Raises `EditError` (`errors`: Spanish, for re-asking) listing every
   unknown anchor, missing block, two ops on one block, `replace_section` mixed with other ops of
-  its section, a heading inside a text or a clashing footnote label; nothing is applied then. The
+  its section, a heading inside a text, a clashing footnote label, a section moved twice, after
+  itself or one of its subsections, or after an unknown anchor; nothing is applied then. The
   result is not validated here: callers run `validate`.
 - `describe_sections(notes) -> str`: the block map (`#anchor -- heading`, then `bloque N (kind):
   opening words`) sent to the editor so it can address blocks.
@@ -253,3 +259,53 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   source needs `[^ia]` in `ampliado` or stays out of the notes in `estricto`.
 - Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/doubts...`
   (`docs/modules/server.md`).
+
+### Revising the notes in conversation -- `revise.py`
+The student talks to the editor about notes it already wrote ("demasiado resumido", "pon un
+ejemplo", "no inventes", "usa la explicación del libro"), role `editor`, prompt `editor_revise`,
+over `assemble_input` with a task instruction (the sources come from the cache) plus, uncached,
+the last `HISTORY_TURNS` (12) turns, the block map (`describe_sections`) with the current fidelity
+mode, and the student's message.
+- `await revise_notes(vault, subject, topic, message, *, client, sync, on_reply=None,
+  on_event=None, digest=None, confirm_over_cap=False, clock=..., ...) -> RevisionResult`. The
+  editor first writes its Spanish reply as text -- streamed through `LLMClient.create(on_text=...)`
+  to `on_reply("reply.delta", {"text", "attempt"})` -- and then, if anything changes, calls the
+  strict tool `apply_edits` once (`EditsOutput`: `ops` (the `EditOp`s above), `footnotes`,
+  `summary` (one Spanish sentence), `fidelity_mode` (`estricto`/`ampliado`, only when the student
+  sets it: recorded in `topic.yaml` with `vault.set_fidelity_mode`), `style_rules` (general
+  preferences the student states for the whole subject: appended as `- rule` lines to the
+  subject's `style_guide` with `vault.set_style_guide`, skipping a rule already there)). No tool
+  call: a chat-only turn, nothing written but the conversation.
+- **Checks**: the ops must apply (`apply_edits`) and the edited notes must pass `validate` in the
+  mode the turn leaves (so "no inventes" must also remove every `[^ia]` block); a `summary` is
+  required, at most 5 style rules of 300 characters. A failure is sent back as a `tool_result`
+  error with the Spanish list, at most `MAX_REASKS` (2) times, and `on_reply("reply.restart",
+  {"attempt"})` tells the caller to drop the reply streamed so far. Past the re-asks nothing is
+  applied and the result has `errors` and a Spanish `warning`.
+- **Applied**: the notes (`vault.write_notes`), `topic.yaml` and `subject.yaml` as needed, then
+  `GitSync.checkpoint("Apuntes de <s>/<t> revisados: <summary>")` at once; no notes tag.
+  `on_event("notes.edited", payload)` gets the result without the `notes` text.
+- `RevisionResult`: `subject`, `topic`, `message`, `reply`, `applied`, `summary`, `ops`,
+  `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added), `notes_changed`,
+  `changed_sections` (anchors the ops touched), `diff` (unified diff of `apuntes.md`), `notes` (the
+  new text when changed), `paths` (vault-relative files the commit changed), `commit`,
+  `attempts`, `errors`, `warning`, `model`.
+- `await undo_last_revision(vault, subject, topic, *, sync, on_event=None) -> UndoResult`: the
+  latest applied turn not yet undone is reverted with `GitSync.revert_paths(commit, paths, ...)`
+  (a `git revert` of that commit restricted to its `paths`, so the ledger and conversation lines it
+  carried stay) and committed as `Deshecho en <s>/<t>: <summary>`; `notes.undone` to `on_event`.
+  Undoing again goes one turn further back. `UndoResult`: `undone_commit`, `summary`, `commit`,
+  `notes_changed`, `diff`, `notes`, `paths`. No Claude call.
+- `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
+  (`ChatTurn`: `time`, `message`, `reply`, `applied`, `summary`, `changed_sections`, `commit`,
+  `undone`, `warning`) and `can_undo`.
+- **Conversation** `conversations/editor.jsonl`: `context` (reason `revise`), `user`, `assistant`,
+  `validation` per call, then one `revision` record per turn (the `RevisionResult`) and one
+  `notes.undone` per undo (the `UndoResult`) -- what `chat_history` and the undo read.
+- Errors (`RevisionError`, Spanish): `InvalidMessageError` (empty, or over 4000 characters),
+  `NotesMissingError` (no notes yet), `NothingToUndoError`, `UndoConflictError` (a file of the
+  turn changed afterwards -- a later turn, a regeneration, a doubt's edit); plus the llm errors as
+  in `generate_notes`, with nothing written but the conversation records.
+- Limitations: a turn is committed as soon as it is applied; when the sync loop happened to commit
+  the files first, `commit` is `None` and that turn cannot be undone. Nothing here streams to the
+  web itself: that is the server's `POST .../notes/chat` (SSE, `docs/modules/server.md`).

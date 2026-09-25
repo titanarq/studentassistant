@@ -25,7 +25,7 @@ from studentassistant.llm.fake import FakeClaude, no_sleep
 from studentassistant.llm.keycheck import check_api_key
 from studentassistant.llm.prompts import Prompt, PromptRegistry, content_hash, load_prompt
 from studentassistant.llm.structured import StructuredResult, strict_tool, structured
-from studentassistant.llm.transport import AnthropicTransport, Transport
+from studentassistant.llm.transport import AnthropicTransport, TextSink, Transport
 from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse, Role, ToolCall, Usage
 
 __all__ = [
@@ -55,6 +55,7 @@ __all__ = [
     "Role",
     "StructuredOutputError",
     "StructuredResult",
+    "TextSink",
     "ToolCall",
     "Transport",
     "UnknownRoleError",

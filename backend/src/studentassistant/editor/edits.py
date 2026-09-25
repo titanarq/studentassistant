@@ -13,7 +13,11 @@ Ops (`EditOp`, a flat model so it can be a strict tool input):
   of the section, before its first block);
 - `delete_block` (`section`, `block`): block `block` is removed;
 - `replace_section` (`section`, `text`): every block of the section is replaced by `text` (its
-  heading, and so its anchor, stays).
+  heading, and so its anchor, stays);
+- `move_section` (`section`, `after`): the section, with its subsections (the deeper headings
+  that follow it), goes after the section `after` and its subsections; `after` empty or null puts
+  it first, before every other section. Moves apply in the order given, after the block ops, and
+  keep the run of footnote definitions at the end of the document.
 
 Blocks are numbered from 1 within their section, as the validator's messages number them ("Sección
 #causas, bloque 2"), and every number of one edit refers to the notes as they were before any op
@@ -21,7 +25,8 @@ of it: the ops do not renumber each other. `text` is one or more blocks separate
 with no section heading in it. New footnote definitions (`NewFootnote`: `label`, `definition` --
 what follows `[^label]: `) are appended to the run of definitions that ends the document (one is
 started when there is none); a label already defined is fine when its definition is the same and
-an error otherwise.
+an error otherwise. The definitions an edit leaves orphaned -- labels the notes cited before it and
+cite nowhere after it, such as the `[^ia]` of a deleted AI paragraph -- are removed with it.
 
 Pure code: no file system, no LLM. Used by the doubts resolution (`doubts.py`) and meant for the
 conversational edit loop as well.
@@ -37,15 +42,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.editor.notes_format import Block, NotesDocument, Section, parse, serialize
 
-EditOpName = Literal["replace_block", "insert_after", "delete_block", "replace_section"]
+EditOpName = Literal[
+    "replace_block", "insert_after", "delete_block", "replace_section", "move_section"
+]
 EDIT_OP_NAMES: tuple[str, ...] = (
     "replace_block",
     "insert_after",
     "delete_block",
     "replace_section",
+    "move_section",
 )
 
 _LABEL = re.compile(r"^[A-Za-z0-9_-]+$")
+_DEFINITION_LINE = re.compile(r"^\[\^([^\]\s]+)\]:")
 
 
 class EditOp(BaseModel):
@@ -63,6 +72,11 @@ class EditOp(BaseModel):
     text: str | None = Field(
         default=None,
         description="The new Markdown blocks (not for delete_block), each with its footnotes.",
+    )
+    after: str | None = Field(
+        default=None,
+        description="move_section only: the anchor (without `#`) of the section it goes after;"
+        " empty or null = first, before every other section.",
     )
 
 
@@ -232,6 +246,137 @@ def _add_footnotes(
     return document.model_copy(update={"preamble": blocks})
 
 
+def _subtree_end(sections: list[Section], index: int) -> int:
+    """One past the last section of the subtree starting at `index` (its deeper headings)."""
+    level = sections[index].heading.level
+    end = index + 1
+    while end < len(sections) and sections[end].heading.level > level:
+        end += 1
+    return end
+
+
+def _ends_with_blank(section: Section) -> Section:
+    if section.blocks:
+        return section.model_copy(
+            update={"blocks": [*section.blocks[:-1], _with_blank(section.blocks[-1])]}
+        )
+    if section.heading_trailing.count("\n") >= 2:
+        return section
+    return section.model_copy(
+        update={"heading_trailing": section.heading_trailing.rstrip("\n") + "\n\n"}
+    )
+
+
+def _ends_with_newline(section: Section) -> Section:
+    if section.blocks:
+        last = section.blocks[-1]
+        return section.model_copy(
+            update={"blocks": [*section.blocks[:-1], last.model_copy(update={"trailing": "\n"})]}
+        )
+    return section.model_copy(update={"heading_trailing": "\n"})
+
+
+def _move_sections(
+    sections: list[Section], moves: Sequence[EditOp], errors: list[str]
+) -> list[Section]:
+    """`sections` after the `move_section` ops, in order; the final footnotes run stays last."""
+    if not sections:
+        return sections
+    result = list(sections)
+    run: Block | None = None
+    last = result[-1]
+    if last.blocks and last.blocks[-1].kind == "footnotes":
+        run = last.blocks[-1]
+        result[-1] = last.model_copy(update={"blocks": last.blocks[:-1]})
+    moved: set[str] = set()
+    count = len(errors)
+    for op in moves:
+        anchor = op.section.strip().removeprefix("#")
+        after = (op.after or "").strip().removeprefix("#") or None
+        name = f"Sección #{anchor}"
+        if anchor in moved:
+            errors.append(f"{name}: hay más de una operación move_section que la mueve.")
+            continue
+        moved.add(anchor)
+        index = next(i for i, section in enumerate(result) if section.anchor == anchor)
+        end = _subtree_end(result, index)
+        subtree = result[index:end]
+        rest = result[:index] + result[end:]
+        if after is None:
+            result = subtree + rest
+            continue
+        if any(section.anchor == after for section in subtree):
+            errors.append(
+                f"{name}: no se puede mover detrás de #{after}, que es ella misma o una de sus"
+                " subsecciones."
+            )
+            continue
+        target = next((i for i, section in enumerate(rest) if section.anchor == after), None)
+        if target is None:
+            errors.append(
+                f"{name}: no hay ninguna sección con el ancla #{after} para ponerla detrás."
+            )
+            continue
+        position = _subtree_end(rest, target)
+        result = rest[:position] + subtree + rest[position:]
+    if len(errors) > count:
+        return list(sections)
+    result = [_ends_with_blank(section) for section in result[:-1]] + [result[-1]]
+    final = result[-1]
+    if run is not None:
+        final = _ends_with_blank(final)
+        final = final.model_copy(update={"blocks": [*final.blocks, run]})
+    else:
+        final = _ends_with_newline(final)
+    return [*result[:-1], final]
+
+
+def _cited(document: NotesDocument) -> set[str]:
+    blocks = [*document.preamble, *(b for section in document.sections for b in section.blocks)]
+    return {label for block in blocks for label in block.footnote_refs}
+
+
+def _without_definitions(blocks: list[Block], labels: set[str]) -> list[Block]:
+    result: list[Block] = []
+    for block in blocks:
+        if block.kind != "footnotes":
+            result.append(block)
+            continue
+        kept: list[str] = []
+        dropping = False
+        for line in block.text.split("\n"):
+            match = _DEFINITION_LINE.match(line)
+            if match is not None:
+                dropping = match.group(1) in labels
+            if not dropping:
+                kept.append(line)
+        if any(line.strip() for line in kept):
+            result.append(block.model_copy(update={"text": "\n".join(kept)}))
+        elif result:  # the whole run went: what came before it now ends where the run ended
+            result[-1] = result[-1].model_copy(update={"trailing": block.trailing})
+    return result
+
+
+def _prune_orphans(before: NotesDocument, after: NotesDocument) -> NotesDocument:
+    """`after` without the definitions of labels `before` cited and `after` no longer cites."""
+    orphaned = _cited(before) - _cited(after)
+    defined = {definition.label for definition in after.footnotes}
+    orphaned &= defined
+    if not orphaned:
+        return after
+    return after.model_copy(
+        update={
+            "preamble": _without_definitions(list(after.preamble), orphaned),
+            "sections": [
+                section.model_copy(
+                    update={"blocks": _without_definitions(list(section.blocks), orphaned)}
+                )
+                for section in after.sections
+            ],
+        }
+    )
+
+
 def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootnote] = ()) -> str:
     """The text of `notes` after `ops` and the new `footnotes`; nothing else changes.
 
@@ -244,10 +389,14 @@ def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootno
     errors: list[str] = []
     anchors = {section.anchor for section in document.sections if section.anchor}
     by_section: dict[str, list[EditOp]] = {}
+    moves: list[EditOp] = []
     for op in ops:
         anchor = op.section.strip().removeprefix("#")
         if anchor not in anchors:
             errors.append(f"No hay ninguna sección con el ancla #{anchor}.")
+            continue
+        if op.op == "move_section":
+            moves.append(op)
             continue
         by_section.setdefault(anchor, []).append(op)
 
@@ -273,8 +422,11 @@ def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootno
         sections.append(
             section.model_copy(update={"blocks": blocks, "heading_trailing": heading_trailing})
         )
+    if moves:
+        sections = _move_sections(sections, moves, errors)
     edited = document.model_copy(update={"sections": sections})
     edited = _add_footnotes(edited, footnotes, errors)
+    edited = _prune_orphans(document, edited)
     if errors:
         raise EditError(errors)
     return serialize(edited)
