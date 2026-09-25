@@ -28,7 +28,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.2"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.3"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -42,7 +42,8 @@ Everything below is re-exported from the package root; other modules import only
   `SubjectCreateRequest`, `Topic`, `TopicsListResponse`, `TopicCreateRequest`,
   `SessionStartRequest`, `Session` (start and resume response), `SessionEndRequest`,
   `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`,
-  `SearchResponse` (with `SearchHit`).
+  `SearchResponse` (with `SearchHit`). `Topic` carries the optional `last_session_at_ms`,
+  `pending_count` (1.1) and `digest_excerpt` (1.3, at most `DIGEST_EXCERPT_MAX` = 400 chars).
 - REST error codes: `ErrorCode` (a `StrEnum`: `COST_CAP_REACHED`, `DOUBT_CLOSED`,
   `SESSION_OPEN`) and `ERROR_CODE_SINCE` (`(1, 2)`); the server's `server.errors` puts them in
   error bodies.
@@ -56,7 +57,7 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.2"`), `parseVersion`, `checkCompatible` (throws
+- Version: `PROTOCOL_VERSION` (`"1.3"`), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union
@@ -75,8 +76,8 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.1"`: the app has no use for the 1.2 error `code`, so it keeps
-  speaking 1.1 and gets plain error bodies; it decodes no error body anyway, only the HTTP status),
+- Version: `PROTOCOL_VERSION` (`"1.3"`, for the topic's `digest_excerpt`; the 1.2 error `code`
+  needs nothing from the app, which decodes no error body, only the HTTP status),
   `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
   `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
   with the same message as the backend's) and `negotiate`.

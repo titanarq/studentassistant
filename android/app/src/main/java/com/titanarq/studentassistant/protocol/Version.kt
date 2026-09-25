@@ -6,7 +6,7 @@ package com.titanarq.studentassistant.protocol
  * Peers with the same MAJOR interoperate and speak the lower of the two MINORs; a different MAJOR
  * is refused with a message naming both versions.
  */
-const val PROTOCOL_VERSION: String = "1.1"
+const val PROTOCOL_VERSION: String = "1.3"
 
 private val VERSION_REGEX = Regex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
 

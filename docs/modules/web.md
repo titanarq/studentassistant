@@ -52,8 +52,9 @@ token):
   "error", status} | {kind: "unreachable"}` (`describeFailure()` puts a failure in one Spanish
   sentence); `topicPath(s, t)` builds the topic page path. The web app declares no protocol
   version on REST: served by the backend's own build, it is answered as that backend's version
-  (>= 1.1), so topics may carry `last_session_at_ms` and `pending_count`; both stay optional and
-  a topic without them shows only its name.
+  (>= 1.1), so topics may carry `last_session_at_ms`, `pending_count` and (1.3)
+  `digest_excerpt`; all stay optional, the desk does not show the excerpt (its topic summary
+  does), and a topic without them shows only its name.
 - `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
   after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
   sesión: <fecha>" and "<n> dudas por revisar" when the list carries them. Empty states: no

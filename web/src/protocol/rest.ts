@@ -18,6 +18,9 @@ import { VERSION_PATTERN } from "./version";
 
 export const protocolVersion = str({ pattern: VERSION_PATTERN });
 
+/** The longest `Topic.digest_excerpt` (since 1.3). */
+export const DIGEST_EXCERPT_MAX = 400;
+
 // POST /api/pair
 
 /** Exchanges the one-time code shown in the pairing QR for a long-lived bearer token. */
@@ -70,6 +73,8 @@ export interface Topic {
   last_session_at_ms?: number;
   /** Since 1.1: open pending-review items (doubts awaiting the student); absent when unknown. */
   pending_count?: number;
+  /** Since 1.3: the topic digest's summary paragraph (where the topic was left); absent when unknown. */
+  digest_excerpt?: string;
 }
 
 export interface TopicsListResponse {
@@ -200,7 +205,12 @@ export const decodeSubjectCreateRequest: Decoder<SubjectCreateRequest> = object(
 
 export const decodeTopic: Decoder<Topic> = object(
   { topic_id: id, subject_id: id, name },
-  { open_session_id: id, last_session_at_ms: epochMs, pending_count: int({ min: 0 }) },
+  {
+    open_session_id: id,
+    last_session_at_ms: epochMs,
+    pending_count: int({ min: 0 }),
+    digest_excerpt: str({ minLength: 1, maxLength: DIGEST_EXCERPT_MAX }),
+  },
 );
 
 export const decodeTopicsListResponse: Decoder<TopicsListResponse> = object({

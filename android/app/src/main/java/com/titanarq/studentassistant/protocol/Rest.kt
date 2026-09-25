@@ -80,6 +80,8 @@ data class Topic(
     @SerialName("last_session_at_ms") val lastSessionAtMs: Long? = null,
     /** Since 1.1: open pending-review items (doubts awaiting the student); null when unknown. */
     @SerialName("pending_count") val pendingCount: Int? = null,
+    /** Since 1.3: the topic digest's summary paragraph (where the topic was left); null when unknown. */
+    @SerialName("digest_excerpt") val digestExcerpt: String? = null,
 )
 
 @Serializable

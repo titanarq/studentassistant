@@ -5,13 +5,14 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.2**.
+Current version: **`protocol_version` 1.3**.
 
 | version | change |
 |---|---|
 | 1.0 | first version |
 | 1.1 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `last_session_at_ms` and `pending_count` |
 | 1.2 | REST error bodies gain the optional machine-readable `code` (see "REST errors") |
+| 1.3 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `digest_excerpt` |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -50,7 +51,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.1; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -102,8 +103,8 @@ refusals a client branches on also carry `code`, so no client matches the Spanis
 code" (and fall back on the status), and new codes may be added in later MINOR versions. Like
 every field newer than 1.0 it is sent only to a client whose negotiated version has it: a device
 paired as a 1.0 or 1.1 client gets the plain `{"detail": ...}` body. Error bodies have no schema
-under `protocol/`: every client reads them leniently -- the Android app (1.1) decodes no error
-body at all and goes by the HTTP status only; the web (1.2) reads `detail` and `code` and ignores
+under `protocol/`: every client reads them leniently -- the Android app decodes no error
+body at all and goes by the HTTP status only; the web reads `detail` and `code` and ignores
 anything else. In Python: `ErrorCode`, `ERROR_CODE_SINCE`; in TypeScript: `ErrorCode`,
 `ERROR_CODES`, `errorCode(body)`.
 
@@ -126,12 +127,17 @@ the same version rule.
 - `rest.subjects.list.response`: `subjects`, a list of `{subject_id, name}`.
 - `rest.subjects.create.request`: `{name}`; `rest.subjects.create.response`: the created subject.
 - `rest.topics.list.response`: `subject_id` and its `topics`, each `{topic_id, subject_id, name,
-  open_session_id?, last_session_at_ms?, pending_count?}`. `open_session_id` names the session
+  open_session_id?, last_session_at_ms?, pending_count?, digest_excerpt?}`. `open_session_id` names the session
   still open on that topic: the client resumes it instead of starting a new one.
   `last_session_at_ms` (since 1.1) is the start of the topic's latest session, open or ended, on
   the backend's clock; `pending_count` (since 1.1) counts the topic's open pending-review items
   (doubts awaiting the student). Both are left out when unknown (no session yet, or state the
   backend could not read) and always for a device that paired as a 1.0 client.
+  `digest_excerpt` (since 1.3) is the summary paragraph of the topic digest (`state/digest.md`,
+  rewritten at every session end), at most 400 characters of Spanish text, so the student sees
+  where the topic was left before continuing it; left out before the topic's first ended
+  session, when the digest cannot be read, and for a device that paired as a 1.0-1.2 client.
+  A just-created topic (`rest.topics.create.response`) never has one.
 - `rest.topics.create.request`: `{name}`; `rest.topics.create.response`: the created topic.
 
 ### Session lifecycle

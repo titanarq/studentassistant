@@ -7,6 +7,7 @@ import {
   checkCompatible,
   type ClientEvent,
   DECODERS,
+  DIGEST_EXCERPT_MAX,
   errorCode,
   IncompatibleProtocolVersionError,
   isMessageName,
@@ -91,17 +92,36 @@ describe("decoders", () => {
   });
 });
 
+describe("topic digest excerpt", () => {
+  const topic = { topic_id: "t1", subject_id: "s1", name: "Tema 1" };
+
+  it("is optional and bounded to DIGEST_EXCERPT_MAX", () => {
+    expect(parseMessage("rest.topics.create.response", topic)).toStrictEqual(topic);
+    const excerpt = "x".repeat(DIGEST_EXCERPT_MAX);
+    expect(parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: excerpt })).toStrictEqual({
+      ...topic,
+      digest_excerpt: excerpt,
+    });
+    expect(() => parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: `${excerpt}x` })).toThrow(
+      /digest_excerpt/,
+    );
+    expect(() => parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: "" })).toThrow(
+      /digest_excerpt/,
+    );
+  });
+});
+
 describe("protocol_version", () => {
-  it("is 1.2", () => {
-    expect(PROTOCOL_VERSION).toBe("1.2");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 2]);
+  it("is 1.3", () => {
+    expect(PROTOCOL_VERSION).toBe("1.3");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 3]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.2; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1",
     );
   });
 

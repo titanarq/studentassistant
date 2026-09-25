@@ -97,7 +97,7 @@ class CaptureViewModelTest {
         assertEquals("http://192.168.1.20:8000/ws/sessions/s1", socket.url)
         assertEquals("sa_tok", socket.token)
         assertEquals(
-            Hello("1.1", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
+            Hello("1.3", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
             socket.sent.first(),
         )
         assertEquals(CapturePhase.RUNNING, viewModel.state.value.phase)

@@ -82,7 +82,10 @@ Routes registered today:
     and `pending_count` (open items of
     `observer.load_observer_snapshot(..., write_back=False)`, so listing writes nothing); either
     is left out, with a warning logged, when the vault or observer state cannot be read, and
-    both are always left out for a device that paired as a 1.0 client. `POST /api/subjects/{subject_id}/topics`
+    both are always left out for a device that paired as a 1.0 client. For a caller speaking
+    1.3+ a topic also carries `digest_excerpt`
+    (`observer.digest_excerpt(observer.topic_digest(...))`, cut to `protocol.DIGEST_EXCERPT_MAX`)
+    once a session of it has ended; an unreadable digest is logged and left out (#192). `POST /api/subjects/{subject_id}/topics`
     (`rest.topics.create.request`) -> 201 `rest.topics.create.response`.
   - `POST /api/sessions` (`rest.sessions.start.request`) -> 201 `rest.sessions.start.response`;
     `POST /api/sessions/{id}/resume` (no body) -> `rest.sessions.resume.response`;

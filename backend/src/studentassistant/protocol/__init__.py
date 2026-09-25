@@ -27,6 +27,7 @@ from studentassistant.protocol.client import (
 from studentassistant.protocol.errors import ERROR_CODE_SINCE, ErrorCode
 from studentassistant.protocol.registry import MODELS, model_for
 from studentassistant.protocol.rest import (
+    DIGEST_EXCERPT_MAX,
     CaptureImage,
     CaptureUploadRequest,
     CaptureUploadResponse,
@@ -67,6 +68,7 @@ from studentassistant.protocol.version import (
 
 __all__ = [
     "CLIENT_EVENT_ADAPTER",
+    "DIGEST_EXCERPT_MAX",
     "ERROR_CODE_SINCE",
     "HEADER_SIZE",
     "MAGIC",

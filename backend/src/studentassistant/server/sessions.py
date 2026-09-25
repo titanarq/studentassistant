@@ -67,7 +67,9 @@ from studentassistant.observer import (
     CAPTURE_EVENT_KIND,
     CAPTURE_ID_KEY,
     ObserverStateError,
+    digest_excerpt,
     load_observer_snapshot,
+    topic_digest,
 )
 from studentassistant.protocol.version import PROTOCOL_VERSION, negotiate, parse_version
 from studentassistant.server.auth import Principal
@@ -104,6 +106,9 @@ T = TypeVar("T")
 
 TOPIC_ACTIVITY_SINCE = (1, 1)
 """The protocol version that added a topic's `last_session_at_ms` and `pending_count`."""
+
+TOPIC_DIGEST_SINCE = (1, 3)
+"""The protocol version that added a topic's `digest_excerpt`."""
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
 """How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
@@ -380,7 +385,8 @@ class SessionService:
         """The subject's topics, shaped for a client speaking `protocol_version`.
 
         Peers speak the lower MINOR, and a client refuses unknown fields, so a topic carries
-        `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client.
+        `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client and
+        `digest_excerpt` (added in 1.3) only for a 1.3+ client.
         """
         vault = await self._ready()
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
@@ -390,11 +396,17 @@ class SessionService:
             )
         else:
             activity = [(None, None)] * len(stored)
+        if _speaks_at_least(protocol_version, TOPIC_DIGEST_SINCE):
+            excerpts = await asyncio.to_thread(
+                lambda: [_topic_excerpt(vault, subject_id, t.slug) for t in stored]
+            )
+        else:
+            excerpts = [None] * len(stored)
         return protocol.TopicsListResponse(
             subject_id=subject_id,
             topics=[
-                self._topic(subject_id, t.slug, t.topic.title, last, pending)
-                for t, (last, pending) in zip(stored, activity, strict=True)
+                self._topic(subject_id, t.slug, t.topic.title, last, pending, excerpt)
+                for t, (last, pending), excerpt in zip(stored, activity, excerpts, strict=True)
             ],
         )
 
@@ -716,6 +728,7 @@ class SessionService:
         title: str,
         last_session_at_ms: int | None = None,
         pending_count: int | None = None,
+        digest_excerpt: str | None = None,
     ) -> protocol.Topic:
         return protocol.Topic(
             topic_id=topic_id,
@@ -724,6 +737,7 @@ class SessionService:
             open_session_id=self._open.get((subject_id, topic_id)),
             last_session_at_ms=last_session_at_ms,
             pending_count=pending_count,
+            digest_excerpt=digest_excerpt,
         )
 
 
@@ -767,6 +781,19 @@ def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int |
     else:
         pending = len(snapshot.state.open_pending())
     return last, pending
+
+
+def _topic_excerpt(vault: Vault, subject_id: str, topic_id: str) -> str | None:
+    """The summary paragraph of the topic's digest, `None` before its first session end.
+
+    A digest that cannot be read is logged and left out, like `_topic_activity`.
+    """
+    try:
+        text = topic_digest(vault, subject_id, topic_id)
+    except VaultError as error:
+        logger.warning("topic %s/%s: digest unreadable: %s", subject_id, topic_id, error)
+        return None
+    return digest_excerpt(text, protocol.DIGEST_EXCERPT_MAX)
 
 
 def _scan_open_sessions(vault: Vault) -> dict[tuple[str, str], str]:

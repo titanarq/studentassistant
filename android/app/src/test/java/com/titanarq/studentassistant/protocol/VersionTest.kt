@@ -8,9 +8,9 @@ import org.junit.Test
 
 class VersionTest {
     @Test
-    fun `the current version is 1_1`() {
-        assertEquals("1.1", PROTOCOL_VERSION)
-        assertEquals(ProtocolVersion(1, 1), parseVersion(PROTOCOL_VERSION))
+    fun `the current version is 1_3`() {
+        assertEquals("1.3", PROTOCOL_VERSION)
+        assertEquals(ProtocolVersion(1, 3), parseVersion(PROTOCOL_VERSION))
     }
 
     @Test
@@ -22,9 +22,10 @@ class VersionTest {
 
     @Test
     fun `same major is compatible and negotiates the lower minor`() {
-        assertTrue(isCompatible("1.3"))
-        checkCompatible("1.3")
-        assertEquals("1.1", negotiate("1.3"))
+        assertTrue(isCompatible("1.7"))
+        checkCompatible("1.7")
+        assertEquals("1.3", negotiate("1.7"))
+        assertEquals("1.1", negotiate("1.1"))
         assertEquals("1.2", negotiate("1.2", ours = "1.10"))
     }
 
@@ -33,7 +34,7 @@ class VersionTest {
         assertFalse(isCompatible("2.0"))
         val e = assertThrows(IncompatibleProtocolVersionException::class.java) { checkCompatible("2.0") }
         assertEquals(
-            "incompatible protocol_version 2.0: this side speaks 1.1; " +
+            "incompatible protocol_version 2.0: this side speaks 1.3; " +
                 "update the older side so both share MAJOR version 1",
             e.message,
         )

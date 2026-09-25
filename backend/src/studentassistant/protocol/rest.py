@@ -18,6 +18,8 @@ ProtocolVersion = Annotated[str, Field(pattern=VERSION_PATTERN)]
 Name = Annotated[str, Field(min_length=1, max_length=200)]
 # Client-generated UUID (lowercase, hyphenated) that makes a capture upload idempotent.
 CaptureId = Annotated[str, Field(pattern=UUID_PATTERN)]
+# The longest `Topic.digest_excerpt` (since 1.3).
+DIGEST_EXCERPT_MAX = 400
 
 
 # POST /api/pair
@@ -77,6 +79,8 @@ class Topic(ProtocolModel):
     # and its open pending-review items (doubts awaiting the student).
     last_session_at_ms: EpochMs | None = None
     pending_count: Annotated[int, Field(ge=0)] | None = None
+    # Since 1.3, left out when unknown: the topic digest's summary paragraph (where it was left).
+    digest_excerpt: Annotated[str, Field(min_length=1, max_length=DIGEST_EXCERPT_MAX)] | None = None
 
 
 class TopicsListResponse(ProtocolModel):
