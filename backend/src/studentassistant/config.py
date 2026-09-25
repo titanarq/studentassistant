@@ -29,6 +29,8 @@ DEFAULT_VAULT_PATH = Path("~/StudentAssistant/vault")
 DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
 # `serve --record`: one directory of raw client inputs per session, never inside the vault.
 DEFAULT_RECORDINGS_DIR = Path("~/.cache/studentassistant/recordings")
+# The derived SQLite index of the vault (ADR-0002): a cache, rebuildable from the vault at any time.
+DEFAULT_INDEX_PATH = Path("~/.cache/studentassistant/index.sqlite3")
 
 # The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
 DEFAULT_API_KEY_FILE_NAME = "secrets.env"
@@ -119,8 +121,10 @@ class VaultSettings(BaseModel):
     # setup`, unset until then.
     repo: str | None = None
     git: VaultGitSettings = Field(default_factory=VaultGitSettings)
+    # Where the derived search/listing index lives; never inside the vault.
+    index_path: Path = DEFAULT_INDEX_PATH
 
-    @field_validator("path")
+    @field_validator("path", "index_path")
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
