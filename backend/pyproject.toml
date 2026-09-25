@@ -27,6 +27,7 @@ studentassistant = "studentassistant.cli:cli"
 # A new provider is one module + one line here + `stt.provider = "<name>"` in the config.
 [project.entry-points."studentassistant.stt_providers"]
 fake = "studentassistant.stt.fakes:FakeProvider"
+faster-whisper = "studentassistant.stt.faster_whisper:FasterWhisperProvider"
 
 [project.optional-dependencies]
 whisper = [
