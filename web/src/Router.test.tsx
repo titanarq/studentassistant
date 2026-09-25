@@ -70,3 +70,23 @@ it("renders the notes versions page at the topic's /versions path", () => {
   expect(screen.getByRole("heading", { name: "Versiones de los apuntes de revolucion-industrial" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/topics/revolucion-industrial/notes/versions");
 });
+
+it("renders the live session view at /live, subscribed to the live stream", () => {
+  stubFetch();
+  const opened: string[] = [];
+  class FakeEventSource {
+    onopen = null;
+    onerror = null;
+    constructor(url: string) {
+      opened.push(url);
+    }
+    addEventListener() {}
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+
+  render(<Router pathname="/live" />);
+
+  expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
+  expect(opened).toEqual(["/api/live"]);
+});

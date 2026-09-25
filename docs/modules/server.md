@@ -229,6 +229,25 @@ Routes registered today:
   {"title": "..."}` (at most 200 characters) records it and calls `SessionService.note_change()`.
   Unknown subject or topic 404 (`"No existe ese tema en la bóveda."`), empty title or one that
   looks like a key 422, an unopenable vault 503. No session needed.
+- `GET /api/live` (`server/live_routes.py`, `live_router()`, #57): the web's live session view,
+  a read-only Server-Sent Events stream (`text/event-stream`, `Cache-Control: no-cache`) of the
+  **active** session; web-only, not phone protocol. It opens with `retry: 3000`, then a
+  `snapshot` (`LiveSnapshot`: `session` {`session_id`, `subject_id`, `topic_id`,
+  `started_at_ms`} or `null`, `segments` -- the final transcript segments so far, `{segment_id,
+  t_start, t_end, text}` in session ms --, `captures`, `outline`, `open_pending`). Without an
+  active session the stream ends after that snapshot, so the browser's `EventSource` asks again
+  three seconds later. Otherwise it subscribes to the session on the bus (before reading the log,
+  skipping by `seq` what the log already held) and sends `segment` (a `transcript.final`),
+  `partial` (a `transcript.partial` of a segment not final yet), `capture` (`LiveCapture`:
+  `capture_id`, `t`, `page_path`, `source_path`, `source_context`, `status`
+  `pending`/`transcribed`/`failed`, `text`, `page_number`, `message`; sent on `capture.stored`,
+  `page.transcribed` and `page.transcription_failed`), `outline` (after each
+  `observer.state_op`: the whole outline -- `{section_id, title, parent_id, segment_count}` in
+  reading order, each section followed by its subsections -- and `open_pending`, from the
+  observer's fold `load_observer_snapshot(write_back=False)` of the topic) and finally `ended`
+  (`{session_id}`) on `session.ended`, where the stream ends. A `: keep-alive` comment goes out
+  after 15 s of silence; a closed bus (shutdown) ends the stream. Writes nothing. Needs the bearer
+  check like every non-exempt route.
 - `POST /api/subjects/{subject_id}/topics/{topic_id}/sources/pdf` (`server/pdf_upload.py`,
   `pdf_upload_router()`): the web's PDF import, what `studentassistant import-pdf` does from the
   CLI. Body: `multipart/form-data` with one `file` part (the PDF; its `filename` names it,
