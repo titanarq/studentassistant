@@ -353,6 +353,10 @@ another PC left open is seen.
   provider, #136), and `add_before_close(hook)` after it is published and before `end_session`.
   Each is bounded by `end_hook_timeout`; a hook that fails or times out is logged and the session
   ends anyway. A hook must not call back into the `SessionService` lifecycle (its lock is held).
+  A hook cut off by the timeout keeps nothing it could still publish: the session is ended and
+  detached, so its later events are refused. The observer's flush does not depend on the timeout
+  for correctness: a batch it could not land is caught up in the next session of the topic (or
+  the resume), see `docs/modules/observer.md` (catch-up, #176).
   The app adds `TranscriptPipeline.drain()` as a before-close hook, so every `transcript.final`
   published before `session.ended` is in `transcript.jsonl` before the session is marked ended.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.

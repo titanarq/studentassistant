@@ -43,6 +43,12 @@ Ending: `flush(session_id)` is the `add_before_ended` hook -- it waits for the c
 sends what is still waiting, so the ops land before `session.ended`. `session.ended` forgets the
 session.
 
+Catch-up (#176): every answered batch is acknowledged with a persisted `observer.ack` event
+(`catchup.py`). A batch whose call outlives the end hook's timeout, or that a crash or a stop
+interrupts, stays unacknowledged, so the next time the loop opens a session of the topic (the next
+session, a resume, a restart) it sends those events first, as the catch-up batch. No batch is lost,
+whatever the end hook's timeout.
+
 The observer reaches the bus only through the protocols below (it never imports
 `studentassistant.server`) and the vault only through `studentassistant.vault`.
 """
@@ -71,6 +77,7 @@ from studentassistant.llm import (
     load_prompt,
     strict_tool,
 )
+from studentassistant.observer.catchup import ACK_EVENT_KIND, CatchUp, ack_payload, unanswered
 from studentassistant.observer.context import (
     BATCH_KINDS,
     OBSERVER_ORIGIN,
@@ -101,6 +108,7 @@ from studentassistant.vault import (
     append_conversation_record,
     get_subject,
     get_topic,
+    read_topic_events,
     write_pending_review,
 )
 
@@ -415,18 +423,22 @@ class ObserverLoop:
         if observed is None or event.kind in (SESSION_STARTED, SESSION_RESUMED):
             if observed is not None and observed.call is not None:
                 return  # a resume while a call is in flight: keep the conversation going
-            observed = await self._open(session_id, resumed=event.kind == SESSION_RESUMED)
+            observed = await self._open(
+                session_id, resumed=event.kind == SESSION_RESUMED, trigger=_ref(event)
+            )
             if observed is None:
                 return
         if event.seq is not None and self._fold(observed, event):
             await self._pending_changed(observed)
         item = batch_item(event.kind, str(event.origin), event.t, event.payload)
         if item is not None:
-            observed.items.append(item)
+            observed.items.append(item.at(_ref(event)))
             observed.blocked = False
         self._maybe_start(observed)
 
-    async def _open(self, session_id: str, *, resumed: bool) -> _Observed | None:
+    async def _open(
+        self, session_id: str, *, resumed: bool, trigger: EventRef | None
+    ) -> _Observed | None:
         session = self.lookup(session_id)
         if session is None:
             logger.warning("no open vault session %s for the observer; not observed", session_id)
@@ -434,8 +446,8 @@ class ObserverLoop:
             return None
         vault, subject, topic = session.vault, session.subject_slug, session.topic_slug
         try:
-            snapshot, subject_name, topic_title, digest = await asyncio.to_thread(
-                self._read_topic, vault, subject, topic
+            snapshot, subject_name, topic_title, digest, catch_up = await asyncio.to_thread(
+                self._read_topic, vault, subject, topic, session_id, trigger
             )
         except (VaultError, ObserverStateError):
             logger.exception("the observer cannot load topic %s/%s; not observed", subject, topic)
@@ -449,6 +461,7 @@ class ObserverLoop:
             context=render_state(snapshot.state, session_id=session_id, resumed=resumed),
         )
         self._observed[session_id] = observed
+        observed.items = self._catch_up_items(observed, catch_up)
         await self._notify_pending(observed)
         await self._record(
             observed,
@@ -461,18 +474,57 @@ class ObserverLoop:
                     "reason": "resume" if resumed else "start",
                     "event_count": snapshot.event_count,
                     "cursor": None if snapshot.cursor is None else snapshot.cursor.model_dump(),
+                    "catch_up": len(catch_up.events),
                 },
             ),
         )
+        if not catch_up.acknowledged:
+            # The topic's first acknowledgement: what came before is not replayed.
+            await self._acknowledge(observed, catch_up.last, baseline=True)
         return observed
 
     def _read_topic(
-        self, vault: Vault, subject: str, topic: str
-    ) -> tuple[ObserverSnapshot, str, str, str | None]:
+        self, vault: Vault, subject: str, topic: str, session_id: str, trigger: EventRef | None
+    ) -> tuple[ObserverSnapshot, str, str, str | None, CatchUp]:
         snapshot = load_observer_snapshot(vault, subject, topic)
+        catch_up = unanswered(
+            read_topic_events(vault, subject, topic), session_id=session_id, before=trigger
+        )
         subject_name = get_subject(vault, subject).subject.name
         topic_title = get_topic(vault, subject, topic).topic.title
-        return snapshot, subject_name, topic_title, self.digest(vault, subject, topic)
+        digest = self.digest(vault, subject, topic)
+        return snapshot, subject_name, topic_title, digest, catch_up
+
+    def _catch_up_items(self, observed: _Observed, catch_up: CatchUp) -> list[BatchItem]:
+        """The unanswered events as the first batch, sent at once; `[]` when there are none."""
+        items = [
+            item.at(EventRef(session_id=event_session, seq=event.seq))
+            for event_session, event in catch_up.events
+            if (item := batch_item(event.kind, str(event.origin), event.t, event.payload))
+            is not None
+        ]
+        limit = self.settings.catch_up_max_items
+        if len(items) > limit:
+            logger.warning(
+                "observer of session %s: %d unanswered events, only the newest %d are caught up",
+                observed.id,
+                len(items),
+                limit,
+            )
+            items = items[len(items) - limit :] if limit else []
+        if not items:
+            return []
+        sessions = sorted({item.ref.session_id for item in items if item.ref is not None})
+        header = BatchItem(
+            line=(
+                f"catch-up: {len(items)} events of session {', '.join(sessions)} were stored but"
+                " never answered (a session end or an interruption came first); handle them as"
+                " any batch"
+            ),
+            immediate=True,
+        )
+        logger.info("observer of session %s: catching up %d events", observed.id, len(items))
+        return [header, *items]
 
     def _fold(self, observed: _Observed, event: BusEventLike) -> bool:
         """Fold one persisted event; whether it changed the topic's pending items."""
@@ -581,6 +633,15 @@ class ObserverLoop:
             observed.items[:0] = items  # kept for the next trigger
             observed.blocked = True
             return
+        try:
+            await self._answer(observed, items, response)
+        finally:
+            # Answered (even if a re-ask failed): never caught up again.
+            await self._acknowledge(observed, _newest(items))
+
+    async def _answer(
+        self, observed: _Observed, items: list[BatchItem], response: LLMResponse
+    ) -> None:
         working = observed.snapshot.state
         checked, working = self._check(response, working)
         published = await self._publish(observed, checked.ops)
@@ -744,6 +805,23 @@ class ObserverLoop:
                 observed.awaiting = EventRef(session_id=observed.id, seq=event.seq)
         return count
 
+    async def _acknowledge(
+        self, observed: _Observed, through: EventRef | None, *, baseline: bool = False
+    ) -> None:
+        """Publish `observer.ack` up to `through` (a batch with no stored event needs none)."""
+        if through is None and not baseline:
+            return
+        try:
+            await self.bus.publish(
+                observed.id, ACK_EVENT_KIND, OBSERVER_ORIGIN, ack_payload(through)
+            )
+        except Exception as error:  # the session ended under the call: caught up next time
+            logger.warning(
+                "observer of session %s: batch not acknowledged, it will be caught up: %s",
+                observed.id,
+                error,
+            )
+
     async def _set_status(
         self, observed: _Observed, status: Status, reason: str, detail: Mapping[str, Any]
     ) -> None:
@@ -788,6 +866,15 @@ class ObserverLoop:
             logger.exception(
                 "the observer conversation of session %s cannot be written", observed.id
             )
+
+
+def _ref(event: BusEventLike) -> EventRef | None:
+    return None if event.seq is None else EventRef(session_id=event.session_id, seq=event.seq)
+
+
+def _newest(items: list[BatchItem]) -> EventRef | None:
+    refs = [item.ref for item in items if item.ref is not None]
+    return max(refs, key=EventRef.key) if refs else None
 
 
 # Validation applies ops to a working copy of the state; the ref only fills the models' field.
