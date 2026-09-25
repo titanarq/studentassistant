@@ -143,6 +143,32 @@ export interface CaptureUploadResponse {
   received_at_ms: number;
 }
 
+// GET /api/search
+
+/**
+ * One match of a search over the vault. `path` is the vault-relative file the text is in;
+ * `source` the source it belongs to (absent for notes and transcripts). A transcript hit carries
+ * its `session`, the segment's `seq` and its `t_start` in session ms. `snippet` marks each
+ * matched term between U+0002 and U+0003.
+ */
+export interface SearchHit {
+  kind: "notes" | "page" | "pdf" | "web" | "transcript";
+  path: string;
+  source?: string;
+  subject: string;
+  topic: string;
+  session?: string;
+  seq?: number;
+  t_start?: number;
+  snippet: string;
+}
+
+/** The best matches of `query`, best first. */
+export interface SearchResponse {
+  query: string;
+  hits: SearchHit[];
+}
+
 // Decoders
 
 export const decodePairRequest: Decoder<PairRequest> = object({
@@ -238,4 +264,20 @@ export const decodeCaptureUploadResponse: Decoder<CaptureUploadResponse> = objec
   status: literal("stored", "duplicate"),
   image_count: int({ min: 1 }),
   received_at_ms: epochMs,
+});
+
+export const decodeSearchHit: Decoder<SearchHit> = object(
+  {
+    kind: literal("notes", "page", "pdf", "web", "transcript"),
+    path: str({ minLength: 1 }),
+    subject: id,
+    topic: id,
+    snippet: str(),
+  },
+  { source: str({ minLength: 1 }), session: id, seq: int({ min: 0 }), t_start: int({ min: 0 }) },
+);
+
+export const decodeSearchResponse: Decoder<SearchResponse> = object({
+  query: str(),
+  hits: array(decodeSearchHit),
 });

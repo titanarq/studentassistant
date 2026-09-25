@@ -203,3 +203,49 @@ data class CaptureUploadResponse(
     @SerialName("image_count") val imageCount: Int,
     @SerialName("received_at_ms") val receivedAtMs: Long,
 )
+
+// GET /api/search
+
+@Serializable
+enum class SearchHitKind {
+    @SerialName("notes")
+    NOTES,
+
+    @SerialName("page")
+    PAGE,
+
+    @SerialName("pdf")
+    PDF,
+
+    @SerialName("web")
+    WEB,
+
+    @SerialName("transcript")
+    TRANSCRIPT,
+}
+
+/**
+ * One match of a search over the vault. [path] is the vault-relative file the text is in;
+ * [source] the source it belongs to (absent for notes and transcripts). A transcript hit carries
+ * its [session], the segment's [seq] and its [tStart] in session ms. [snippet] marks each matched
+ * term between U+0002 and U+0003.
+ */
+@Serializable
+data class SearchHit(
+    val kind: SearchHitKind,
+    val path: String,
+    val source: String? = null,
+    val subject: String,
+    val topic: String,
+    val session: String? = null,
+    val seq: Long? = null,
+    @SerialName("t_start") val tStart: Long? = null,
+    val snippet: String,
+)
+
+/** The best matches of [query], best first. */
+@Serializable
+data class SearchResponse(
+    val query: String,
+    val hits: List<SearchHit>,
+)

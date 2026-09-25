@@ -83,6 +83,7 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/resume` | -- | `rest.sessions.resume.response` |
 | `POST /api/sessions/{id}/end` | `rest.sessions.end.request` | `rest.sessions.end.response` |
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
+| `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
 
 ### Pairing and health
 
@@ -133,6 +134,20 @@ A session is about exactly one topic of one subject, fixed when it starts.
 
 Re-sending a `capture_id` the backend already stored is answered with `status: "duplicate"` and
 stores nothing, so a client may retry an upload or replay its offline spool freely.
+
+### Search
+
+`GET /api/search` searches the vault's notes, page transcriptions, PDF page text, web pages and
+final transcript segments (the web's search box). Query: `q` (plain text, every word must appear
+as a prefix, accents and case ignored), optional `subject` and `topic` ids (`topic` needs
+`subject`), `kinds` (comma-separated subset of the hit kinds below, default all) and `limit`
+(1-100, default 20).
+
+- `rest.search.response`: the `query` and its `hits`, best first, each `{kind (notes | page | pdf
+  | web | transcript), path, source?, subject, topic, session?, seq?, t_start?, snippet}`. `path`
+  is the vault-relative file the text is in, `source` the vault-relative source it belongs to
+  (absent for notes and transcripts); a transcript hit carries its `session`, the segment's `seq`
+  and `t_start` (session time, ms). `snippet` marks each matched term between U+0002 and U+0003.
 
 ## WebSocket `/ws/sessions/{id}`
 

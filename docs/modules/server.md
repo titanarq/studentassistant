@@ -212,6 +212,20 @@ Routes registered today:
   a key, a body that is not multipart, a missing/empty/repeated `file`, or any other part 422; an
   unknown subject or topic 404 (checked before the body is read); a vault that cannot be opened
   503. No active session is needed. Needs the bearer check like every non-exempt route.
+- `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
+  `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
+  `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a
+  worker thread; optional hit fields are left out, never `null`. `q` is plain text (at most 500
+  characters; every word must appear, as a prefix, accents and case ignored; no word, no hits).
+  `subject` and `topic` filter by slug (protocol id pattern; `topic` needs `subject`, else 422);
+  an unknown one matches nothing. `kinds` is a comma-separated subset of `notes`, `page`, `pdf`,
+  `web`, `transcript` (default all; an unknown kind is 422 naming it). `limit` 1-100, default 20.
+  Each hit: `kind`, `path` (the vault-relative file), `source` (the source it belongs to, for
+  `GET /api/sources/{source}`; absent for notes and transcripts), `subject`, `topic`, and for a
+  transcript `session`, `seq` and `t_start` (session ms); `snippet` marks each matched term
+  between `\x02` and `\x03`. A vault that cannot be opened is 503 (`"No se puede abrir la
+  bóveda."`), an index that could not be opened 503 (`"El índice de búsqueda no está
+  disponible."`). Needs the bearer check like every non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
@@ -279,7 +293,7 @@ never echoes the request's `input` back.
 ### Session lifecycle -- `server/sessions.py`
 
 `SessionService(bus, *, vault=None, sync=None, vault_settings=None, host=None, sync_interval=1.0,
-end_hook_timeout=10.0)` (on
+end_hook_timeout=10.0, index_interval=5.0)` (on
 `app.state.sessions`) owns subjects/topics listing and creation and the session state machine
 `active` -> `ended`, over the vault's public functions (every call in a worker thread; lifecycle
 changes serialised by one lock). On first use it opens the vault (lazily, when built without one),
@@ -300,6 +314,15 @@ another PC left open is seen.
 - `startup()` / `shutdown()` (the app's lifespan): between them an open vault has the background
   `GitSync.run(sync_interval)` task (`sync_running` says whether it runs); `shutdown()` cancels
   it and flushes (`GitSync.flush()` in a worker thread). No git call runs on the event loop.
+- The derived search index (ADR-0002, `vault.index.VaultIndex`): right after the vault's first
+  pull and scan, `VaultIndex.open(vault, vault_settings.index_path)` runs in a worker thread
+  (rebuilding the index when it was built for another HEAD, e.g. after that pull); `index` is it,
+  or `None` before the vault opens or when it cannot be opened (logged; the vault still works and
+  search answers 503). While serving, `VaultIndex.run(index_interval)` runs next to the sync loop
+  (`index_running`), updating the index in a worker thread. After the pull of every session start
+  (unless it conflicted) a `refresh()` is scheduled in a worker thread, without delaying the start
+  (`await wait_index_refreshed()` waits for it). `shutdown()` cancels the loop, waits for a
+  running refresh and closes the index (in a worker thread) after the flush.
 - `resume` continues the session's logs: the next event's `seq` is one past the last in its
   `events.jsonl` (the vault's `resume_session`).
 - Lifecycle events are published on the bus as persisted events with origin `user`:

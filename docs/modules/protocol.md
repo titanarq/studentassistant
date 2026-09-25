@@ -7,7 +7,8 @@
 ## Responsibility
 The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), documented in `protocol/README.md`:
 - REST: `POST /api/pair`, `GET /api/health`, subjects/topics listing and creation, session
-  start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`).
+  start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`),
+  `GET /api/search` (the web's search over the vault index).
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
@@ -37,7 +38,8 @@ Everything below is re-exported from the package root; other modules import only
 - REST bodies: `PairRequest`, `PairResponse`, `HealthResponse`, `Subject`, `SubjectsListResponse`,
   `SubjectCreateRequest`, `Topic`, `TopicsListResponse`, `TopicCreateRequest`,
   `SessionStartRequest`, `Session` (start and resume response), `SessionEndRequest`,
-  `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`.
+  `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`,
+  `SearchResponse` (with `SearchHit`).
 - Registry: `MODELS`, mapping each `protocol/<name>.schema.json` name to its model, and
   `model_for(name)` (`KeyError` for an unregistered name).
 - Audio frames: `AudioFrame`, `encode_frame`, `decode_frame`, `HEADER_SIZE`, `MAGIC`, and the
