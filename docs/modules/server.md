@@ -112,18 +112,22 @@ Routes registered today:
     (`DEFAULT_SOURCE_KIND`) when there is none. It is read from `events.jsonl` on every upload
     (with the stored captures, in one worker thread, under the per-session lock), so it survives
     a backend restart.
-  - Stored: until capture processing exists (the `sources` module) only `images[0]` is stored,
-    as it came, through `vault.put_source(vault, subject, topic, <source context>,
-    "capture.<ext>", bytes, meta)` (`<ext>` from its content type: `.jpg`, `.png`, `.webp`; in a
-    worker thread, followed by `GitSync.note_change()`), so under `sources/<source context>/`.
-    The sidecar `meta`: `capture_id`, `session`, `captured_at` (`images[0].client_time_ms` as
-    ISO 8601 UTC), `trigger`, `command_id` (when present), `image_count`, `width_px`,
-    `height_px` (of `images[0]`), `source_context`. The other images are received, counted and
-    validated, not stored. Then the persisted bus event `capture.stored` (origin `phone`;
-    `observer.CAPTURE_EVENT_KIND`, which the observer's fold registers) is published with payload
-    `capture_id`, `trigger`, `command_id` (when present), `image_count`, `client_time_ms`,
-    `source_path` (the stored file, relative to the vault root) and `source_context` (the same
-    value as the sidecar's). The WebSocket gateway acknowledges that event to the connected
+  - Stored: the burst goes to `sources.store_capture` (in a worker thread, followed by
+    `GitSync.note_change()`), under `sources/<source context>/`: the sharpest still downscaled
+    as `page-NNN.jpg`, its cropped page `page-NNN.page.jpg`, every other still as it came as
+    `page-NNN.burst<K>.<ext>` (see `docs/modules/sources.md`). A burst none of whose images
+    decodes is 422, storing nothing. The sidecar `meta` the route gives: `capture_id`, `session`,
+    `captured_at` (`images[0].client_time_ms` as ISO 8601 UTC), `trigger`, `command_id` (when
+    present), `image_count`, `source_context`; `store_capture` adds the stored still's
+    `width_px`/`height_px`, `session_t_ms`, `transcript_window` and the processing record. The
+    capture's session time is the burst's `client_time_ms` plus the clock offset of the session's
+    latest WebSocket `hello` (`SessionGateway.clock_offset_ms(session_id)`, `None` -> 0 when no
+    socket said hello) minus the session's `started_at_ms`, never below 0. Then the persisted bus
+    event `capture.stored` (origin `phone`; `observer.CAPTURE_EVENT_KIND`, which the observer's
+    fold registers) is published with payload `capture_id`, `trigger`, `command_id` (when
+    present), `image_count`, `client_time_ms`, `source_path` (the stored still, relative to the
+    vault root), `page_path` (the page image, likewise) and `source_context` (the same value as
+    the sidecar's). The WebSocket gateway acknowledges that event to the connected
     client (see "Forwarded to the client" below). Answer: 201 `rest.sessions.captures.response`,
     `status: "stored"`, `image_count` the images in the burst, `received_at_ms` the backend
     clock.

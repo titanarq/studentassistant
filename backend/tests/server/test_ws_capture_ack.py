@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import anyio
+import cv2
+import numpy as np
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -24,7 +26,8 @@ from studentassistant.vault import sources_directory
 
 CAPTURE_ID = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a60"
 OTHER_CAPTURE_ID = "5d2a7e10-3c4b-4f9a-a1d2-7e6f5c4b3a21"
-JPEG = b"\xff\xd8\xff\xe0" + b"notes-page" * 20 + b"\xff\xd9"
+# A real (tiny) JPEG: capture processing decodes every still it stores.
+JPEG = cv2.imencode(".jpg", np.full((120, 160, 3), 200, dtype=np.uint8))[1].tobytes()
 BOUNDARY = "sa-test-boundary"
 RECEIVE_TIMEOUT_S = 5.0
 """How long a test waits for a server message before it fails (instead of hanging CI)."""
@@ -190,7 +193,8 @@ def test_switch_source_over_the_socket_stores_the_next_capture_under_that_source
         assert receive_json(socket)["capture_ids"] == [CAPTURE_ID]
 
     book = sources_directory(ws.vault, "fisica", "cinematica", "book")
-    assert (book / "page-001.jpg").read_bytes() == JPEG
+    assert (book / "page-001.jpg").is_file()
+    assert (book / "page-001.page.jpg").is_file()
     sidecar = yaml.safe_load((book / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["source_context"] == "book"
     assert not sources_directory(ws.vault, "fisica", "cinematica", "notes").exists()
@@ -204,6 +208,6 @@ def test_without_a_switch_the_capture_stays_notes(ws: WsHarness, client: TestCli
         assert upload(client, ws.session_id).status_code == 201
         assert receive_json(socket)["type"] == "ack"
     notes = sources_directory(ws.vault, "fisica", "cinematica", "notes")
-    assert (notes / "page-001.jpg").read_bytes() == JPEG
+    assert (notes / "page-001.jpg").is_file()
     (event,) = ws.events_of("capture.stored")
     assert event.payload["source_context"] == "notes"

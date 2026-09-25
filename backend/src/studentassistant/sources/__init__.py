@@ -1,5 +1,14 @@
 """Source ingestion: capture processing, page transcription, textbook, PDF, web."""
 
+from studentassistant.sources.captures import (
+    BurstStill,
+    CaptureImageError,
+    ProcessedBurst,
+    StoredCapture,
+    process_burst,
+    store_capture,
+    transcript_window,
+)
 from studentassistant.sources.pdf import (
     ImportedPage,
     ImportedPdf,
@@ -18,6 +27,13 @@ from studentassistant.sources.pdf import (
 )
 
 __all__ = [
+    "BurstStill",
+    "CaptureImageError",
+    "ProcessedBurst",
+    "StoredCapture",
+    "process_burst",
+    "store_capture",
+    "transcript_window",
     "ImportedPage",
     "ImportedPdf",
     "PageRange",

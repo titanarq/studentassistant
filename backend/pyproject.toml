@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 dependencies = [
     "anthropic>=1.8.0",
     "fastapi>=0.141.1",
+    "numpy>=2.5.3",
+    "opencv-python-headless>=5.0.0.93",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pymupdf>=1.28.2",
