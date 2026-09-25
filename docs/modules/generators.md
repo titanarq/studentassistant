@@ -152,6 +152,11 @@ material.
   up to `new_limit` minus those first reviewed on the day of `now` (in `tz`, local by default) --,
   `counts` (`total`, `due`, `new`, `unseen`, `learned`, `new_today`, `suspended`), `next_due`,
   `suspended`, `warnings`.
+- `practice_summary(vault, *, now=None, new_limit=10, tz=None) -> PracticeSummary` (#280): every
+  topic's `practice_queue` counts (`TopicPracticeSummary`: subject/topic ids and names, `due`,
+  `new`, `next_due`), topics without practice items omitted, sorted by `due` then `new` (desc),
+  with `totals` (`due`, `new`, `topics`); an unreadable subject or topic is skipped and named in
+  Spanish `warnings`. Backs `GET /api/practice/summary`.
 - `record_practice_review(vault, s, t, answer, *, sync, clock) -> ReviewOutcome` (`review`,
   `state`): `PracticeAnswer` (`item`, `rating`, `given`, `self_assessed`). A flashcard needs a
   `rating` (`InvalidReviewError`); a question is graded by `quiz.grade` -- wrong is `again`, right
