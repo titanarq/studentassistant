@@ -3,8 +3,8 @@
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
 `cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, and `setup` creates or clones the vault on this PC
-and records it in the configuration file.
+(or a page range of it) to a topic as a source, `setup` gets a PC from clone to running (the
+vault, the Anthropic API key, the STT model, the systemd service) and `doctor` checks that it is.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -28,9 +30,25 @@ import click
 import segno
 import typer
 import uvicorn
+from pydantic import ValidationError
 
 from studentassistant import __version__
-from studentassistant.config import ServerSettings, Settings, check_repo_name, write_vault_config
+from studentassistant.config import (
+    ServerSettings,
+    Settings,
+    check_repo_name,
+    config_toml_path,
+    write_vault_config,
+)
+from studentassistant.install import service as install_service
+from studentassistant.install import whisper
+from studentassistant.install.apikey import (
+    API_KEY_ENV_VAR,
+    export_api_key,
+    read_api_key,
+    store_api_key,
+)
+from studentassistant.install.doctor import DoctorProbes, run_doctor
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
@@ -65,7 +83,10 @@ cli = typer.Typer(
 @cli.command()
 def serve() -> None:
     """Serve the FastAPI app on the configured host and port until interrupted."""
-    server = Settings().server
+    settings = Settings()
+    server = settings.server
+    # The key `setup` stored on this PC, unless the environment already carries one.
+    export_api_key(settings.llm.api_key_path())
     # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
     # guard and the loopback trust see (uvicorn trusts it from loopback by default).
     uvicorn.run(create_app(server=server), host=server.host, port=server.port, proxy_headers=False)
@@ -318,11 +339,28 @@ def setup(
     student: Annotated[
         str | None, typer.Option(help="Tu nombre, tal como lo guardará un vault nuevo.")
     ] = None,
+    api_key_stdin: Annotated[
+        bool,
+        typer.Option(
+            "--api-key-stdin", help="Leer la clave de la API de Anthropic de la entrada estándar."
+        ),
+    ] = False,
+    install_unit: Annotated[
+        bool | None,
+        typer.Option(
+            "--service/--no-service",
+            help="Instalar (o no) el servicio systemd que mantiene el backend en marcha.",
+        ),
+    ] = None,
 ) -> None:
-    """Create or clone the vault from GitHub and record it in the configuration file.
+    """Get this PC from clone to running: vault, API key, STT model and systemd service.
 
-    Every option left out is asked for (in Spanish); with `--vault-repo`, `--path` and one of
-    `--create`/`--clone` nothing is asked. Re-running with the same answers changes nothing.
+    The vault is created or cloned from GitHub and recorded in the configuration file; the
+    Anthropic API key is stored in a file only you can read (never in the vault); the configured
+    STT provider is prepared (the Whisper model downloaded, when faster-whisper is selected); and
+    a systemd `--user` unit for `serve` is installed and started. Every option left out is asked
+    for (in Spanish); with `--vault-repo`, `--path` and one of `--create`/`--clone` nothing is
+    asked. Re-running with the same answers changes nothing.
     """
     if create and clone:
         typer.echo("Elige solo una opción: --create o --clone.")
@@ -383,3 +421,130 @@ def setup(
         raise typer.Exit(code=1) from error
     write_vault_config(result.vault.path, result.repo)
     typer.echo(_SETUP_DONE[result.action].format(path=result.vault.path, repo=result.repo))
+
+    failed = [
+        not _setup_api_key(settings, unattended=unattended, from_stdin=api_key_stdin),
+        not _setup_stt(settings),
+        not _setup_service(unattended=unattended, install=install_unit),
+    ]
+    if any(failed):
+        raise typer.Exit(code=1)
+    typer.echo("Listo. Comprueba la instalación con `studentassistant doctor`.")
+
+
+def _setup_api_key(settings: Settings, *, unattended: bool, from_stdin: bool) -> bool:
+    """Store the Anthropic API key on this PC; never echo it. Returns False on failure."""
+    path = settings.llm.api_key_path()
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    elif read_api_key(path) is not None:
+        typer.echo(f"La clave de la API de Anthropic ya está guardada en {path}.")
+        return True
+    elif os.environ.get(API_KEY_ENV_VAR):
+        typer.echo(f"La clave de la API de Anthropic viene de {API_KEY_ENV_VAR}: no se guarda.")
+        return True
+    elif unattended:
+        key = ""
+    else:
+        key = typer.prompt(
+            "Clave de la API de Anthropic (no se verá; Enter para dejarlo para luego)",
+            default="",
+            hide_input=True,
+            show_default=False,
+        ).strip()
+    if not key:
+        typer.echo(
+            "Sin clave de la API de Anthropic: guárdala luego con"
+            " `studentassistant setup --api-key-stdin`."
+        )
+        return True
+    try:
+        store_api_key(path, key)
+    except ValueError:
+        typer.echo("Esa clave no es válida (no puede tener espacios): no se ha guardado.")
+        return False
+    typer.echo(f"Clave de la API de Anthropic guardada en {path} (solo la puedes leer tú).")
+    return True
+
+
+def _setup_stt(settings: Settings) -> bool:
+    """Prepare the configured STT provider: download the Whisper model when it is selected."""
+    stt = settings.stt
+    if not whisper.uses_whisper(stt):
+        where = "el cliente" if stt.mode == "client" else "el proveedor"
+        typer.echo(f"Voz: modo {stt.mode}, {stt.provider}; transcribe {where}, nada que descargar.")
+        return True
+    options = whisper.whisper_options(stt)
+    typer.echo(f"Descargando el modelo de Whisper {options.model} (puede tardar un rato)...")
+    try:
+        path = whisper.download(options)
+    except whisper.WhisperError as error:
+        typer.echo(f"No se pudo preparar la voz: {error}")
+        return False
+    typer.echo(f"Modelo de Whisper {options.model} listo en {path}.")
+    return True
+
+
+def _setup_service(*, unattended: bool, install: bool | None) -> bool:
+    """Install and start the systemd `--user` unit for `serve` (asked for unless given)."""
+    if install is None:
+        install = unattended or typer.confirm(
+            "¿Instalar el servicio para que el backend arranque solo al iniciar sesión?",
+            default=True,
+        )
+    if not install:
+        typer.echo("Servicio no instalado: arranca el backend con `studentassistant serve`.")
+        return True
+    try:
+        executable = install_service.serve_executable()
+    except FileNotFoundError:
+        typer.echo("No se encuentra el comando studentassistant: no se instala el servicio.")
+        return False
+    outcome = install_service.install_unit(executable, config_toml_path().absolute())
+    if outcome.error is not None:
+        typer.echo(f"No se pudo activar el servicio: {outcome.error}")
+        return False
+    typer.echo(f"Servicio {install_service.UNIT_NAME} instalado en {outcome.path} y en marcha.")
+    return True
+
+
+def _backend_answers(server: ServerSettings) -> bool:
+    """Whether a Student Assistant backend answers `GET /api/health` on this PC."""
+    url = local_backend_url(server) + "/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            body = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    return isinstance(body, dict) and "protocol_version" in body
+
+
+def _doctor_probes(server: ServerSettings) -> DoctorProbes:
+    """What `doctor` reaches the outside world through (tests replace this)."""
+    return DoctorProbes(github_host=_github_host, backend_answers=lambda: _backend_answers(server))
+
+
+@cli.command()
+def doctor(
+    api_call: Annotated[
+        bool,
+        typer.Option(
+            "--api-call",
+            help="Probar la clave con una llamada gratuita a la API de Anthropic.",
+        ),
+    ] = False,
+) -> None:
+    """Check that this PC is ready: one line per check, exit status 1 when any fails."""
+    try:
+        settings = Settings()
+    except ValidationError as error:
+        typer.echo(f"[FALLO] Configuración: {config_toml_path()} no es válida: {error}")
+        raise typer.Exit(code=1) from error
+    source = config_toml_path()
+    shown = str(source) if source.exists() else f"{source} no existe: valores por defecto"
+    typer.echo(f"[ok] Configuración: {shown}")
+    checks = run_doctor(settings, api_call=api_call, probes=_doctor_probes(settings.server))
+    for check in checks:
+        typer.echo(check.line())
+    if any(check.failed for check in checks):
+        raise typer.Exit(code=1)

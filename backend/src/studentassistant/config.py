@@ -28,6 +28,9 @@ DEFAULT_VAULT_PATH = Path("~/StudentAssistant/vault")
 # Paired capture clients: machine-local state, never inside the vault.
 DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
 
+# The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
+DEFAULT_API_KEY_FILE_NAME = "secrets.env"
+
 # Claude roles: the observer reads the live session, the editor and the generators write (ADR-0004).
 FAST_MODEL = "claude-sonnet-5"
 CAPABLE_MODEL = "claude-opus-5-5"
@@ -221,6 +224,10 @@ class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
     roles: LlmRolesSettings = Field(default_factory=LlmRolesSettings)
+    # The machine-local file (`KEY=value` lines, mode 600) `setup` stores the Anthropic API key
+    # in and `serve` exports from; unset, `secrets.env` next to the configuration file. Never in
+    # the vault, and never the key itself in `config.toml`.
+    api_key_file: Path | None = None
     max_attempts: int = Field(default=DEFAULT_LLM_MAX_ATTEMPTS, ge=1)
     # Cost caps in USD (no cap when unset): the calls of one session, and every call of the
     # current UTC day across the whole vault. Only calls bound to a ledger count and are capped.
@@ -229,6 +236,15 @@ class LlmSettings(BaseModel):
     # `[llm.prices."<model id>"]`: a configured table is merged over the defaults, key by key, so
     # adding a model or changing one price keeps the rest.
     prices: dict[str, LlmPrice] = Field(default_factory=_default_prices)
+
+    @field_validator("api_key_file")
+    @classmethod
+    def expand_user(cls, path: Path | None) -> Path | None:
+        return path.expanduser() if path is not None else None
+
+    def api_key_path(self) -> Path:
+        """Where the API key file is: `api_key_file`, or `secrets.env` beside the config file."""
+        return self.api_key_file or config_toml_path().parent / DEFAULT_API_KEY_FILE_NAME
 
     @field_validator("prices", mode="before")
     @classmethod
@@ -248,6 +264,11 @@ class LlmSettings(BaseModel):
 DEFAULT_STT_MODE = "client"
 DEFAULT_STT_PROVIDER = "web-speech"
 DEFAULT_STT_LANGUAGE = "es"
+# `[stt.options.faster-whisper]` keys `setup` and `doctor` read (ADR-0007): the model to
+# download, the device (`auto` = CUDA when present, CPU otherwise; `cuda`; `cpu`) and where the
+# model is cached (unset: the Hugging Face cache).
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
+DEFAULT_WHISPER_DEVICE = "auto"
 # Server mode: seconds of audio queued for the provider past which superseded partials are dropped.
 DEFAULT_STT_MAX_BACKLOG_SECONDS = 10.0
 
