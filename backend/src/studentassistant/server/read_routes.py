@@ -1,4 +1,5 @@
-"""The web UI's read API under `/api`: study-desk summary, notes, sources, sessions, transcripts.
+"""The web UI's read API under `/api`: study-desk summary, notes, pending review, sources, sessions,
+transcripts.
 
 Read-only and thin: every route opens the vault through the `SessionService` on
 `app.state.sessions` (so the lazily opened, pulled vault is the one the lifecycle routes use) and
@@ -19,12 +20,12 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from studentassistant.observer import load_observer_snapshot
+from studentassistant.observer import PendingItem, load_observer_snapshot, pending_review
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
@@ -120,6 +121,20 @@ class TopicNotes(BaseModel):
     topic_id: str
     text: str = Field(description="`notes/apuntes.md` as Markdown.")
     version: int | None = Field(description="The notes version, `null` when none is tagged.")
+
+
+class TopicPending(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/pending`: the pending-review queue."""
+
+    subject_id: str
+    topic_id: str
+    open_count: int = Field(description="Open items of the whole queue, whatever the filter.")
+    items: list[PendingItem] = Field(
+        description="The items the filter keeps: open ones first, each group in the order added."
+    )
+
+
+PendingFilter = Literal["all", "open", "closed"]
 
 
 class SourceMeta(BaseModel):
@@ -302,6 +317,32 @@ def read_router() -> APIRouter:
             raise HTTPException(status.HTTP_404_NOT_FOUND, NO_NOTES_DETAIL)
         version = await _read(_notes_version, sync, subject_id, topic_id)
         return TopicNotes(subject_id=subject_id, topic_id=topic_id, text=text, version=version)
+
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/pending",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_pending(
+        request: Request,
+        subject_id: SubjectId,
+        topic_id: TopicId,
+        which: Annotated[
+            PendingFilter,
+            Query(alias="status", description="`open`, `closed` (settled, dismissed) or `all`."),
+        ] = "all",
+    ) -> TopicPending:
+        vault = await _vault(request)
+        async with _not_found():
+            snapshot = await _read(
+                lambda: load_observer_snapshot(vault, subject_id, topic_id, write_back=False)
+            )
+        review = pending_review(snapshot.state)
+        items = [
+            item for item in review.items if which == "all" or item.is_open == (which == "open")
+        ]
+        return TopicPending(
+            subject_id=subject_id, topic_id=topic_id, open_count=review.open_count, items=items
+        )
 
     @router.get("/subjects/{subject_id}/topics/{topic_id}/sessions")
     async def topic_sessions(

@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+import yaml
 
 from studentassistant.config import LlmSettings, ObserverSettings, Settings
 from studentassistant.llm import FakeClaude, LLMRequest, LLMResponse, Usage
@@ -30,6 +31,7 @@ from studentassistant.vault import (
     create_subject,
     create_topic,
     end_session,
+    pending_review_path,
     read_conversation,
     read_ledger,
     start_session,
@@ -488,3 +490,92 @@ async def test_session_end_forgets_the_session(
     assert loop.status(session.id) is None
     await asyncio.wait_for(loop.flush(session.id), WAIT)
     assert fake.requests == []
+
+
+async def test_pending_changes_publish_the_open_count_and_regenerate_the_review(
+    loop: ObserverLoop, bus: SessionBus, session: Session, fake: FakeClaude, tmp_vault: Vault
+) -> None:
+    subscription = bus.subscribe(name="phone", session_id=session.id, kinds={"notice"})
+    counts: list[int] = []
+
+    async def collect() -> None:
+        async for event in subscription:
+            counts.append(event.payload["pending_count"])
+
+    collector = asyncio.create_task(collect())
+
+    async def seen(n: int) -> list[int]:
+        async def until() -> None:
+            while len(counts) < n:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(until(), WAIT)
+        await asyncio.sleep(0.05)  # nothing more arrives
+        return counts
+
+    review_path = pending_review_path(tmp_vault, session.subject_slug, session.topic_slug)
+    fake.reply_tool(
+        TOOL_NAME,
+        ops_reply(
+            {
+                "op": "add_pending",
+                "pending_id": "p-1",
+                "kind": "illegible",
+                "text": "No se lee la palabra junto a la fórmula",
+                "segment_ids": ["seg-1"],
+                "capture_ids": [],
+                "source_refs": [],
+            },
+            {"op": "add_section", "section_id": "sec-1", "title": "La membrana"},
+        ),
+    )
+    fake.reply_tool(
+        TOOL_NAME,
+        ops_reply(
+            {
+                "op": "add_pending",
+                "pending_id": "p-2",
+                "kind": "illegible",
+                "text": "No se lee la palabra junto a la fórmula",
+                "segment_ids": ["seg-3"],
+                "capture_ids": [],
+                "source_refs": [],
+            }
+        ),
+    )
+    try:
+        await segment(bus, session, 1, "Aquí pone algo que no entiendo.")
+        await segment(bus, session, 2, "La membrana rodea la célula.")
+        await idle(loop, session.id)
+        # The count at the start, then after the new item; the section changes nothing pending.
+        assert await seen(2) == [0, 1]
+        review = yaml.safe_load(review_path.read_text(encoding="utf-8"))
+        assert review["open_count"] == 1
+        assert [item["id"] for item in review["items"]] == ["p-1"]
+
+        await segment(bus, session, 3, "Sigo sin leer esa palabra.")
+        await segment(bus, session, 4, "Pasamos al núcleo.")
+        await idle(loop, session.id)
+        # Merged into p-1: the queue changed (its refs) but still holds one open doubt.
+        assert await seen(3) == [0, 1, 1]
+        review = yaml.safe_load(review_path.read_text(encoding="utf-8"))
+        assert review["items"][0]["merged_ids"] == ["p-2"]
+        assert review["items"][0]["refs"]["segments"] == ["seg-1", "seg-3"]
+
+        # The student settles it (any origin): the count drops to zero.
+        await bus.publish(
+            session.id,
+            STATE_OP_EVENT_KIND,
+            "user",
+            {"op": "resolve_pending", "pending_id": "p-2", "resolution": "Dice «fosfolípidos»"},
+        )
+        await asyncio.wait_for(loop.drain(), WAIT)
+        assert await seen(4) == [0, 1, 1, 0]
+        review = yaml.safe_load(review_path.read_text(encoding="utf-8"))
+        assert review["open_count"] == 0
+        assert review["items"][0]["status"] == "resolved"
+        # A notice is transient: never in the event log.
+        assert all(event.kind != "notice" for event in session.read_events())
+    finally:
+        subscription.close()
+        await asyncio.wait_for(collector, WAIT)

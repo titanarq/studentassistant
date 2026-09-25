@@ -184,6 +184,12 @@ Routes registered today:
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
     (`"Todavía no hay apuntes de este tema."`).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/pending?status=all|open|closed` ->
+    `TopicPending`: `open_count` (of the whole queue) and `items`, the observer's `PendingItem`s
+    (`id`, `kind`, `text`, `refs` {`pages`, `segments`, `sources`}, `created_by`, `status`,
+    `resolution`, `added_at`, `resolved_at`, `merged_ids`), open first, filtered by `status`
+    (default `all`; `closed` = resolved, auto-resolved or dismissed). Read from the fold
+    (`load_observer_snapshot(write_back=False)`), so it writes nothing.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/sessions` -> `TopicSessions`: `sessions`, by
     id, each `session_id`, `started_at`, `ended_at` (`null` while unended) and `minutes`.
   - `GET /api/sessions/{session_id}/transcript?subject=..&topic=..&t=HH:MM:SS-HH:MM:SS` ->

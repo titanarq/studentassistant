@@ -115,6 +115,10 @@ returns `None` when none was written. The vault never imports the observer: the 
 the model. An unreadable snapshot (not UTF-8, not JSON, not the model) is a `SnapshotFileError`
 (a `StateError`); a missing topic is a `TopicNotFoundError`. `observer_snapshot_path(...)` and
 `state_directory(...)` (imported from `state.py`) give the paths.
+`write_pending_review(vault, subject_slug, topic_slug, review)` writes the observer's pending
+queue model as deterministic YAML (`dump_yaml` of `model_dump(mode="json")`, atomic, secret guard)
+to `review/pending.yaml`, creating `review/`, and returns the path; `pending_review_path(...)`
+gives it. The observer regenerates it from its fold after every change (#55); the index reads it.
 
 ### JSONL logs -- `jsonl.py`
 `append_jsonl(path, obj)` writes one compact JSON object per line with a single write, flush and
@@ -447,7 +451,7 @@ from their own module (`studentassistant.vault.github`, `studentassistant.vault.
 As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md` and `review/pending.yaml` (the index reads it when present);
+- Also unwritten: `state/digest.md`;
   and the retention `purge` described below. (`conversations/` is written since #51.)
 
 ## Purge
