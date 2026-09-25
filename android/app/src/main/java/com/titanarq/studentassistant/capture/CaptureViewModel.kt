@@ -27,6 +27,7 @@ import com.titanarq.studentassistant.session.OpenSession
 import com.titanarq.studentassistant.session.SessionHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,6 +70,11 @@ data class CaptureUiState(
     val micProblem: MicProblem? = null,
     /** The last "Terminar" failed with this; the session is still open. */
     val endFailure: BackendResult.Failure? = null,
+    /**
+     * «Micrófono en pausa»: the app went to the background and the microphone stopped. Stays
+     * true while in the background and for [CaptureViewModel.PAUSE_NOTICE_MS] after returning.
+     */
+    val micPaused: Boolean = false,
 )
 
 /**
@@ -77,7 +83,9 @@ data class CaptureUiState(
  * live transcript and pending counter from server events, and the session buttons.
  *
  * [start] runs once the microphone permission is granted; [leave] stops everything without ending
- * the session (the home screen offers "Continuar"); [end] ends it.
+ * the session (the home screen offers "Continuar"); [end] ends it. [onBackground] / [onForeground]
+ * (the screen's `ON_STOP` / `ON_START`) pause and resume the microphone while the socket stays
+ * open, so the session goes on where it was.
  */
 class CaptureViewModel(
     private val open: OpenSession,
@@ -98,6 +106,8 @@ class CaptureViewModel(
     private var transcriber: ClientTranscriber? = null
     private var streamer: AudioStreamer? = null
     private var micMode: SttMode? = null
+    private var inBackground = false
+    private var pauseNoticeJob: Job? = null
     private val transcriptLines = LinkedHashMap<String, TranscriptLine>()
 
     /** Opens the session socket and, once `hello.ack` names the STT mode, the microphone. */
@@ -141,6 +151,39 @@ class CaptureViewModel(
         connection?.stop()
         connection = null
         if (_state.value.phase == CapturePhase.RUNNING) _state.update { it.copy(phase = CapturePhase.IDLE) }
+    }
+
+    /**
+     * The app went to the background (`ON_STOP`): the microphone stops (an utterance in progress
+     * is settled as a final and sent first). The socket stays open and keeps its buffers, so
+     * nothing is lost or sent twice.
+     */
+    fun onBackground() {
+        if (inBackground) return
+        inBackground = true
+        pauseNoticeJob?.cancel()
+        pauseNoticeJob = null
+        val wasListening = micMode != null
+        stopMic()
+        if (wasListening || _state.value.phase == CapturePhase.RUNNING) _state.update { it.copy(micPaused = true) }
+    }
+
+    /**
+     * Back in the foreground (`ON_START`): the microphone restarts in the connection's STT mode
+     * (or at the next `hello.ack` when not connected now); «Micrófono en pausa» stays for
+     * [PAUSE_NOTICE_MS].
+     */
+    fun onForeground() {
+        if (!inBackground) return
+        inBackground = false
+        val state = connection?.state?.value
+        if (state is ConnectionState.Connected) startMic(state.sttMode)
+        if (_state.value.micPaused) {
+            pauseNoticeJob = viewModelScope.launch {
+                delay(PAUSE_NOTICE_MS)
+                _state.update { it.copy(micPaused = false) }
+            }
+        }
     }
 
     /** From a failed connection: try again now. */
@@ -198,7 +241,7 @@ class CaptureViewModel(
     }
 
     private fun startMic(mode: SttMode) {
-        if (micMode == mode) return
+        if (micMode == mode || inBackground) return
         stopMic()
         micMode = mode
         val connection = connection ?: return
@@ -264,6 +307,9 @@ class CaptureViewModel(
 
     companion object {
         const val MAX_TRANSCRIPT_LINES: Int = 50
+
+        /** How long «Micrófono en pausa» stays after returning to the foreground. */
+        const val PAUSE_NOTICE_MS: Long = 4_000
 
         private val ENDED_STATUSES = setOf(404, 409)
 

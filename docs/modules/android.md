@@ -155,8 +155,16 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   with the client time of its first sample (the wall clock at the first frame plus the samples
   read since). **`AudioRecordSource`** is the microphone: `AudioRecord`, `VOICE_RECOGNITION`, 16
   kHz mono PCM16. Frames are encoded by `protocol.AudioFrame`.
-- Known gaps: the microphone is not paused when the app goes to the background (Android silences
-  it); nothing here is spooled to disk (android-offline).
+- **Background pause** (#184): the screen observes its lifecycle; `ON_STOP` calls
+  `CaptureViewModel.onBackground()` (skipped on a configuration change, which the view model
+  outlives) and `ON_START` `onForeground()`. In the background the transcriber or audio streamer
+  stops (an utterance in progress is settled and sent as its final first) while the socket stays
+  open with its buffers, so no line is lost or sent twice; a reconnect meanwhile does not restart
+  the microphone. Back in the foreground the microphone restarts in the connection's STT mode (a
+  new transcriber, so new segment ids; audio `seq` continues on the same connection) and
+  `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). The camera preview is
+  bound to the same lifecycle through CameraX, which closes the camera on `ON_STOP`.
+- Known gap: nothing here is spooled to disk (android-offline).
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
