@@ -91,16 +91,16 @@ describe("decoders", () => {
 });
 
 describe("protocol_version", () => {
-  it("is 1.0", () => {
-    expect(PROTOCOL_VERSION).toBe("1.0");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 0]);
+  it("is 1.1", () => {
+    expect(PROTOCOL_VERSION).toBe("1.1");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 1]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.0; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.1; update the older side so both share MAJOR version 1",
     );
   });
 

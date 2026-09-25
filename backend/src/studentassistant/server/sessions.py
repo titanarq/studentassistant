@@ -26,6 +26,12 @@ sessions, and again before every session start; a `conflict` refuses the start
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
 flushes whatever is still pending.
 
+One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
+(`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
+`host_warning` the status route shows -- a warning, never a refusal. A session start then claims
+the record for this host, commits it and asks for an immediate push; its end releases it before
+the end's checkpoint and push.
+
 The derived search index (`VaultIndex`, ADR-0002) is opened at `[vault] index_path` right after
 the vault is (after its first pull), in a worker thread; an index that cannot be opened is logged
 and left out (`index` stays `None`), never failing the vault. While serving, `VaultIndex.run()`
@@ -56,11 +62,17 @@ from typing import Any, Literal, TypeVar
 
 from studentassistant import protocol
 from studentassistant.config import VaultSettings
-from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
-from studentassistant.protocol.version import PROTOCOL_VERSION
+from studentassistant.observer import (
+    CAPTURE_EVENT_KIND,
+    CAPTURE_ID_KEY,
+    ObserverStateError,
+    load_observer_snapshot,
+)
+from studentassistant.protocol.version import PROTOCOL_VERSION, negotiate, parse_version
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
 from studentassistant.vault import (
+    ActiveHostWarning,
     GitSync,
     NoOpenSessionError,
     Session,
@@ -68,11 +80,15 @@ from studentassistant.vault import (
     SyncResult,
     Vault,
     VaultError,
+    check_active_host,
+    claim_active_host,
     create_subject,
     create_topic,
     end_session,
+    list_sessions,
     list_subjects,
     list_topics,
+    release_active_host,
     resume_session,
     start_session,
 )
@@ -84,6 +100,9 @@ SESSION_ENDED = "session.ended"
 LIFECYCLE_KINDS = frozenset({SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED})
 
 T = TypeVar("T")
+
+TOPIC_ACTIVITY_SINCE = (1, 1)
+"""The protocol version that added a topic's `last_session_at_ms` and `pending_count`."""
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
 """How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
@@ -198,6 +217,7 @@ class SessionService:
         self._index_interval = index_interval
         self._index_runner: asyncio.Task[None] | None = None
         self._index_refresh: asyncio.Task[None] | None = None
+        self._host_warning: ActiveHostWarning | None = None
         if bus.on_append is None:
             bus.on_append = self._note_change
 
@@ -224,6 +244,11 @@ class SessionService:
             VaultUnavailableError: the vault cannot be opened.
         """
         return await self._ready()
+
+    @property
+    def host_warning(self) -> ActiveHostWarning | None:
+        """Another PC's open claim on the vault, as of the last pull (vault open, session start)."""
+        return self._host_warning
 
     @property
     def sync_running(self) -> bool:
@@ -339,12 +364,28 @@ class SessionService:
         self._note_change()
         return _subject(stored)
 
-    async def list_topics(self, subject_id: str) -> protocol.TopicsListResponse:
+    async def list_topics(
+        self, subject_id: str, *, protocol_version: str = PROTOCOL_VERSION
+    ) -> protocol.TopicsListResponse:
+        """The subject's topics, shaped for a client speaking `protocol_version`.
+
+        Peers speak the lower MINOR, and a client refuses unknown fields, so a topic carries
+        `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client.
+        """
         vault = await self._ready()
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
+        if _speaks_at_least(protocol_version, TOPIC_ACTIVITY_SINCE):
+            activity = await asyncio.to_thread(
+                lambda: [_topic_activity(vault, subject_id, t.slug) for t in stored]
+            )
+        else:
+            activity = [(None, None)] * len(stored)
         return protocol.TopicsListResponse(
             subject_id=subject_id,
-            topics=[self._topic(subject_id, t.slug, t.topic.title) for t in stored],
+            topics=[
+                self._topic(subject_id, t.slug, t.topic.title, last, pending)
+                for t, (last, pending) in zip(stored, activity, strict=True)
+            ],
         )
 
     async def create_topic(self, subject_id: str, name: str) -> protocol.Topic:
@@ -391,8 +432,12 @@ class SessionService:
                     result.conflicts,
                 )
             self._schedule_index_refresh()
+            await self._check_host(vault)
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
+            )
+            await asyncio.to_thread(
+                claim_active_host, vault, self.host, session.id, subject_id, topic_id
             )
             self._note_change()
             self._open[(subject_id, topic_id)] = session.id
@@ -408,6 +453,14 @@ class SessionService:
                     "device_id": _device(principal),
                 },
             )
+            sync = self._sync
+            if sync is not None:
+                # The claim is committed now and pushed by the background loop right away, so the
+                # other PCs see it without the start waiting for the network.
+                await asyncio.to_thread(
+                    sync.checkpoint, f"sesión {session.id} iniciada en {self.host}"
+                )
+                sync.request_push()
             return await _wire_session(session)
 
     async def resume(
@@ -474,6 +527,7 @@ class SessionService:
                 )
                 await self._run_end_hooks(self._before_close, session.id, "before close")
                 meta = await asyncio.to_thread(end_session, session)
+                await asyncio.to_thread(release_active_host, session.vault, self.host, session.id)
             except BaseException:
                 if attached_here:
                     self.bus.detach(session.id)
@@ -565,6 +619,7 @@ class SessionService:
                 # Pull before the scan, so sessions another PC left open are seen. A conflict is
                 # only logged here: the next session start pulls again and refuses on it.
                 await self._pull("vault open")
+                await self._check_host(vault)
                 self._open = await asyncio.to_thread(_scan_open_sessions, vault)
                 self._index = await self._open_index(vault)
                 self._vault = vault
@@ -625,16 +680,35 @@ class SessionService:
             return None
         return task
 
+    async def _check_host(self, vault: Vault) -> None:
+        """Read the active-host record just pulled into `host_warning`; logs a warning it finds."""
+        stale_after = (
+            self._sync.settings if self._sync is not None else self._settings.git
+        ).active_host_stale_seconds
+        warning = await asyncio.to_thread(check_active_host, vault, self.host, stale_after)
+        if warning is not None:
+            logger.warning("vault active host: %s", warning.message)
+        self._host_warning = warning
+
     def _note_change(self) -> None:
         if self._sync is not None:
             self._sync.note_change()
 
-    def _topic(self, subject_id: str, topic_id: str, title: str) -> protocol.Topic:
+    def _topic(
+        self,
+        subject_id: str,
+        topic_id: str,
+        title: str,
+        last_session_at_ms: int | None = None,
+        pending_count: int | None = None,
+    ) -> protocol.Topic:
         return protocol.Topic(
             topic_id=topic_id,
             subject_id=subject_id,
             name=title,
             open_session_id=self._open.get((subject_id, topic_id)),
+            last_session_at_ms=last_session_at_ms,
+            pending_count=pending_count,
         )
 
 
@@ -643,6 +717,38 @@ async def _refresh(index: VaultIndex) -> None:
         await asyncio.to_thread(index.refresh)
     except (VaultError, sqlite3.Error, OSError) as error:
         logger.warning("search index refresh failed: %s", error)
+
+
+def _speaks_at_least(client: str, since: tuple[int, int]) -> bool:
+    """Whether the version negotiated with a client speaking `client` is at least `since`."""
+    try:
+        return parse_version(negotiate(client)) >= since
+    except ValueError:
+        return False
+
+
+def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int | None, int | None]:
+    """The topic's latest session start (epoch ms) and open pending count, `None` when unknown.
+
+    Each is read on its own through the vault's and the observer's public functions; one that
+    cannot be read is logged and left out, so a damaged session never hides the topic list.
+    """
+    last: int | None = None
+    try:
+        sessions = list_sessions(vault, subject_id, topic_id)
+    except VaultError as error:
+        logger.warning("topic %s/%s: sessions unreadable: %s", subject_id, topic_id, error)
+    else:
+        if sessions:
+            last = _epoch_ms(max(meta.started_at for meta in sessions))
+    pending: int | None = None
+    try:
+        snapshot = load_observer_snapshot(vault, subject_id, topic_id, write_back=False)
+    except (VaultError, ObserverStateError) as error:
+        logger.warning("topic %s/%s: observer state unreadable: %s", subject_id, topic_id, error)
+    else:
+        pending = len(snapshot.state.open_pending())
+    return last, pending
 
 
 def _scan_open_sessions(vault: Vault) -> dict[tuple[str, str], str]:

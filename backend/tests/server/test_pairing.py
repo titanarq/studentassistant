@@ -67,7 +67,7 @@ def test_pairing_redeems_the_code_and_returns_a_token(
 
     assert response.status_code == 200
     paired = PairResponse.model_validate(response.json())
-    assert paired.protocol_version == "1.0"
+    assert paired.protocol_version == "1.1"
     assert len(paired.token) >= 43
     assert local.app.state.devices.verify_token(paired.token).id == paired.device_id  # type: ignore[attr-defined]
 

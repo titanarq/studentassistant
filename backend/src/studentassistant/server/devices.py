@@ -25,6 +25,9 @@ TOKEN_PREFIX = "sa_"
 TOKEN_BYTES = 32
 """Bytes of `secrets` entropy in every token (`secrets.token_urlsafe` -> 43 characters)."""
 
+PAIRED_BEFORE_VERSIONING = "1.0"
+"""The protocol version of a device whose pairing record carries none (paired before 1.1)."""
+
 FILE_MODE = 0o600
 DIR_MODE = 0o700
 
@@ -37,6 +40,9 @@ class Device(BaseModel):
     created_at: datetime
     token_salt: str
     token_hash: str
+    # The `protocol_version` the client sent when it paired; absent for a device paired before
+    # protocol 1.1, which is therefore a 1.0 client.
+    protocol_version: str | None = None
 
 
 class DeviceInfo(BaseModel):
@@ -45,6 +51,7 @@ class DeviceInfo(BaseModel):
     id: str
     name: str
     created_at: datetime
+    protocol_version: str = PAIRED_BEFORE_VERSIONING
 
 
 class _DevicesFile(BaseModel):
@@ -62,8 +69,11 @@ class DeviceStore:
         self.path = path
         self._lock = threading.Lock()
 
-    def issue_token(self, name: str) -> tuple[DeviceInfo, str]:
-        """Pair a new device called `name`; return it and its plaintext token (shown only now)."""
+    def issue_token(
+        self, name: str, protocol_version: str = PAIRED_BEFORE_VERSIONING
+    ) -> tuple[DeviceInfo, str]:
+        """Pair a new device called `name` speaking `protocol_version` (the one its pairing
+        request carried); return it and its plaintext token (shown only now)."""
         token = TOKEN_PREFIX + secrets.token_urlsafe(TOKEN_BYTES)
         salt = secrets.token_hex(16)
         device = Device(
@@ -72,6 +82,7 @@ class DeviceStore:
             created_at=datetime.now(UTC),
             token_salt=salt,
             token_hash=_hash_token(salt, token),
+            protocol_version=protocol_version,
         )
         with self._lock:
             stored = self._read()
@@ -128,4 +139,9 @@ class DeviceStore:
 
 
 def _info(device: Device) -> DeviceInfo:
-    return DeviceInfo(id=device.id, name=device.name, created_at=device.created_at)
+    return DeviceInfo(
+        id=device.id,
+        name=device.name,
+        created_at=device.created_at,
+        protocol_version=device.protocol_version or PAIRED_BEFORE_VERSIONING,
+    )

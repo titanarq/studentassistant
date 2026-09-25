@@ -14,6 +14,9 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
   `capture_now`, `notice` e.g. pending count, `ack` of audio seq / captures).
 - A `protocol_version`; both sides refuse an incompatible major version with a clear message.
+  Peers speak the lower MINOR: REST requests carry no version, so the backend answers a device's
+  REST calls in the version it sent at pairing (stored with the device, 1.0 when absent) and
+  omits fields newer than that; the WebSocket negotiates in `hello` / `hello.ack`.
 
 ## Boundaries
 - Pure data definitions and (de)serialisation; no I/O.
@@ -22,7 +25,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.0"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.1"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -47,7 +50,7 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.0"`), `parseVersion`, `checkCompatible` (throws
+- Version: `PROTOCOL_VERSION` (`"1.1"`), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union
@@ -64,7 +67,7 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.0"`), `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
+- Version: `PROTOCOL_VERSION` (`"1.1"`), `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
   `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
   with the same message as the backend's) and `negotiate`.
 - Client WS events: the sealed `ClientEvent` (`Hello` with `ClientCapabilities` / `AudioFormat`,

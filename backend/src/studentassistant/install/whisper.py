@@ -1,10 +1,11 @@
 """Preparing and checking the faster-whisper model, when `stt.provider = "faster-whisper"`.
 
 Only used in server STT mode with faster-whisper selected (ADR-0008); in the default client mode
-the capture client transcribes and there is nothing to download. faster-whisper is an optional
-dependency: it and `ctranslate2` are imported only when asked for, so the rest of the backend
-never needs them. Options come from `[stt.options.faster-whisper]` (`model`, `device`,
-`download_root`), with the defaults in `studentassistant.config`.
+the capture client transcribes and there is nothing to download. faster-whisper comes with the
+optional `whisper` extra (`uv sync --extra whisper`): it and `ctranslate2` are imported only when
+asked for, so the rest of the backend never needs them. Options come from
+`[stt.options.faster-whisper]` (`model`, `device`, `download_root`), with the defaults in
+`studentassistant.config`.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from studentassistant.config import DEFAULT_WHISPER_DEVICE, DEFAULT_WHISPER_MODE
 PROVIDER_NAME = "faster-whisper"
 NOT_INSTALLED_MESSAGE = (
     "faster-whisper no está instalado en el entorno de Student Assistant"
-    " (instálalo en backend/ con `uv pip install faster-whisper`)"
+    " (instálalo en backend/ con `uv sync --extra whisper`)"
 )
 
 

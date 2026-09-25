@@ -73,6 +73,10 @@ class Topic(ProtocolModel):
     name: Name
     # The session still open on this topic, if any; the client resumes it instead of starting one.
     open_session_id: Id | None = None
+    # Since 1.1, left out when unknown: the start of the topic's latest session (backend clock)
+    # and its open pending-review items (doubts awaiting the student).
+    last_session_at_ms: EpochMs | None = None
+    pending_count: Annotated[int, Field(ge=0)] | None = None
 
 
 class TopicsListResponse(ProtocolModel):

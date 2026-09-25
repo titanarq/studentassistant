@@ -15,7 +15,10 @@ never raised, so the capture path never sees it, and a local commit is never und
 `sync()` is `git pull --rebase`: the JSONL logs merge by union (`.gitattributes`), and any other
 conflict aborts the rebase, so the local commits and the working tree stay exactly as they were
 and the conflicting paths are reported for the student to decide (ADR-0002: never auto-resolved
-by discarding). Notes versions are annotated tags `<subject-slug>/<topic-slug>/apuntes-vN`,
+by discarding). Both sides of such a divergence are kept: the local commit and the remote one are
+pinned under `refs/studentassistant/divergence/{local,remote}` and described by the `Divergence`
+in the status, and `divergent_versions(path)` returns each side's content, until a later sync
+succeeds. Notes versions are annotated tags `<subject-slug>/<topic-slug>/apuntes-vN`,
 pushed with the branch.
 
 Time is read from an injectable `Clock`, and nothing here sleeps or starts a thread: `run_due()`
@@ -37,7 +40,7 @@ from typing import Literal, Protocol
 
 from studentassistant.config import VaultGitSettings
 from studentassistant.vault.git import GitIdentity, GitResult, GitRunner
-from studentassistant.vault.vault import MAIN_BRANCH, Vault
+from studentassistant.vault.vault import ACTIVE_HOST_MERGE_DRIVER, MAIN_BRANCH, Vault
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,10 @@ SyncOutcome = Literal["ok", "conflict", "offline", "auth", "error"]
 
 NOTES_TAG_SUFFIX = "apuntes-v"
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+DIVERGENCE_REF_PREFIX = "refs/studentassistant/divergence/"
+DIVERGENCE_LOCAL_REF = DIVERGENCE_REF_PREFIX + "local"
+DIVERGENCE_REMOTE_REF = DIVERGENCE_REF_PREFIX + "remote"
 
 
 class Clock(Protocol):
@@ -85,6 +92,30 @@ class SyncResult:
 
 
 @dataclass(frozen=True)
+class Divergence:
+    """A pull git could not merge: the paths, and the two commits that each keep one side.
+
+    `local_commit` is this PC's HEAD, still checked out; `remote_commit` is what the remote had.
+    Both are pinned by refs (`DIVERGENCE_LOCAL_REF`, `DIVERGENCE_REMOTE_REF`), so neither side is
+    lost while the student decides.
+    """
+
+    paths: tuple[str, ...]
+    local_commit: str
+    remote_commit: str
+    detected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
+class DivergentVersions:
+    """One diverging path's content on each side; `None` where that side has no such file."""
+
+    path: str
+    local: str | None
+    remote: str | None
+
+
+@dataclass(frozen=True)
 class SyncStatus:
     """A snapshot of the vault's git state, for the web UI and the logs. Reading it runs no git."""
 
@@ -101,6 +132,8 @@ class SyncStatus:
     last_sync: SyncResult | None = None
     # The last commit or tag that failed, redacted.
     last_error: str | None = None
+    # The unresolved divergence of the last conflicting sync; cleared by a successful one.
+    divergence: Divergence | None = None
 
 
 @dataclass(frozen=True)
@@ -386,6 +419,15 @@ class GitSync:
         logger.warning("vault push failed (%s), retrying in %.0f s", kind, delay)
         return False
 
+    def request_push(self) -> None:
+        """Make a push due now, for the background loop (`run_due`) to do. Runs no git.
+
+        For a commit that should reach the remote soon (the active-host claim at session start)
+        without the caller waiting for the network.
+        """
+        with self._state_lock:
+            self._push_due_at = self.clock.monotonic()
+
     def flush(self) -> SyncStatus:
         """Commit whatever is pending and push now: session end and shutdown. Never raises."""
         with self._git_lock:
@@ -403,27 +445,48 @@ class GitSync:
         """
         with self._git_lock:
             self._commit(None)
-            result = self._pull_locked()
+            result, divergence = self._pull_locked()
+            if result.ok:
+                self._forget_divergence_locked()
             pending = self._count_unpushed()
-        self._update(last_sync=result, pending_commits=pending)
+        changes: dict[str, object] = {"last_sync": result, "pending_commits": pending}
+        if result.ok:
+            changes["divergence"] = None
+        elif divergence is not None:
+            changes["divergence"] = divergence
+        self._update(**changes)
         if result.ok and pending:
             self._schedule_push(0.0)
         if not result.ok:
             logger.warning("vault sync: %s %s", result.outcome, result.message)
         return result
 
-    def _pull_locked(self) -> SyncResult:
+    def _pull_locked(self) -> tuple[SyncResult, Divergence | None]:
         remote = self.settings.remote
         heads = self.git.run("ls-remote", "--heads", remote, MAIN_BRANCH)
         if not heads.ok:
-            return SyncResult(outcome=_sync_kind(heads), message=heads.describe())
+            return SyncResult(outcome=_sync_kind(heads), message=heads.describe()), None
         if not heads.stdout.strip():
-            return SyncResult(outcome="ok", message="el remoto aún no tiene la rama principal")
+            return SyncResult(
+                outcome="ok", message="el remoto aún no tiene la rama principal"
+            ), None
+        local = self.git.run("rev-parse", "--verify", "--quiet", "HEAD").stdout.strip()
         pull = self.git.run(
-            "-c", "commit.gpgsign=false", "pull", "--rebase", "--no-autostash", remote, MAIN_BRANCH
+            "-c",
+            "commit.gpgsign=false",
+            # `.sa/active.yaml` keeps the remote's side (`vault/active.py`): never a conflict.
+            "-c",
+            f"merge.{ACTIVE_HOST_MERGE_DRIVER}.name=active host record: keep the remote side",
+            "-c",
+            f"merge.{ACTIVE_HOST_MERGE_DRIVER}.driver=true",
+            "pull",
+            "--rebase",
+            "--no-autostash",
+            remote,
+            MAIN_BRANCH,
         )
         if pull.ok:
-            return SyncResult(outcome="ok")
+            return SyncResult(outcome="ok"), None
         if self._rebase_in_progress():
             unmerged = self.git.run("diff", "--name-only", "--diff-filter=U", "-z")
             conflicts = tuple(sorted(path for path in unmerged.stdout.split("\0") if path))
@@ -431,8 +494,45 @@ class GitSync:
             message = "conflicto no resoluble automáticamente; rebase cancelado"
             if not abort.ok:
                 message += f" (y la cancelación falló: {abort.describe()})"
-            return SyncResult(outcome="conflict", message=message, conflicts=conflicts)
-        return SyncResult(outcome=_sync_kind(pull), message=pull.describe())
+            result = SyncResult(outcome="conflict", message=message, conflicts=conflicts)
+            return result, self._keep_divergence_locked(conflicts, local)
+        return SyncResult(outcome=_sync_kind(pull), message=pull.describe()), None
+
+    def _keep_divergence_locked(self, conflicts: tuple[str, ...], local: str) -> Divergence | None:
+        """Pin both sides of a conflicting pull under refs; `None` if either cannot be named."""
+        remote = self.git.run("rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+        remote_commit = remote.stdout.strip()
+        if not local or not remote.ok or not remote_commit:
+            logger.warning("vault divergence: could not name both sides (%s)", remote.describe())
+            return None
+        for ref, commit in ((DIVERGENCE_LOCAL_REF, local), (DIVERGENCE_REMOTE_REF, remote_commit)):
+            pinned = self.git.run("update-ref", ref, commit)
+            if not pinned.ok:
+                logger.warning("vault divergence: could not pin %s: %s", ref, pinned.describe())
+        return Divergence(paths=conflicts, local_commit=local, remote_commit=remote_commit)
+
+    def _forget_divergence_locked(self) -> None:
+        for ref in (DIVERGENCE_LOCAL_REF, DIVERGENCE_REMOTE_REF):
+            if self.git.run("rev-parse", "--verify", "--quiet", ref).ok:
+                self.git.run("update-ref", "-d", ref)
+
+    def divergent_versions(self, path: str) -> DivergentVersions | None:
+        """Both sides of one path of the current divergence, or `None` when it is not one of them.
+
+        Text as git shows it (undecodable bytes replaced): for the student to compare and decide.
+        Never raises.
+        """
+        divergence = self.status().divergence
+        if divergence is None or path not in divergence.paths:
+            return None
+        with self._git_lock:
+            local = self.git.run("show", f"{divergence.local_commit}:{path}")
+            remote = self.git.run("show", f"{divergence.remote_commit}:{path}")
+        return DivergentVersions(
+            path=path,
+            local=local.stdout if local.ok else None,
+            remote=remote.stdout if remote.ok else None,
+        )
 
     def _rebase_in_progress(self) -> bool:
         for name in ("rebase-merge", "rebase-apply"):
@@ -518,6 +618,8 @@ def _check_slugs(subject_slug: str, topic_slug: str) -> None:
 
 __all__ = [
     "Clock",
+    "Divergence",
+    "DivergentVersions",
     "GitSync",
     "NotesTag",
     "PushFailure",

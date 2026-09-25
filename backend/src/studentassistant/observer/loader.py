@@ -34,13 +34,16 @@ def _still_valid(snapshot: ObserverSnapshot, events: list[TopicEvent]) -> bool:
     return snapshot.cursor == EventRef(session_id=session_id, seq=event.seq)
 
 
-def load_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> ObserverSnapshot:
+def load_observer_snapshot(
+    vault: Vault, subject_slug: str, topic_slug: str, *, write_back: bool = True
+) -> ObserverSnapshot:
     """The topic's up-to-date observer snapshot; the stored one is refreshed when it changed.
 
     The stored snapshot is used when it still matches the log; otherwise (none stored, not
     readable, another `state_version`, or the log changed before its cursor) the state is folded
     from scratch. The events after it are folded and, when the result differs from what was
-    stored, it is written back through `write_observer_snapshot`.
+    stored, it is written back through `write_observer_snapshot`, unless `write_back` is false
+    (a read-only caller, such as a listing, that must leave the vault untouched).
 
     Raises:
         SubjectNotFoundError, TopicNotFoundError, SessionFileError: what the vault raises for a
@@ -55,6 +58,6 @@ def load_observer_snapshot(vault: Vault, subject_slug: str, topic_slug: str) -> 
     base = stored if stored is not None and _still_valid(stored, events) else None
     start = base.event_count if base is not None else 0
     snapshot = advance_snapshot(base, events[start:])
-    if snapshot != stored:
+    if write_back and snapshot != stored:
         write_observer_snapshot(vault, subject_slug, topic_slug, snapshot)
     return snapshot

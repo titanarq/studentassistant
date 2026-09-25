@@ -130,7 +130,7 @@ def pairing_router(server: ServerSettings, devices: DeviceStore, codes: PairingC
         if not codes.redeem(body.pairing_code):
             log.warning("pairing refused: invalid pairing code")
             raise HTTPException(status_code=401, detail=INVALID_CODE_DETAIL)
-        device, token = devices.issue_token(body.device_name)
+        device, token = devices.issue_token(body.device_name, body.protocol_version)
         log.info("device %s paired (%s client)", device.id, body.client_kind)
         return PairResponse(device_id=device.id, token=token, protocol_version=PROTOCOL_VERSION)
 

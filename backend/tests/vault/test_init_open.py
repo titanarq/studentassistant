@@ -89,7 +89,8 @@ def test_gitattributes_keeps_both_sides_of_an_append_only_jsonl_file(tmp_path: P
 
     content = (vault.path / GITATTRIBUTES_NAME).read_text(encoding="utf-8")
 
-    assert content == GITATTRIBUTES_CONTENT == "*.jsonl merge=union\n"
+    assert content == GITATTRIBUTES_CONTENT
+    assert GITATTRIBUTES_CONTENT == "*.jsonl merge=union\n.sa/active.yaml merge=sa-active\n"
 
 
 def test_init_starts_the_repository_on_the_main_branch(tmp_path: Path) -> None:

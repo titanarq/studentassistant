@@ -55,15 +55,18 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   `[stt.options.faster-whisper]` `model` (default `DEFAULT_WHISPER_MODEL`, `large-v3-turbo`),
   `device` (`auto`|`cuda`|`cpu`, default `auto`) and `download_root` (default: the Hugging Face
   cache); `download` / `cached_model` via `faster_whisper.download_model`, `cuda_devices()` via
-  `ctranslate2.get_cuda_device_count()`. Both packages are optional and imported lazily; the
-  future faster-whisper provider (stt module) should read the same option keys.
+  `ctranslate2.get_cuda_device_count()`. Both packages come with the optional `whisper` extra
+  (`uv sync --extra whisper`; CI and `scripts/test.sh` never install it) and are imported
+  lazily; the future faster-whisper provider (stt module) should read the same option keys.
 - `doctor.py` -- `run_doctor(settings, *, api_call=False, probes=None) -> list[Check]`; every
   outside reach (GitHub host, the key check, the port, the running backend, the environment) is
   a `DoctorProbes` field. Checks, in order: Python dependencies (the distribution's
   requirements installed); STT mode/provider (server mode: the provider resolves in the
   registry; with faster-whisper also installed, CUDA unless `device = "cpu"` -- `aviso` for
-  `auto` without a GPU -- and the model cached); the API key (present in the environment or in a
-  `0600` file; with `api_call`, `llm.check_api_key`); the vault opens; `origin` is `vault.repo`
+  `auto` without a GPU -- and the model cached); the API key (in the environment, in a `0600` key
+  file or, failing both, an `ant auth` profile found by `llm.find_ant_profile` through the
+  `ant_profile` probe; the line names the source; with `api_call`, `llm.check_api_key` with the
+  key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`
   and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
   means git's own); the server port is free or answered by our `/api/health`; the service is
   `active`. The CLI adds a first `Configuración` line (an invalid config is a `FALLO`).

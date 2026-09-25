@@ -25,7 +25,7 @@ from typing import Literal
 from studentassistant.config import ServerSettings, Settings, SttSettings
 from studentassistant.install import service, whisper
 from studentassistant.install.apikey import API_KEY_ENV_VAR, file_is_private, read_api_key
-from studentassistant.llm import LLMAPIError, LLMError, check_api_key
+from studentassistant.llm import LLMAPIError, LLMError, check_api_key, find_ant_profile
 from studentassistant.stt.registry import UnknownProviderError, provider_class
 from studentassistant.vault import Vault, VaultError
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
@@ -74,8 +74,11 @@ class DoctorProbes:
 
     # How git authenticates to GitHub; raising `GitHubHostError` means "no credentials".
     github_host: Callable[[], GitHubHost] = select_host
-    # One free call with the key; raises an `LLMError` when it does not work.
-    api_key_check: Callable[[str], None] = check_api_key
+    # One free call with the key (`None`: whatever the SDK resolves, e.g. an `ant auth`
+    # profile); raises an `LLMError` when it does not work.
+    api_key_check: Callable[[str | None], None] = check_api_key
+    # The `ant auth` profile the SDK would use, or `None` (never reads a secret).
+    ant_profile: Callable[[], str | None] = find_ant_profile
     port_free: Callable[[str, int], bool] = port_is_free
     # Whether a Student Assistant backend answers `GET /api/health` on this PC.
     backend_answers: Callable[[], bool] = _no_backend
@@ -102,7 +105,8 @@ def check_python_dependencies() -> Check:
         except metadata.PackageNotFoundError:
             missing.append(match.group(0))
     if missing:
-        return Check(name, "fallo", f"faltan {', '.join(missing)} (lanza `uv sync` en backend/)")
+        hint = "lanza `uv sync` en backend/, con `--extra whisper` si usas Whisper en el PC"
+        return Check(name, "fallo", f"faltan {', '.join(missing)} ({hint})")
     return Check(name, "ok", f"las {required} dependencias están instaladas")
 
 
@@ -149,28 +153,34 @@ def check_whisper(stt: SttSettings) -> list[Check]:
 
 
 def check_api_key_setting(settings: Settings, api_call: bool, probes: DoctorProbes) -> Check:
+    """The key's source, in the order the SDK sees it once `serve` has exported the key file:
+    the environment, the key file, then an `ant auth` profile."""
     name = "Clave de la API de Anthropic"
     path = settings.llm.api_key_path()
     key = probes.environ.get(API_KEY_ENV_VAR) or None
-    where = f"la variable {API_KEY_ENV_VAR}"
+    where, of_where = f"la variable {API_KEY_ENV_VAR}", f"de la variable {API_KEY_ENV_VAR}"
     if key is None:
         key = read_api_key(path)
-        where = str(path)
+        where, of_where = f"el fichero {path}", f"del fichero {path}"
         if key is not None and not file_is_private(path):
             return Check(name, "fallo", f"{path} lo pueden leer otros usuarios: chmod 600 {path}")
     if key is None:
-        return Check(name, "fallo", "no hay clave: guárdala con `studentassistant setup`")
+        profile = probes.ant_profile()
+        if profile is None:
+            return Check(name, "fallo", "no hay clave: guárdala con `studentassistant setup`")
+        where = f"el perfil «{profile}» de `ant auth`"
+        of_where = f"del perfil «{profile}» de `ant auth`"
     if not api_call:
         return Check(name, "ok", f"en {where} (prueba que funciona con --api-call)")
     try:
-        probes.api_key_check(key)
+        probes.api_key_check(key)  # `None` for a profile: the SDK resolves it
     except LLMAPIError as error:
         if error.status_code in (401, 403):
-            return Check(name, "fallo", f"Anthropic rechaza la clave de {where}")
+            return Check(name, "fallo", f"Anthropic rechaza la clave {of_where}")
         return Check(name, "fallo", f"la API respondió con un error ({error.status_code})")
     except LLMError as error:
         return Check(name, "fallo", f"no se pudo contactar con la API de Anthropic: {error}")
-    return Check(name, "ok", f"la clave de {where} funciona")
+    return Check(name, "ok", f"la clave {of_where} funciona")
 
 
 def check_vault(settings: Settings, probes: DoctorProbes) -> list[Check]:

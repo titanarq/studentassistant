@@ -1,5 +1,14 @@
 """Git-backed content store: layout, writers, commit/push/pull, setup, SQLite index."""
 
+from studentassistant.vault.active import (
+    ActiveHost,
+    ActiveHostWarning,
+    active_host_warning,
+    check_active_host,
+    claim_active_host,
+    read_active_host,
+    release_active_host,
+)
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.ledger import (
@@ -73,6 +82,8 @@ from studentassistant.vault.subjects import (
 )
 from studentassistant.vault.sync import (
     Clock,
+    Divergence,
+    DivergentVersions,
     GitSync,
     NotesTag,
     PushFailure,
@@ -104,7 +115,11 @@ from studentassistant.vault.vault import (
 __all__ = [
     "EVENT_SCHEMA_VERSION",
     "SOURCE_KINDS",
+    "ActiveHost",
+    "ActiveHostWarning",
     "Clock",
+    "Divergence",
+    "DivergentVersions",
     "Event",
     "GitCommandError",
     "GitIdentity",
@@ -153,8 +168,11 @@ __all__ = [
     "VaultFormatError",
     "VaultMetaError",
     "VaultNotFoundError",
+    "active_host_warning",
     "append_jsonl",
     "append_ledger_entry",
+    "check_active_host",
+    "claim_active_host",
     "create_subject",
     "create_topic",
     "end_session",
@@ -173,6 +191,7 @@ __all__ = [
     "notes_path",
     "notes_tag_name",
     "put_source",
+    "read_active_host",
     "read_all_ledgers",
     "read_jsonl",
     "read_ledger",
@@ -182,6 +201,7 @@ __all__ = [
     "read_source",
     "read_topic_events",
     "require_topic",
+    "release_active_host",
     "resume_session",
     "sessions_directory",
     "sources_directory",

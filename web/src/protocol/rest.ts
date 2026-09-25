@@ -66,6 +66,10 @@ export interface Topic {
   name: string;
   /** The session still open on this topic, if any; the client resumes it. */
   open_session_id?: string;
+  /** Since 1.1: start of the topic's latest session, backend clock, epoch ms; absent when unknown. */
+  last_session_at_ms?: number;
+  /** Since 1.1: open pending-review items (doubts awaiting the student); absent when unknown. */
+  pending_count?: number;
 }
 
 export interface TopicsListResponse {
@@ -196,7 +200,7 @@ export const decodeSubjectCreateRequest: Decoder<SubjectCreateRequest> = object(
 
 export const decodeTopic: Decoder<Topic> = object(
   { topic_id: id, subject_id: id, name },
-  { open_session_id: id },
+  { open_session_id: id, last_session_at_ms: epochMs, pending_count: int({ min: 0 }) },
 );
 
 export const decodeTopicsListResponse: Decoder<TopicsListResponse> = object({

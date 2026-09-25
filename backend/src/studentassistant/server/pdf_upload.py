@@ -263,7 +263,8 @@ def _response(
 def pdf_upload_router() -> APIRouter:
     """The PDF upload route; the service and the `[sources]` limits are read from `app.state`."""
     router = APIRouter(prefix="/api")
-    # One lock per topic: `put_source` numbers `page-NNN` from what the directory holds.
+    # One lock per topic: imports of one topic run one at a time, so their memory does not add
+    # up (`put_source` itself keeps page numbers distinct across concurrent writers).
     locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     @router.post(
