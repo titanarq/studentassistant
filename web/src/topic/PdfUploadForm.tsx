@@ -24,9 +24,12 @@ function describe(imported: ImportedPdf): string {
 export default function PdfUploadForm({
   subjectId,
   topicId,
+  onImported,
 }: {
   subjectId: string;
   topicId: string;
+  /** Called after a PDF was added, so the page can refresh what it shows of the topic. */
+  onImported?: (imported: ImportedPdf) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [pages, setPages] = useState("");
@@ -43,6 +46,7 @@ export default function PdfUploadForm({
     switch (result.kind) {
       case "ok":
         setStatus({ state: "done", imported: result.imported });
+        onImported?.(result.imported);
         break;
       case "refused":
         setStatus({ state: "failed", message: `No se ha añadido el PDF: ${result.detail}` });
