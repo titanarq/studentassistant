@@ -150,7 +150,8 @@ material.
 - `practice_queue(vault, s, t, *, now=None, new_limit=10, tz=None) -> PracticeQueue`: `queue` of
   `QueuedItem` (`item`, `state` or none) -- the items due (oldest due first), then never-seen items
   up to `new_limit` minus those first reviewed on the day of `now` (in `tz`, local by default) --,
-  `counts` (`total`, `due`, `new`, `unseen`, `learned`, `new_today`), `next_due`, `warnings`.
+  `counts` (`total`, `due`, `new`, `unseen`, `learned`, `new_today`, `suspended`), `next_due`,
+  `suspended`, `warnings`.
 - `record_practice_review(vault, s, t, answer, *, sync, clock) -> ReviewOutcome` (`review`,
   `state`): `PracticeAnswer` (`item`, `rating`, `given`, `self_assessed`). A flashcard needs a
   `rating` (`InvalidReviewError`); a question is graded by `quiz.grade` -- wrong is `again`, right
@@ -160,6 +161,20 @@ material.
   one but committed together by `GitSync.run_due()` (after `commit_quiet_seconds` of quiet, at the
   latest `commit_max_delay_seconds` after the first review) under the batch summary, or by
   `flush()` at shutdown / `sync()` like any other pending change.
+- Setting an item aside (#281): `suspend_practice_item(vault, s, t, key, *, sync, clock)` and
+  `restore_practice_item(...)` -> `SuspensionOutcome` (`item`, `suspended`, `suspended_at`,
+  `changed`) append a `PracticeSuspension` (`time`, `item`, `source`, `action` `suspend|restore`)
+  to the same `study/practice.jsonl` -- a distinct line kind (`extra="forbid"` tells it from a
+  `PracticeReview`), so old logs still load and `merge=union` keeps both PCs' lines -- then only
+  `sync.note_change()`. The latest record per item in time order (file order on a tie) wins
+  (`suspensions(lines) -> {key: suspended_at}`; `practice_log(...)` reads both kinds). Idempotent:
+  a request that changes nothing writes nothing (`changed: false`); an unknown key is
+  `PracticeItemNotFoundError`. A suspended item is never queued (neither due nor new, and it does
+  not set `next_due`); `counts.suspended` counts it (`total` still includes it, `unseen` and
+  `learned` do not; one started today still counts in `new_today`), and
+  `PracticeQueue.suspended` / `suspended_items(vault, s, t)` list the current ones as
+  `SuspendedItem` (`key`, `source`, `prompt`, `suspended_at`), latest first. `replay` ignores the
+  suspensions, so a restored item keeps its previous history and schedule.
 
 Full quiz attempts (`quiz-results.jsonl`) do not feed the schedule. REST:
 `server/practice_routes.py` (`docs/modules/server.md`); web: `src/practice/`.

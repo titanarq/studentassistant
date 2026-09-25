@@ -85,6 +85,40 @@ def test_practise_flashcards_and_quiz(
     assert client.get(f"{base}/practice", params={"new_limit": 500}).status_code == 422
 
 
+def test_set_aside_and_restore(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> None:
+    base = f"/api/subjects/{topic.subject}/topics/{topic.topic}"
+    fake.reply_tool(FLASHCARDS_TOOL, {"cards": [{"front": "¿Qué es?", "back": "Un límite."}]})
+    assert client.post(f"{base}/generated/flashcards", json={}).status_code == 200
+    card = client.get(f"{base}/practice").json()["queue"][0]["item"]["key"]
+    first = client.post(f"{base}/practice/reviews", json={"item": card, "rating": "again"})
+    assert first.is_success
+
+    aside = client.post(f"{base}/practice/items/{card}/suspend")
+    assert aside.status_code == 200, aside.text
+    assert aside.json()["suspended"] is True and aside.json()["changed"] is True
+    repeated = client.post(f"{base}/practice/items/{card}/suspend").json()
+    assert repeated["changed"] is False and repeated["suspended_at"] == aside.json()["suspended_at"]
+    queue = client.get(f"{base}/practice").json()
+    assert queue["queue"] == [] and queue["counts"]["suspended"] == 1
+    assert [(s["key"], s["prompt"]) for s in queue["suspended"]] == [(card, "¿Qué es?")]
+    lines = study_log_path(topic.vault, topic.subject, topic.topic, "practice").read_text("utf-8")
+    assert len(lines.splitlines()) == 2
+
+    restored = client.post(f"{base}/practice/items/{card}/restore")
+    assert restored.status_code == 200 and restored.json()["suspended"] is False
+    assert client.post(f"{base}/practice/items/{card}/restore").json()["changed"] is False
+    back = client.get(f"{base}/practice").json()
+    assert back["suspended"] == [] and back["counts"]["learned"] == 1
+
+    for action in ("suspend", "restore"):
+        missing = client.post(f"{base}/practice/items/quiz:nada/{action}")
+        assert missing.status_code == 404 and "ya no está" in missing.json()["detail"]
+    assert client.post(f"{base}/practice/items/otra:cosa/suspend").status_code == 422
+    other = f"/api/subjects/{topic.subject}/topics/nada"
+    unknown = client.post(f"{other}/practice/items/{card}/suspend")
+    assert unknown.status_code == 404
+
+
 def test_unknown_topic(client: TestClient, topic: ReviseTopic) -> None:
     response = client.get(f"/api/subjects/{topic.subject}/topics/nada/practice")
     assert response.status_code == 404

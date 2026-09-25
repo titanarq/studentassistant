@@ -187,10 +187,69 @@ it("shows a refused review and keeps the item", async () => {
 it("reads the queue leniently and describes intervals", () => {
   const read = readQueue(queue([CARD, { item: { key: "quiz:x", source: "quiz", prompt: "?", answer: "a" } }]));
   expect(read?.queue.map((q) => q.item.key)).toEqual(["flashcards:c0000abcd"]);
+  expect(read?.suspended).toEqual([]);
   expect(readQueue({ queue: [] })).toBeNull();
   expect(describeInterval(10 / (24 * 60))).toBe("en 10 minutos");
   expect(describeInterval(0.25)).toBe("en 6 horas");
   expect(describeInterval(1)).toBe("mañana");
   expect(describeInterval(6)).toBe("en 6 días");
   expect(describeInterval(90)).toBe("en 3 meses");
+});
+
+it("sets the current item aside and restores one from the Descartadas list", async () => {
+  const posts: string[] = [];
+  const fetchMock = stubApi({
+    ...TOPICS,
+    [`${TOPIC}/practice`]: jsonResponse(
+      queue([CARD, SHORT], {
+        counts: { total: 5, due: 1, new: 2, unseen: 3, learned: 2, new_today: 0, suspended: 1 },
+        suspended: [
+          { key: "quiz:cccccccccccc", source: "quiz", prompt: "¿Pregunta vieja?", suspended_at: "2026-09-20T10:00:00Z" },
+        ],
+      }),
+    ),
+  });
+  const original = fetchMock.getMockImplementation();
+  fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      posts.push(input);
+      const suspended = input.endsWith("/suspend");
+      return jsonResponse({ item: "x", suspended, suspended_at: null, changed: true });
+    }
+    return original!(input, init);
+  });
+  renderPage();
+
+  expect(await screen.findByText("¿Qué es la derivada?")).toBeInTheDocument();
+  expect(screen.getByText(/2 de 5 ya vistas · 1 descartadas/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Descartar esta tarjeta" }));
+
+  expect(await screen.findByRole("status")).toHaveTextContent("Tarjeta descartada: ya no saldrá en la práctica.");
+  expect(screen.getByText("¿Qué regla se verá el próximo día?")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Descartar esta pregunta" })).toBeInTheDocument();
+  expect(screen.getByText(/quedan 1/)).toBeInTheDocument();
+  expect(screen.getByText("Descartadas (2)")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Recuperar: ¿Pregunta vieja?" }));
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/Recuperada/));
+  expect(screen.getByText("Descartadas (1)")).toBeInTheDocument();
+  expect(screen.queryByText("¿Pregunta vieja?")).toBeNull();
+  expect(posts).toEqual([
+    `${TOPIC}/practice/items/flashcards%3Ac0000abcd/suspend`,
+    `${TOPIC}/practice/items/quiz%3Acccccccccccc/restore`,
+  ]);
+});
+
+it("keeps the item when setting it aside is refused", async () => {
+  stubApi({
+    ...TOPICS,
+    [`${TOPIC}/practice`]: jsonResponse(queue([CARD])),
+    [`POST ${TOPIC}/practice/items/flashcards%3Ac0000abcd/suspend`]: jsonResponse({ detail: "Ya no está." }, 404),
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Descartar esta tarjeta" }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Ya no está."));
+  expect(screen.getByText("¿Qué es la derivada?")).toBeInTheDocument();
+  expect(screen.queryByText(/Descartadas/)).toBeNull();
 });

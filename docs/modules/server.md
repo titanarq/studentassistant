@@ -519,12 +519,19 @@ Routes registered today:
   - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
 - **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
-    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `warnings`); `new_limit` 0-100,
-    default 10 new items a day. 500 when a material cannot be read.
+    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `suspended`, `warnings`);
+    `new_limit` 0-100, default 10 new items a day. 500 when a material cannot be read.
   - `POST .../practice/reviews`, body `PracticeAnswer` (`item`, `rating`, `given`,
     `self_assessed`) -> `ReviewOutcome` (`review`, `state`), appended to `study/practice.jsonl`
     and committed with the sitting's batch (`note_change()`). 404 an item no longer in the
     material, 422 a flashcard review without a rating.
+  - `POST .../practice/items/{key}/suspend` and `POST .../practice/items/{key}/restore` (#281)
+    -> `SuspensionOutcome` (`item`, `suspended`, `suspended_at`, `changed`): set the item aside
+    (never queued) or bring it back with its history; the record goes to `study/practice.jsonl`
+    and is committed with the sitting's batch (`note_change()`). Idempotent (a repeat writes
+    nothing, `changed: false`). `key` must look like `flashcards:<id>` or `quiz:<hash>` (else
+    422); 404 an item no longer in the material or an unknown topic. The items set aside come
+    in the queue response (`suspended`).
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).

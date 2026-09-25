@@ -22,6 +22,14 @@ never seen, minus the new ones already started that day); `record_practice_revie
 answer with the quiz's own `grade` (a wrong answer is `again`, a right one `good` unless the
 student picks `hard` or `easy`), takes the student's rating for a flashcard, stores the review and
 answers the item's new schedule.
+
+The student can set an item aside ("esta tarjeta no me sirve", #281): `suspend_practice_item`
+appends a `PracticeSuspension` (`action: suspend`) to the same log and `restore_practice_item` one
+with `action: restore`. The latest of them per item, in time order (file order on a tie), says
+whether it is suspended, so two PCs' interleaved lines agree. A suspended item is never queued
+(neither due nor new) and is counted apart; its reviews stay in the log, so a restored item comes
+back with its previous history and schedule. Setting aside an item already set aside (or restoring
+one that is not) writes nothing.
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from studentassistant.generators import flashcards as flashcards_module
 from studentassistant.generators.quiz import (
@@ -165,6 +173,19 @@ class PracticeReview(_Strict):
     anchors: list[str] = Field(default_factory=list)
 
 
+class PracticeSuspension(_Strict):
+    """A line of `study/practice.jsonl` that sets an item aside or brings it back (#281)."""
+
+    time: datetime
+    item: str = Field(description="`flashcards:<card id>` or `quiz:<question hash>`.")
+    source: Source
+    action: Literal["suspend", "restore"]
+
+
+class _PracticeLine(RootModel[PracticeReview | PracticeSuspension]):
+    """Any line of the practice log: `extra="forbid"` tells the two kinds apart."""
+
+
 def replay(reviews: Iterable[PracticeReview]) -> dict[str, ItemState]:
     """Every reviewed item's state, from its reviews in time order (file order on a tie)."""
     states: dict[str, ItemState] = {}
@@ -178,7 +199,25 @@ def replay(reviews: Iterable[PracticeReview]) -> dict[str, ItemState]:
 
 def practice_history(vault: Vault, subject: str, topic: str) -> list[PracticeReview]:
     """Every review of the topic's practice, in file order."""
-    return read_study_records(vault, subject, topic, PRACTICE_LOG, PracticeReview)
+    lines = practice_log(vault, subject, topic)
+    return [line for line in lines if isinstance(line, PracticeReview)]
+
+
+def practice_log(
+    vault: Vault, subject: str, topic: str
+) -> list[PracticeReview | PracticeSuspension]:
+    """Every line of the topic's practice log (reviews and suspensions), in file order."""
+    lines = read_study_records(vault, subject, topic, PRACTICE_LOG, _PracticeLine)
+    return [line.root for line in lines]
+
+
+def suspensions(lines: Iterable[PracticeReview | PracticeSuspension]) -> dict[str, datetime]:
+    """The suspended items and when each was set aside: the latest record per item wins."""
+    records = [line for line in lines if isinstance(line, PracticeSuspension)]
+    latest: dict[str, PracticeSuspension] = {}
+    for _, record in sorted(enumerate(records), key=lambda pair: (pair[1].time, pair[0])):
+        latest[record.item] = record
+    return {key: record.time for key, record in latest.items() if record.action == "suspend"}
 
 
 # -- the items -------------------------------------------------------------------------------------
@@ -301,12 +340,22 @@ class QueuedItem(_Strict):
 
 
 class PracticeCounts(_Strict):
-    total: int = Field(description="Items in the current material.")
+    total: int = Field(description="Items in the current material, suspended ones included.")
     due: int = Field(description="Reviewed items due now.")
     new: int = Field(description="Never-reviewed items offered now (within the daily limit).")
-    unseen: int = Field(description="Every never-reviewed item.")
-    learned: int = Field(description="Items reviewed at least once.")
+    unseen: int = Field(description="Every never-reviewed item not suspended.")
+    learned: int = Field(description="Items reviewed at least once, not suspended.")
     new_today: int = Field(description="Items first reviewed today.")
+    suspended: int = Field(default=0, description="Items set aside: never queued.")
+
+
+class SuspendedItem(_Strict):
+    """A current item the student set aside, as the practice page lists it."""
+
+    key: str
+    source: Source
+    prompt: str
+    suspended_at: datetime
 
 
 class PracticeQueue(_Strict):
@@ -317,6 +366,9 @@ class PracticeQueue(_Strict):
     counts: PracticeCounts
     next_due: datetime | None = Field(
         default=None, description="The earliest due time after `now` of a reviewed item."
+    )
+    suspended: list[SuspendedItem] = Field(
+        default_factory=list, description="The items set aside, the latest first."
     )
     warnings: list[str] = Field(default_factory=list)
 
@@ -349,7 +401,9 @@ def practice_queue(
     """
     moment = now or _utc_now()
     items, warnings = practice_items(vault, subject, topic)
-    states = replay(practice_history(vault, subject, topic))
+    lines = practice_log(vault, subject, topic)
+    states = replay(line for line in lines if isinstance(line, PracticeReview))
+    aside = suspensions(lines)
     today = _local_day(moment, tz)
     current = {item.key for item in items}
     new_today = sum(
@@ -362,8 +416,11 @@ def practice_queue(
     due: list[QueuedItem] = []
     unseen: list[QueuedItem] = []
     later: list[datetime] = []
+    suspended = _suspended(items, aside)
     for item in items:
         state = states.get(item.key)
+        if item.key in aside:
+            continue
         if state is None:
             unseen.append(QueuedItem(item=item))
         elif state.due is not None and state.due <= moment:
@@ -380,12 +437,39 @@ def practice_queue(
             due=len(due),
             new=len(fresh),
             unseen=len(unseen),
-            learned=len(items) - len(unseen),
+            learned=len(items) - len(unseen) - len(suspended),
             new_today=new_today,
+            suspended=len(suspended),
         ),
         next_due=min(later) if later else None,
+        suspended=suspended,
         warnings=warnings,
     )
+
+
+def _suspended(items: list[PracticeItem], aside: dict[str, datetime]) -> list[SuspendedItem]:
+    listed = [
+        SuspendedItem(
+            key=item.key, source=item.source, prompt=item.prompt, suspended_at=aside[item.key]
+        )
+        for item in items
+        if item.key in aside
+    ]
+    return sorted(listed, key=lambda entry: entry.suspended_at, reverse=True)
+
+
+def suspended_items(vault: Vault, subject: str, topic: str) -> list[SuspendedItem]:
+    """The current items the student set aside, the latest first.
+
+    An item set aside that left the material is not listed (it is not offered anyway); it stays
+    set aside if it comes back.
+
+    Raises:
+        GenerationError: a material cannot be read.
+        VaultError, JsonlError: the topic or its practice log cannot be read.
+    """
+    items, _warnings = practice_items(vault, subject, topic)
+    return _suspended(items, suspensions(practice_log(vault, subject, topic)))
 
 
 # -- reviewing -------------------------------------------------------------------------------------
@@ -491,4 +575,68 @@ def _grade_quiz_item(item: PracticeItem, answer: PracticeAnswer) -> GradedAnswer
     return grade(
         question,
         QuizAnswer(question=item.key, given=answer.given, self_assessed=answer.self_assessed),
+    )
+
+
+# -- setting items aside ---------------------------------------------------------------------------
+
+
+class SuspensionOutcome(_Strict):
+    """Where an item stands after a suspend or restore request."""
+
+    item: str
+    suspended: bool
+    suspended_at: datetime | None = Field(default=None, description="When, while set aside.")
+    changed: bool = Field(description="False when it already was so: nothing was written.")
+
+
+def suspend_practice_item(
+    vault: Vault, subject: str, topic: str, key: str, *, sync: GitSync, clock: Clock = _utc_now
+) -> SuspensionOutcome:
+    """Set a current item aside so it is no longer queued (idempotent).
+
+    Raises:
+        PracticeItemNotFoundError: no current flashcard or quiz question has that key.
+        GenerationError, VaultError: the material or the topic cannot be read or written.
+    """
+    return _set_suspended(vault, subject, topic, key, True, sync=sync, clock=clock)
+
+
+def restore_practice_item(
+    vault: Vault, subject: str, topic: str, key: str, *, sync: GitSync, clock: Clock = _utc_now
+) -> SuspensionOutcome:
+    """Bring a set-aside item back, with its previous history and schedule (idempotent).
+
+    Raises:
+        PracticeItemNotFoundError: no current flashcard or quiz question has that key.
+        GenerationError, VaultError: the material or the topic cannot be read or written.
+    """
+    return _set_suspended(vault, subject, topic, key, False, sync=sync, clock=clock)
+
+
+def _set_suspended(
+    vault: Vault,
+    subject: str,
+    topic: str,
+    key: str,
+    suspend: bool,
+    *,
+    sync: GitSync,
+    clock: Clock,
+) -> SuspensionOutcome:
+    items, _warnings = practice_items(vault, subject, topic)
+    item = next((candidate for candidate in items if candidate.key == key), None)
+    if item is None:
+        raise PracticeItemNotFoundError(key)
+    since = suspensions(practice_log(vault, subject, topic)).get(key)
+    if (since is not None) == suspend:
+        return SuspensionOutcome(item=key, suspended=suspend, suspended_at=since, changed=False)
+    now = clock()
+    record = PracticeSuspension(
+        time=now, item=key, source=item.source, action="suspend" if suspend else "restore"
+    )
+    append_study_record(vault, subject, topic, PRACTICE_LOG, record)
+    sync.note_change()
+    return SuspensionOutcome(
+        item=key, suspended=suspend, suspended_at=now if suspend else None, changed=True
     )
