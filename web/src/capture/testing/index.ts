@@ -5,6 +5,7 @@
  */
 
 export * from "./audio";
+export * from "./canvas";
 export * from "./media";
 export * from "./socket";
 export * from "./speech";

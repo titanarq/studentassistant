@@ -244,6 +244,67 @@ export interface MediaFakes {
   restore(): void;
 }
 
+/**
+ * `HTMLMediaElement.HAVE_CURRENT_DATA`: the readyState from which an element has the frame it is
+ * showing, and so one a canvas can be drawn from. jsdom exposes the constant on no global.
+ */
+const HAVE_CURRENT_DATA = 2;
+
+/**
+ * The `<video>` a page previews a stream in, which is also what a canvas grab draws from. jsdom
+ * decodes no frame and its `play()` says so out loud, so this element arrives having one and with a
+ * `play()` that resolves; a test of the wait for the first frame calls `makeNotReady()`.
+ */
+export interface FakePreview {
+  readonly element: HTMLVideoElement;
+  /** Every value put on `srcObject`, in order; a `null` is the camera letting go of the element. */
+  readonly sources: Array<MediaStream | null>;
+  /** How many times the code under test called `play()`. */
+  readonly playCount: number;
+  /** Test control: the element has no frame yet, so a grab has to wait for `loadeddata`. */
+  makeNotReady(): void;
+  /** Test control: the first frame arrived. */
+  emitLoadedData(): void;
+}
+
+export function fakePreview(): FakePreview {
+  const element = document.createElement("video");
+  const sources: Array<MediaStream | null> = [];
+  let source: MediaStream | null = null;
+  let playCount = 0;
+  let ready = true;
+  Object.defineProperty(element, "srcObject", {
+    configurable: true,
+    get: () => source,
+    set: (value: MediaStream | null) => {
+      source = value;
+      sources.push(value);
+    },
+  });
+  Object.defineProperty(element, "readyState", {
+    configurable: true,
+    get: () => (ready ? HAVE_CURRENT_DATA : 0),
+  });
+  element.play = () => {
+    playCount += 1;
+    return Promise.resolve();
+  };
+  return {
+    element,
+    sources,
+    get playCount() {
+      return playCount;
+    },
+    makeNotReady: () => {
+      ready = false;
+    },
+    emitLoadedData: () => {
+      ready = true;
+      element.dispatchEvent(new Event("loadeddata"));
+    },
+  };
+}
+
 /** Puts the media fakes on `navigator` and `globalThis`; the returned `restore()` takes them off. */
 export function installMediaFakes(options: MediaFakeOptions = {}): MediaFakes {
   const videoTrack = new FakeMediaStreamTrack("video", {
