@@ -46,6 +46,7 @@ from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
 from studentassistant.server.read_routes import read_router
 from studentassistant.server.redaction import install_log_redaction
+from studentassistant.server.search_routes import search_router
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.ws import SessionGateway, ws_router
@@ -160,6 +161,7 @@ def create_app(
     app.include_router(captures_router())
     app.include_router(read_router())
     app.include_router(pdf_upload_router())
+    app.include_router(search_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

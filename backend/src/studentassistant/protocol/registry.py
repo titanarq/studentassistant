@@ -18,6 +18,7 @@ from studentassistant.protocol.rest import (
     HealthResponse,
     PairRequest,
     PairResponse,
+    SearchResponse,
     Session,
     SessionEndRequest,
     SessionEndResponse,
@@ -67,6 +68,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "rest.sessions.end.response": SessionEndResponse,
     "rest.sessions.captures.request": CaptureUploadRequest,
     "rest.sessions.captures.response": CaptureUploadResponse,
+    "rest.search.response": SearchResponse,
 }
 
 

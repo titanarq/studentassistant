@@ -154,3 +154,33 @@ class CaptureUploadResponse(ProtocolModel):
     status: Literal["stored", "duplicate"]
     image_count: Annotated[int, Field(ge=1)]
     received_at_ms: EpochMs
+
+
+# GET /api/search
+
+
+class SearchHit(ProtocolModel):
+    """One match of a search over the vault's notes, page transcriptions, web pages, transcripts.
+
+    `path` is the vault-relative file the text is in; `source` the source it belongs to (a page
+    transcription's page image, a web page itself; absent for notes and transcripts). A transcript
+    hit carries its `session`, the segment's `seq` and its `t_start` in session milliseconds.
+    `snippet` marks each matched term between U+0002 and U+0003.
+    """
+
+    kind: Literal["notes", "page", "pdf", "web", "transcript"]
+    path: Annotated[str, Field(min_length=1)]
+    source: Annotated[str, Field(min_length=1)] | None = None
+    subject: Id
+    topic: Id
+    session: Id | None = None
+    seq: Annotated[int, Field(ge=0)] | None = None
+    t_start: Annotated[int, Field(ge=0)] | None = None
+    snippet: str
+
+
+class SearchResponse(ProtocolModel):
+    """The best matches of `query`, best first."""
+
+    query: str
+    hits: list[SearchHit]

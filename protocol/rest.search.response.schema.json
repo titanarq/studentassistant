@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.search.response.schema.json",
+  "title": "rest.search.response",
+  "description": "GET /api/search response: the best matches of the query in the vault, best first.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "query",
+    "hits"
+  ],
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "The query as it was asked."
+    },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "subject",
+          "topic",
+          "snippet"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "notes",
+              "page",
+              "pdf",
+              "web",
+              "transcript"
+            ],
+            "description": "notes: notes/apuntes.md; page: a page transcription; pdf: the text of a PDF page; web: a web page; transcript: one final transcript segment."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The vault-relative file the text is in."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The vault-relative source the file belongs to (GET /api/sources/{source}); absent for notes and transcripts."
+          },
+          "subject": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "topic": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "session": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "description": "The session of a transcript hit."
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The transcript segment's seq."
+          },
+          "t_start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "When the transcript segment starts, in ms since the session started."
+          },
+          "snippet": {
+            "type": "string",
+            "description": "The matching passage, each matched term between U+0002 and U+0003."
+          }
+        }
+      }
+    }
+  }
+}

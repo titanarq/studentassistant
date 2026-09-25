@@ -1,0 +1,30 @@
+{
+  "query": "fotosintesis",
+  "hits": [
+    {
+      "kind": "notes",
+      "path": "subjects/biologia/topics/fotosintesis/notes/apuntes.md",
+      "subject": "biologia",
+      "topic": "fotosintesis",
+      "snippet": "# \u0002Fotosíntesis\u0003\n\nLa \u0002fotosíntesis\u0003 transforma la luz en energía química…"
+    },
+    {
+      "kind": "page",
+      "path": "subjects/biologia/topics/fotosintesis/sources/notes/page-001.md",
+      "source": "subjects/biologia/topics/fotosintesis/sources/notes/page-001.jpg",
+      "subject": "biologia",
+      "topic": "fotosintesis",
+      "snippet": "…la \u0002fotosíntesis\u0003 ocurre en los cloroplastos…"
+    },
+    {
+      "kind": "transcript",
+      "path": "subjects/biologia/topics/fotosintesis/sessions/20260925-101500/transcript.jsonl",
+      "subject": "biologia",
+      "topic": "fotosintesis",
+      "session": "20260925-101500",
+      "seq": 12,
+      "t_start": 154000,
+      "snippet": "aquí pone que la \u0002fotosíntesis\u0003 necesita clorofila"
+    }
+  ]
+}
