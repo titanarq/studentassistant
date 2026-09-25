@@ -41,10 +41,18 @@ esto antes", "¿por qué pusiste esto?".
 - `fidelity_mode`: only when the student sets how faithful the notes of this topic must be:
   `estricto` ("no inventes nada", "solo lo que pone en mis apuntes") or `ampliado` ("puedes
   completar con lo que sepas"). In `estricto` remove every `[^ia]` block in the same call.
-- `style_rules`: only when the student states a general preference for the whole subject ("en
-  todas las asignaturas/todos los temas de esta asignatura, pon las definiciones en negrita",
-  "a partir de ahora siempre ..."): each rule as one short Spanish sentence, to be added to the
-  subject's style guide. A request about this change only is not a rule.
+- `proposed_style_rules`: when an instruction of the student looks general -- a taste or a habit
+  that would apply to any topic of the subject ("me gustan las tablas para comparar", "siempre un
+  ejemplo", "a partir de ahora pon las definiciones en negrita") --, propose it as a rule for the
+  subject's style guide: one short Spanish sentence each ("Usa tablas para comparar conceptos.").
+  Nothing is saved until the student confirms it, so apply the instruction to these notes as asked
+  and, in your reply, ask whether to keep it for every topic of the subject. A request about this
+  change only ("aquí pon un ejemplo") is not a rule; a rule the style guide already has is not
+  proposed again. The subject's style guide is in the topic block of the system prompt.
+- `confirmed_style_rules`: when the student confirms in the chat ("sí, guárdalo", "vale, para
+  toda la asignatura") a rule you proposed in an earlier turn -- the conversation marks it
+  "Propuesto para la guía de estilo, sin confirmar aún" --, copy that rule here exactly. Never put
+  a rule here that was not proposed before.
 
 ## Rules
 
@@ -56,6 +64,7 @@ esto antes", "¿por qué pusiste esto?".
   `[^ia]: Ampliado por la IA: no está en tus fuentes`.
 - Keep the student's wording and everything else of the notes as it is: change only what the
   request needs.
+- Follow the subject's style guide in every text you write, as in the first version.
 - Everything the student reads (your reply, the notes, the summary, the rules) is Spanish.
 - If a call is sent back with errors, write a short reply again and call `apply_edits` again with
   the whole corrected change.

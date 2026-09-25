@@ -324,7 +324,7 @@ Routes registered today:
     - then exactly one of `result` -- the `RevisionResult`: `reply` (authoritative; replaces the
       streamed text), `applied`, `summary`, `changed_sections`, `diff` (unified diff of
       `apuntes.md`), `notes` (the new text when changed), `fidelity_mode`, `style_rules`,
-      `commit`, `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
+      `proposed_style_rules` (to confirm with the style guide API below), `commit`, `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
       "...", "code"?: "..."}` (a reached cost cap 409 `cost_cap_reached`, built with
       `cost_cap_error`, until the body says `confirm_over_cap`; a Claude refusal or failure 502);
       `code` is gated like a REST error body (`speaks_error_codes`); the stream then ends.
@@ -341,8 +341,8 @@ Routes registered today:
     conversation. Holds the notes lock like a turn. A block that is not in the notes, or a
     title/rule, is 422 before the stream.
   - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, message, reply, applied,
-    summary, changed_sections, commit, undone, warning, refs}`, oldest first -- `kind` `explain`
-    for a "¿Por qué?" answer, with its `refs`; `can_undo`). Reads only; works without
+    summary, changed_sections, commit, undone, warning, refs, proposed_style_rules}`, oldest
+    first -- `kind` `explain` for a "¿Por qué?" answer, with its `refs`; `can_undo`). Reads only; works without
     `llm_transport`.
   - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
     `notes_changed`, `diff`, `notes`, `paths`): reverts the latest applied turn not yet undone
@@ -371,6 +371,18 @@ Routes registered today:
   - Errors, Spanish `detail`: a vault that cannot be opened 503, an unknown topic or version 404,
     a version below 1 or a diff without `from` 422, no current notes to diff with, the current
     notes already being that version, or another notes operation of the topic running 409.
+- **The subject style guide API** (`server/style_guide_routes.py`, `style_guide_router()`),
+  web-only, thin over `editor.style_guide` (`docs/modules/editor.md`), over the vault and
+  `GitSync` of the `SessionService`; no Claude call. Each answers a `StyleGuide` (`subject`,
+  `rules`, `added`, `commit`):
+  - `GET /api/subjects/{subject_id}/style-guide`: the rules;
+  - `POST .../style-guide/rules`, body `{"rules": ["Usa tablas para comparar conceptos."]}`: the
+    student confirms rules the editor proposed (`proposed_style_rules` of a chat turn); new ones
+    appended and committed, `added` lists them;
+  - `PUT .../style-guide`, body `{"rules": [...]}`: the whole list, edited or with rules removed
+    (`[]` clears it).
+  - Errors, Spanish `detail`: an unknown subject 404, an empty or too long rule or more than 50
+    422, a vault that cannot be opened 503. Needs the bearer check like every non-exempt route.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
