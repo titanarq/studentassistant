@@ -174,7 +174,13 @@ private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: ()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.topic.name, style = MaterialTheme.typography.titleMedium)
-            if (row.canContinue) {
+            if (row.ending) {
+                Text(
+                    stringResource(R.string.home_session_ending),
+                    color = MaterialTheme.colorScheme.secondary,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else if (row.canContinue) {
                 Text(
                     stringResource(R.string.home_session_open),
                     color = MaterialTheme.colorScheme.primary,

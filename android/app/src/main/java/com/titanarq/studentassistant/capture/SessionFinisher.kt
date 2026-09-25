@@ -6,12 +6,16 @@ import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionEndRequest
+import com.titanarq.studentassistant.session.PendingEnds
 import com.titanarq.studentassistant.spool.PendingEnd
 import com.titanarq.studentassistant.spool.Spools
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -40,6 +45,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * A transient failure (unreachable, 408/425/429/5xx, an unreadable answer) retries the whole
  * sequence after [retryDelaysMs] (the last delay repeats); a refusal (401, 403, 400, 422, an
  * incompatible version) leaves the pending end on disk for the next start.
+ *
+ * "Continuar" on the home screen goes through [continueInstead], so a session the student takes up
+ * again is never ended behind their back, and never ended twice.
  */
 class SessionFinisher(
     private val scope: CoroutineScope,
@@ -54,21 +62,62 @@ class SessionFinisher(
     private val drainTimeoutMs: Long = DRAIN_TIMEOUT_MS,
     private val capturesTimeoutMs: Long = CAPTURES_TIMEOUT_MS,
     private val reconnectDelaysMs: List<Long> = SessionConnection.DEFAULT_RECONNECT_DELAYS_MS,
-) {
+) : PendingEnds {
     init {
         require(retryDelaysMs.isNotEmpty()) { "retryDelaysMs must not be empty" }
     }
 
+    // All guarded by `jobs`.
     private val jobs = HashMap<String, Job>()
+    private val backends = HashMap<String, BackendCredentials>()
+
+    /** Sessions a [continueInstead] is working on: no end is started for them meanwhile. */
+    private val held = HashSet<String>()
+
+    /** Sessions the student continued in this process: [restore] leaves them alone. */
+    private val continued = HashSet<String>()
+
     private val _pending = MutableStateFlow<Set<String>>(emptySet())
 
-    /** Session ids whose end is still to be completed. */
-    val pending: StateFlow<Set<String>> = _pending.asStateFlow()
+    /** Session ids whose end is being completed now (a refused one leaves this set, not the disk). */
+    override val pending: StateFlow<Set<String>> = _pending.asStateFlow()
 
     /** Records [end] on disk and completes it in the background. */
     fun finish(backend: BackendCredentials, end: PendingEnd) {
+        synchronized(jobs) { continued -= end.sessionId }
         spools.putEnd(end)
         launch(backend, end)
+    }
+
+    override suspend fun continueInstead(sessionId: String, resume: suspend () -> Boolean): Boolean {
+        val job = synchronized(jobs) {
+            held += sessionId
+            jobs[sessionId]
+        }
+        val wasRunning = job?.isActive == true
+        var continuing = false
+        try {
+            job?.cancelAndJoin()
+            continuing = resume()
+            return continuing
+        } finally {
+            withContext(NonCancellable) {
+                val backend = synchronized(jobs) {
+                    held -= sessionId
+                    if (continuing) continued += sessionId
+                    backends[sessionId]
+                }
+                if (continuing) {
+                    // Also an end refused earlier: the next start must not end a session in use.
+                    spools.removeEnd(sessionId)
+                } else if (wasRunning) {
+                    // The resume failed: the end the student asked for goes on.
+                    val end = spools.ends().firstOrNull { it.sessionId == sessionId }
+                    val credentials = backend ?: end?.let { credentials(it.baseUrl) }
+                    if (end != null && credentials != null) launch(credentials, end)
+                }
+            }
+        }
     }
 
     /** Resumes every pending end left by an earlier run (its backend looked up by base URL). */
@@ -88,7 +137,9 @@ class SessionFinisher(
 
     private fun launch(backend: BackendCredentials, end: PendingEnd) {
         synchronized(jobs) {
+            if (end.sessionId in held || end.sessionId in continued) return
             if (jobs[end.sessionId]?.isActive == true) return
+            backends[end.sessionId] = backend
             _pending.update { it + end.sessionId }
             jobs[end.sessionId] = scope.launch { run(backend, end) }
         }
@@ -111,8 +162,13 @@ class SessionFinisher(
                 }
             }
         } finally {
-            synchronized(jobs) { jobs.remove(end.sessionId) }
-            _pending.update { it - end.sessionId }
+            val self = currentCoroutineContext()[Job]
+            synchronized(jobs) {
+                if (jobs[end.sessionId] === self) {
+                    jobs.remove(end.sessionId)
+                    _pending.update { it - end.sessionId }
+                }
+            }
         }
     }
 
@@ -172,6 +228,11 @@ class SessionFinisher(
             withTimeoutOrNull(drainTimeoutMs) { connection.drained.first { it } }
         } finally {
             connection.stop()
+            // Wait for the socket to be let go, so a capture screen opened next on the same
+            // spools (see continueInstead) never shares them with this connection.
+            withContext(NonCancellable) {
+                withTimeoutOrNull(STOP_TIMEOUT_MS) { connection.state.first { it == ConnectionState.Stopped } }
+            }
         }
     }
 
@@ -183,6 +244,8 @@ class SessionFinisher(
 
         /** How long pending captures may take to upload before the session is ended anyway. */
         const val CAPTURES_TIMEOUT_MS: Long = 300_000
+
+        private const val STOP_TIMEOUT_MS: Long = 5_000
 
         private val ENDED_STATUSES = setOf(404, 409)
     }

@@ -219,4 +219,88 @@ class SessionFinisherTest {
         assertEquals(emptySet<String>(), finisher.pending.value)
         assertEquals(listOf(end), spools.ends())
     }
+    @Test
+    fun `Continuar on a session being ended stops the end for good, keeping its spool`() = runTest {
+        val spools = spools()
+        spools.audio("s1").append(SpooledFrame(0, 1, shortArrayOf(1)))
+        client.resumeSessionResult = BackendResult.Unreachable("offline")
+        client.endSessionResult = ended
+        val finisher = finisher(spools)
+        finisher.finish(backend, end)
+        runCurrent()
+        assertEquals(setOf("s1"), finisher.pending.value)
+
+        val continued = finisher.continueInstead("s1") {
+            assertEquals(emptySet<String>(), finisher.pending.value) // stopped before the resume
+            true
+        }
+
+        assertTrue(continued)
+        assertEquals(emptyList<PendingEnd>(), spools.ends())
+        assertEquals(listOf("s1"), spools.sessionIds()) // the capture screen resends it
+        finisher.restore()
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(0, endCalls())
+        assertEquals(1, client.calls.count { it.startsWith("resumeSession") })
+        assertEquals(emptySet<String>(), finisher.pending.value)
+    }
+
+    @Test
+    fun `an end stopped in the middle of its flush lets its socket go before the resume`() = runTest {
+        val spools = spools()
+        spools.audio("s1").append(SpooledFrame(0, 1, shortArrayOf(1)))
+        client.resumeSessionResult = BackendResult.Success(session())
+        client.endSessionResult = ended
+        val finisher = finisher(spools)
+        finisher.finish(backend, end)
+        runCurrent()
+        handshake(SttMode.SERVER)
+        assertFalse(sockets.last.closed)
+
+        finisher.continueInstead("s1") {
+            assertTrue(sockets.last.closed)
+            true
+        }
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(1, sockets.sockets.size)
+        assertEquals(0, endCalls())
+    }
+
+    @Test
+    fun `when the resume fails the end goes on, and ends once`() = runTest {
+        val spools = spools()
+        client.resumeSessionResult = BackendResult.Unreachable("offline")
+        client.endSessionResult = ended
+        val finisher = finisher(spools)
+        finisher.finish(backend, end)
+        runCurrent()
+
+        assertFalse(finisher.continueInstead("s1") { false })
+        assertEquals(setOf("s1"), finisher.pending.value)
+        assertEquals(listOf(end), spools.ends())
+
+        client.resumeSessionResult = BackendResult.HttpError(409) // meanwhile ended from elsewhere
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(1, endCalls())
+        assertEquals(emptyList<PendingEnd>(), spools.ends())
+        assertEquals(emptySet<String>(), finisher.pending.value)
+    }
+
+    @Test
+    fun `an end refused earlier is dropped when the student continues, so no later start ends it`() = runTest {
+        val spools = spools()
+        client.resumeSessionResult = BackendResult.HttpError(401)
+        val finisher = finisher(spools)
+        finisher.finish(backend, end)
+        runCurrent()
+        assertEquals(listOf(end), spools.ends())
+        assertEquals(emptySet<String>(), finisher.pending.value)
+
+        assertTrue(finisher.continueInstead("s1") { true })
+        assertEquals(emptyList<PendingEnd>(), spools.ends())
+        assertEquals(0, endCalls())
+    }
 }

@@ -70,6 +70,7 @@
     <string name="home_continue_session">Continuar</string>
     <string name="home_opening_session">Abriendo la sesión…</string>
     <string name="home_session_open">Sesión abierta</string>
+    <string name="home_session_ending">Terminando sesión… Pulsa «Continuar» si quieres seguir con ella.</string>
     <string name="home_last_session">Última sesión: %1$s</string>
     <plurals name="home_pending_doubts">
         <item quantity="one">%1$d duda pendiente</item>
