@@ -17,6 +17,11 @@ opened; a range of more than `max_pdf_pages` pages is refused (never truncated);
 `max_stored_pdf_bytes` is refused, and the message asks for a narrower range. Encrypted and
 unreadable files are refused. A refused import leaves nothing in the vault.
 
+A kept page without extractable text (`has_text` false: a scanned page) is transcribed later with
+Claude vision (`pdf_transcription.py`) into `page-NNN.pKKK.md`; `render_pdf_page` makes the image
+it reads, `scanned_pages_without_transcription` finds the pages still owed one, and
+`read_pdf_page_text` gives a page's text: the extracted `.txt`, else that transcription.
+
 For the editor, `pdf_document_block` turns a stored PDF into a Claude `document` block (base64,
 citations enabled) and `citation_source_id` maps a citation Claude returns back to the source id
 the notes cite. Everything here is CPU-bound: a server caller runs it in a worker thread.
@@ -39,6 +44,7 @@ from studentassistant.config import SourcesSettings
 from studentassistant.vault import (
     SourceError,
     Vault,
+    list_sources,
     put_source,
     read_source,
     sources_directory,
@@ -212,6 +218,86 @@ def import_pdf(
     return ImportedPdf(path=path, source_id=source_id, meta=meta, pages=imported)
 
 
+@dataclass(frozen=True)
+class PdfPageText:
+    """The text of one page of a stored PDF: extracted by PyMuPDF, or transcribed from its image
+    by Claude (`transcribed`, a scanned page's `page-NNN.pKKK.md`)."""
+
+    text: str
+    transcribed: bool
+
+
+def page_text_path(pdf_path: str, page: int) -> str:
+    """`.../page-001.pdf`, 3 -> `.../page-001.p003.txt`: the extracted text of page 3."""
+    return _page_file(pdf_path, page, "txt")
+
+
+def page_transcription_path(pdf_path: str, page: int) -> str:
+    """`.../page-001.pdf`, 3 -> `.../page-001.p003.md`: the vision transcription of page 3."""
+    return _page_file(pdf_path, page, "md")
+
+
+def read_pdf_page_text(vault: Vault, pdf_path: str, page: int) -> PdfPageText | None:
+    """The text of page `page` of the stored PDF at `pdf_path` (vault-relative), or `None`.
+
+    The PyMuPDF text (`page-NNN.pKKK.txt`) when it holds any; else, for a scanned page, its
+    Claude transcription (`page-NNN.pKKK.md`) when it is stored and not empty. Blocking.
+    """
+    extracted = _read_utf8(vault, page_text_path(pdf_path, page))
+    if extracted is not None and extracted.strip():
+        return PdfPageText(extracted.strip(), transcribed=False)
+    transcription = _read_utf8(vault, page_transcription_path(pdf_path, page))
+    if transcription is not None and transcription.strip():
+        return PdfPageText(transcription.strip(), transcribed=True)
+    return None
+
+
+def scanned_pages_without_transcription(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> list[tuple[str, int]]:
+    """`(pdf_path, page)` of every page of the topic's stored PDFs owed a vision transcription.
+
+    A page is owed one when its extracted text (`page-NNN.pKKK.txt`) is stored but empty (no text
+    layer: a scanned page) and no non-empty `page-NNN.pKKK.md` is there. `pdf_path` is
+    vault-relative; pages count from 1 in the stored file. Blocking.
+
+    Raises what `vault.list_sources` raises for a topic it cannot read.
+    """
+    owed: list[tuple[str, int]] = []
+    for source in list_sources(vault, subject_slug, topic_slug):
+        if source.kind != PDF_KIND or not source.path.endswith(".pdf"):
+            continue
+        count = (source.meta or {}).get("page_count")
+        if not isinstance(count, int) or count < 1:
+            continue
+        for page in range(1, count + 1):
+            extracted = _read_utf8(vault, page_text_path(source.path, page))
+            if extracted is None or extracted.strip():
+                continue
+            transcription = _read_utf8(vault, page_transcription_path(source.path, page))
+            if transcription is None or not transcription.strip():
+                owed.append((source.path, page))
+    return owed
+
+
+def render_pdf_page(content: bytes, page: int, *, long_edge: int, quality: int) -> bytes:
+    """Page `page` (from 1) of the PDF `content` as a JPEG whose long edge is `long_edge` px.
+
+    CPU-bound: a server caller runs it in a worker thread.
+
+    Raises:
+        PdfUnreadableError: `content` is not a PDF PyMuPDF can open.
+        PageRangeError: the PDF has no page `page`.
+    """
+    document = _open("documento.pdf", content)
+    try:
+        if not 1 <= page <= document.page_count:
+            raise PageRangeError(f"El PDF no tiene página {page}.")
+        return _render(document[page - 1], long_edge, quality)
+    finally:
+        document.close()
+
+
 def original_page(meta: Mapping[str, Any], page: int) -> int:
     """The original PDF's number of page `page` of a stored PDF, from its sidecar `meta`."""
     return int(meta.get("first_page", 1)) + page - 1
@@ -331,10 +417,30 @@ def _open(name: str, content: bytes) -> pymupdf.Document:
 
 def _thumbnail(page: pymupdf.Page, limits: SourcesSettings) -> bytes:
     """The page rendered as a JPEG whose long edge is `pdf_thumbnail_long_edge` pixels."""
+    return _render(page, limits.pdf_thumbnail_long_edge, limits.pdf_thumbnail_quality)
+
+
+def _render(page: pymupdf.Page, long_edge: int, quality: int) -> bytes:
     rect = page.rect
-    zoom = limits.pdf_thumbnail_long_edge / max(rect.width, rect.height, 1.0)
+    zoom = long_edge / max(rect.width, rect.height, 1.0)
     pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
-    return pixmap.tobytes("jpeg", jpg_quality=limits.pdf_thumbnail_quality)
+    return pixmap.tobytes("jpeg", jpg_quality=quality)
+
+
+def _page_file(pdf_path: str, page: int, extension: str) -> str:
+    stem = pdf_path.split("#", 1)[0].rsplit(".", 1)[0]
+    return f"{stem}.p{page:03d}.{extension}"
+
+
+def _read_utf8(vault: Vault, vault_path: str) -> str | None:
+    try:
+        content = read_source(vault, vault_path).content
+    except SourceError:
+        return None
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _vault_relative(vault: Vault, subject_slug: str, topic_slug: str, file_name: str) -> str:

@@ -250,14 +250,17 @@ def _next_number(directory: Path, pattern: re.Pattern[str]) -> int:
 TRANSCRIPTION_SUFFIX = ".md"
 
 
-def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) -> Path:
+def put_page_transcription(
+    vault: Vault, vault_relative_path: str, text: str, *, page: int | None = None
+) -> Path:
     """Write the Markdown transcription of a stored page as `page-NNN.md` next to it.
 
     `vault_relative_path` names the page as `list_sources` does (or any file derived from it,
     such as its `page-NNN.page.jpg`): a file under a topic's `sources/notes|book|pdf/` whose name
-    starts with `page-NNN.`. The text passes the secret guard and is written atomically as UTF-8;
-    a transcription already there is replaced (the page was transcribed again). Returns the path
-    written.
+    starts with `page-NNN.`. With `page` (page `K` of a stored PDF, from 1), the file written is
+    `page-NNN.pKKK.md` instead: the transcription of one scanned page of that PDF. The text
+    passes the secret guard and is written atomically as UTF-8; a transcription already there is
+    replaced (the page was transcribed again). Returns the path written.
 
     Raises:
         SourcePathError: when the path is not a page of a paged kind (see `read_source`).
@@ -279,8 +282,11 @@ def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) ->
         )
     if not sidecar.is_file() or sidecar.is_symlink():
         raise SourceNotFoundError(f"there is no stored page {stem} at {vault_relative_path!r}")
+    if page is not None and page < 1:
+        raise SourcePathError(f"page {page} of {vault_relative_path!r} is not a page number")
     guard(text)
-    target = directory / f"{stem}{TRANSCRIPTION_SUFFIX}"
+    part = "" if page is None else f".p{page:03d}"
+    target = directory / f"{stem}{part}{TRANSCRIPTION_SUFFIX}"
     with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         write_text_atomic(target, text)
     return target

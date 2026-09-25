@@ -6,6 +6,7 @@ to store no source.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from studentassistant.config import ServerSettings, SourcesSettings
+from studentassistant.config import ObserverSettings, ServerSettings, Settings, SourcesSettings
+from studentassistant.llm import FakeClaude
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
-from studentassistant.vault import Vault, create_subject, create_topic, list_sources
+from studentassistant.vault import Vault, create_subject, create_topic, list_sources, read_ledger
 
 LOCAL_BASE_URL = "http://localhost:8765"
 LAN_BASE_URL = "http://192.168.1.20:8765"
@@ -264,3 +266,54 @@ def test_a_lan_client_without_a_token_is_refused(make_app: AppFactory, vault: Va
 
     assert response.status_code == 401
     assert pdf_sources(vault) == []
+
+
+class GatedClaude(FakeClaude):
+    """A `FakeClaude` whose requests wait until `gate` is set (on the app's event loop)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def send(self, request: Any, on_text: Any = None) -> Any:
+        await self.gate.wait()
+        return await super().send(request, on_text)
+
+
+def test_a_scanned_page_is_transcribed_in_the_background_after_the_response(
+    devices_path: Path, codes: PairingCodes, tmp_path: Path, vault: Vault
+) -> None:
+    fake = GatedClaude()
+    fake.reply_text("# Tema 4\n\nPágina escaneada.")
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=ServerSettings(devices_path=devices_path, public_url=LAN_BASE_URL),
+        codes=codes,
+        vault=vault,
+        llm_transport=fake,
+        llm_settings=Settings(observer=ObserverSettings(enabled=False)),
+    )
+    with TestClient(app, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000)) as client:
+        response = upload(client, make_pdf(pages=3, blank=(2,)))
+        assert response.status_code == 201, response.text
+        assert response.json()["pages_without_text"] == [2]
+        # The response came back while Claude had not answered yet.
+        topic = vault.path / "subjects" / "historia" / "topics" / "revolucion-industrial"
+        md = topic / "sources" / "pdf" / "page-001.p002.md"
+        assert not md.exists()
+
+        async def release_and_wait() -> None:
+            fake.gate.set()
+            await asyncio.wait_for(app.state.pdf_transcriber.wait_idle(), 10)
+
+        client.portal.call(release_and_wait)  # type: ignore[union-attr]
+
+    assert md.read_text(encoding="utf-8") == "# Tema 4\n\nPágina escaneada.\n"
+    assert len(fake.requests) == 1  # only the page without text
+    assert [e.role for e in read_ledger(vault, "historia", "revolucion-industrial")] == [
+        "transcriber"
+    ]
+
+
+def test_without_an_llm_transport_there_is_no_pdf_transcriber(make_app: AppFactory) -> None:
+    assert make_app().state.pdf_transcriber is None

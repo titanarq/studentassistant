@@ -40,7 +40,6 @@ from studentassistant.editor.inputs import (
     _read_text,
     _render_pending,
     _Segment,
-    _sibling,
     _topic_block,
     _transcription,
     fidelity_mode_of,
@@ -63,7 +62,7 @@ from studentassistant.editor.revise import (
 )
 from studentassistant.llm import LLMClient, RefusalError, load_prompt
 from studentassistant.observer import load_observer_snapshot
-from studentassistant.sources import original_page, pdf_document_block
+from studentassistant.sources import original_page, pdf_document_block, read_pdf_page_text
 from studentassistant.vault import (
     GitSync,
     StoredSource,
@@ -260,9 +259,14 @@ def _add_pdf_page(
     name = str(meta.get("original_name") or stored_id)
     where = f", página {original_page(meta, page)} del original" if page is not None else ""
     header = f"### [^{ref.label}] {ref.text} (PDF «{name}»{where})"
-    text = _read_text(vault, _sibling(source.path, f"p{page:03d}.txt")) if page else None
-    if text and text.strip():
-        builder.text(f"{header}\nTexto de la página:\n\n{text.strip()}\n")
+    page_text = read_pdf_page_text(vault, source.path, page) if page else None
+    if page_text is not None:
+        label = (
+            "Transcripción de la página escaneada"
+            if page_text.transcribed
+            else "Texto de la página"
+        )
+        builder.text(f"{header}\n{label}:\n\n{page_text.text}\n")
         return
     builder.text(f"{header}\n(Sin texto extraído: lee la página en el documento.)\n")
     block = pdf_document_block(vault, subject_slug, topic_slug, stored_id)

@@ -49,7 +49,7 @@ from studentassistant.observer import (
     TopicState,
     load_observer_snapshot,
 )
-from studentassistant.sources import original_page, pdf_document_block
+from studentassistant.sources import original_page, pdf_document_block, read_pdf_page_text
 from studentassistant.vault import (
     SourceError,
     StoredSource,
@@ -493,13 +493,15 @@ def _add_pdf(
     size = len(block["source"]["data"])
     if builder.attachment(block, size, source_id, "document"):
         return
-    # Past the budget: the extracted text of each page instead of the document.
+    # Past the budget: the text of each page instead of the document -- the extracted text, or
+    # for a scanned page its vision transcription (`page-NNN.pKKK.md`).
     for page in range(1, count + 1):
-        text = _read_text(vault, _sibling(source.path, f"p{page:03d}.txt"))
-        if text and text.strip():
+        page_text = read_pdf_page_text(vault, source.path, page)
+        if page_text is not None:
+            scanned = ", página escaneada, transcrita" if page_text.transcribed else ""
             builder.text(
                 f"#### {source_id}#page={page} (página {original_page(meta, page)} del"
-                f" original)\n{text.strip()}\n"
+                f" original{scanned})\n{page_text.text}\n"
             )
 
 

@@ -199,6 +199,38 @@ submodules.
 Import is CPU-bound (PyMuPDF): a server caller runs it in a worker thread, as the web upload
 (`POST /api/subjects/{s}/topics/{t}/sources/pdf`, `server/pdf_upload.py`) does.
 
+### Scanned PDF pages -- `pdf_transcription.py` (#257)
+A kept page whose PyMuPDF text is empty (`has_text` false: a scan with no text layer) is
+transcribed with Claude vision into `page-NNN.pKKK.md`, next to its `.txt` and `.jpg`:
+
+- `render_pdf_page(content, page, *, long_edge, quality) -> bytes` (in `pdf.py`) renders page `K`
+  as a JPEG at `[sources] pdf_transcription_long_edge` / `pdf_transcription_quality`;
+  `read_pdf_page_input(vault, s, t, pdf_path, page, settings) -> PdfPageInput` adds the context
+  (subject, topic, original file name, original page number).
+- `await transcribe_pdf_page(client, page, vault) -> PdfPageTranscription`: one `transcriber` call
+  with the `page_transcription_pdf` prompt (the printed-text variant of the page prompts: layout
+  kept, `[[?word]]` / `[[?]]` marks, no spoken hints, no printed page number asked), the image
+  first, then the context; the Markdown is written with `vault.put_page_transcription(vault,
+  pdf_path, text, page=K)`. Raises like `transcribe_page`.
+- `ScannedPdfTranscriber(settings=, client_factory=, on_write=)` runs those calls in the
+  background with a `transcriber` client bound to the topic's ledger (no session). `schedule(vault,
+  s, t, [(pdf_path, K), ...])` queues pages (a page already queued is not queued twice, and one
+  whose `.md` is there by the time its turn comes is skipped); the web upload calls it after the
+  import, never waiting for it (`app.state.pdf_transcriber`, built with the page transcriber when
+  the app has an LLM transport and `transcription_enabled`). `catch_up_vault(vault)` is a
+  `SessionService.add_on_open` hook: once per start it queues every page
+  `scanned_pages_without_transcription(vault, s, t)` (in `pdf.py`) lists for every topic -- pages
+  whose `.txt` is stored but empty and with no non-empty `.md` (a restart cut the job, a cost cap
+  stopped it, or the PDF came in through the CLI). Concurrency, attempts and retry waits are the
+  page transcriber's `transcription_*` settings; a reached cost cap, a refusal, an unreadable
+  stored PDF or the last failed attempt is logged and leaves the page without `.md` (the next start
+  tries again). Each exchange is appended to `conversations/transcriber-pdf.jsonl` (the image as
+  `{"type": "vault", "path": <pdf>, "page": K}`); `on_write` tells the sync to commit. Uncertain
+  words stay marked in the Markdown; they open no pending item (no session holds a PDF).
+- `read_pdf_page_text(vault, pdf_path, K) -> PdfPageText | None` (in `pdf.py`) is how the editor
+  reads a PDF page as text: the `.txt` when it holds any text, else the `.md`
+  (`PdfPageText.transcribed`), else `None`.
+
 ### Web search -- `web.py`, `web_searcher.py` (#59)
 Not re-exported by the package root (they import `studentassistant.llm`): import them from their
 submodules. "Busca esto en Internet" runs Claude's server-side web tools through
@@ -287,6 +319,8 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `max_stored_pdf_bytes` | 20 MiB | the kept pages as a PDF are refused: choose a shorter range |
 | `pdf_thumbnail_long_edge` | 1200 px | -- |
 | `pdf_thumbnail_quality` | 85 | -- |
+| `pdf_transcription_long_edge` | 1568 px | a scanned PDF page is rendered at it for its vision transcription (Claude downscales larger images) |
+| `pdf_transcription_quality` | 90 | -- |
 | `capture_long_edge` | 2400 px | a captured still and its page image are downscaled to it |
 | `capture_jpeg_quality` | 85 | -- |
 | `capture_window_before_seconds` | 20 | a capture's transcript window starts this long before it |

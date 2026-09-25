@@ -71,6 +71,10 @@ from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.web_search_routes import web_search_router
 from studentassistant.server.ws import SessionGateway, ws_router
+from studentassistant.sources.pdf_transcription import ScannedPdfTranscriber
+from studentassistant.sources.pdf_transcription import (
+    default_client_factory as pdf_transcriber_client_factory,
+)
 from studentassistant.sources.transcriber import PageTranscriber
 from studentassistant.sources.transcriber import (
     default_client_factory as transcriber_client_factory,
@@ -192,6 +196,7 @@ def create_app(
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     app.state.observer = None
     app.state.transcriber = None
+    app.state.pdf_transcriber = None
     app.state.notes = None
     app.state.generators = default_registry
     app.state.materials = None
@@ -214,6 +219,13 @@ def create_app(
             app.state.sessions.add_on_open(app.state.transcriber.catch_up_vault)
             # Before the observer's flush, so the observer sees the last pages' transcriptions.
             app.state.sessions.add_before_ended(app.state.transcriber.flush)
+            # Scanned PDF pages (#257): queued by the upload; the rest at server start.
+            app.state.pdf_transcriber = ScannedPdfTranscriber(
+                settings=sources,
+                client_factory=pdf_transcriber_client_factory(llm_settings, llm_transport),
+                on_write=app.state.sessions.note_change,
+            )
+            app.state.sessions.add_on_open(app.state.pdf_transcriber.catch_up_vault)
         if sources.web_search_enabled:
             # "Busca esto en Internet": voice commands and the web UI (`web_search_routes.py`).
             app.state.web_searcher = WebSearcher(
@@ -314,6 +326,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await transcripts.stop()
         if transcriber is not None:
             await transcriber.stop()
+        pdf_transcriber: ScannedPdfTranscriber | None = app.state.pdf_transcriber
+        if pdf_transcriber is not None:
+            await pdf_transcriber.stop()
         if web_searcher is not None:
             await web_searcher.stop()
         if observer is not None:

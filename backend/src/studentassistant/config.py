@@ -360,6 +360,9 @@ DEFAULT_MAX_PDF_PAGES = 100
 DEFAULT_MAX_STORED_PDF_BYTES = 20 * 1024 * 1024
 DEFAULT_PDF_THUMBNAIL_LONG_EDGE = 1200
 DEFAULT_PDF_THUMBNAIL_QUALITY = 85
+# Claude vision downscales an image whose long edge exceeds ~1568 px, so a bigger render only costs.
+DEFAULT_PDF_TRANSCRIPTION_LONG_EDGE = 1568
+DEFAULT_PDF_TRANSCRIPTION_QUALITY = 90
 DEFAULT_CAPTURE_LONG_EDGE = 2400
 DEFAULT_CAPTURE_JPEG_QUALITY = 85
 DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
@@ -391,6 +394,10 @@ class SourcesSettings(BaseModel):
     # Page thumbnails: long edge in pixels and JPEG quality.
     pdf_thumbnail_long_edge: int = Field(default=DEFAULT_PDF_THUMBNAIL_LONG_EDGE, ge=16)
     pdf_thumbnail_quality: int = Field(default=DEFAULT_PDF_THUMBNAIL_QUALITY, ge=1, le=100)
+    # A scanned PDF page (no text layer) is rendered at this long edge (px) and JPEG quality for
+    # its Claude vision transcription (`page-NNN.pKKK.md`, `sources/pdf_transcription.py`).
+    pdf_transcription_long_edge: int = Field(default=DEFAULT_PDF_TRANSCRIPTION_LONG_EDGE, ge=16)
+    pdf_transcription_quality: int = Field(default=DEFAULT_PDF_TRANSCRIPTION_QUALITY, ge=1, le=100)
     # Captured pages: the kept still and its page image are downscaled to this long edge (px)
     # and stored as JPEG at this quality.
     capture_long_edge: int = Field(default=DEFAULT_CAPTURE_LONG_EDGE, ge=16)
