@@ -70,6 +70,10 @@ No price or cap lives anywhere but these config defaults.
   `GET /v1/models?limit=1` (no tokens, no ledger, no cap) proving a key works, for
   `studentassistant doctor --api-call`; raises `LLMAPIError` (401/403 = refused) or
   `LLMTransientError`/`LLMError` like any call. `sdk` replaces the `anthropic.Anthropic` client.
+- `find_ant_profile(environ=None, home=None) -> str | None` -- the `ant auth` profile the SDK
+  would use (`ANTHROPIC_PROFILE`, else `<config_dir>/active_config`, else `default`, with
+  `<config_dir>` = `ANTHROPIC_CONFIG_DIR` or `~/.config/anthropic`) when its
+  `configs/<profile>.json` exists; never opens `credentials/` nor runs `ant`. For `doctor`.
 - Cost ledger: `LedgerBinding(vault, subject, topic, session=None)` passed as `ledger=` to
   `get_client` / `FakeClaude.client` makes every successful `create` append a `LedgerEntry`
   through `studentassistant.vault.append_ledger_entry` (time from `clock`, role, model, prompt
