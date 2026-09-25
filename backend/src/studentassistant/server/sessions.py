@@ -603,6 +603,19 @@ class SessionService:
             raise SessionAlreadyEndedError(f"la sesión {session_id} ya ha terminado")
         raise UnknownSessionError(f"no existe la sesión {session_id}")
 
+    async def is_known(self, session_id: str) -> bool:
+        """Whether some topic of the vault lists `session_id` (active, unended or ended).
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+        """
+        vault = await self._ready()
+        if self._active is not None and self._active.id == session_id:
+            return True
+        if session_id in self._open.values():
+            return True
+        return await asyncio.to_thread(self._is_listed, vault, session_id)
+
     def note_change(self) -> None:
         """Tell the vault's `GitSync` a vault file was written (a no-op before the vault opens)."""
         self._note_change()

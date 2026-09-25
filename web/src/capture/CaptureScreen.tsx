@@ -40,6 +40,7 @@ import {
   WEB_SPEECH_PROVIDER,
 } from "./sessionSocket";
 import { type ClientTranscriber, type TranscriberProblemCode } from "./transcriber";
+import { useSessionHealth } from "./sessionHealth";
 import { ScreenWakeLock } from "./wakeLock";
 import { WebSpeechTranscriber } from "./webSpeechTranscriber";
 
@@ -687,6 +688,8 @@ export default function CaptureScreen({
   }
 
   const live = connection === "open" && blocking === null && !ending;
+  // Failures behind the scenes (#262): a discreet line each, only while something is wrong.
+  const health = useSessionHealth(session.session_id, !ending && connection !== "lost");
   const pendingLine =
     pending === null
       ? "El servidor todavía no ha avisado de ninguna duda."
@@ -780,6 +783,14 @@ export default function CaptureScreen({
           {ending ? "Terminando la sesión…" : "Terminar"}
         </button>
       </section>
+
+      {health.length > 0 && (
+        <ul role="status" aria-label="Estado del servidor">
+          {health.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
 
       <p role="status" aria-label="Dudas pendientes">
         {pendingLine}

@@ -63,6 +63,7 @@ from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.revise_routes import revise_router
 from studentassistant.server.search_routes import search_router
+from studentassistant.server.session_health import SessionHealth
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.style_guide_routes import style_guide_router
@@ -174,6 +175,8 @@ def create_app(
     app.state.devices = devices
     app.state.codes = PairingCodes() if codes is None else codes
     app.state.bus = SessionBus()
+    # Per-session failure counts for `GET /api/sessions/{id}/health` (#262).
+    app.state.health = SessionHealth(app.state.bus)
     app.state.sessions = SessionService(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )

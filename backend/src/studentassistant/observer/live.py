@@ -30,7 +30,10 @@ Cost caps (#120): the client is bound to the session's ledger, so a reached cap 
 `CostCapReachedError` before anything is sent. The observer then pauses: the batch is kept, an
 `observer.status` event (`status: paused`, `cap`, `limit_usd`, `total_usd`) is published once, and
 the next trigger tries again; `status: running` is published when a call succeeds again. Any other
-Claude failure keeps the batch too and publishes `status: error`.
+Claude failure keeps the batch too and publishes `status: error`. Every failed call (any
+`LLMError` but a reached cap, or an unexpected error of the batch) is also published as a notice
+`observer.call_failed` (not persisted; `kind`: `unavailable` | `refused` | `invalid` | `error`,
+and `reason`, the error's text for the logs), which the server counts per session (#262).
 
 Pending-review queue (#55): whenever a folded event changes the topic's pending items (an
 `add_pending`, a merge into an open item, a `resolve_pending` of any origin), the loop publishes a
@@ -86,6 +89,10 @@ from studentassistant.llm import (
     LLMClient,
     LLMError,
     LLMResponse,
+    LLMRetriesExhaustedError,
+    LLMTransientError,
+    RefusalError,
+    StructuredOutputError,
     Transport,
     get_client,
     load_prompt,
@@ -138,6 +145,8 @@ STATUS_EVENT_KIND = "observer.status"
 CONTEXT_ROLLED_EVENT_KIND = "observer.context_rolled"
 """The persisted event of a context purge (#60): `reason`, `before_tokens`, `after_tokens`..."""
 NOTICE_EVENT_KIND = "notice"
+CALL_FAILED_EVENT_KIND = "observer.call_failed"
+"""The notice of one failed observer call (#262): `kind` (`CallFailureKind`) and `reason`."""
 """The transient bus event the gateway forwards to the phone as the protocol `notice`."""
 SESSION_STARTED = "session.started"
 SESSION_RESUMED = "session.resumed"
@@ -148,6 +157,7 @@ OBSERVER_QUEUE_SIZE = 1024
 """The observer's bus subscription bound (persisted events are never dropped; see the bus)."""
 
 Status = Literal["running", "paused", "error"]
+CallFailureKind = Literal["unavailable", "refused", "invalid", "error"]
 DigestReader = Callable[[Vault, str, str], str | None]
 ClientFactory = Callable[[LedgerBinding], LLMClient]
 
@@ -277,6 +287,17 @@ class _Rollover:
     before_tokens: int
     dropped_turns: int
     tail_segments: int
+
+
+def _failure_kind(error: LLMError) -> CallFailureKind:
+    """What a failed call is to the student: Claude out of reach, a refusal, a bad answer."""
+    if isinstance(error, LLMTransientError | LLMRetriesExhaustedError):
+        return "unavailable"
+    if isinstance(error, RefusalError):
+        return "refused"
+    if isinstance(error, StructuredOutputError):
+        return "invalid"
+    return "error"
 
 
 def _prompt_tokens(response: LLMResponse) -> int:
@@ -654,8 +675,9 @@ class ObserverLoop:
     async def _call(self, observed: _Observed, items: list[BatchItem]) -> None:
         try:
             await self._send_batch(observed, items)
-        except Exception:
+        except Exception as error:
             logger.exception("the observer call of session %s failed", observed.id)
+            await self._report_failure(observed, "error", repr(error))
         finally:
             observed.call = None
             if self._observed.get(observed.id) is observed:
@@ -859,6 +881,7 @@ class ObserverLoop:
             return None
         except LLMError as error:
             logger.warning("observer call of session %s failed: %s", observed.id, error)
+            await self._report_failure(observed, _failure_kind(error), str(error))
             await self._set_status(observed, "error", str(error), {})
             self._restore_owed(observed, turn)
             return None
@@ -972,6 +995,20 @@ class ObserverLoop:
                 observed.id,
                 error,
             )
+
+    async def _report_failure(
+        self, observed: _Observed, kind: CallFailureKind, reason: str
+    ) -> None:
+        try:
+            await self.bus.publish(
+                observed.id,
+                CALL_FAILED_EVENT_KIND,
+                OBSERVER_ORIGIN,
+                {"kind": kind, "reason": reason},
+                persist=False,
+            )
+        except Exception as error:  # the session ended meanwhile
+            logger.warning("observer of session %s: failure not published: %s", observed.id, error)
 
     async def _set_status(
         self, observed: _Observed, status: Status, reason: str, detail: Mapping[str, Any]

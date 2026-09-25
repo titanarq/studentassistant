@@ -171,6 +171,12 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
   `reason`, `cap`, `limit_usd`, `total_usd`) is published; the next new item tries again, and a
   successful call publishes `status: running`. Any other Claude failure keeps the batch the same
   way with `status: error`. A failed call is never retried until something new arrives.
+  Every failed call (any `LLMError` but a reached cap, or an unexpected error of the batch) is
+  also published as a transient notice `observer.call_failed` (`CALL_FAILED_EVENT_KIND`,
+  `persist=False`; `kind`: `unavailable` (transient or retries exhausted) | `refused` |
+  `invalid` (structured output) | `error`, and `reason`, the error's text for logs), which the
+  server's per-session health counts (#262, `docs/modules/server.md`). The gateway does not
+  forward it.
 - **Pending notice**: when a folded event changes the pending items (a new item, a merge, a close
   of any origin), the loop publishes a transient `notice` (`NOTICE_EVENT_KIND`, `persist=False`,
   `payload.pending_count` = the open count; the gateway forwards it to the phone as the protocol
