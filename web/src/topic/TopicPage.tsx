@@ -7,6 +7,7 @@ import {
   type ReadResult,
   type TopicSummary,
 } from "../desk/api";
+import MaterialsPanel from "../materials/MaterialsPanel";
 import PdfUploadForm from "./PdfUploadForm";
 import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
@@ -16,7 +17,8 @@ import WebSearchPanel from "./WebSearchPanel";
 /**
  * `/subjects/<subject>/topics/<topic>`: the topic page, reached from the study desk. It shows
  * "<subject> / <topic>" (names from the subject and topic lists, ids until they arrive), the
- * topic card from the read API's summary, and the PDF upload (#149), after which the card is
+ * topic card from the read API's summary, "Material de estudio" (`MaterialsPanel`, #79: generate,
+ * preview and download each material; a generation reloads the card), and the PDF upload (#149), after which the card is
  * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
  * the card is reloaded too, "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
  * "Añadir una página web" (`WebPageForm`, #62), after storing one.
@@ -69,6 +71,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
       {(summary === null || summary.kind !== "not-found") && (
         <>
           <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={refresh} />
+          <MaterialsPanel subjectId={subjectId} topicId={topicId} refreshKey={reload} onGenerated={refresh} />
           <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
           <WebSearchPanel subjectId={subjectId} topicId={topicId} onKept={refresh} />
           <WebPageForm subjectId={subjectId} topicId={topicId} onAdded={refresh} />

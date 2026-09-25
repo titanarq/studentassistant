@@ -186,7 +186,7 @@ note's GUID is `guid_for(subject, topic, card id)`. A card's `id` (`c<8 hex>[-n]
 generations (`assign_ids`): the previous cards are shown to Claude, whose reused `id` is kept when
 it is an earlier card's and not given twice; else a card whose normalized front equals an earlier
 card's takes its id; else a new id from the front's hash. Items are the card ids with their
-anchors. The web downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
+anchors. The web ("Material de estudio", #79) downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
 
 ## Exercises and mock exam -- `exam.py` (kind `examen`, #77)
 
@@ -210,7 +210,8 @@ printed. Files under `generated/`, the statements apart from the solutions:
 Extra items beyond the options are cut, questions without points, questions not adding up to
 `total_points` and rubrics not adding up to their question's points are kept and reported as
 Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
-web lists the two PDFs under "Descargas" through `GET .../generated/files/{name}` (#76).
+web lists the two PDFs and previews the Markdown in "Material de estudio" (#79) through `GET
+.../generated/files/{name}`.
 
 ## Slides -- `slides.py` (kind `diapositivas`, #78)
 
@@ -237,6 +238,6 @@ Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["ma
 `["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
 (unset: Marp finds Chrome/Chromium itself). Marp needs Node and a Chromium-based browser; it is
 not a Python dependency. Items are the slides (`d01`, `d02`...) with their anchors. The web lists
-the PDF/PPTX under Descargas through `GET .../generated/files/{name}`. Tests use a stand-in
+the PDF/PPTX in "Material de estudio" (#79) through `GET .../generated/files/{name}`. Tests use a stand-in
 exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
 `@pytest.mark.integration` (`SA_TEST_MARP`).

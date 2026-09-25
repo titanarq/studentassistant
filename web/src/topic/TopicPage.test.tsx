@@ -101,3 +101,30 @@ it("keeps the ids as names and shows an error when the backend is down", async (
   expect(screen.getByRole("heading", { name: "Tema revolucion-francesa" })).toBeInTheDocument();
   expect(screen.getByText("Asignatura historia")).toBeInTheDocument();
 });
+
+it("shows the study materials and reloads the card after generating one", async () => {
+  let summaries = 0;
+  const generated = "/api/subjects/historia/topics/revolucion-francesa/generated";
+  stubApi({
+    "/api/subjects": SUBJECTS,
+    "/api/subjects/historia/topics": TOPICS,
+    [SUMMARY_PATH]: () => {
+      summaries++;
+      return summary(0);
+    },
+    "/api/generators": jsonResponse([]),
+    [generated]: jsonResponse({
+      subject: "historia",
+      topic: "revolucion-francesa",
+      has_notes: true,
+      artifacts: [{ kind: "esquema", title: "Esquema", generated: false, files: [] }],
+    }),
+    [`POST ${generated}/esquema`]: jsonResponse({ kind: "esquema", notes: { sha256: "f", version: 3 }, warnings: [] }),
+  });
+
+  renderPage();
+
+  expect(await screen.findByRole("heading", { name: "Material de estudio" })).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Generar" }));
+  await vi.waitFor(() => expect(summaries).toBe(2));
+});

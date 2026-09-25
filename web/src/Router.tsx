@@ -1,6 +1,7 @@
 import App from "./App";
 import CapturePage from "./capture/CapturePage";
 import LivePage from "./live/LivePage";
+import MaterialPreviewPage from "./materials/MaterialPreviewPage";
 import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
 import PendingPage from "./pending/PendingPage";
@@ -10,6 +11,7 @@ import TopicPage from "./topic/TopicPage";
 import VersionsPage from "./versions/VersionsPage";
 
 const STYLE_GUIDE_PATH = /^\/subjects\/([^/]+)\/style-guide$/;
+const MATERIAL_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)\/material\/([^/]+)$/;
 const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions|\/quiz)?$/;
 
 function decode(segment: string): string | null {
@@ -35,6 +37,13 @@ export default function Router({ pathname = window.location.pathname }: { pathna
   if (guide) {
     const subjectId = decode(guide[1]);
     if (subjectId !== null) return <StyleGuidePage subjectId={subjectId} />;
+  }
+  const material = MATERIAL_PATH.exec(path);
+  if (material) {
+    const [subjectId, topicId, name] = material.slice(1).map(decode);
+    if (subjectId !== null && topicId !== null && name !== null) {
+      return <MaterialPreviewPage subjectId={subjectId} topicId={topicId} name={name} />;
+    }
   }
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
