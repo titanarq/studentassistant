@@ -27,6 +27,7 @@ from studentassistant.vault.ledger import (
     read_all_ledgers,
     read_ledger,
 )
+from studentassistant.vault.locking import VaultBusyError
 from studentassistant.vault.notes import (
     NotesError,
     generated_directory,
@@ -198,6 +199,7 @@ __all__ = [
     "Vault",
     "VaultError",
     "VaultFormatError",
+    "VaultBusyError",
     "VaultMetaError",
     "VaultNotFoundError",
     "active_host_warning",
