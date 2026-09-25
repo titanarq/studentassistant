@@ -463,6 +463,17 @@ defaulting to the repository owner, which is also what it takes unattended), run
 the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`, optional,
 `SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
 
+**Restore drill** (`backend/tests/server/test_restore_drill.py`, #261): the promise "a new PC
+restores everything with setup + clone + index rebuild" is tested end to end. A vault is built
+through the public paths only (the sample recording replayed through `create_app`, `notes/generate`
+and one `notes/chat` revision, `FakeClaude` per role), pushed by the app's `GitSync` to a local
+bare repository standing in for GitHub, cloned into a fresh directory with `clone_vault` (a
+`LocalHost`; `post_clone` rebuilds a fresh index, as the CLI's does), and compared with the
+original: the study desk over REST (subjects, topics, each topic's summary, sessions, doubts,
+notes versions and chat history), `load_observer_snapshot` per topic, `apuntes.md` and its tags,
+`list_doubts`, the cost ledger totals and `VaultIndex.search` results. Anything a future change
+stops committing (a file written outside the vault, a cache mistaken for content) fails it.
+
 ### Derived index -- `index.py`
 A SQLite database at `vault.index_path` (`VaultSettings.index_path`, `SA_VAULT__INDEX_PATH`,
 default `~/.cache/studentassistant/index.sqlite3`): a cache (ADR-0002), never inside the vault,
