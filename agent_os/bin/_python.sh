@@ -48,6 +48,58 @@ agent_os_host_root() {
   dirname "$agent_os_dir"
 }
 
+# Where this package sits inside the host root `$1`, as a path relative to it: `agent_os` in a
+# host that vendors the mechanism through `git subtree`, and NOTHING when the package IS the root
+# (the mechanism's own repository) or lies outside it. Compared physically, because the host root
+# comes from `git rev-parse` and this directory from a `cd`.
+agent_os_relative_dir() {
+  local dir root
+  dir=$(cd "$agent_os_dir" 2>/dev/null && pwd -P) || return 0
+  root=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+  case $dir in
+    "$root"/*) printf '%s\n' "${dir#"$root"/}" ;;
+  esac
+  return 0
+}
+
+# The PYTHONPATH a run in worktree `$1` of host root `$2` is exported with (agent-os#35). The
+# worktree's root always, which is what resolves a package of the host's own from the worktree.
+# In a vendoring host, also the worktree's copy of this package's directory, AFTER the root: there
+# `<worktree>/agent_os/` is the mechanism's repository and carries no `__init__.py`, so on the root
+# alone it is only a namespace portion, and the regular package the venv's editable install puts
+# on `sys.path` (the MAIN checkout's `agent_os/agent_os/`) wins over it -- measured with the
+# mechanism's own interpreter, `python -c 'import agent_os; print(agent_os.__file__)'` run with
+# `PYTHONPATH=<worktree>`. Named from the path alone, never from what the worktree holds, so the
+# value is the same one `agent_run_environment_names` recomputes after the worktree is gone.
+agent_os_worktree_pythonpath() {
+  local relative
+  relative=$(agent_os_relative_dir "$2")
+  if [ -n "$relative" ]; then
+    printf '%s:%s\n' "$1" "$1/$relative"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# Links the host's `<package dir>/.venv` into worktree `$1` of host root `$2`, at the same relative
+# path, when the package is vendored (agent-os#35): `git worktree add` brings tracked files only,
+# and without it `agent_os/.venv/bin/pytest` -- the command that runs the mechanism's own suite --
+# does not exist in the worktree. A link, never a copy, like the root `.venv` and `.env`. With
+# `$3` = `only-if-ignored` the link is made only where git would ignore it, for a worktree that
+# outlives the run: a branch cut before the mechanism's `.gitignore` named `.venv` without a slash
+# would otherwise show the link as untracked, and an untracked entry refuses the next start.
+agent_os_link_mechanism_venv() {
+  local worktree=$1 root=$2 mode=${3-} relative
+  relative=$(agent_os_relative_dir "$root")
+  [ -n "$relative" ] || return 0
+  [ -d "$root/$relative/.venv" ] && [ -d "$worktree/$relative" ] || return 0
+  [ -e "$worktree/$relative/.venv" ] && return 0
+  if [ "$mode" = only-if-ignored ]; then
+    git -C "$worktree" check-ignore -q "$relative/.venv" 2>/dev/null || return 0
+  fi
+  ln -s "$root/$relative/.venv" "$worktree/$relative/.venv" && echo "linked $worktree/$relative/.venv -> $root/$relative/.venv"
+}
+
 # How the injected RULES blocks name the mechanism's own CLIs: `"$AGENT_OS_PYTHON" -m
 # agent_os.<module>`, written literally in the prompt and never substituted. Every driver EXPORTS
 # that variable, so the agent's own shell resolves it to the same interpreter the driver uses --

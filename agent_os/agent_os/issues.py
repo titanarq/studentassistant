@@ -14,10 +14,11 @@ No third-party GitHub library and no new dependency: every call is `gh api` / `g
     python -m agent_os.issues update <N> [--state open|closed] [--comment "..."]
         [--add-label L] [--remove-label L] [--title T] [--body-file F]
     python -m agent_os.issues validate <N>
-    python -m agent_os.issues move <N> refine|ready|doing|blocked-on-human|ai-completed|
-        review|done
+    python -m agent_os.issues move <N> [<N> ...] refine|ready|doing|blocked-on-human|
+        ai-completed|review|done      # several numbers: one invocation, the board resolved once
     python -m agent_os.issues brief <N> [--supplement F]
     python -m agent_os.issues load <backlog.yaml> [--dry-run]
+    python -m agent_os.issues supersede <N> --by A [--by B ...] [--route D=A[,B] ...]
 
 Repository: the `AGENT_OS_GH_REPO` env variable (`owner/name`), else `project.repo` in
 `config/agents.yaml`, else `gh repo view` on the cwd. Printed at the start of every command.
@@ -68,6 +69,8 @@ tag from the YAML becomes a label too, created on first use.
 from __future__ import annotations
 
 import argparse
+import datetime
+import functools
 import json
 import os
 import pathlib
@@ -75,6 +78,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 
 import yaml
 
@@ -90,6 +94,7 @@ from agent_os.lib import (
     load_project,
     load_task_classes,
     render_human_message,
+    replace_blocker,
     validate_issue_body,
 )
 
@@ -191,8 +196,19 @@ def _gh(*args: str, input_text: str | None = None) -> subprocess.CompletedProces
 
 
 def _is_rate_limited(message: str) -> bool:
-    lowered = message.lower()
-    return "403" in message or "429" in message or "rate limit" in lowered
+    """A rate limit, primary or secondary, by what GitHub says -- not by a bare 403, which is as
+    often a permission refused, where retrying only delays the same answer."""
+    return "429" in message or "rate limit" in message.lower()
+
+
+def _is_secondary_rate_limit(message: str) -> bool:
+    """GitHub's concurrency / points-per-minute limit: it has no bucket to read, and GitHub asks
+    for at least a minute's wait when it sends no `Retry-After`."""
+    return "secondary rate limit" in message.lower()
+
+
+# GitHub's documented minimum wait after a secondary rate limit that carries no `Retry-After`.
+SECONDARY_RATE_LIMIT_WAIT_SECONDS = 60
 
 
 def _retry_after(message: str) -> float | None:
@@ -200,20 +216,70 @@ def _retry_after(message: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def gh_json(*args: str, input_text: str | None = None):
-    """Runs `gh <args>`, parses stdout as JSON (None if empty), retries up to 5 times on a rate
-    limit (honouring `Retry-After` if present, exponential backoff otherwise), and exits on any
-    other failure."""
+def exhausted_quotas() -> list[str] | None:
+    """One line per quota of this `gh` login that is at zero right now -- `graphql: 0 of 5000
+    left, resets at ...` -- or None when the quotas could not be read. `gh api rate_limit` is
+    free: it counts against none of them.
+
+    Every API has its own bucket: `core` (REST), `graphql`, `search`... The top-level `.rate`
+    that `gh api rate_limit` prints first is `core` alone, so it can read `remaining: 5000` while
+    `graphql` is at zero, and every GraphQL-backed `gh` subcommand answers "API rate limit already
+    exceeded" (#70). Naming the empty bucket is what tells that apart from a transient refusal."""
+    result = _gh("api", "rate_limit", "--jq", ".resources")
+    if result.returncode != 0:
+        return None
+    try:
+        resources = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(resources, dict):
+        return None
+    lines = []
+    for name, bucket in sorted(resources.items()):
+        if not isinstance(bucket, dict) or bucket.get("remaining") != 0:
+            continue
+        reset = datetime.datetime.fromtimestamp(int(bucket.get("reset") or 0), datetime.UTC)
+        lines.append(
+            f"{name}: 0 of {bucket.get('limit')} left, resets at {reset:%Y-%m-%dT%H:%M:%SZ}"
+        )
+    return lines
+
+
+def gh_text(*args: str, input_text: str | None = None) -> str:
+    """Runs `gh <args>` and returns its stripped stdout, and exits on any failure it cannot wait
+    out. A rate limit is retried up to 5 times (`Retry-After` if present; at least a minute for a
+    secondary limit; exponential backoff otherwise) -- unless one of the login's quotas is at
+    zero, which no retry within the hour can outlast: that exits at once, naming the empty quota
+    and when it refills, instead of sleeping on it and surfacing gh's bare text (#70)."""
     attempts = 6
     for attempt in range(attempts):
         result = _gh(*args, input_text=input_text)
         if result.returncode == 0:
-            text = result.stdout.strip()
-            return json.loads(text) if text else None
-        if attempt < attempts - 1 and _is_rate_limited(result.stderr):
-            time.sleep(_retry_after(result.stderr) or (2**attempt))
-            continue
-        sys.exit(f"gh {' '.join(args)} failed:\n{result.stderr}")
+            return result.stdout.strip()
+        if not _is_rate_limited(result.stderr):
+            break
+        secondary = _is_secondary_rate_limit(result.stderr)
+        empty = None if secondary else exhausted_quotas()
+        if empty:
+            sys.exit(
+                f"gh {' '.join(args)} failed: this gh login's GitHub quota is exhausted, and "
+                "retrying before it resets cannot succeed:\n"
+                + "\n".join(f"  {line}" for line in empty)
+                + f"\n{result.stderr}"
+            )
+        if attempt == attempts - 1:
+            break
+        backoff = float(2**attempt)
+        if secondary:
+            backoff = max(backoff, SECONDARY_RATE_LIMIT_WAIT_SECONDS)
+        time.sleep(_retry_after(result.stderr) or backoff)
+    sys.exit(f"gh {' '.join(args)} failed:\n{result.stderr}")
+
+
+def gh_json(*args: str, input_text: str | None = None):
+    """`gh_text`, parsed as JSON (None if empty)."""
+    text = gh_text(*args, input_text=input_text)
+    return json.loads(text) if text else None
 
 
 def gh_json_dict(*args: str, input_text: str | None = None) -> dict:
@@ -253,9 +319,26 @@ def repo_name() -> str:
 # --------------------------------------------------------------------------------------------
 
 
+# Labels are read over REST, never with `gh label list`: that one is GraphQL, and the GraphQL
+# quota is 5000 points an hour shared by every host and tool the human runs, where REST draws on
+# the separate core quota (#27).
+
+
 def existing_labels(repo: str) -> set[str]:
-    rows = gh_json("label", "list", "--repo", repo, "--limit", "200", "--json", "name") or []
-    return {row["name"] for row in rows}
+    """Every label the repository has, over REST, every page of it."""
+    text = gh_text("api", f"repos/{repo}/labels?per_page=100", "--paginate", "--jq", ".[].name")
+    return {line for line in text.splitlines() if line}
+
+
+def label_exists(repo: str, name: str) -> bool:
+    """Whether the repository has label `name`: one REST `GET`, a 404 meaning no. What `move`
+    asks about the one label it writes, instead of listing every label to find it."""
+    result = _gh("api", f"repos/{repo}/labels/{urllib.parse.quote(name, safe='')}")
+    if result.returncode == 0:
+        return True
+    if "404" in result.stderr or "not found" in result.stderr.lower():
+        return False
+    sys.exit(f"gh api repos/{repo}/labels/{name} failed:\n{result.stderr}")
 
 
 def ensure_labels(repo: str, names: list[str], cache: set[str]) -> None:
@@ -587,7 +670,7 @@ def page_review_ready(number: int, issue: dict) -> str:
 # --------------------------------------------------------------------------------------------
 # agent_os/docs/adr/2026-09-14-the-issue-is-the-unit-of-work-and-status-labels-are-the-mechanical-state.md
 
-FRONT_MATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
+FRONT_MATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 
 def template_body(name: str) -> str:
@@ -598,21 +681,57 @@ def template_body(name: str) -> str:
     return FRONT_MATTER_RE.sub("", text).strip() + "\n"
 
 
+def template_title_prefix(name: str) -> str:
+    """The `title:` GitHub's "new issue" form pre-fills from `.github/ISSUE_TEMPLATE/<name>.md`
+    (`'[task] '` in the shipped task template), or "" when the type has no template or its front
+    matter declares no title. Read from the host's template, so a host that spells its prefix
+    differently is obeyed without a config key."""
+    path = TEMPLATE_DIR / f"{name}.md"
+    if not path.is_file():
+        return ""
+    match = FRONT_MATTER_RE.match(path.read_text())
+    front_matter = yaml.safe_load(match.group(1)) if match else None
+    title = front_matter.get("title") if isinstance(front_matter, dict) else None
+    return title if isinstance(title, str) else ""
+
+
+def prefixed_title(title: str, issue_type: str) -> str:
+    """`title` with its type's template prefix in front, exactly once (#15). An issue created
+    through the API skips GitHub's form, which is what applies the prefix to a hand-written one,
+    so without this every refiner-created task lacked it. A title that already starts with the
+    prefix — compared without its trailing space and ignoring case — is left as it is, so passing
+    an already-prefixed title never yields `[task] [task] `."""
+    prefix = template_title_prefix(issue_type)
+    marker = prefix.strip()
+    if not marker or title.lower().startswith(marker.lower()):
+        return title
+    return prefix + title
+
+
 def open_issue_numbers(repo: str) -> set[int]:
-    """Every open issue's number, one listing, so `Blocked by #N` resolves without a `gh issue
-    view` per blocker."""
-    rows = gh_json(
-        "issue", "list", "--repo", repo, "--state", "open", "--limit", "1000", "--json", "number"
+    """Every open issue's number, one listing, so `Blocked by #N` resolves without a read per
+    blocker. Over REST, every page of it: `gh issue list` is GraphQL (#70). REST lists open pull
+    requests as issues too; they are left out, as `gh issue list` left them out."""
+    text = gh_text(
+        "api",
+        f"repos/{repo}/issues?state=open&per_page=100",
+        "--paginate",
+        "--jq",
+        ".[] | select(.pull_request == null) | .number",
     )
-    return {int(row["number"]) for row in rows or []}
+    return {int(line) for line in text.splitlines() if line.strip()}
 
 
 def validate_issue(repo: str, number: int) -> list[str]:
     """Every mechanical reason issue #N is not a brief an agent could start from, one per line.
     The rules themselves live in `agent_lib.validate_issue_body`, which is also what the guard's
     dispatchable predicate asks — "Ready for AI" and "the validator passes" are one implementation
-    and cannot drift apart."""
-    data = gh_json_dict("issue", "view", str(number), "--repo", repo, "--json", "body,labels")
+    and cannot drift apart.
+
+    Read over REST, like `move` (#27): `worker_task.sh start` validates before every dispatch,
+    and `gh issue view --json` is GraphQL -- a login whose GraphQL quota was empty could not
+    dispatch at all while its REST quota was whole (#70)."""
+    data = gh_json_dict("api", f"repos/{repo}/issues/{number}")
     labels = type_labels()
     grouping_types = [
         label for label in sorted(label_names(data)) if label in (labels["epic"], labels["feature"])
@@ -642,18 +761,47 @@ def board_owner(repo: str) -> str:
     return repo.split("/", 1)[0]
 
 
+BOARD_FIELDS_QUERY = """
+query($owner: String!, $number: Int!) {
+  repositoryOwner(login: $owner) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        id
+        fields(first: 50) {
+          nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@functools.cache
 def board_status_field(owner: str, board: int) -> tuple[str, str, dict[str, str]]:
-    """`(project id, Status field id, {option name: option id})`, queried once per run. The
-    single-select field GitHub creates with every project board is named `Status`; a board whose
-    column field is named something else falls back to its first single-select field."""
-    project = gh_json_dict("project", "view", str(board), "--owner", owner, "--format", "json")
-    fields = (
-        gh_json_dict("project", "field-list", str(board), "--owner", owner, "--format", "json").get(
-            "fields"
-        )
-        or []
+    """`(project id, Status field id, {option name: option id})`, asked once per process and
+    shared by every issue a bulk `move` touches. The single-select field GitHub creates with every
+    project board is named `Status`; a board whose column field is named something else falls
+    back to its first single-select field.
+
+    One bounded GraphQL query (~1 point), not `gh project view` + `gh project field-list`: on a
+    91-item board the field listing alone cost ~103 points of the user's 5000-an-hour GraphQL
+    quota, which every host shares (#27)."""
+    data = gh_json(
+        "api",
+        "graphql",
+        "-f",
+        f"query={BOARD_FIELDS_QUERY}",
+        "-f",
+        f"owner={owner}",
+        "-F",
+        f"number={board}",
     )
-    single_selects = [field for field in fields if field.get("options") is not None]
+    project = (((data or {}).get("data") or {}).get("repositoryOwner") or {}).get("projectV2")
+    if not project:
+        sys.exit(f"no project {owner}/{board} visible to this gh login to mirror the state into")
+    fields = (project.get("fields") or {}).get("nodes") or []
+    single_selects = [field for field in fields if field and field.get("options") is not None]
     status = next(
         (field for field in single_selects if field.get("name") == BOARD_STATUS_FIELD),
         next(iter(single_selects), None),
@@ -664,33 +812,59 @@ def board_status_field(owner: str, board: int) -> tuple[str, str, dict[str, str]
     return project["id"], status["id"], options
 
 
+ISSUE_PROJECT_ITEMS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      projectItems(first: 50) {
+        nodes { id project { number owner { ... on Organization { login } ... on User { login } } } }
+      }
+    }
+  }
+}
+"""
+
+
 def board_item_id(owner: str, board: int, repo: str, number: int) -> str | None:
     """The board item holding issue #N, or None when the issue was never added to the board —
-    which is not an error: the labels carry the state, the board only shows it."""
+    which is not an error: the labels carry the state, the board only shows it.
+
+    Asked from the issue's side, not by listing the board (#14): `gh project item-list` on an org
+    Project v2 came back with zero items while every issue's `projectItems` named its item there,
+    so every `move` skipped the mirror in silence. One issue's items are also a bounded answer,
+    where the listing stopped at its `--limit`."""
+    repo_owner, name = repo.split("/", 1)
     data = gh_json(
-        "project",
-        "item-list",
-        str(board),
-        "--owner",
-        owner,
-        "--format",
-        "json",
-        "--limit",
-        "1000",
+        "api",
+        "graphql",
+        "-f",
+        f"query={ISSUE_PROJECT_ITEMS_QUERY}",
+        "-f",
+        f"owner={repo_owner}",
+        "-f",
+        f"name={name}",
+        "-F",
+        f"number={number}",
     )
-    for item in (data or {}).get("items") or []:
-        content = item.get("content") or {}
-        if content.get("number") == number and content.get("repository") in (None, repo):
+    issue = (((data or {}).get("data") or {}).get("repository") or {}).get("issue") or {}
+    for item in (issue.get("projectItems") or {}).get("nodes") or []:
+        project = item.get("project") or {}
+        if project.get("number") == board and (project.get("owner") or {}).get("login") == owner:
             return item["id"]
     return None
 
 
-def mirror_board_column(repo: str, number: int, column: str, board: int) -> str:
+def mirror_board_column(
+    repo: str, number: int, column: str, board: int, *, item: str | None = None
+) -> str:
     """Moves issue #N's board item to `column`. Returns the line to print: what it did, or why it
     could not, never an exception — a board that disagrees with the labels is a cosmetic defect,
-    and failing the `move` here would leave the label set and the caller thinking it was not."""
+    and failing the `move` here would leave the label set and the caller thinking it was not.
+
+    `item` is the board item when the caller already holds it (`create`, from the `item-add` it
+    just made); otherwise it is looked up from the issue's side."""
     owner = board_owner(repo)
-    item = board_item_id(owner, board, repo, number)
+    item = item or board_item_id(owner, board, repo, number)
     if not item:
         return f"board:    #{number} is not on project {board}; column not mirrored"
     project_id, field_id, options = board_status_field(owner, board)
@@ -709,6 +883,51 @@ def mirror_board_column(repo: str, number: int, column: str, board: int) -> str:
         options[column],
     )
     return f"board:    {column}"
+
+
+def _exit_reason(exc: SystemExit) -> str:
+    """The first line of what `gh_json` (or `board_status_field`) exited with: enough to say why
+    in one `board:` line without dumping `gh`'s whole stderr into it."""
+    text = str(exc.code) if exc.code is not None else ""
+    return text.strip().splitlines()[0] if text.strip() else "gh failed"
+
+
+def initial_board_column(labels: list[str], project: ProjectConfig) -> str | None:
+    """The column the state label a new issue is created with maps to, or None when it carries
+    no state label or that state keeps whatever column the item has (`blocked-on-human`)."""
+    for state in WORK_STATES:
+        label = project.labels.label_for_state(state)
+        if label and label in labels:
+            return project.board_columns.get(state)
+    return None
+
+
+def add_to_board(repo: str, number: int, url: str, labels: list[str]) -> list[str]:
+    """Puts a just-created issue on `project.board_number` and, when it starts with a `status:*`
+    label, sets the column that state mirrors (#23). Without this a later `move` found no item to
+    mirror onto unless the host's board happened to auto-add issues. Returns the lines to print —
+    never an exception: the issue exists and carries its labels whatever the board answers, and
+    failing the `create` here would make the caller create it a second time."""
+    project = load_project()
+    board = project.board_number
+    if not board:
+        return []
+    owner = board_owner(repo)
+    try:
+        added = gh_json(
+            "project", "item-add", str(board), "--owner", owner, "--url", url, "--format", "json"
+        )
+    except SystemExit as exc:
+        return [f"board:    #{number} not added to project {board}: {_exit_reason(exc)}"]
+    lines = [f"board:    added #{number} to project {board}"]
+    column = initial_board_column(labels, project)
+    if column:
+        item = (added or {}).get("id") if isinstance(added, dict) else None
+        try:
+            lines.append(mirror_board_column(repo, number, column, board, item=item))
+        except SystemExit as exc:
+            lines.append(f"board:    column not mirrored: {_exit_reason(exc)}")
+    return lines
 
 
 # --------------------------------------------------------------------------------------------
@@ -845,11 +1064,13 @@ def cmd_create(args: argparse.Namespace) -> None:
         body = template_body(args.template)
     else:
         body = pathlib.Path(args.body_file).read_text() if args.body_file else ""
-    result = create_issue(repo, args.title, body, labels)
+    result = create_issue(repo, prefixed_title(args.title, issue_type), body, labels)
     number = result["number"]
     print(f"created #{number}  {result.get('html_url', '')}")
     if args.parent:
         link_parent(repo, args.parent, number, result["id"])
+    for line in add_to_board(repo, number, result.get("html_url", ""), labels):
+        print(line)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -903,39 +1124,78 @@ def cmd_validate(args: argparse.Namespace) -> None:
     print("ok")
 
 
-def cmd_move(args: argparse.Namespace) -> None:
-    repo = repo_name()
-    print(f"repo: {repo}")
-    project = load_project()
+def issue_for_move(repo: str, number: int) -> dict:
+    """What `move` needs of issue #N -- its labels, state, title and web URL -- over REST: `gh
+    issue view` is GraphQL, and that quota is the one a bulk move exhausted (#27)."""
+    data = gh_json_dict("api", f"repos/{repo}/issues/{number}")
+    return {
+        "labels": data.get("labels") or [],
+        "state": data.get("state") or "",
+        "title": data.get("title") or "",
+        "url": data.get("html_url") or "",
+    }
+
+
+def move_issue(repo: str, number: int, state: str, project: ProjectConfig) -> None:
+    """Moves one issue to `state`: its label set, its open/closed state, its board column, and the
+    review page. The target label is already known to exist -- `cmd_move` makes sure of it once
+    for however many issues it moves."""
     vocabulary = project.labels
-    target = vocabulary.label_for_state(args.state)
-    current = gh_json_dict(
-        "issue", "view", str(args.number), "--repo", repo, "--json", "labels,state,title,url"
-    )
+    target = vocabulary.label_for_state(state)
+    current = issue_for_move(repo, number)
     # Exactly one state label at a time: every other one comes off, whatever it was, so an issue
     # can never read as two states at once. `status:agents-paused` is not a state and is never
     # touched here -- it is the human-only full stop on the tracking epic.
-    held = [label["name"] for label in current.get("labels", [])]
+    held = [label["name"] for label in current["labels"]]
     labels = [label for label in held if label not in set(vocabulary.state_labels)]
     if target:
-        ensure_labels(repo, [target], existing_labels(repo))
         labels.append(target)
     fields: dict = {"labels": labels}
-    if args.state == "done" and (current.get("state") or "").upper() == "OPEN":
+    if state == "done" and current["state"].upper() == "OPEN":
         fields["state"] = "closed"
-    update_issue(repo, args.number, fields)
+    update_issue(repo, number, fields)
     print(
         f"labels:   {', '.join(labels) or '(none)'}" + ("  (closed)" if "state" in fields else "")
     )
-    column = project.board_columns.get(args.state)
+    column = project.board_columns.get(state)
     if column:
-        print(mirror_board_column(repo, args.number, column, project.board_number))
+        print(mirror_board_column(repo, number, column, project.board_number))
     else:
-        print(f"board:    {args.state} keeps the item's current column")
+        print(f"board:    {state} keeps the item's current column")
     # Last, and only after the label and the board are written: the page announces a state the
     # tracker already holds, and it can never be the reason a move fails.
-    if args.state == "review":
-        print(page_review_ready(args.number, current))
+    if state == "review":
+        print(page_review_ready(number, current))
+
+
+def cmd_move(args: argparse.Namespace) -> None:
+    """`move N [N ...] STATE`. With several numbers the repository, the config, the target label
+    and the board's Status field are resolved once for all of them (#27); each issue then costs
+    two GraphQL requests (its board item, the column edit) and its REST reads and writes. One
+    issue that fails does not stop the rest: its reason is printed under its number and the
+    command exits non-zero naming every issue that did not move."""
+    repo = repo_name()
+    print(f"repo: {repo}")
+    project = load_project()
+    target = project.labels.label_for_state(args.state)
+    if target and not label_exists(repo, target):
+        ensure_labels(repo, [target], set())
+    if len(args.numbers) == 1:
+        move_issue(repo, args.numbers[0], args.state, project)
+        return
+    failed = []
+    for number in args.numbers:
+        print(f"#{number}")
+        try:
+            move_issue(repo, number, args.state, project)
+        except SystemExit as exc:
+            print(f"failed:   {exc.code}")
+            failed.append(number)
+    if failed:
+        sys.exit(
+            f"move {args.state}: {len(failed)} of {len(args.numbers)} failed: "
+            + ", ".join(f"#{number}" for number in failed)
+        )
 
 
 def cmd_brief(args: argparse.Namespace) -> None:
@@ -947,6 +1207,102 @@ def cmd_brief(args: argparse.Namespace) -> None:
         pathlib.Path(args.output).write_text(text)
     else:
         print(text, end="")
+
+
+def parse_routes(routes: list[str] | None, children: list[int]) -> dict[int, list[int]]:
+    """`--route D=A,B` pairs as {dependent: [children]}: which of the split's children a given
+    dependent really waits on, when the refiner can tell. Every child named must be one of `--by`,
+    so a typo can never point a dependent at an unrelated issue."""
+    parsed: dict[int, list[int]] = {}
+    for route in routes or []:
+        dependent, _, targets = route.partition("=")
+        try:
+            numbers = [int(n.strip().lstrip("#")) for n in targets.split(",") if n.strip()]
+            parsed[int(dependent.strip().lstrip("#"))] = numbers
+        except ValueError:
+            sys.exit(f"--route {route!r}: expected DEPENDENT=CHILD[,CHILD...]")
+        if not numbers:
+            sys.exit(f"--route {route!r} names no child")
+        strangers = [n for n in numbers if n not in children]
+        if strangers:
+            listed = ", ".join(f"#{n}" for n in strangers)
+            sys.exit(f"--route {route!r}: {listed} is not one of the --by children")
+    return parsed
+
+
+def supersede(
+    repo: str, original: int, children: list[int], routes: dict[int, list[int]]
+) -> list[str]:
+    """The split's bookkeeping, done in one deterministic pass rather than left to a prompt (#39):
+    every OPEN issue whose `## Dependencies` says `Blocked by #<original>` has that line rewritten
+    to the children it is routed to (all of them when no route says otherwise) and gets a comment
+    saying so; then the original is closed as `not planned` with a "superseded by" comment. Left
+    open, the original blocked its dependents forever; closed by hand, it unblocked them before
+    the children were done. Idempotent: a second run finds no dependent line and a closed original.
+    Returns one line per thing it did."""
+    if not children:
+        sys.exit("supersede needs at least one --by child")
+    if original in children:
+        sys.exit(f"#{original} cannot supersede itself")
+    current = gh_json_dict("issue", "view", str(original), "--repo", repo, "--json", "labels,state")
+    labels = type_labels()
+    grouping = sorted(label_names(current) & {labels["epic"], labels["feature"]})
+    if grouping:
+        # A feature's children are its parts, not its replacement: it stays open to group them.
+        sys.exit(f"#{original} is {grouping[0]}: only a split task or bug is superseded")
+    listing = ("issue", "list", "--repo", repo, "--state", "open", "--limit", "1000")
+    rows = gh_json(*listing, "--json", "number,body") or []
+    open_numbers = {int(row["number"]) for row in rows}
+    missing = [n for n in children if n not in open_numbers]
+    if missing:
+        listed = ", ".join(f"#{n}" for n in missing)
+        sys.exit(f"{listed} is not an open issue: a superseding child must exist and be open")
+    unrouted = [d for d in routes if d not in open_numbers]
+    if unrouted:
+        sys.exit(f"--route names #{unrouted[0]}, which is not an open issue")
+    children_text = ", ".join(f"#{n}" for n in children)
+    done: list[str] = []
+    for row in rows:
+        dependent = int(row["number"])
+        if dependent == original or dependent in children:
+            continue
+        targets = routes.get(dependent, children)
+        body = replace_blocker(row.get("body") or "", original, targets)
+        if body is None:
+            continue
+        update_issue(repo, dependent, {"body": body})
+        targets_text = ", ".join(f"#{n}" for n in targets)
+        comment = (
+            f"`Blocked by #{original}` is now `Blocked by` {targets_text}: #{original} was split "
+            f"into {children_text} and closed as superseded."
+        )
+        gh_json(
+            "api",
+            f"repos/{repo}/issues/{dependent}/comments",
+            "-X",
+            "POST",
+            "-f",
+            f"body={comment}",
+        )
+        done.append(f"dependent #{dependent}: Blocked by #{original} -> {targets_text}")
+    if (current.get("state") or "").upper() == "OPEN":
+        comment = f"Superseded by {children_text}."
+        gh_json(
+            "api", f"repos/{repo}/issues/{original}/comments", "-X", "POST", "-f", f"body={comment}"
+        )
+        update_issue(repo, original, {"state": "closed", "state_reason": "not_planned"})
+        done.append(f"closed #{original} as not planned, superseded by {children_text}")
+    else:
+        done.append(f"#{original} was already closed")
+    return done
+
+
+def cmd_supersede(args: argparse.Namespace) -> None:
+    repo = repo_name()
+    print(f"repo: {repo}")
+    children = list(dict.fromkeys(args.by or []))
+    for line in supersede(repo, args.number, children, parse_routes(args.route, children)):
+        print(line)
 
 
 def cmd_load(args: argparse.Namespace) -> None:
@@ -1013,7 +1369,7 @@ def main() -> None:
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("move")
-    p.add_argument("number", type=int)
+    p.add_argument("numbers", type=int, nargs="+", metavar="number")
     p.add_argument("state", choices=WORK_STATES)
     p.set_defaults(func=cmd_move)
 
@@ -1027,6 +1383,18 @@ def main() -> None:
     p.add_argument("file")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_load)
+
+    p = sub.add_parser(
+        "supersede", help="after a split: repoint the original's dependents and close it"
+    )
+    p.add_argument("number", type=int)
+    p.add_argument("--by", type=int, action="append", required=True, help="a child of the split")
+    p.add_argument(
+        "--route",
+        action="append",
+        help="DEPENDENT=CHILD[,CHILD]: the children one dependent waits on (default: all)",
+    )
+    p.set_defaults(func=cmd_supersede)
 
     args = parser.parse_args()
     args.func(args)

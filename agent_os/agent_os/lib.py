@@ -552,6 +552,29 @@ class ProjectConfig(Strict):
     # read-only-by-default worker has (agent_os/docs/adr/2026-09-15-workers-connect-read-only-by-default-
     # and-reach-the-owner-only-through-the-test-runner.md).
     test_command: str = "scripts/test.sh"
+    # Whether `agent_os.install` writes `.github/workflows/ci-host.yml`, a workflow running
+    # `test_command` on every pull request with no path filter. The control plane counts zero
+    # checks on a PR's head SHA as merge condition 1 not met, and `ci-agent-os.yml` only fires on
+    # `agent_os/**`; a host whose own CI already reports on every PR sets this to false
+    # (agent_os/docs/adr/2026-09-24-a-pr-with-no-checks-fails-the-ci-condition-and-every-host-ships-a-ci.md).
+    install_host_ci: bool = True
+    # How a freshly added worktree -- a worker's, on `init`, and a validator's throwaway one -- is
+    # made runnable, since a new worktree carries tracked files only (agent-os#41,
+    # agent_os/docs/adr/2026-09-24-a-fresh-worktree-is-provisioned-the-way-the-host-configures.md).
+    # `worktree_links` are paths relative to the repository root, each symlinked from the main
+    # checkout into the worktree when the checkout has it and the worktree does not: a link and
+    # never a copy, so one file stays authoritative for every tree. The default is the root
+    # `.venv` and `.env` the drivers linked before this key existed. `worktree_setup_command` is
+    # then run by `bash -c` INSIDE the worktree before any backend starts -- a monorepo's `uv sync`
+    # in `backend/`, an `npm ci` in `web/` -- and a non-zero exit refuses the run rather than
+    # handing an agent a tree it cannot run anything in. Empty by default: nothing is run.
+    worktree_links: list[str] = [".venv", ".env"]
+    worktree_setup_command: str = ""
+    # The linters the validator runs on the files a pull request touches, each a command that
+    # takes the file list as its trailing arguments, rendered into its RULES as `__LINT_RULES__`.
+    # Empty by default, and an empty list renders no lint bullet at all: a project whose linter
+    # is not configured is not told a command it may not have.
+    lint_commands: list[str] = []
     # One host-owned file per role whose text is appended at that role's `__PROJECT_EXTRAS__`
     # extension point, as a path relative to the HOST project's root. Every key is optional, and a
     # role with no entry renders nothing there: this is where a sentence only the host can write
@@ -779,6 +802,23 @@ def load_agents_config(path: pathlib.Path | str = DEFAULT_AGENTS_CONFIG) -> Agen
 
 def load_project(path: pathlib.Path | str = DEFAULT_AGENTS_CONFIG) -> ProjectConfig:
     return load_agents_config(path).project
+
+
+# What `load_agents_config` raises for a file that is absent, unreadable, not YAML, or not the
+# schema -- the set every CLI entry point catches to refuse in one line instead of a traceback.
+CONFIG_LOAD_ERRORS = (OSError, yaml.YAMLError, ValidationError)
+
+
+def config_load_failure(error: Exception, path: pathlib.Path | str = DEFAULT_AGENTS_CONFIG) -> str:
+    """One line saying why `path` did not load and where the fix is described (agent-os#3). A
+    missing file is the normal state of a host that has not reached the adoption step writing it
+    yet, so that case names the step; any other failure is the error itself, folded to one line."""
+    if isinstance(error, FileNotFoundError):
+        return (
+            f"{path} does not exist -- write it from agent_os/config.example.yaml "
+            "(agent_os/docs/ADOPTION.md step 8)"
+        )
+    return f"{path} does not load -- {' '.join(str(error).split())}"
 
 
 def load_mechanism(path: pathlib.Path | str = DEFAULT_AGENTS_CONFIG) -> MechanismConfig:
@@ -1279,6 +1319,23 @@ def _substitute_block(text: str, placeholder: str, value: str) -> str:
     return "\n".join(rendered)
 
 
+def lint_rules(project: ProjectConfig | None = None) -> str:
+    """The validator's lint bullet, rendered from `project.lint_commands`, or nothing when the list
+    is empty (agent-os#41: the bullet used to hard-code one Python host's `.venv/bin/ruff`)."""
+    commands = (project or load_project()).lint_commands
+    if not commands:
+        return ""
+    spelled = " and ".join(f"`{command} <files>`" for command in commands)
+    return (
+        "- Run the project's linters on the files the pull request actually touches, never on the\n"
+        "  whole repository -- a finding about a file it did not touch is not a verdict about it --\n"
+        "  and run them from inside that worktree:\n"
+        f"  {spelled}.\n"
+        "  The same file in this checkout is not the code under review, and linting it is a verdict\n"
+        "  about something else."
+    )
+
+
 def prompt_extras_path(role: str, project: ProjectConfig | None = None) -> pathlib.Path | None:
     """The host-owned file whose text is appended at this role's extension point, or None when the
     host names none. Relative to the HOST project's root, never to this package."""
@@ -1307,6 +1364,7 @@ def prompt_substitutions(
         "HUMAN_LOGIN": project.human_login,
         "HUMAN_MESSAGE_RULES": human_message_rules(project),
         "TEST_COMMAND": project.test_command,
+        "LINT_RULES": lint_rules(project),
         "FORBIDDEN_PATHS_RULES": forbidden_paths_rules(project) if both_lists_configured else "",
         "MECHANISM_PATHS_RULES": mechanism_paths_rules(mechanism) if both_lists_configured else "",
         "NEVER_RUN_RULES": never_run_rules(project),
@@ -1408,6 +1466,35 @@ BLOCKED_BY_RE = re.compile(r"^\s*Blocked by\s+#(\d+)\s*$", re.MULTILINE | re.IGN
 
 def blocking_issue_numbers(body: str) -> list[int]:
     return [int(n) for n in BLOCKED_BY_RE.findall(body or "")]
+
+
+def replace_blocker(body: str, original: int, replacements: list[int]) -> str | None:
+    """`body` with every `Blocked by #<original>` line replaced by one `Blocked by #<n>` line per
+    number in `replacements`, in the same indentation, skipping a number the body already lists as
+    a blocker so a line is never duplicated; None when the body names no such blocker. Each line is
+    matched against the same `BLOCKED_BY_RE` `blocking_issue_numbers` reads, so the writer never
+    rewrites a line the reader would not have taken for a blocker (#39)."""
+    body = body or ""
+    if original not in blocking_issue_numbers(body):
+        return None
+    already_listed = set(blocking_issue_numbers(body)) - {original}
+    new_numbers = [n for n in dict.fromkeys(replacements) if n not in already_listed]
+    lines: list[str] = []
+    written = False
+    for line in body.splitlines(keepends=True):
+        text = line.rstrip("\r\n")
+        match = BLOCKED_BY_RE.fullmatch(text)
+        if not match or int(match.group(1)) != original:
+            lines.append(line)
+            continue
+        if written:
+            continue  # the same blocker named twice: one set of replacement lines is enough
+        written = True
+        indent = text[: len(text) - len(text.lstrip())]
+        ending = line[len(text) :] or "\n"
+        lines += [f"{indent}Blocked by #{n}{ending}" for n in new_numbers]
+    rewritten = "".join(lines)
+    return rewritten if body.endswith(("\n", "\r")) else rewritten.rstrip("\r\n")
 
 
 # The shape of a task or bug body, in the order the sections must appear
@@ -1630,6 +1717,34 @@ def needs_refinement(
     return bool(section_failures(body) + budget_failures(body, task_classes))
 
 
+REFINER_SUMMARY_MARKER = "<!-- refiner-summary -->"
+
+
+def refiner_pass_answered_by_the_human(issue: dict, project: ProjectConfig | None = None) -> bool:
+    """Has the human already replied to the refiner's pass on this issue: it carries a
+    `<!-- refiner-summary -->` comment and the human commented after the latest one.
+
+    Such an issue is never the refiner's again (the summary is its loop safety,
+    agent_os/docs/adr/2026-09-15-the-refiner-runs-unattended-only-after-a-human-reviewed-its-dry-run.md),
+    and the planner turns a summarised issue that `refine_pending` names into a doubt for the
+    human. Once the human has answered that doubt, naming the issue again only re-asks it: a split
+    feature put back in `status:refine` never conforms to the template, so every idle wake named
+    it and the planner parked the answered question twice (agent-os#72). `issue["comments"]` is a
+    `gh issue list --json comments` row's list, oldest first; a row without it has no summary."""
+    comments = issue.get("comments") or []
+    summary_positions = [
+        position
+        for position, comment in enumerate(comments)
+        if (comment.get("body") or "").lstrip().startswith(REFINER_SUMMARY_MARKER)
+    ]
+    if not summary_positions:
+        return False
+    return any(
+        is_human_comment((comment.get("author") or {}).get("login") or "", project)
+        for comment in comments[summary_positions[-1] + 1 :]
+    )
+
+
 def promotable_to_ready(
     issue: dict,
     *,
@@ -1659,13 +1774,52 @@ def promotable_to_ready(
     )
 
 
+def refine_queue_rank(
+    issue: dict,
+    *,
+    parent_labels: set[str] | None,
+    open_issue_numbers: set[int],
+    labels: LabelVocabulary | None = None,
+) -> tuple[int, int, int, int]:
+    """Pure sort key for the refine queue: the issue closest to a worker dispatch sorts first (#32).
+
+    1. Parent carries `auto-ready` -- once refined it is promoted mechanically, anything else
+       waits for a human anyway (`promotable_to_ready` above). A failed parent lookup (`None`)
+       reads as not opted in: this only orders the queue, it never promotes anything.
+    2. Priority -- the position of its best label in `labels.priorities`; no priority label sorts
+       after every priority.
+    3. No open `Blocked by #N` -- a refined issue still waiting on a blocker is not dispatchable.
+    4. Issue number ascending -- the older issue first, the reverse of `gh issue list`'s order.
+    """
+    labels = labels or LabelVocabulary()
+    names = label_names(issue)
+    parent_opted_in = parent_labels is not None and labels.auto_ready in parent_labels
+    priority = min(
+        (index for index, label in enumerate(labels.priorities) if label in names),
+        default=len(labels.priorities),
+    )
+    has_open_blocker = any(
+        blocker in open_issue_numbers for blocker in blocking_issue_numbers(issue.get("body") or "")
+    )
+    return (
+        0 if parent_opted_in else 1,
+        priority,
+        1 if has_open_blocker else 0,
+        int(issue["number"]),
+    )
+
+
 def read_events(path: pathlib.Path | str) -> list[dict]:
     events = []
     for line in pathlib.Path(path).read_text(errors="replace").splitlines():
         try:
-            events.append(json.loads(line))
+            event = json.loads(line)
         except ValueError:
             continue
+        # A line that parses to a string, a number or a list is no event either: every reader
+        # calls `.get` on what this returns, and one such line must not kill the guard's tick.
+        if isinstance(event, dict):
+            events.append(event)
     return events
 
 
@@ -2212,6 +2366,7 @@ def main() -> None:
     sub.add_parser("mechanism-paths-rules")
     sub.add_parser("mechanism-paths-regex")
     sub.add_parser("never-run-rules")
+    sub.add_parser("worktree-links")
     sub.add_parser("worker-environment")
     sub.add_parser("worker-environment-rules")
     render = sub.add_parser("render-prompt")
@@ -2297,6 +2452,10 @@ def main() -> None:
         print(mechanism_paths_rules())
     elif args.command == "mechanism-paths-regex":
         print(mechanism_paths_regex())
+    elif args.command == "worktree-links":
+        # One path per line, for the drivers' `while read` loop.
+        for path in load_project().worktree_links:
+            print(path)
     elif args.command == "never-run-rules":
         print(never_run_rules())
     elif args.command == "worker-environment":

@@ -1,20 +1,28 @@
 # The mechanism's own CI, copied as-is by `agent-os install` when the host has no
-# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 6). A host that already
+# `.github/workflows/ci-agent-os.yml` yet (agent_os/docs/AGENT_OS.md §4.3, §5 step 7). A host that already
 # runs its own tests job can instead fold these two steps into it, the way a host whose
 # `ci.yml` already exists does -- this file exists so a fresh host has something that works
 # without hand-writing it first.
 name: agent-os
 
 on:
+  # Only a PR that changes the mechanism (a `git subtree pull`, a fix on its way back) or this file
+  # runs the mechanism's suite; a host-only PR gets its check from `ci-host.yml`
+  # (agent_os/docs/adr/2026-09-24-a-pr-with-no-checks-fails-the-ci-condition-and-every-host-ships-a-ci.md).
+  # A path-filtered workflow that does not run reports no check at all, so do not make its job a
+  # required status check in branch protection: a host-only PR would wait on it forever.
   pull_request:
+    paths:
+      - agent_os/**
+      - .github/workflows/ci-agent-os.yml
 
 jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

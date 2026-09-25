@@ -73,3 +73,18 @@ worker then tries to execute before anyone has checked it reads like a real brie
   refiner wrote or can rewrite away. Counting it as one would have relaunched the refiner on #356
   (template-conformant, `status:refine`, `Blocked by #323` still open) for nothing — found once
   `planner.refiner_unattended` went live and fixed the same day.
+
+## Amendment 2026-09-25 (agent-os#72): an answered refiner doubt is not named again
+Loop safety rested on the planner alone: `refine_pending` named every `status:refine` issue with a
+structural defect, and the planner, finding a `<!-- refiner-summary -->` on it, turned it into a
+doubt for the human. A split feature never conforms to the template, so once a human answered the
+refiner's doubt and put `status:refine` back (host issue #84, 2026-09-24), every idle wake named it
+again and the planner parked the same, already answered question twice.
+- **The tick reads the marker too.** `refinable_issues` lists the refine queue with its comments
+  and drops any issue where the human (`agent_lib.is_human_comment`) commented after the latest
+  refiner summary (`agent_lib.refiner_pass_answered_by_the_human`). A summary nobody has answered
+  yet is still named, so the planner still raises its one doubt; a new refiner summary reopens the
+  question.
+- **A split feature's doubt is answered by lifting the block only.** The control plane's Duty 2
+  says so: the refiner took the feature's refine label off on purpose, and putting it back is what
+  re-queued #84.

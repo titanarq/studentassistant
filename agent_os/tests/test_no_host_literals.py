@@ -1,7 +1,9 @@
 """`agent_os/` carries no literal of any host project (agent_os/docs/AGENT_OS.md's own agnosticism claim,
 `agent_os/docs/adr/2026-09-14-the-agent-mechanism-is-project-agnostic-and-configured-not-coded.md`).
 
-A blunt substring walk over every file under `agent_os/`, excluding `docs/` (history and the
+A blunt substring walk over every file git knows under the repository root -- tracked, plus
+untracked-but-not-ignored (#53: a filesystem walk also read nested agent worktrees and caches no
+host ever receives) -- excluding `docs/` (history and the
 module doc are allowed to name the projects they were written about), `tests/golden/` (fixture
 data captured from a real run, not code) and `config.example.yaml` (its own commentary explains
 the shape of a real value by naming one, `agent_os/docs/AGENT_OS.md` §4.1). Two further, narrower
@@ -62,10 +64,6 @@ EXCLUDED_PATHS = {
 
 
 def _is_excluded_by_location(relative_parts: tuple[str, ...]) -> bool:
-    # `.git` sits under `AGENT_OS_DIR` only once the mechanism is its own repository's root, and
-    # carries that repository's own URL: git's metadata, not a file of the mechanism.
-    if relative_parts[0] in (".git", ".venv", "__pycache__"):
-        return True
     if relative_parts[0] == "docs":
         return True
     if "tests" in relative_parts and "golden" in relative_parts:
@@ -73,16 +71,43 @@ def _is_excluded_by_location(relative_parts: tuple[str, ...]) -> bool:
     return relative_parts[-1] == "config.example.yaml"
 
 
-def _files():
-    """Every real file under `agent_os/` not excluded by its LOCATION -- `EXCLUDED_PATHS` is
+def _repository_files(root):
+    """The files git knows under `root`: tracked, plus untracked-but-not-ignored so a new file
+    is checked before it is ever `git add`-ed. What a host receives is what git tracks; a
+    filesystem walk would also read ignored caches and nested agent worktrees (#53), whose own
+    `docs/` and `tests/` escape every root-anchored exclusion. No fallback to a walk: without
+    git the premise of the test is gone and it says so."""
+    import subprocess
+
+    if not (root / ".git").exists():
+        raise RuntimeError(f"no .git under {root}: cannot ask git which files the mechanism ships")
+    listing = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        raise RuntimeError(f"git ls-files failed under {root}: {listing.stderr.strip()}")
+    # A nested repository or worktree is listed as one `dir/` entry, never its contents; a
+    # tracked file deleted from the working tree is listed but no longer exists. Neither is a
+    # file to read.
+    entries = listing.stdout.split("\0")
+    return sorted({entry for entry in entries if entry and not entry.endswith("/")})
+
+
+def _files(root=AGENT_OS_DIR):
+    """Every file git knows under `root` not excluded by its LOCATION -- `EXCLUDED_PATHS` is
     checked separately by each test below, not folded in here, so the second test can still see
     the files the first one skips."""
-    for path in sorted(AGENT_OS_DIR.rglob("*")):
+    for posix in _repository_files(root):
+        path = root / posix
         if not path.is_file():
             continue
-        relative = path.relative_to(AGENT_OS_DIR)
-        posix = relative.as_posix()
-        if _is_excluded_by_location(relative.parts) or posix in SELF_REFERENTIAL_CHECKS:
+        if _is_excluded_by_location(path.relative_to(root).parts):
+            continue
+        if posix in SELF_REFERENTIAL_CHECKS:
             continue
         yield path, posix
 
@@ -120,5 +145,52 @@ def test_every_exclusion_still_applies():
     assert not missing, f"exclusion(s) naming a file that no longer exists: {missing}"
 
 
-def test_git_metadata_is_excluded_by_location():
-    assert _is_excluded_by_location((".git", "config"))
+def _git(root, *args):
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _repository_with_a_literal_in(tmp_path, *relative_paths, ignore=""):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text(ignore)
+    (tmp_path / "clean.py").write_text("x = 1\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "init")
+    for relative in relative_paths:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"name = '{FORBIDDEN[0]}'\n")
+    return tmp_path
+
+
+def test_an_ignored_untracked_path_is_never_read(tmp_path):
+    root = _repository_with_a_literal_in(tmp_path, ".cache/leak.txt", ignore=".cache/\n")
+    # A nested agent worktree, not ignored here on purpose: git lists it as one `dir/` entry and
+    # never its contents, whatever `.gitignore` says.
+    _git(root, "worktree", "add", "-q", ".claude/worktrees/x")
+    (root / ".claude/worktrees/x/leak.py").write_text(f"name = '{FORBIDDEN[0]}'\n")
+    assert [relative for _path, relative in _files(root)] == [".gitignore", "clean.py"]
+
+
+def test_an_untracked_file_that_is_not_ignored_is_still_scanned(tmp_path):
+    root = _repository_with_a_literal_in(tmp_path, "agent_os/stray.py")
+    assert "agent_os/stray.py" in [relative for _path, relative in _files(root)]
+
+
+def test_a_tracked_file_is_scanned(tmp_path):
+    root = _repository_with_a_literal_in(tmp_path, "agent_os/tracked.py")
+    _git(root, "add", "agent_os/tracked.py")
+    assert "agent_os/tracked.py" in [relative for _path, relative in _files(root)]
+
+
+def test_a_root_without_git_fails_loudly(tmp_path):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="git"):
+        list(_files(tmp_path))

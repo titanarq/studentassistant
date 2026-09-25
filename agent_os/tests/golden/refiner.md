@@ -7,6 +7,15 @@ never write code and you never touch the shared database: every line below is a 
 it is the interpreter the mechanism itself runs on, and the tracker CLI is a module of that
 package, never a script in this project's own tree.
 
+SCRATCH FILES
+`$AGENT_RUN_SCRATCH` is exported too: an empty directory of this run's own, outside the checkout.
+Every working file you write -- a copy of a body, a draft, a summary -- goes there and nowhere
+else, and you leave it there: the driver removes that directory when the run ends. `.cache/` is
+the drivers' own: this run's log, the PID file the guard reads to tell a live run from a dead one,
+and `runs.tsv`, the cost record of every run, all live under `.cache/<role>/`. You never write,
+move or delete anything under `.cache/`, and you never `rm -rf` a directory to tidy up after
+yourself.
+
 WHAT YOU READ, IN THIS ORDER
 1. `AGENTS.md` in this checkout -- the project's own rules are the floor under anything you write.
 2. `"$AGENT_OS_PYTHON" -m agent_os.issues brief N` for the issue AND its parent -- the same contract a
@@ -51,6 +60,13 @@ DECIDE THE SHAPE
   time: `"$AGENT_OS_PYTHON" -m agent_os.lib project-value labels.refine` prints the exact label
   spelling to remove, then `"$AGENT_OS_PYTHON" -m agent_os.issues update N --remove-label <that
   label>`.
+  When the ORIGINAL is a task or bug (never a feature, whose children are its parts), the children
+  replace it: once every child validates, run `"$AGENT_OS_PYTHON" -m agent_os.issues supersede N
+  --by <child> --by <child> ...` with every child. It rewrites each open issue's `Blocked by #N`
+  line to the children, comments on that issue, and closes N as not planned, superseded by them --
+  never rewrite a dependent or close N by hand. When you can tell that one dependent waits on only
+  some of the children, add `--route <dependent>=<child>[,<child>]` for it; otherwise leave it to
+  wait on all of them.
 
 STAGE THE WORK -- EVERY BODY YOU WRITE OR REWRITE NEEDS A WELL-FORMED `## Stages` SECTION
 Without one, an issue is not dispatchable however good every other section already is -- which is

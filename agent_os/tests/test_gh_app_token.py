@@ -69,3 +69,57 @@ def test_secrets_dir_defaults_to_dot_secrets_gh_apps_when_the_key_is_absent(tmp_
     assert result.returncode == 2
     expected = tmp_path / ".secrets" / "gh_apps" / "some-app.json"
     assert str(expected) in result.stderr
+
+
+def test_declared_dependencies_pull_in_pyjwts_crypto_extra():
+    # #6: the App JWT is signed RS256, which PyJWT only registers when `cryptography` is present --
+    # and a bare `PyJWT>=2.8` does not bring it. `bootstrap.sh` installs exactly what this file
+    # declares, so without the `[crypto]` extra (or `cryptography` by name) the mechanism's own
+    # interpreter could not sign the JWT: `KeyError: 'RS256'`.
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    pyproject = tomllib.loads((AGENT_OS_DIR / "pyproject.toml").read_text())
+    requirements = [Requirement(line) for line in pyproject["project"]["dependencies"]]
+    names = {requirement.name.lower(): requirement for requirement in requirements}
+    assert "cryptography" in names or "crypto" in names["pyjwt"].extras, (
+        "PyJWT is declared without its [crypto] extra and cryptography is not declared either"
+    )
+
+
+def test_build_app_jwt_signs_rs256_with_the_declared_dependencies(tmp_path):
+    # The same failure through the module's own code path: an RSA key on disk, `build_app_jwt` run
+    # in a fresh interpreter, a JWT out -- not the `KeyError: 'RS256'` a crypto-less PyJWT raises.
+    _write_config(tmp_path, None)
+    key_path = tmp_path / "app.pem"
+    # `openssl`, not `cryptography`, makes the key: the test must not need the very package whose
+    # absence it is there to catch.
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"]
+        + ["-out", str(key_path)],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    environment = dict(os.environ)
+    environment["AGENT_OS_HOST_ROOT"] = str(tmp_path)
+    environment.pop("AGENTS_CONFIG_PATH", None)
+    script = (
+        "from agent_os.gh_app_token import build_app_jwt\n"
+        f"print(build_app_jwt({{'app_id': 123, 'private_key_path': {str(key_path)!r}}}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=environment,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    import jwt
+
+    token = result.stdout.strip()
+    assert jwt.get_unverified_header(token)["alg"] == "RS256"
+    assert jwt.decode(token, options={"verify_signature": False})["iss"] == "123"

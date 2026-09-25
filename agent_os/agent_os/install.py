@@ -1,12 +1,12 @@
 """Adopting the mechanism on a machine, from `config/agents.yaml` alone.
 
 `agent-os install [--dry-run] [--force]` writes the systemd `--user` units the tick runs on, and
-copies the host's `.claude/agents/*.md`, `.github/ISSUE_TEMPLATE/*.md` and a CI snippet if they are
-absent -- the three files `agent_os/docs/AGENT_OS.md` §5 step 7 used to say were "machine steps, not code,
+copies the host's `.claude/agents/*.md`, `.github/ISSUE_TEMPLATE/*.md`, the mechanism's CI snippet
+and a host CI workflow running `project.test_command` on every pull request if they are absent -- the three files `agent_os/docs/AGENT_OS.md` §5 step 7 used to say were "machine steps, not code,
 but manual regardless" (`agent_os/docs/AGENT_OS.md` §7 row (h)). It never enables, restarts or reloads a
 systemd unit: arming the timer stays a human decision
 (`agent_os/docs/adr/2026-09-14-the-monitor-and-planner-run-on-triggers-never-as-a-standing-process.md`,
-`docs/runbooks/agent_monitor.md`).
+`agent_os/docs/ADOPTION.md` step 22).
 
     agent-os-install --dry-run     # print every path this would touch and its diff, write nothing
     agent-os-install               # write what does not already exist
@@ -22,17 +22,20 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import pathlib
 import re
 import sys
 
 from agent_os.cli import AGENT_OS_DIR, agent_os_python, host_root
-from agent_os.lib import ProjectConfig, load_project
+from agent_os.lib import CONFIG_LOAD_ERRORS, ProjectConfig, config_load_failure, load_project
 from agent_os.render import render_agent_template
 
 SYSTEMD_TEMPLATES_DIR = AGENT_OS_DIR / "templates" / "systemd"
 ISSUE_TEMPLATES_DIR = AGENT_OS_DIR / "templates" / "issue_template"
 CI_SNIPPET_SOURCE = AGENT_OS_DIR / "templates" / "ci-agent-os.yml"
+HOST_CI_WORKFLOW_SOURCE = AGENT_OS_DIR / "templates" / "ci-host.yml"
+HOST_CI_WORKFLOW_NAME = "ci-host.yml"
 AGENT_TEMPLATES_DIR = AGENT_OS_DIR / "agents"
 
 # The standard systemd/POSIX default -- present on every Linux box regardless of what this one
@@ -70,17 +73,38 @@ def executables_path_prefix(project: ProjectConfig) -> str:
     return ":".join([*directories, DEFAULT_PATH_TAIL])
 
 
+def unit_python() -> str:
+    """The mechanism's own interpreter as `agent_os_python()` resolves it, required to be an
+    absolute path to an executable file -- because a systemd unit runs it with whatever PATH the
+    `--user` manager has, which nothing guarantees carries a `python3` at all, let alone one with
+    the mechanism's dependencies (#12).
+
+    `agent_os_python()`'s last step, the bare `python3`, is a fallback a shell driver can afford:
+    it fails on the import, in front of whoever ran it. Frozen into a unit it fails five minutes
+    later on a timer nobody is watching, so install refuses it instead."""
+    python = agent_os_python()
+    if not os.path.isabs(python) or not (os.path.isfile(python) and os.access(python, os.X_OK)):
+        raise InstallError(
+            f"no absolute interpreter for the guard unit's ExecStart (resolved {python!r}) -- "
+            "run `bash agent_os/bootstrap.sh` to build the mechanism's own .venv, or set "
+            "AGENT_OS_PYTHON to the absolute path of an interpreter that imports agent_os"
+        )
+    return python
+
+
 def resolve_exec_start(root: pathlib.Path) -> str:
-    """The host's own shim (`scripts/agent_guard.py`) run on the host's own interpreter when one
-    exists -- reproducing exactly what a hand-armed unit on this machine already does
-    (`docs/runbooks/agent_monitor.md`) -- or the package's own console form otherwise, which is
-    what a host with no shims (one that never ran #508's move) gets instead."""
+    """The host's own shim (`scripts/agent_guard.py`) when one exists -- the path the host's
+    prompts, docs and hand-armed units already name -- or the package's own module form otherwise,
+    which is what a host with no shims (one that never ran #508's move) gets instead.
+
+    Both run on `unit_python()`, the mechanism's own interpreter, and never on a host's: a host
+    root `.venv` carries the host's package versions, which must not decide how the guard behaves
+    (AGENT_OS.md §8, #51). The shim itself only re-executes `agent_os.guard` on that same
+    interpreter, so it needs nothing the host's venv provides."""
     shim = root / "scripts" / "agent_guard.py"
     if shim.is_file():
-        venv_python = root / ".venv" / "bin" / "python"
-        python = str(venv_python) if venv_python.is_file() else "python3"
-        return f"{python} {shim} tick"
-    return f"{agent_os_python()} -m agent_os.guard tick"
+        return f"{unit_python()} {shim} tick"
+    return f"{unit_python()} -m agent_os.guard tick"
 
 
 def _refuse_unknown_tokens(rendered: str, *, source: str) -> None:
@@ -149,13 +173,18 @@ class Action:
             )
         )
 
-    def status(self, *, force: bool) -> str:
+    def status(self, *, force: bool, dry_run: bool) -> str:
+        """What happened to this file -- or, under `dry_run`, what would have. Only a dry run
+        speaks in the conditional: `main()` prints this after `write()`, so on a real run the
+        past tense is already true when the line appears (agent-os#9)."""
         if not self.existed:
-            return "would create" if self.content else "would create (empty)"
+            verb = "would create" if dry_run else "created"
+            return verb if self.content else f"{verb} (empty)"
         if self.unchanged:
             return "exists, up to date -- skipped"
         if force:
-            return "exists and differs -- overwriting (--force)"
+            verb = "would overwrite" if dry_run else "overwritten"
+            return f"exists and differs -- {verb} (--force)"
         return "exists and differs -- refusing without --force"
 
     def should_write(self, *, force: bool) -> bool:
@@ -203,6 +232,18 @@ def plan_ci_snippet(root: pathlib.Path) -> list[Action]:
     ]
 
 
+def plan_host_ci_workflow(project: ProjectConfig, root: pathlib.Path) -> list[Action]:
+    """`.github/workflows/ci-host.yml`, running `project.test_command` on every pull request with
+    no path filter, so no PR reaches the control plane with zero checks -- which its merge
+    condition 1 counts as not met (agent-os#50). `ci-agent-os.yml` alone only fires on
+    `agent_os/**`. A host whose own CI already reports on every PR opts out with
+    `project.install_host_ci: false`."""
+    if not project.install_host_ci:
+        return []
+    rendered = render_agent_template(HOST_CI_WORKFLOW_SOURCE.read_text(), project)
+    return [Action(root / ".github" / "workflows" / HOST_CI_WORKFLOW_NAME, rendered)]
+
+
 def plan_agent_templates(
     project: ProjectConfig, root: pathlib.Path
 ) -> tuple[list[Action], str | None]:
@@ -233,7 +274,10 @@ def main() -> None:
     args = parser.parse_args()
 
     root = host_root()
-    project = load_project()
+    try:
+        project = load_project()
+    except CONFIG_LOAD_ERRORS as error:
+        sys.exit(config_load_failure(error))
     systemd_user_dir = pathlib.Path.home() / ".config" / "systemd" / "user"
 
     try:
@@ -245,14 +289,15 @@ def main() -> None:
     actions += agent_actions
     actions += plan_issue_templates(root)
     actions += plan_ci_snippet(root)
+    actions += plan_host_ci_workflow(project, root)
 
     failed = False
     for action in actions:
-        print(f"{action.dest}: {action.status(force=args.force)}")
-        if action.existed and not action.unchanged:
-            print(action.diff)
         if not args.dry_run and action.should_write(force=args.force):
             action.write()
+        print(f"{action.dest}: {action.status(force=args.force, dry_run=args.dry_run)}")
+        if action.existed and not action.unchanged:
+            print(action.diff)
         if action.existed and not action.unchanged and not args.force:
             failed = True
 

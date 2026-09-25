@@ -213,6 +213,63 @@ agent_mark_backend_exited() {
     || echo "WARNING: no exit marker for $1 -- the guard will not read this run's quota"
 }
 
+# The run's own scratch directory, exported as AGENT_RUN_SCRATCH and named in every role's RULES
+# (agent-os#33). A role told nowhere where its working copies go wrote them under its own
+# `.cache/<role>/` and then tidied up with `rm -rf .cache/<role>`, taking the run log, the PID file
+# the guard reads for `role_died` and every `runs.tsv` row with it. So the scratch directory lives
+# outside both the run directory and the checkout, is empty when the backend starts, and is removed
+# by the driver -- never by the role -- when the run ends. A run that cannot have one is not run.
+agent_run_scratch=""
+
+agent_make_run_scratch() {
+  local role=$1
+  agent_run_scratch=$(mktemp -d "${TMPDIR:-/tmp}/agent-os-$role-scratch.XXXXXX") || {
+    agent_run_scratch=""
+    echo "no scratch directory for this $role run under ${TMPDIR:-/tmp} -- not running it"
+    return 1
+  }
+  export AGENT_RUN_SCRATCH="$agent_run_scratch"
+}
+
+agent_remove_run_scratch() {
+  [ -n "$agent_run_scratch" ] || return 0
+  rm -rf -- "$agent_run_scratch"
+  agent_run_scratch=""
+}
+
+# Makes a freshly added worktree runnable the way the host configures it (agent-os#41): a new
+# worktree carries tracked files only, and what a project's commands need beside them -- a
+# virtualenv, `node_modules`, a `.env` -- is gitignored. First every `project.worktree_links` path
+# the main checkout has is linked in (a link, never a copy: one file stays authoritative for every
+# tree), then `project.worktree_setup_command` runs inside the worktree. Shared by this driver's
+# throwaway worktree and by `worker_task.sh init`. Returns non-zero, having said why, when either
+# step fails: a tree nobody could provision is refused, never handed to an agent as if it were ready.
+agent_provision_worktree() {
+  local main=$1 tree=$2 links linked setup
+  if ! links=$("$agent_python" -m agent_os.lib worktree-links); then
+    echo "ERROR: cannot read project.worktree_links -- refusing to provision $tree"
+    return 1
+  fi
+  while IFS= read -r linked; do
+    [ -n "$linked" ] || continue
+    { [ -e "$tree/$linked" ] || [ -L "$tree/$linked" ]; } && continue
+    [ -e "$main/$linked" ] || continue
+    mkdir -p "$(dirname "$tree/$linked")"
+    ln -s "$main/$linked" "$tree/$linked"
+    echo "linked $tree/$linked -> $main/$linked"
+  done <<<"$links"
+  if ! setup=$(agent_project_value worktree_setup_command); then
+    echo "ERROR: cannot read project.worktree_setup_command -- refusing to provision $tree"
+    return 1
+  fi
+  [ -n "$setup" ] || return 0
+  echo "setup:     $setup (in $tree)"
+  if ! (cd "$tree" && bash -c "$setup"); then
+    echo "ERROR: project.worktree_setup_command failed in $tree: $setup"
+    return 1
+  fi
+}
+
 # Sourced for the helpers above (planner_task.sh) -- everything below is the driver itself.
 [ "${BASH_SOURCE[0]}" != "${0}" ] && return 0
 
@@ -278,15 +335,14 @@ agent_prepare_worktree() {
     return 1
   fi
   agent_worktree=$path
-  # `git worktree add` brings tracked files only, and both of these are gitignored: without `.venv`
-  # nothing runs at all (`scripts/test.sh` calls `.venv/bin/pytest`), and without `.env` a tool
-  # that needs a credential refuses before it reaches the network. A link, never a copy -- one file
-  # stays authoritative for every tree, exactly as worker_task.sh's launch does for a worker.
-  for linked in .venv .env; do
-    [ -e "$path/$linked" ] && continue
-    [ -e "$agent_main/$linked" ] && ln -s "$agent_main/$linked" "$path/$linked"
-  done
-  export PYTHONPATH="$path"
+  # Set before provisioning, so the EXIT trap removes a worktree whose setup failed as well.
+  agent_provision_worktree "$agent_main" "$path" || return 2
+  # In a host that vendors the mechanism, its own venv and its own package too (agent-os#35): the
+  # run that tests a `subtree pull` has to import the worktree's copy of the mechanism, not this
+  # checkout's. Both are no-ops where the mechanism is the repository root.
+  agent_os_link_mechanism_venv "$path" "$agent_main"
+  PYTHONPATH=$(agent_os_worktree_pythonpath "$path" "$agent_main")
+  export PYTHONPATH
   echo "worktree:  $path @ $(git -C "$path" rev-parse --short HEAD) (PYTHONPATH exported at it)"
 }
 
@@ -326,12 +382,14 @@ agent_wait_for_own_session() {
 # in the record, from a review that read the code it claims to have reviewed.
 #
 # Prints the NAMES, one per line, of the run-scoped variables in this shell's environment.
-# PYTHONPATH is one of them only when it is a run's worktree, which this run's own EXIT trap is
-# about to remove: a PYTHONPATH the caller had for its own reasons is the caller's and stays.
+# PYTHONPATH is one of them only when it is the value a run's worktree was exported with, which
+# this run's own EXIT trap is about to remove: a PYTHONPATH the caller had for its own reasons is
+# the caller's and stays.
 # ---------------------------------------------------------------------------------------------
 agent_run_environment_names() {
   compgen -e | grep -E '^(AGENT_RUN_|AGENT_DETACHED_RUN$)'
-  if [ -n "${AGENT_RUN_WORKTREE:-}" ] && [ "${PYTHONPATH-}" = "$AGENT_RUN_WORKTREE" ]; then
+  if [ -n "${AGENT_RUN_WORKTREE:-}" ] \
+    && [ "${PYTHONPATH-}" = "$(agent_os_worktree_pythonpath "$AGENT_RUN_WORKTREE" "$agent_main")" ]; then
     echo PYTHONPATH
   fi
   return 0
@@ -349,9 +407,11 @@ agent_detached_run() {
   agent_worktree=${AGENT_RUN_WORKTREE:-}
   # The two traps the driver installs before the detach, now covering the run that owns the
   # worktree: EXIT for a backend that fails, the signal trap for a run that is killed, which is the
-  # one that would otherwise leave its worktree registered behind it.
-  trap agent_remove_worktree EXIT
-  trap 'agent_remove_worktree; exit 143' INT TERM HUP
+  # one that would otherwise leave its worktree registered behind it. The scratch directory is made
+  # here, in the process that outlives the launch, so its lifetime is exactly the run's.
+  trap 'agent_remove_worktree; agent_remove_run_scratch' EXIT
+  trap 'agent_remove_worktree; agent_remove_run_scratch; exit 143' INT TERM HUP
+  agent_make_run_scratch "$AGENT_RUN_ROLE" || exit 1
 
   # Launched from the MAIN checkout: a one-shot role reads and judges, it never writes code. The
   # worktree above is where the commands it runs resolve, not where the backend itself sits.
@@ -581,6 +641,15 @@ trap 'agent_remove_worktree; exit 143' INT TERM HUP
 
 if [ "$runs_tests" = yes ]; then
   agent_prepare_worktree "$role" "$subject" "$run_stamp"
+  prepare_status=$?
+  # 1 is "no worktree", which the run survives by reading the diff only; 2 is a worktree the host's
+  # own provisioning could not make runnable (agent-os#41), and a review launched on it would
+  # request changes on correct code for a failure that is the environment's -- so no run at all.
+  if [ "$prepare_status" -eq 2 ]; then
+    echo "ERROR: the worktree for #$subject could not be provisioned -- no $role run launched" \
+      | tee -a "$logfile"
+    exit 1
+  fi
   [ -n "$agent_worktree" ] && echo "worktree:  $agent_worktree" >>"$logfile"
   # The RULES name that worktree by its own path instead of leaving the agent to derive it: on the
   # run that prepared none, an inherited `$PYTHONPATH` still points at whatever tree launched this
