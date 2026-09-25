@@ -14,6 +14,11 @@ without them:
 - `examen.pdf`, `examen-soluciones.pdf` -- the same, printable (A4, PyMuPDF's `Story`), the exam
   with a header for the student's name and date, room to answer every question and page numbers.
 
+A fifth, `examen.yaml` (`ExamFile`), is the machine-readable exam the web corrects it from
+(`generators.exam_results`): title, instructions, duration, total points and every exercise and
+question with its id, statement, difficulty, points, solution, rubric and anchors. It exists since
+generator version 2, so an exam built before shows as stale.
+
 Items are `e<n>` (exercise n) and `p<n>` (exam question n) with their anchors. Points that do not
 add up (the questions to `total_points`, a question's rubric to its points) are kept as Claude
 gave them and reported in a Spanish warning.
@@ -29,6 +34,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import pymupdf
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.generators.base import (
@@ -48,6 +54,7 @@ EXAM_MD = f"{KIND}.md"
 SOLUTIONS_MD = f"{KIND}-soluciones.md"
 EXAM_PDF = f"{KIND}.pdf"
 SOLUTIONS_PDF = f"{KIND}-soluciones.pdf"
+EXAM_YAML = f"{KIND}.yaml"
 
 _TOLERANCE = 1e-6
 
@@ -119,6 +126,59 @@ class Exam:
     total_points: float
     exercises: list[Question]
     questions: list[Question]
+
+
+class ExamQuestion(_Strict):
+    """One exercise (`e<n>`) or exam question (`p<n>`) of `examen.yaml`."""
+
+    id: str
+    number: int
+    statement: str
+    difficulty: Difficulty
+    points: float | None = None
+    solution: str
+    rubric: list[RubricCriterion] = Field(default_factory=list)
+    anchors: list[str] = Field(default_factory=list)
+
+
+class ExamFile(_Strict):
+    """`generated/examen.yaml`: the exam as the web corrects it."""
+
+    title: str
+    instructions: str = ""
+    duration_minutes: int
+    total_points: float
+    exercises: list[ExamQuestion] = Field(default_factory=list)
+    questions: list[ExamQuestion]
+
+
+def exam_file(exam: Exam) -> ExamFile:
+    def stored(question: Question) -> ExamQuestion:
+        return ExamQuestion(
+            id=question.id,
+            number=question.number,
+            statement=question.statement,
+            difficulty=question.difficulty,
+            points=question.points,
+            solution=question.solution,
+            rubric=question.rubric,
+            anchors=question.anchors,
+        )
+
+    return ExamFile(
+        title=exam.title,
+        instructions=exam.instructions,
+        duration_minutes=exam.duration_minutes,
+        total_points=exam.total_points,
+        exercises=[stored(q) for q in exam.exercises],
+        questions=[stored(q) for q in exam.questions],
+    )
+
+
+def dump_exam(exam: ExamFile) -> str:
+    return yaml.safe_dump(
+        exam.model_dump(mode="json"), allow_unicode=True, sort_keys=False, width=100
+    )
 
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
@@ -413,8 +473,9 @@ def render_pdf(body_html: str, *, title: str) -> bytes:
 
 
 def render_files(exam: Exam, sections: dict[str, NoteSection]) -> dict[str, str | bytes]:
-    """The four files of the artifact (CPU-bound: run it in a worker thread)."""
+    """The five files of the artifact (CPU-bound: run it in a worker thread)."""
     return {
+        EXAM_YAML: dump_exam(exam_file(exam)),
         EXAM_MD: render_exam_markdown(exam),
         SOLUTIONS_MD: render_solutions_markdown(exam, sections),
         EXAM_PDF: render_pdf(render_exam_html(exam), title=f"Examen: {exam.title}"),
@@ -444,7 +505,7 @@ class ExamGenerator(Generator):
         "Ejercicios de práctica y un examen de prueba imprimibles (PDF), con las soluciones y "
         "los criterios de corrección aparte."
     )
-    version = 1
+    version = 2  # 2: `examen.yaml`, to correct the exam from the web
     options_model = ExamOptions
 
     async def generate(self, context: GeneratorContext) -> GeneratorOutput:

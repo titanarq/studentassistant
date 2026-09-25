@@ -295,12 +295,33 @@ printed. Files under `generated/`, the statements apart from the solutions:
   over HTML rendered from the same data; `**bold**`, `*italic*`, `- ` and `1. ` lists, any
   `$..$` left as LaTeX source in monospace), the exam with a name/date line, a box to answer each
   question sized by its points, and `<title> · Página i de n` at the foot of every page.
+- `examen.yaml` (`ExamFile`, since generator version 2, #283) -- the machine-readable exam the web
+  corrects: `title`, `instructions`, `duration_minutes`, `total_points`, `exercises` and
+  `questions`, each an `ExamQuestion` (`id`, `number`, `statement`, `difficulty`, `points`,
+  `solution`, `rubric`, `anchors`). An exam built by version 1 has none and shows as stale.
 
 Extra items beyond the options are cut, questions without points, questions not adding up to
 `total_points` and rubrics not adding up to their question's points are kept and reported as
 Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
 web lists the two PDFs and previews the Markdown in "Material de estudio" (#79) through `GET
 .../generated/files/{name}`.
+
+Correcting it -- `exam_results.py` (#283): the student sits the exam on paper and grades it in the
+web with the rubric. `read_exam(vault, s, t) -> StoredExam | None` (`exam` from `examen.yaml`, the
+manifest's `built_at`, `notes_version`, `warnings`, `stale`, `stale_reason`; `None` without an
+exam or without `examen.yaml`). `record_exam_result(vault, s, t, attempt, *, sync, clock) ->
+ExamResult` checks an `ExamAttempt` (`built_at` of the exam corrected, `questions`: per question
+id the `awarded` points, one per rubric criterion in order -- a question without rubric is one
+criterion "Pregunta completa" worth its points; a question left out scores 0): every value
+between 0 and its criterion's points, the question's score capped at its points (its `points`,
+else its rubric's sum). The `ExamResult` (`time`, `exam_built_at`, `generator_version`,
+`notes_version`, `notes_sha256`, `score`, `total` -- the questions' points added up --,
+`percentage`, `questions`: `QuestionScore` with `points`, `score`, `criteria` awarded and
+`anchors`) is appended to `study/exam-results.jsonl` (`vault.study`) and committed (`Corrección
+del examen de s/t: x/y`). Refusals (`GenerationError`, Spanish): `ExamNotFoundError`,
+`ExamChangedError` (generated again since `built_at`), `InvalidCorrectionError` (unknown question,
+one corrected twice, not one value per criterion, points out of range). `exam_results(vault, s,
+t)` reads the history. REST: `server/exam_routes.py` (`docs/modules/server.md`); web: `src/exam/`.
 
 ## Slides -- `slides.py` (kind `diapositivas`, #78)
 
