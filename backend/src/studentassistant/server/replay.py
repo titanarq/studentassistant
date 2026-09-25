@@ -10,7 +10,9 @@ client takes, and nothing else:
 3. send every transcript message (`transcript.client.*`, due at its `client_end_ms`) and every
    `button`/`marker` (due at its `client_time_ms`), and upload every capture burst through
    `POST /api/sessions/{id}/captures` (due at its `client_time_ms`), in client-time order, each
-   at its recorded offset from the session start divided by `speed`;
+   at its recorded offset from the session start divided by `speed`; a server-mode recording
+   sends `audio.wav` instead of transcript messages, sliced into `AUDIO_FRAME_MS` binary frames
+   (the protocol's `encode_frame`, `seq` from 0, each due when its last sample was captured);
 4. `POST /api/sessions/{id}/end`, due at the last recorded time, then close the socket.
 
 Every message carries the client times it was recorded with, and `hello` the recording's start
@@ -21,6 +23,13 @@ Before each upload and before the end the replay settles: it waits until the bac
 processed every WebSocket message sent so far (a capture is stored under the source context of
 the `switch_source` buttons before it, read from the session's events) and has echoed every
 final it was sent (up to `confirm_timeout_s`, since a final refused as a secret is never echoed).
+In server mode it also waits for the backend's `ack` of the last audio frame sent.
+
+Server-mode audio survives a dropped socket: when the backend closes it (or the connection
+drops), the replay reconnects to the same `ws_path` (up to `MAX_RECONNECTS` times), sends `hello`
+again with a client time that keeps the first connection's clock offset, and resends every frame
+after the highest `audio_seq` the backend acknowledged. The gateway keeps the session's receive
+state across sockets and ignores a frame it already had, so nothing is lost or fed twice.
 
 Pacing reads `clock` and waits with `sleep`, both injectable, so a test replays without waiting.
 The backend is reached through a `ReplayTransport`: `AsgiTransport` drives an in-process app
@@ -61,6 +70,12 @@ from studentassistant.protocol import (
     TranscriptClientPartial,
 )
 from studentassistant.protocol import Session as SessionResponse
+from studentassistant.protocol.audio import (
+    SAMPLE_RATE_HZ,
+    SAMPLE_WIDTH_BYTES,
+    AudioFrame,
+    encode_frame,
+)
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.recording import RecordedCapture, Recording
 
@@ -73,6 +88,15 @@ DEFAULT_CONFIRM_TIMEOUT_S = 5.0
 """How long a settle waits for the echo of the finals sent before it goes on without them."""
 
 _HELLO_TIMEOUT_S = 10.0
+
+AUDIO_FRAME_MS = 100
+"""Length of the audio slice each binary frame carries in a server-mode replay."""
+
+MAX_RECONNECTS = 3
+"""How many times a server-mode replay reconnects a dropped socket before it gives up."""
+
+DEFAULT_ACK_TIMEOUT_S = 10.0
+"""How long a settle waits for the backend to acknowledge the last audio frame sent."""
 
 
 class ReplayError(RuntimeError):
@@ -140,6 +164,10 @@ class ReplayResult:
     events_sent: int
     captures_stored: int
     captures_duplicate: int
+    audio_frames_sent: int
+    # Frames sent again after a reconnect, from the backend's last acknowledged `seq`.
+    audio_frames_resent: int
+    reconnects: int
     ended_at_ms: int
 
 
@@ -149,17 +177,45 @@ class ReplayResult:
 @dataclass(frozen=True)
 class _Step:
     client_time_ms: int
-    message: TranscriptClientPartial | TranscriptClientFinal | Button | Marker | RecordedCapture
+    message: (
+        TranscriptClientPartial
+        | TranscriptClientFinal
+        | Button
+        | Marker
+        | RecordedCapture
+        | AudioFrame
+    )
+
+
+def audio_frames(recording: Recording, frame_ms: int = AUDIO_FRAME_MS) -> list[AudioFrame]:
+    """`audio.wav` as the binary frames a server-mode client streams: `frame_ms` of samples each
+    (the last one shorter), `seq` from 0, stamped with the client time of their first sample."""
+    pcm = recording.read_audio()
+    step = SAMPLE_RATE_HZ * frame_ms // 1000 * SAMPLE_WIDTH_BYTES
+    start_ms = recording.manifest.started_client_time_ms
+    return [
+        AudioFrame(
+            seq=seq,
+            client_time_ms=start_ms + offset // SAMPLE_WIDTH_BYTES * 1000 // SAMPLE_RATE_HZ,
+            pcm=pcm[offset : offset + step],
+        )
+        for seq, offset in enumerate(range(0, len(pcm), step))
+    ]
 
 
 def timeline(recording: Recording) -> list[_Step]:
     """Everything the recording sends after `hello`, in client-time order.
 
-    A transcript message is due when the recognizer gave it (`client_end_ms`). The sort is
-    stable and the input is transcript, then events, then captures, so at one instant a final
-    goes before a button, and a button before the capture it applies to.
+    A transcript message is due when the recognizer gave it (`client_end_ms`), an audio frame
+    when its last sample was captured. The sort is stable and the input is audio, transcript,
+    then events, then captures, so at one instant speech goes before a button, and a button
+    before the capture it applies to.
     """
-    steps = [_Step(message.client_end_ms, message) for message in recording.transcript]
+    steps = [
+        _Step(frame.client_time_ms + round(frame.duration_ms), frame)
+        for frame in audio_frames(recording)
+    ]
+    steps += [_Step(message.client_end_ms, message) for message in recording.transcript]
     steps += [_Step(message.client_time_ms, message) for message in recording.events]
     steps += [_Step(capture.metadata.client_time_ms, capture) for capture in recording.captures]
     return sorted(steps, key=lambda step: step.client_time_ms)
@@ -175,6 +231,7 @@ async def replay(
     sleep: Sleep = asyncio.sleep,
     clock: Clock = time.monotonic,
     confirm_timeout_s: float = DEFAULT_CONFIRM_TIMEOUT_S,
+    ack_timeout_s: float = DEFAULT_ACK_TIMEOUT_S,
 ) -> ReplayResult:
     """Replay `recording` into the backend `transport` reaches, as the module doc describes.
 
@@ -183,13 +240,11 @@ async def replay(
 
     Raises:
         ReplayError: when the backend refuses a request or closes the socket, or the recording's
-            STT mode is not the backend's (or is one this replay cannot send yet).
+            STT mode is not the backend's, or a server-mode socket kept dropping.
     """
     if speed <= 0:
         raise ValueError(f"speed must be positive, got {speed}")
     manifest = recording.manifest
-    if manifest.stt_mode != "client":
-        raise ReplayError("only client-mode recordings (transcript.jsonl) can be replayed yet")
     subject_id = subject or manifest.subject
     topic_id = topic or manifest.topic
     await _ensure_topic(transport, subject_id, topic_id)
@@ -202,10 +257,16 @@ async def replay(
             expect=(201,),
         )
     )
-    socket = await transport.connect(session.ws_path)
-    client = _Client(socket, confirm_timeout_s)
+    client = _Client(
+        transport,
+        session.ws_path,
+        stt_mode=manifest.stt_mode,
+        stt_provider=manifest.stt_provider,
+        confirm_timeout_s=confirm_timeout_s,
+        ack_timeout_s=ack_timeout_s,
+    )
     try:
-        await client.handshake(manifest.stt_mode, manifest.stt_provider, start_ms)
+        await client.connect(start_ms)
         started = clock()
         partials = finals = events = stored = duplicates = 0
         end_ms = start_ms
@@ -221,6 +282,9 @@ async def replay(
                     stored += 1
                 else:
                     duplicates += 1
+                continue
+            if isinstance(message, AudioFrame):
+                await client.send_audio(message)
                 continue
             await client.send(message)
             if isinstance(message, TranscriptClientFinal):
@@ -247,64 +311,136 @@ async def replay(
         events_sent=events,
         captures_stored=stored,
         captures_duplicate=duplicates,
+        audio_frames_sent=len(client.audio_sent),
+        audio_frames_resent=client.audio_resent,
+        reconnects=client.reconnects,
         ended_at_ms=int(ended["ended_at_ms"]),
     )
 
 
 class _Client:
-    """The WebSocket side of one replay: sends, and reads what the backend sends back."""
+    """The WebSocket side of one replay: sends, reads what the backend sends back, and (server
+    mode) reconnects a dropped socket and resends the audio the backend did not acknowledge."""
 
-    def __init__(self, socket: ReplaySocket, confirm_timeout_s: float) -> None:
-        self.socket = socket
+    def __init__(
+        self,
+        transport: ReplayTransport,
+        ws_path: str,
+        *,
+        stt_mode: str,
+        stt_provider: str,
+        confirm_timeout_s: float,
+        ack_timeout_s: float,
+    ) -> None:
+        self.transport = transport
+        self.ws_path = ws_path
+        self.stt_mode = stt_mode
+        self.stt_provider = stt_provider
         self.confirm_timeout_s = confirm_timeout_s
+        self.ack_timeout_s = ack_timeout_s
         self.finals_sent: set[str] = set()
         self.finals_echoed: set[str] = set()
+        # Every audio frame sent so far, by `seq`, and the highest `seq` the backend acknowledged.
+        self.audio_sent: list[AudioFrame] = []
+        self.audio_acked: int | None = None
+        self.audio_resent = 0
+        self.reconnects = 0
         self.echoed = asyncio.Condition()
-        self.closed = False
+        self.closed = True
+        self.socket: ReplaySocket | None = None
         self._reader: asyncio.Task[None] | None = None
+        # Client time of the first `hello` and when (real monotonic seconds) it was sent.
+        self._first_hello: tuple[int, float] | None = None
 
-    async def handshake(self, stt_mode: str, stt_provider: str, client_time_ms: int) -> None:
+    async def connect(self, client_time_ms: int) -> None:
+        """Open the session socket and complete the `hello` handshake."""
+        socket = await self.transport.connect(self.ws_path)
+        self.socket = socket
         hello = ClientHello(
             type="hello",
             protocol_version=PROTOCOL_VERSION,
             capabilities=ClientCapabilities(
-                stt=stt_mode,  # type: ignore[arg-type]
-                stt_provider=stt_provider,
+                stt=self.stt_mode,  # type: ignore[arg-type]
+                stt_provider=self.stt_provider,
                 audio_format=(
                     AudioFormat(encoding="pcm16", sample_rate_hz=16000, channels=1)
-                    if stt_mode == "server"
+                    if self.stt_mode == "server"
                     else None
                 ),
             ),
             client_time_ms=client_time_ms,
         )
-        await self.socket.send_text(hello.model_dump_json(exclude_none=True))
+        if self._first_hello is None:
+            self._first_hello = (client_time_ms, time.monotonic())
+        await socket.send_text(hello.model_dump_json(exclude_none=True))
         try:
-            text = await asyncio.wait_for(self.socket.receive_text(), _HELLO_TIMEOUT_S)
+            text = await asyncio.wait_for(socket.receive_text(), _HELLO_TIMEOUT_S)
         except TimeoutError:
             raise ReplayError("the backend did not answer hello") from None
         if text is None:
-            raise ReplayError(f"the backend closed the socket instead of hello.ack: {self.socket}")
+            raise ReplayError(f"the backend closed the socket instead of hello.ack: {socket}")
         try:
             ack = HelloAck.model_validate_json(text)
         except ValidationError:
             raise ReplayError(f"expected hello.ack, got {text[:200]}") from None
-        if ack.stt_mode != stt_mode:
+        if ack.stt_mode != self.stt_mode:
             raise ReplayError(
-                f"the backend runs STT in {ack.stt_mode} mode but the recording is {stt_mode} "
-                "mode: set [stt].mode to match it"
+                f"the backend runs STT in {ack.stt_mode} mode but the recording is "
+                f"{self.stt_mode} mode: set [stt].mode to match it"
             )
-        self._reader = asyncio.create_task(self._read())
+        self.closed = False
+        self._reader = asyncio.create_task(self._read(socket))
 
     async def send(self, message: Any) -> None:
         if self.closed:
             raise ReplayError(f"the backend closed the session socket: {self.socket}")
         if isinstance(message, TranscriptClientFinal):
             self.finals_sent.add(message.segment_id)
+        assert self.socket is not None
         await self.socket.send_text(message.model_dump_json(exclude_none=True))
 
+    async def send_audio(self, frame: AudioFrame) -> None:
+        """Send the next audio frame, reconnecting first when the socket was dropped."""
+        assert frame.seq == len(self.audio_sent), "audio frames are sent in `seq` order"
+        self.audio_sent.append(frame)
+        if self.closed:
+            await self._resume()  # resends everything unacknowledged, this frame included
+            return
+        assert self.socket is not None
+        await self.socket.send_bytes(encode_frame(frame))
+
+    async def _resume(self) -> None:
+        """Reconnect a dropped server-mode socket and resend from the last acknowledged `seq`."""
+        while True:
+            if self.reconnects >= MAX_RECONNECTS:
+                raise ReplayError(
+                    f"the session socket dropped {self.reconnects + 1} times; last {self.socket}"
+                )
+            self.reconnects += 1
+            logger.warning("the session socket dropped (%s); reconnecting", self.socket)
+            await self._drop()
+            assert self._first_hello is not None
+            first_client_ms, first_real_s = self._first_hello
+            # Keep the first connection's clock offset: the backend clock has moved on by the
+            # real time since the first `hello`, so the client clock "has" too.
+            await self.connect(first_client_ms + round((time.monotonic() - first_real_s) * 1000))
+            assert self.socket is not None
+            # Let the backend's resume `ack` (sent right after `hello.ack`) reach the reader.
+            await self.socket.settle()
+            first = 0 if self.audio_acked is None else self.audio_acked + 1
+            for frame in self.audio_sent[first:]:
+                if self.closed:
+                    break
+                await self.socket.send_bytes(encode_frame(frame))
+                self.audio_resent += 1
+            if not self.closed:
+                return
+
     async def settle(self) -> None:
+        assert self.socket is not None
         await self.socket.settle()
+        if self.stt_mode == "server":
+            await self._settle_audio()
         if self.closed:
             raise ReplayError(f"the backend closed the session socket: {self.socket}")
         try:
@@ -321,16 +457,42 @@ class _Client:
         if self.closed:
             raise ReplayError(f"the backend closed the session socket: {self.socket}")
 
-    async def close(self) -> None:
-        await self.socket.close()
+    async def _settle_audio(self) -> None:
+        """Wait for the `ack` of the last frame sent, resuming a socket dropped meanwhile."""
+        last = len(self.audio_sent) - 1
+        if last < 0:
+            return
+
+        def done() -> bool:
+            return self.closed or (self.audio_acked is not None and self.audio_acked >= last)
+
+        while True:
+            try:
+                async with self.echoed:
+                    await asyncio.wait_for(self.echoed.wait_for(done), self.ack_timeout_s)
+            except TimeoutError:
+                raise ReplayError(
+                    f"the backend acknowledged audio up to seq {self.audio_acked}, not {last}"
+                ) from None
+            if not self.closed:
+                return
+            await self._resume()
+
+    async def _drop(self) -> None:
+        if self.socket is not None:
+            await self.socket.close()
         if self._reader is not None:
             self._reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader
+            self._reader = None
 
-    async def _read(self) -> None:
+    async def close(self) -> None:
+        await self._drop()
+
+    async def _read(self, socket: ReplaySocket) -> None:
         while True:
-            text = await self.socket.receive_text()
+            text = await socket.receive_text()
             async with self.echoed:
                 if text is None:
                     self.closed = True
@@ -339,6 +501,12 @@ class _Client:
                         data = json.loads(text)
                         if isinstance(data, dict) and data.get("type") == "transcript.final":
                             self.finals_echoed.add(str(data.get("segment_id")))
+                        elif isinstance(data, dict) and data.get("type") == "ack":
+                            seq = data.get("audio_seq")
+                            if isinstance(seq, int) and (
+                                self.audio_acked is None or seq > self.audio_acked
+                            ):
+                                self.audio_acked = seq
                 self.echoed.notify_all()
             if text is None:
                 return
