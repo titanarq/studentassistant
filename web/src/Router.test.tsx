@@ -28,3 +28,15 @@ it("renders the study desk at /", () => {
 
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
 });
+
+it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/topics/revolucion-industrial/"])(
+  "renders the topic page at %s",
+  (pathname) => {
+    stubFetch();
+
+    render(<Router pathname={pathname} />);
+
+    expect(screen.getByRole("heading", { name: "Tema revolucion-industrial" })).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
+  },
+);

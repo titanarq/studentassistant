@@ -36,6 +36,7 @@ def config_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     for name in list(os.environ):
         if name.startswith("SA_"):
             monkeypatch.delenv(name)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     path = tmp_path / "config.toml"
     monkeypatch.setenv("SA_CONFIG", str(path))
     return path
@@ -197,7 +198,7 @@ def test_setup_clone_interactive_asks_in_spanish(
     create_vault(tmp_path / "pc1", "ana/vault", "Ana", github)
     write_toml(config_toml, '[server]\nport = 9100\n\n[vault]\npath = "%s"\n' % (tmp_path / "pc2"))
 
-    result = runner.invoke(cli, ["setup"], input="clonar\nana/vault\n\n")
+    result = runner.invoke(cli, ["setup"], input="clonar\nana/vault\n\n\n\n")
 
     assert result.exit_code == 0, result.output
     assert "¿Quieres crear un vault nuevo o clonar uno" in result.output
@@ -218,7 +219,7 @@ def test_setup_create_interactive_asks_the_name_and_reasks_a_bad_repo(
     from studentassistant.vault import Vault
 
     vault_path = tmp_path / "vault"
-    answers = f"crear\nmal\nana/vault\n{vault_path}\nAna García\n"
+    answers = f"crear\nmal\nana/vault\n{vault_path}\nAna García\n\n\n"
 
     result = runner.invoke(cli, ["setup"], input=answers)
 

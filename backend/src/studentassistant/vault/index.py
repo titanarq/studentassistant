@@ -22,7 +22,7 @@ The index remembers a fingerprint (mtime, size, inode) of every file it read; `u
 the tree, and each unit one of whose files appeared, disappeared or changed is deleted from the
 index and read again. A file this backend cannot read does not fail the index: its unit is left
 out and reported (`IndexReport.skipped`). Notes versions come from the git tags
-`<topic-slug>/apuntes-vN` and are re-listed on every update.
+`<subject-slug>/<topic-slug>/apuntes-vN` and are re-listed on every update.
 
 Search is FTS5 with the `unicode61` tokenizer removing diacritics, so `fotosintesis` finds
 `fotosíntesis`. Every hit names the vault-relative file it came from (and, for a transcript, the
@@ -75,7 +75,7 @@ from studentassistant.vault.vault import Vault
 logger = logging.getLogger(__name__)
 
 # Bumped whenever the tables change: an index of another schema is rebuilt, never migrated.
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 
 REVIEW_DIRNAME = "review"
 PENDING_FILE_NAME = "pending.yaml"
@@ -99,7 +99,8 @@ _SESSION_ID = re.compile(SESSION_ID_PATTERN)
 _PAGE_TRANSCRIPTION = re.compile(r"^page-(\d{3,})\.md$")
 _PDF_PAGE_TEXT = re.compile(r"^(page-\d{3,})\.p(\d+)\.txt$")
 _QUERY_TERM = re.compile(r"\w+")
-_NOTES_TAG = re.compile(rf"^([a-z0-9]+(?:-[a-z0-9]+)*)/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$")
+_SLUG_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+_NOTES_TAG = re.compile(rf"^({_SLUG_PATTERN})/({_SLUG_PATTERN})/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$")
 # The identity `GitRunner` wants; the index only reads, so it never authors anything.
 _READER = GitIdentity(name="studentassistant index", email="index@studentassistant.invalid")
 _GIT_TIMEOUT_SECONDS = 30.0
@@ -128,8 +129,8 @@ CREATE TABLE pending (
     item TEXT NOT NULL, PRIMARY KEY (subject, topic, position)
 );
 CREATE TABLE note_versions (
-    topic TEXT NOT NULL, version INTEGER NOT NULL, name TEXT NOT NULL, commit_id TEXT NOT NULL,
-    PRIMARY KEY (topic, version)
+    subject TEXT NOT NULL, topic TEXT NOT NULL, version INTEGER NOT NULL, name TEXT NOT NULL,
+    commit_id TEXT NOT NULL, PRIMARY KEY (subject, topic, version)
 );
 CREATE VIRTUAL TABLE docs USING fts5 (
     body, kind UNINDEXED, path UNINDEXED, source UNINDEXED, subject UNINDEXED, topic UNINDEXED,
@@ -204,8 +205,9 @@ class PendingItem:
 
 @dataclass(frozen=True)
 class NoteVersion:
-    """One notes version tag `<topic-slug>/apuntes-v<version>`."""
+    """One notes version tag `<subject-slug>/<topic-slug>/apuntes-v<version>`."""
 
+    subject: str
     topic: str
     version: int
     name: str
@@ -395,9 +397,9 @@ class VaultIndex:
 
         connection.execute("DELETE FROM note_versions")
         connection.executemany(
-            "INSERT OR REPLACE INTO note_versions (topic, version, name, commit_id)"
-            " VALUES (?, ?, ?, ?)",
-            [(tag.topic, tag.version, tag.name, tag.commit) for tag in self._tags()],
+            "INSERT OR REPLACE INTO note_versions (subject, topic, version, name, commit_id)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(tag.subject, tag.topic, tag.version, tag.name, tag.commit) for tag in self._tags()],
         )
         connection.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('head', ?)", (self._head() or "",)
@@ -457,7 +459,7 @@ class VaultIndex:
         result = self._git.run(
             "tag",
             "--list",
-            f"*/{NOTES_TAG_SUFFIX}*",
+            f"*/*/{NOTES_TAG_SUFFIX}*",
             "--format=%(refname:short)%09%(*objectname)%09%(objectname)",
         )
         tags = []
@@ -467,7 +469,11 @@ class VaultIndex:
             if match:
                 tags.append(
                     NoteVersion(
-                        topic=match[1], version=int(match[2]), name=name, commit=peeled or target
+                        subject=match[1],
+                        topic=match[2],
+                        version=int(match[3]),
+                        name=name,
+                        commit=peeled or target,
                     )
                 )
         return tags
@@ -568,16 +574,23 @@ class VaultIndex:
             )
         ]
 
-    def note_versions(self, topic: str | None = None) -> list[NoteVersion]:
-        """Every notes version tag (of the topic slug when given), by topic then version."""
-        where, parameters = _filters(topic=topic)
+    def note_versions(
+        self, subject: str | None = None, topic: str | None = None
+    ) -> list[NoteVersion]:
+        """Every notes version tag (of the subject / topic when given), by subject, topic then
+        version."""
+        where, parameters = _filters(subject=subject, topic=topic)
         return [
             NoteVersion(
-                topic=r["topic"], version=r["version"], name=r["name"], commit=r["commit_id"]
+                subject=r["subject"],
+                topic=r["topic"],
+                version=r["version"],
+                name=r["name"],
+                commit=r["commit_id"],
             )
             for r in self._query(
-                f"SELECT topic, version, name, commit_id FROM note_versions{where}"
-                " ORDER BY topic, version",
+                f"SELECT subject, topic, version, name, commit_id FROM note_versions{where}"
+                " ORDER BY subject, topic, version",
                 parameters,
             )
         ]

@@ -21,6 +21,7 @@ from studentassistant.llm.errors import (
     UnknownRoleError,
 )
 from studentassistant.llm.fake import FakeClaude, no_sleep
+from studentassistant.llm.keycheck import check_api_key
 from studentassistant.llm.prompts import Prompt, PromptRegistry, content_hash, load_prompt
 from studentassistant.llm.structured import StructuredResult, strict_tool, structured
 from studentassistant.llm.transport import AnthropicTransport, Transport
@@ -60,6 +61,7 @@ __all__ = [
     "backoff_delay",
     "cache_stable_prefix",
     "cached_block",
+    "check_api_key",
     "content_hash",
     "cost_status",
     "estimate_usd",

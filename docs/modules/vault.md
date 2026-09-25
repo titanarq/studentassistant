@@ -233,10 +233,16 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
-- `create_notes_tag(topic_slug, message=None)` commits what is pending and puts the annotated tag
-  `<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing (`notes_tag_name`), pushed by
-  the next push; `list_notes_tags(topic_slug)` returns the `NotesTag`s (`name`, `version`,
-  `commit`) oldest first. A non-slug raises `ValueError`.
+- `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
+  annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
+  for that subject and topic (`notes_tag_name`), pushed by the next push;
+  `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
+  `commit`) oldest first. A non-slug subject or topic raises `ValueError`. Tags are keyed by
+  subject as well as topic because topic slugs are unique only within a subject (#143): two
+  subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
+  `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
+  before this format (the editor, which will, is not written yet), so no vault holds one. ADR-0002
+  still shows the topic-only form.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`.
@@ -294,6 +300,11 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
   create whose first push never happened is pushed); `post_clone` is not called.
 - `verify_push_access(runner)` -- `git push --dry-run origin main`; failing it is a `SetupError`.
+- `check_remote_access(path, host, repo=None, author_email=..., timeout=...) -> RemoteAccess`
+  -- for `studentassistant doctor`: the (redacted) `origin` URL, `repo_matches` (`None` without
+  `repo` or `host`) and `push_error` (`None` when the dry-run push succeeded, else the Spanish
+  reason). `host=None` runs git with no extra credentials. No repository or no `origin` is a
+  `SetupError`. Writes nothing.
 - Both return a `SetupResult` (`vault`, `repo`, `action`: `created`, `cloned` or
   `already-set-up`); every refusal is a `SetupError` (a `VaultError`) with a Spanish message, or
   the host's `GitHubHostError`.
@@ -327,7 +338,8 @@ unit is `subject.yaml`; `topic.yaml`; a session's `session.yaml` + `transcript.j
 `review/pending.yaml`. Both return an `IndexReport` (`rebuilt`, `units_indexed`, `units_removed`,
 `documents`, `skipped`): a unit whose files this backend cannot read is left out and listed in
 `skipped` as `(unit, reason)`, never failing the rest, and is retried when its files change. The
-notes version tags (`*/apuntes-vN`) are re-listed on every update, and the HEAD the index reflects
+notes version tags (`<subject-slug>/<topic-slug>/apuntes-vN`; the old topic-only form is not a
+notes version) are re-listed on every update, and the HEAD the index reflects
 is recorded. `run(interval=5.0)` is an asyncio loop calling `update()` in a worker thread until
 cancelled (how a running backend keeps it current after vault writes); every other method
 blocks. One lock serialises a `VaultIndex`, so threads may share it; `close()` it, or use it as a
@@ -342,8 +354,9 @@ topic, id, started_at, ended_at, host)`; `sources(subject=None, topic=None)` ->
 `IndexedSource(subject, topic, kind, path, meta)` in `list_sources` order, `path` being what
 `read_source` takes; `pending(subject=None, topic=None)` -> `PendingItem(subject, topic,
 position, item)`, the entries of `review/pending.yaml` as the file holds them (a top-level list,
-or the `items` list of a mapping; their schema is the observer's); `note_versions(topic=None)` ->
-`NoteVersion(topic, version, name, commit)`, keyed by topic slug as the tags are.
+or the `items` list of a mapping; their schema is the observer's); `note_versions(subject=None,
+topic=None)` -> `NoteVersion(subject, topic, version, name, commit)`, keyed by subject and topic as
+the tags are (so two subjects' `introduccion` never share a sequence).
 
 `search(query, subject=None, topic=None, kinds=None, limit=20)` -> `SearchHit`s over FTS5
 (`unicode61`, diacritics removed: `fotosintesis` finds `fotosíntesis`). `query` is plain text,

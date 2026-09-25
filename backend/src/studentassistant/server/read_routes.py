@@ -106,7 +106,7 @@ class TopicSummary(BaseModel):
     )
     open_pending: int = Field(description="Open pending-review items of the observer's state.")
     notes_version: int | None = Field(
-        description="The highest `<topic>/apuntes-vN` tag, `null` when there is none."
+        description="The highest `<subject>/<topic>/apuntes-vN` tag, `null` when there is none."
     )
     generated: list[str] = Field(
         description="Vault-relative paths of the generated material under `generated/`."
@@ -206,8 +206,8 @@ def _minutes(meta: SessionMeta, now: datetime) -> float:
     return round(max((end - meta.started_at).total_seconds(), 0.0) / 60, 1)
 
 
-def _notes_version(sync: GitSync | None, topic_id: str) -> int | None:
-    tags = [] if sync is None else sync.list_notes_tags(topic_id)
+def _notes_version(sync: GitSync | None, subject_id: str, topic_id: str) -> int | None:
+    tags = [] if sync is None else sync.list_notes_tags(subject_id, topic_id)
     return max((tag.version for tag in tags), default=None)
 
 
@@ -282,7 +282,7 @@ def read_router() -> APIRouter:
                 sessions=len(sessions),
                 session_minutes=round(sum(_minutes(meta, now) for meta in sessions), 1),
                 open_pending=len(snapshot.state.open_pending()),
-                notes_version=_notes_version(sync, topic_id),
+                notes_version=_notes_version(sync, subject_id, topic_id),
                 generated=list_generated(vault, subject_id, topic_id),
             )
 
@@ -300,7 +300,7 @@ def read_router() -> APIRouter:
             text = await _read(read_notes, vault, subject_id, topic_id)
         if text is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, NO_NOTES_DETAIL)
-        version = await _read(_notes_version, sync, topic_id)
+        version = await _read(_notes_version, sync, subject_id, topic_id)
         return TopicNotes(subject_id=subject_id, topic_id=topic_id, text=text, version=version)
 
     @router.get("/subjects/{subject_id}/topics/{topic_id}/sessions")

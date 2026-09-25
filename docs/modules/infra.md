@@ -25,7 +25,48 @@ the `studentassistant` console script.
 - `studentassistant version` -- prints `studentassistant.__version__`.
 - A flag never duplicates a configuration value: where the server listens comes from `Settings()`,
   so there is one way to configure the backend and not two.
-- Not built yet: `setup` and `doctor` (this module), `replay` (server), `purge` (vault).
+- `studentassistant setup` -- the vault part is the vault module's (`docs/modules/vault.md`);
+  after it this module adds, in order: the Anthropic API key (`--api-key-stdin`, else a hidden
+  Spanish prompt; skipped when already stored or in `ANTHROPIC_API_KEY`, and when unattended),
+  the STT provider (the faster-whisper model download, only when it is selected) and the systemd
+  unit (`--service/--no-service`; asked when interactive, installed when unattended). Any step
+  that fails makes it exit 1 after the others ran.
+- `studentassistant doctor [--api-call]` -- one line per check, `[ok]`/`[aviso]`/`[FALLO]`,
+  exit 1 on any `FALLO` (list below). `--api-call` is the opt-in free API call.
+- Not built yet: `replay` (server), `purge` (vault).
+
+### Install (`studentassistant/install/`)
+The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/runbooks/install.md`.
+- `apikey.py` -- the key file `llm.api_key_path()` (`llm.api_key_file`, default `secrets.env`
+  next to the config file): `KEY=value` lines, mode `0600`, also a valid systemd
+  `EnvironmentFile`. `store_api_key(path, key) -> bool` (keeps other lines, idempotent),
+  `read_api_key(path)`, `export_api_key(path, environ=None) -> bool` (sets
+  `ANTHROPIC_API_KEY` only when the environment has none; `serve` calls it before uvicorn),
+  `file_is_private(path)`. Never in the vault or `config.toml`; nothing prints the key.
+- `service.py` -- `studentassistant.service` in `$XDG_CONFIG_HOME/systemd/user`
+  (`~/.config/systemd/user`): `ExecStart=<venv>/bin/studentassistant serve`,
+  `Environment=SA_CONFIG=<absolute config path>`, `Restart=on-failure`,
+  `WantedBy=default.target`. `install_unit(executable, config_path)` writes it when it differs,
+  `daemon-reload`, `enable --now`, and `try-restart` when an existing unit changed.
+  `service_state()` is `systemctl --user is-active`. Every call goes through `run_systemctl`,
+  which `tests/conftest.py` replaces for every test (autouse `systemctl` fixture, a
+  `FakeSystemctl`) together with `unit_directory`, so no test touches the machine's systemd.
+- `whisper.py` -- only when `stt.mode = "server"` and `stt.provider = "faster-whisper"`: reads
+  `[stt.options.faster-whisper]` `model` (default `DEFAULT_WHISPER_MODEL`, `large-v3-turbo`),
+  `device` (`auto`|`cuda`|`cpu`, default `auto`) and `download_root` (default: the Hugging Face
+  cache); `download` / `cached_model` via `faster_whisper.download_model`, `cuda_devices()` via
+  `ctranslate2.get_cuda_device_count()`. Both packages are optional and imported lazily; the
+  future faster-whisper provider (stt module) should read the same option keys.
+- `doctor.py` -- `run_doctor(settings, *, api_call=False, probes=None) -> list[Check]`; every
+  outside reach (GitHub host, the key check, the port, the running backend, the environment) is
+  a `DoctorProbes` field. Checks, in order: Python dependencies (the distribution's
+  requirements installed); STT mode/provider (server mode: the provider resolves in the
+  registry; with faster-whisper also installed, CUDA unless `device = "cpu"` -- `aviso` for
+  `auto` without a GPU -- and the model cached); the API key (present in the environment or in a
+  `0600` file; with `api_call`, `llm.check_api_key`); the vault opens; `origin` is `vault.repo`
+  and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
+  means git's own); the server port is free or answered by our `/api/health`; the service is
+  `active`. The CLI adds a first `Configuración` line (an invalid config is a `FALLO`).
 
 ### `create_app()`
 `studentassistant/server/app.py`. A factory, not a module-level `app`: uvicorn, the CLI and every

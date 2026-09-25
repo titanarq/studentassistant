@@ -50,7 +50,8 @@ What exists today, after issue #34: PDF import.
   `Importar PDF <file> en <subject>/<topic>`); the server's sync pushes it. Exit 1 with a Spanish
   message on any refusal, 2 on a malformed topic.
 
-Import is CPU-bound (PyMuPDF): a server caller runs it in a worker thread.
+Import is CPU-bound (PyMuPDF): a server caller runs it in a worker thread, as the web upload
+(`POST /api/subjects/{s}/topics/{t}/sources/pdf`, `server/pdf_upload.py`) does.
 
 ### Size limit and storage policy
 The vault keeps PDFs in plain git, never Git LFS (ADR-0002 leaves LFS an opt-in for later), and

@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from studentassistant.cli import cli
 from studentassistant.vault import (
+    GitSync,
     Vault,
     create_subject,
     create_topic,
@@ -271,15 +272,38 @@ def test_a_new_head_triggers_a_rebuild_on_open(
     (tmp_vault.path / "subjects" / "biologia" / "subject.yaml").write_text(
         "name: Biología celular\nstyle_guide: null\n", encoding="utf-8"
     )
-    git(tmp_vault.path, "commit", "-q", "-am", "segundo")
-    git(tmp_vault.path, "tag", "-a", "la-celula/apuntes-v1", "-m", "v1")
+    tag = GitSync(tmp_vault).create_notes_tag("biologia", "la-celula")
 
     with VaultIndex.open(tmp_vault, index_path) as index:
         assert index.is_current()
         assert index.subjects()[0].name == "Biología celular"
-        [version] = index.note_versions("la-celula")
-        assert (version.name, version.version) == ("la-celula/apuntes-v1", 1)
+        [version] = index.note_versions("biologia", "la-celula")
+        assert (version.subject, version.topic, version.version) == ("biologia", "la-celula", 1)
+        assert version.name == tag.name == "biologia/la-celula/apuntes-v1"
         assert version.commit == git(tmp_vault.path, "rev-parse", "HEAD").strip()
+
+
+def test_note_versions_of_two_subjects_sharing_a_topic_slug_stay_apart(
+    tmp_vault: Vault, content: dict[str, str], index_path: Path
+) -> None:
+    create_topic(tmp_vault, "biologia", "Introducción")
+    create_topic(tmp_vault, "quimica", "Introducción")
+    sync = GitSync(tmp_vault)
+    sync.create_notes_tag("biologia", "introduccion")
+    sync.create_notes_tag("biologia", "introduccion")
+    sync.create_notes_tag("quimica", "introduccion")
+    # A tag in the old topic-only form is not a notes version.
+    git(tmp_vault.path, "tag", "-a", "introduccion/apuntes-v9", "-m", "old")
+
+    with VaultIndex.open(tmp_vault, index_path) as index:
+        assert [(v.subject, v.version) for v in index.note_versions(topic="introduccion")] == [
+            ("biologia", 1),
+            ("biologia", 2),
+            ("quimica", 1),
+        ]
+        assert [v.name for v in index.note_versions("quimica", "introduccion")] == [
+            "quimica/introduccion/apuntes-v1"
+        ]
 
 
 def test_open_reports_a_rebuild_only_when_head_moved(
