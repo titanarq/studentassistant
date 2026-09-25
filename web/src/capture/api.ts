@@ -11,6 +11,7 @@ import {
   type CaptureUploadRequest,
   type CaptureUploadResponse,
   type MessageTypes,
+  type NotesGenerationStatus,
   parseMessage,
   ProtocolDecodeError,
   type Session,
@@ -43,6 +44,11 @@ export function sessionEndPath(sessionId: string): string {
   return `${SESSIONS_PATH}/${encodeURIComponent(sessionId)}/end`;
 }
 
+/** Since 1.6 (#258): the topic's latest notes generation, which a client polls. */
+export function notesGenerationPath(subjectId: string, topicId: string): string {
+  return `${topicsPath(subjectId)}/${encodeURIComponent(topicId)}/notes/generation`;
+}
+
 export function sessionCapturesPath(sessionId: string): string {
   return `${SESSIONS_PATH}/${encodeURIComponent(sessionId)}/captures`;
 }
@@ -68,6 +74,7 @@ export type TopicResult = ApiResult<Topic>;
 export type SessionResult = ApiResult<Session>;
 export type SessionEndResult = ApiResult<SessionEndResponse>;
 export type CapturesResult = ApiResult<CaptureUploadResponse>;
+export type NotesGenerationResult = ApiResult<NotesGenerationStatus>;
 
 /** The answers this client decodes, each named by the schema it must match. */
 type Answer =
@@ -78,7 +85,8 @@ type Answer =
   | "rest.sessions.start.response"
   | "rest.sessions.resume.response"
   | "rest.sessions.end.response"
-  | "rest.sessions.captures.response";
+  | "rest.sessions.captures.response"
+  | "rest.topics.notes.generation.response";
 
 type Body = SubjectCreateRequest | TopicCreateRequest | SessionStartRequest | SessionEndRequest;
 
@@ -195,15 +203,31 @@ export async function resumeSession(sessionId: string): Promise<SessionResult> {
   return call(sessionResumePath(sessionId), { method: "POST" }, "rest.sessions.resume.response");
 }
 
+/**
+ * Ends a session. `prepareNotes` (protocol 1.6, #271) asks the backend to prepare the topic's
+ * notes in the background once it has ended; without it the body is exactly the 1.0 one, with no
+ * `prepare_notes` field at all.
+ */
 export async function endSession(
   sessionId: string,
   reason: SessionEndRequest["reason"],
   clientTimeMs: number,
+  prepareNotes = false,
 ): Promise<SessionEndResult> {
+  const body: SessionEndRequest = { client_time_ms: clientTimeMs, reason };
+  if (prepareNotes) body.prepare_notes = true;
+  return call(sessionEndPath(sessionId), jsonPost(body), "rest.sessions.end.response");
+}
+
+/** One poll of the topic's notes generation (`GET .../notes/generation`, since 1.6). */
+export async function fetchNotesGeneration(
+  subjectId: string,
+  topicId: string,
+): Promise<NotesGenerationResult> {
   return call(
-    sessionEndPath(sessionId),
-    jsonPost({ client_time_ms: clientTimeMs, reason }),
-    "rest.sessions.end.response",
+    notesGenerationPath(subjectId, topicId),
+    { method: "GET" },
+    "rest.topics.notes.generation.response",
   );
 }
 

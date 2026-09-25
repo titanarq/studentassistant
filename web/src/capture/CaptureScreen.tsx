@@ -39,6 +39,7 @@ import {
   type SessionSocketEvent,
   WEB_SPEECH_PROVIDER,
 } from "./sessionSocket";
+import NotesProgress from "./NotesProgress";
 import { type ClientTranscriber, type TranscriberProblemCode } from "./transcriber";
 import { useSessionHealth } from "./sessionHealth";
 import { ScreenWakeLock } from "./wakeLock";
@@ -323,6 +324,8 @@ export interface CaptureScreenProps {
   playShutter?: () => void;
   /** How long a burst's flash covers the preview. */
   flashMs?: number;
+  /** How often the notes generation is polled after "Terminar y preparar apuntes". */
+  notesPollMs?: number;
 }
 
 export default function CaptureScreen({
@@ -333,6 +336,7 @@ export default function CaptureScreen({
   now = Date.now,
   playShutter = shutterClick,
   flashMs = FLASH_MS,
+  notesPollMs,
 }: CaptureScreenProps) {
   const preview = useRef<HTMLVideoElement | null>(null);
   /** The three objects of a running session, so a press reaches the ones the effect built. */
@@ -384,6 +388,11 @@ export default function CaptureScreen({
   const [reactivating, setReactivating] = useState(false);
   /** Since #256: the tab was hidden mid-session, so transcription may have paused meanwhile. */
   const [hiddenTabNotice, setHiddenTabNotice] = useState(false);
+  /**
+   * Since #271: the session ended with `prepare_notes`, so the screen gives way to the generation's
+   * progress; `onEnded` waits for the student's "Volver" there.
+   */
+  const [prepared, setPrepared] = useState<SessionEndResponse | null>(null);
 
   const flash = useCallback(() => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
@@ -664,11 +673,12 @@ export default function CaptureScreen({
    * Terminar: the session ends on the backend first and the devices are given back after, so a
    * refusal of the end is a refusal the student still reads with the session on the page. Either
    * way the camera, the microphone and the socket stop: an end that failed is not a reason to keep
-   * a laptop's light on.
+   * a laptop's light on. "Terminar y preparar apuntes" (#271, `prepareNotes`) is the same end with
+   * `prepare_notes: true`, after which the screen follows the notes generation instead of leaving.
    */
-  async function finish() {
+  async function finish(prepareNotes = false) {
     setEnding(true);
-    const result = await endSession(session.session_id, "button", now());
+    const result = await endSession(session.session_id, "button", now(), prepareNotes);
     stopped.current = true;
     runtime.current.wakeLock?.stop();
     runtime.current.transcriber?.stop();
@@ -680,7 +690,8 @@ export default function CaptureScreen({
     runtime.current.socket?.close();
     runtime.current.socket = null;
     if (result.kind === "ok") {
-      onEnded?.(result.value);
+      if (prepareNotes) setPrepared(result.value);
+      else onEnded?.(result.value);
       return;
     }
     setEnding(false);
@@ -704,6 +715,20 @@ export default function CaptureScreen({
       : sttMode === "server"
         ? "Transcribe el servidor: esta página le envía el audio del micrófono."
         : null;
+
+  if (prepared !== null) {
+    return (
+      <NotesProgress
+        subjectId={session.subject_id}
+        topicId={session.topic_id}
+        subjectName={subjectName}
+        topicName={topicName}
+        start={prepared.notes_generation}
+        onClose={() => onEnded?.(prepared)}
+        intervalMs={notesPollMs}
+      />
+    );
+  }
 
   return (
     <main>
@@ -781,6 +806,9 @@ export default function CaptureScreen({
         ))}
         <button type="button" disabled={ending} onClick={() => void finish()}>
           {ending ? "Terminando la sesión…" : "Terminar"}
+        </button>
+        <button type="button" disabled={ending} onClick={() => void finish(true)}>
+          Terminar y preparar apuntes
         </button>
       </section>
 
