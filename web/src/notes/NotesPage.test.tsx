@@ -32,6 +32,7 @@ function text(body: string) {
 const ROUTES = {
   "/api/subjects/historia/topics": TOPICS,
   "/api/subjects/historia/topics/revolucion-industrial/notes": notes(),
+  "/api/subjects/historia/topics/revolucion-industrial/notes/chat": jsonResponse({ turns: [], can_undo: false }),
   [`${SOURCES}/notes/page-001.jpg/meta`]: meta(`${TOPIC}/sources/notes/page-001.jpg`, "notes", { session_t_ms: 1 }),
   [`${SOURCES}/notes/page-001.md`]: text("# Revolución Industrial\n- Gran Bretaña, s. XVIII"),
   [`${SOURCES}/notes/page-002.jpg/meta`]: meta(`${TOPIC}/sources/notes/page-002.jpg`, "notes", {}, "Carbón y hierro"),

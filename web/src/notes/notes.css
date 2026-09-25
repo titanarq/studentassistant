@@ -166,3 +166,60 @@ button,
     max-height: 45vh;
   }
 }
+
+/* The editor chat (#71): beside the notes on a wide screen, below them otherwise. The sources
+   panel still floats over the viewport edge, above the chat. */
+.notes-chat {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1rem 2rem;
+}
+
+@media (min-width: 80rem) {
+  .notes-page {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 1.5rem;
+  }
+
+  .notes-page main {
+    margin: 0;
+    flex: 0 1 46rem;
+  }
+
+  .notes-chat {
+    position: sticky;
+    top: 0;
+    flex: 0 0 26rem;
+    max-height: 100vh;
+    overflow-y: auto;
+    margin: 0;
+    padding: 0 1rem 1rem;
+  }
+
+  .notes-page-with-panel main {
+    margin-left: 0;
+  }
+}
+
+.notes-block {
+  position: relative;
+}
+
+.notes-changed {
+  background: #e3f4e1;
+  border-left: 4px solid #26a269;
+  padding-left: 0.5rem;
+}
+
+.notes-why {
+  font-size: 0.8rem;
+  opacity: 0.55;
+  margin-bottom: 0.5rem;
+}
+
+.notes-block:hover .notes-why,
+.notes-why:focus-visible {
+  opacity: 1;
+}

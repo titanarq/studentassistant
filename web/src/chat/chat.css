@@ -1,0 +1,90 @@
+/* The chat with the editor beside the notes. */
+
+.chat-log {
+  list-style: none;
+  padding-left: 0;
+  margin: 0 0 1rem;
+}
+
+.chat-entry {
+  border-bottom: 1px solid #eee;
+  padding: 0.5rem 0;
+}
+
+.chat-who {
+  font-weight: 600;
+}
+
+.chat-message {
+  background: #eef3fb;
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  margin: 0 0 0.4rem;
+  white-space: pre-wrap;
+}
+
+.chat-reply {
+  white-space: pre-wrap;
+}
+
+.chat-entry[aria-busy="true"] .chat-reply {
+  color: #444;
+}
+
+.chat-applied {
+  color: #1c6b3a;
+  font-size: 0.9rem;
+}
+
+.chat-warning {
+  color: #9c3d00;
+  font-size: 0.9rem;
+}
+
+.chat-hint {
+  color: #555;
+}
+
+.chat-diff pre {
+  font-size: 0.8rem;
+  background: #f6f6f6;
+  padding: 0.5rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.chat-diff pre > * {
+  display: block;
+  text-decoration: none;
+}
+
+.chat-diff .diff-add {
+  background: #d7f5d9;
+}
+
+.chat-diff .diff-del {
+  background: #fbdada;
+  text-decoration: line-through;
+}
+
+.chat-diff .diff-hunk {
+  color: #777;
+}
+
+.chat-form label {
+  display: block;
+  font-weight: 600;
+}
+
+.chat-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

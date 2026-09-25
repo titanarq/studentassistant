@@ -7,6 +7,11 @@ import { parseProvenance } from "./provenance";
  * `#` link to it), every provenance footnote reference is a link to its definition that opens the
  * sources panel instead (`onOpenSource`), and every block that cites `[^ia]` is highlighted as
  * content the AI added. The definitions are listed at the end under "Fuentes".
+ *
+ * With `changedSections`, every top-level block inside one of those sections (or a subsection of
+ * one) is highlighted as changed by the editor's last turn; with `onAskWhy`, every top-level block
+ * with text gets a "¿Por qué pusiste esto?" button that hands the block and its section's anchor
+ * to the caller.
  */
 
 export interface NotesViewProps {
@@ -15,6 +20,12 @@ export interface NotesViewProps {
   onOpenSource: (label: string, trigger: HTMLElement) => void;
   /** The label whose source the panel shows, marked as current. */
   activeLabel?: string | null;
+  /** Anchors of the sections the editor's last turn changed, highlighted. */
+  changedSections?: ReadonlySet<string>;
+  /** "¿Por qué pusiste esto?" on a block: the block and the anchor of its section, if any. */
+  onAskWhy?: (block: Block, section: string | null) => void;
+  /** The "¿Por qué?" buttons are disabled (the editor is busy). */
+  askDisabled?: boolean;
 }
 
 const refId = (label: string, n: number) => `fnref-${label}-${n}`;
@@ -53,7 +64,14 @@ function safeHref(href: string): string | null {
   return /^(https?:|mailto:|#)/i.test(href) ? href : null;
 }
 
-export default function NotesView({ tree, onOpenSource, activeLabel = null }: NotesViewProps) {
+export default function NotesView({
+  tree,
+  onOpenSource,
+  activeLabel = null,
+  changedSections,
+  onAskWhy,
+  askDisabled = false,
+}: NotesViewProps) {
   const numbers = numbering(tree);
   const definitions = new Map(tree.footnotes.map((f) => [f.label, f.text]));
   const seen = new Map<string, number>();
@@ -204,7 +222,40 @@ export default function NotesView({ tree, onOpenSource, activeLabel = null }: No
     }
   };
 
-  const body = tree.blocks.map((b, index) => block(b, String(index)));
+  const wrap = changedSections !== undefined || onAskWhy !== undefined;
+  const headings: { level: number; anchor: string | null }[] = [];
+  const body = tree.blocks.map((b, index) => {
+    const key = String(index);
+    if (!wrap) return block(b, key);
+    if (b.type === "heading") {
+      while (headings.length > 0 && headings[headings.length - 1].level >= b.level) headings.pop();
+      headings.push({ level: b.level, anchor: b.anchor });
+    }
+    const section = [...headings].reverse().find((h) => h.anchor !== null)?.anchor ?? null;
+    const changed = headings.some((h) => h.anchor !== null && changedSections?.has(h.anchor));
+    const askable = onAskWhy !== undefined && b.type !== "heading" && b.type !== "rule";
+    return (
+      <div
+        key={key}
+        className={changed ? "notes-block notes-changed" : "notes-block"}
+        aria-description={changed && b.type !== "heading" ? "Cambiado por el editor en el último mensaje" : undefined}
+      >
+        {block(b, key)}
+        {askable && (
+          <button
+            type="button"
+            className="notes-why"
+            aria-label="¿Por qué pusiste esto?"
+            title="¿Por qué pusiste esto?"
+            disabled={askDisabled}
+            onClick={() => onAskWhy(b, section)}
+          >
+            ¿Por qué?
+          </button>
+        )}
+      </div>
+    );
+  });
   const cited = [...numbers.keys()].filter((label) => definitions.has(label));
 
   return (

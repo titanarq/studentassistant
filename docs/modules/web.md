@@ -101,6 +101,49 @@ token):
   - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
     `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
     localhost trust as every other request of the web app.
+  - Beside the notes (a sticky column from 80rem, below them otherwise) `NotesPage` shows the
+    editor chat (`src/chat/`, #71). After a turn or an undo that changed the notes it reads them
+    again (only the latest read is shown) and `NotesView` highlights (`notes-changed`) every
+    top-level block inside a section the turn touched (`changedSections`, the turn's
+    `changed_sections` anchors, subsections included); an undo clears the highlight. `NotesView`'s
+    `onAskWhy` puts a "¿Por qué?" button (named "¿Por qué pusiste esto?") on every top-level block
+    with text, disabled while the editor is busy (`askDisabled`); the page sends `whyQuestion(block,
+    section)` through the same chat. A topic without notes (404) shows `PrepareTopic` under the
+    backend's detail and reads the notes again when it is done; the chat appears once notes exist.
+- `src/chat/` (#71): the chat with the editor over the editor chat API (docs/modules/server.md).
+  - `sse.ts`: `readSse(body, onEvent)`, a reader of a `text/event-stream` body from a `fetch` POST
+    (events split at blank lines, `event:` + joined `data:` lines, comments ignored; rejects when
+    the stream breaks).
+  - `api.ts`: `sendChatMessage(s, t, message, {confirmOverCap, onDelta, onRestart})` posts `POST
+    .../notes/chat` and reads its stream (`reply.delta` -> `onDelta(text, attempt)`,
+    `reply.restart` -> `onRestart(attempt)`) -> `ChatOutcome` = `ActionResult<RevisionResult>`
+    (an error before the stream or an `error` event is `refused` with its status and Spanish
+    `detail`, `overCap` for a reached cost cap) `| {kind: "interrupted"}` when the stream ends or
+    breaks before `result`/`error`; `fetchChatHistory -> ReadResult<ChatHistory>` (`GET
+    .../notes/chat`), `undoLastTurn -> ActionResult<UndoResult>` (`POST .../notes/chat/undo`),
+    `describeChatFailure`. Bodies are read leniently (`readRevision`, `readHistory`, `readUndo`).
+  - `diff.ts`: `parseDiff(unified)` -> hunk/add/del/context lines (file header dropped),
+    `diffStats`. `DiffView` shows a turn's diff in an open `details` "Cambios en los apuntes
+    (<n> líneas añadidas, <m> quitadas)", added lines in `<ins>`, removed ones in `<del>`.
+  - `why.ts`: `blockExcerpt(block)` (the block's text without footnote references nor `[[?..]]`
+    marks, cut at `EXCERPT_CHARS` = 280) and `whyQuestion(block, section)` -> `"¿Por qué pusiste
+    esto? (en la sección #<anchor>) «<excerpt>»"` (`null` for a rule). Until the dedicated "¿por
+    qué?" of #69 exists, the editor answers it as a chat-only turn (the revise prompt already
+    handles questions without edits).
+  - `useEditorChat(s, t, onNotesChanged)`: reads the conversation once, then runs one turn or undo
+    at a time (`busy`); the running turn's reply grows with each delta and restarts on
+    `reply.restart`; the `result`'s `reply` replaces it. `canUndo` starts from the history's
+    `can_undo` and turns on after an applied turn with a commit. A cut stream reads the history
+    and the notes again (the turn goes on in the backend). A reached cost cap sets `overCap`, and
+    `retry` repeats the message with `confirm_over_cap` in place of the failed entry. An undo
+    says "Se ha deshecho el cambio «<summary>».", marks the turn undone and reads the history
+    again (diffs of this page's turns are kept by commit).
+  - `EditorChat` ("Hablar con el editor"): a `log` of the turns ("Tú:" / "Editor:", "El editor
+    está pensando…" until the first delta, "Cambio aplicado: <summary>" or "Cambio deshecho:
+    ...", the turn's warning, a failure as an alert, the `DiffView` of a live applied turn), a
+    hint while empty, "Mensaje para el editor" (Enter sends, Shift+Enter is a new line; up to
+    4000 characters), "Enviar" and "Deshacer el último cambio" (enabled when `canUndo` and idle),
+    and "Continuar igualmente" after a reached cost cap.
 - `src/pending/` (#80): the pending-doubts panel and the doubts-resolution flow. `PendingPage`
   (`← Tema <name>` link, "Dudas pendientes", "<N> dudas por revisar" in a polite live region, a
   "Por revisar / Cerradas / Todas" filter applied on the page, `applyFilter`) reads the editor's
@@ -153,4 +196,5 @@ token):
 
 ## Tests
 vitest + Testing Library with a mocked API (`src/test/mockApi.ts`: `stubApi({path: response})`
-stubs `fetch` by method and path).
+stubs `fetch` by method and path; `sseResponse(events)` is a complete event stream and
+`streamResponse()` one the test feeds event by event with `push`, `close` and `fail`).
