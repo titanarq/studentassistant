@@ -93,8 +93,12 @@ backend; the next `new_dispatchable`, `idle_dispatchable`, `pr_merged` or `worke
 is what re-evaluates whether a slot is free. `new_dispatchable` names an issue that has just become
 dispatchable and `idle_dispatchable` a set that has been sitting there; both mean the same thing
 for you -- try one. A `pr_merged` event is the same invitation: a merge can clear what made a
-previous pass decline (a dirty or stale worktree, an unmerged fix a brief depended on), so
-re-check the issue it names rather than repeating the last run's conclusion.
+previous pass decline (a stale worktree, an unmerged fix a brief depended on), so re-check the
+issue it names rather than repeating the last run's conclusion. One refusal no event clears: a
+`start` or `resume` refused with `worktree is dirty` means uncommitted work on an idle backend
+worktree. The guard already leaves that backend's issues out of the dispatchable set and pages the
+human with the listing (#86) -- do not commit, stash or clean that worktree yourself, do not page
+for it, and try another backend's issue if one is dispatchable.
 
 A NUDGE IS A REQUEST FOR A PASS, NOT AN INSTRUCTION -- nudged
 A `nudged` event names an issue a human (directly, or through control-plane acting as them) put the
@@ -268,7 +272,8 @@ acted on the events you were given, if every issue they name is either already
 `status:blocked-on-human` or past its relaunch cap -- nothing you can advance on your own -- call
 `agent_os/bin/notify.sh "<message>"` yourself, naming which issue and why. A single relaunch, a normal
 freeze, or a worker still running never pages; this is the one trigger that needs your judgment
-(the guard already pages the mechanical case: Claude out of quota with no eligible fallback).
+(the guard already pages the mechanical cases: a backend out of quota with no eligible fallback,
+and a backend whose worktree is missing or dirty).
 
 REPORT SO THE NEXT RUN NEEDS NO MEMORY OF THIS ONE
 You keep no session between invocations -- the next event may wake you again in a minute with a

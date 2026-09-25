@@ -69,7 +69,7 @@ import os
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -1462,6 +1462,8 @@ class DispatchableScan:
     issues: list[int]
     # backend -> the issue numbers excluded because that backend has no worktree.
     without_worktree: dict[str, list[int]]
+    # backend -> the issue numbers excluded because that backend's idle worktree is dirty (#86).
+    dirty_worktree: dict[str, list[int]] = field(default_factory=dict)
 
 
 def backend_worktree_present(backend: str) -> bool:
@@ -1471,6 +1473,52 @@ def backend_worktree_present(backend: str) -> bool:
     mechanism (#392)."""
     path = BACKEND_WORKTREES.get(backend)
     return bool(path) and (Path(path) / ".git").exists()
+
+
+# The worker's scratch directory, which `worker_task.sh` hides from git in every worker worktree
+# (`hide_scratchpad_from_git`, #86) -- so an untracked path under it is never dirt here either,
+# including on a worktree the driver has not touched since that change.
+SCRATCH_DIR = "scratchpad/"
+
+
+def backend_worktree_dirt(backend: str, *, main: Path = HOST_ROOT) -> list[str]:
+    """What `worker_task.sh start`/`resume`/`branch` would refuse to run over on `backend`'s
+    worktree right now, as `git status --porcelain` entries -- or nothing, when there is no
+    worktree (#392's own condition) or a run on it is alive, whose uncommitted work is simply its
+    work in progress. Mirrors the driver's `uncommitted_work`: the `.env` link the driver creates
+    itself (#404) and untracked scratch (#86) are not dirt. Dirt on an idle worktree clears itself
+    on no event, which is what makes it a page (#86). A `git status` that fails is reported as the
+    one entry, not read as clean: the driver would refuse over that worktree just the same."""
+    path = BACKEND_WORKTREES.get(backend)
+    if not path or not (Path(path) / ".git").exists():
+        return []
+    if _is_alive(worker_paths(backend, main).pidfile):
+        return []
+    listing = subprocess.run(
+        ["git", "-C", path, "status", "--porcelain", "-z", "--untracked-files=normal"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return [f"(git status failed: {listing.stderr.strip() or listing.returncode})"]
+    fields = listing.stdout.split("\0")
+    dirt: list[str] = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+        # A rename or copy carries its original path as the next NUL-separated field.
+        if entry[0] in "RC":
+            index += 1
+        if entry == "?? .env" and (Path(path) / ".env").is_symlink():
+            continue
+        if entry.startswith(f"?? {SCRATCH_DIR}"):
+            continue
+        dirt.append(entry)
+    return dirt
 
 
 def dispatchable_scan(*, main: Path = HOST_ROOT) -> DispatchableScan:
@@ -1490,12 +1538,14 @@ def dispatchable_scan(*, main: Path = HOST_ROOT) -> DispatchableScan:
     from the dispatchable ones so the tick can name the condition and page for it."""
     ready = _gh_issue_list("number,state,labels,body", main=main, extra=["--label", READY_LABEL])
     if not ready:
-        return DispatchableScan([], {})
+        return DispatchableScan([], {}, {})
     open_numbers = {int(row["number"]) for row in _gh_issue_list("number", main=main)}
     classes = load_task_classes()
     issues: list[int] = []
     without_worktree: dict[str, list[int]] = {}
+    dirty_worktree: dict[str, list[int]] = {}
     present: dict[str, bool] = {}
+    dirt: dict[str, list[str]] = {}
     for row in ready:
         if not is_dispatchable(
             row,
@@ -1515,11 +1565,19 @@ def dispatchable_scan(*, main: Path = HOST_ROOT) -> DispatchableScan:
         backend = task_class.backend
         if backend not in present:
             present[backend] = backend_worktree_present(backend)
-        if present[backend]:
-            issues.append(number)
-        else:
+        if not present[backend]:
             without_worktree.setdefault(backend, []).append(number)
-    return DispatchableScan(issues, without_worktree)
+            continue
+        # The same reasoning as the missing worktree, one step later (#86): the driver would refuse
+        # this dispatch with `worktree is dirty`, and the planner run woken to try it would be
+        # spent for nothing -- over and over, since no event ever cleans a worktree.
+        if backend not in dirt:
+            dirt[backend] = backend_worktree_dirt(backend, main=main)
+        if dirt[backend]:
+            dirty_worktree.setdefault(backend, []).append(number)
+        else:
+            issues.append(number)
+    return DispatchableScan(issues, without_worktree, dirty_worktree)
 
 
 def dispatchable_issues(*, main: Path = HOST_ROOT) -> list[int]:
@@ -1603,6 +1661,61 @@ def _page_missing_worktree_if_due(
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(f"{now.isoformat()}\n")
     return f"paged: {'; '.join(summaries)}"
+
+
+def _page_dirty_worktree_if_due(scan: DispatchableScan, *, main: Path = HOST_ROOT) -> list[str]:
+    """Journal and page every backend whose IDLE worktree is dirty -- the one refusal of
+    `worker_task.sh start`/`resume`/`branch` that no event clears (#86). The planner reads a refused
+    `start` as "wait for the next event" (`prompts/planner.md`), and nothing in the event stream
+    commits or cleans a worktree, so without this the backend stopped with nobody told: the
+    changes-requested `resume` of an issue in review as much as the next dispatch. Which is why
+    every backend is checked, not only those holding ready issues back (`scan.dirty_worktree`,
+    whose count the page carries).
+
+    Paged here and not by the driver at the moment it refuses: the tick sees the condition whether
+    or not anyone tries a dispatch, it already takes the held-back issues out of
+    `idle_dispatchable` (so no planner run is spent on a refusal), and it pages through the same
+    `render_human_message`/`notify` path as every other page. A `worker_task.sh` run by hand
+    prints its refusal to the human who ran it, who needs no page.
+
+    ONE page per distinct listing, as #86 asks: the marker under the guard's cache records the
+    listing last paged, the same listing on the next tick pages nothing, a CHANGED listing is news
+    and pages at once, and a clean worktree deletes the marker so the next time it gets dirty is
+    paged too. Returns the journal lines, one per dirty backend, plus one per page sent."""
+    lines: list[str] = []
+    for backend in sorted(BACKENDS):
+        marker = cache_dir(main) / "guard" / f"paged-dirty-worktree-{backend}"
+        dirt = backend_worktree_dirt(backend, main=main)
+        if not dirt:
+            marker.unlink(missing_ok=True)
+            continue
+        worktree = BACKEND_WORKTREES.get(backend, "(unconfigured)")
+        held_back = scan.dirty_worktree.get(backend, [])
+        shown = ", ".join(dirt[:5]) + (f" (+{len(dirt) - 5} more)" if len(dirt) > 5 else "")
+        lines.append(
+            f"backend {backend} worktree {worktree} is dirty and idle: {shown} -- "
+            f"{len(held_back)} ready issue(s) held back"
+        )
+        if marker.is_file() and marker.read_text().strip() == shown:
+            continue
+        try:
+            page = render_human_message(
+                "backend_worktree_dirty",
+                backend=backend,
+                worktree=worktree,
+                paths=shown,
+                issue_count=len(held_back),
+            )
+        except HumanMessageError as error:
+            # Same as the missing worktree: a config typo must not make the tick retry the render
+            # every few minutes -- say so, and still record the listing as paged.
+            print(f"ntfy: no page for the dirty worktree -- {error}")
+        else:
+            notify(page, main=main)
+            lines.append(f"paged: {backend} worktree dirty")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{shown}\n")
+    return lines
 
 
 def refinable_issues(*, main: Path = HOST_ROOT) -> list[int]:
@@ -2872,6 +2985,8 @@ def tick(*, main: Path = HOST_ROOT, now: datetime | None = None) -> None:
     paged = _page_missing_worktree_if_due(scan, main=main, now=now)
     if paged:
         print(paged)
+    for line in _page_dirty_worktree_if_due(scan, main=main):
+        print(line)
 
     # A merge (#413) and the idle condition read the same two facts -- is anything alive, what is
     # dispatchable -- so liveness is read once for both. When `pr_merged` fires, `idle_dispatchable`

@@ -45,13 +45,14 @@ project:
   # One one-line template per page the mechanism can send, written in `human_language`. A key the
   # mechanism asks for and this mapping does not carry is an error when the config loads, not when
   # the page is due; so is a template `str.format` cannot parse. The placeholders each one may use
-  # are fixed by the call site -- these five are the whole set today.
+  # are fixed by the call site -- these six are the whole set today.
   messages:
     review_ready: "Review pending: issue #{issue} «{title}» is approved and only needs merging - {url}"
     quota_exhausted_no_fallback: "No quota left and issue #{issue} declares no fallback (class «{task_class}», backend {backend}): it cannot move without you"
     planner_run_cap_reached: "The planner has spent its daily run cap ({runs}/{cap}) and will dispatch nothing more today; {pending} event(s) wait for tomorrow: {context}"
     backend_worktree_missing: "Backend with no worktree: {backend} has no worktree at {worktree} and {issue_count} ready issue(s) cannot move until you create it"
     unreviewed_pull_request: "Lost review: PR #{pr} for issue #{issue} has no review and no {role} running - it may have died leaving no trace"
+    backend_worktree_dirty: "Blocked backend: {backend}'s worktree {worktree} has uncommitted work no run will clear ({paths}); {issue_count} ready issue(s) wait, and no run on it can start or resume until you commit or clean it"
   # The project's own compact test wrapper, injected into the worker's RULES as `__TEST_COMMAND__`.
   # A host with more than one test suite names the wrapper that runs the right one.
   test_command: scripts/test.sh

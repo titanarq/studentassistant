@@ -812,17 +812,18 @@ def test_project_config_refuses_a_message_that_is_not_one_line():
 
 
 def test_the_real_config_writes_every_page_the_mechanism_can_send():
-    # Five mechanical pages, one key each: the 2026-09-14 ADR's original two triggers
+    # Six mechanical pages, one key each: the 2026-09-14 ADR's original two triggers
     # (`quota_exhausted_no_fallback`, `planner_run_cap_reached`), its 2026-09-16 third trigger
     # (`review_ready`, #366), and the second trigger's own concrete form twice over --
     # `backend_worktree_missing` (#392) and `unreviewed_pull_request` (#394) -- two more PAGES,
-    # not two more triggers.
+    # not two more triggers -- and `backend_worktree_dirty` (#86), its third concrete form.
     assert set(load_project().messages) == {
         "review_ready",
         "quota_exhausted_no_fallback",
         "planner_run_cap_reached",
         "backend_worktree_missing",
         "unreviewed_pull_request",
+        "backend_worktree_dirty",
     }
 
 
@@ -844,6 +845,14 @@ def test_the_real_configs_pages_render_with_the_fields_their_call_sites_pass():
     )
     assert render_human_message(
         "unreviewed_pull_request", project, pr=409, issue=394, role="validator"
+    )
+    assert render_human_message(
+        "backend_worktree_dirty",
+        project,
+        backend="qwen",
+        worktree="/x/example-qwen",
+        paths=" M README.md",
+        issue_count=2,
     )
 
 

@@ -54,11 +54,12 @@ abort a tick, and with it the other backend's check, over a typo nothing at that
 that one page in Spanish (`agent_os/docs/AGENT_OS.md` §7 row (g)) — the rule that a question for the human
 is written in their language (`agent_os/docs/adr/2026-09-15-a-question-for-the-human-is-written-in-their-
 language-and-in-functional-terms.md`) held everywhere except on the one channel that reaches their
-phone. There are five keys, one per mechanical page, and there are no others: `review_ready`,
+phone. There are six keys, one per mechanical page, and there are no others: `review_ready`,
 `quota_exhausted_no_fallback`, `planner_run_cap_reached`, `backend_worktree_missing`
-(#392's amendment below) and `unreviewed_pull_request` (#394's amendment below) — the last two are
-each the second trigger above in its concrete form, the same way `planner_run_cap_reached` already
-was, not a trigger of their own. The operational line a run prints to its journal stays English and
+(#392's amendment below), `unreviewed_pull_request` (#394's amendment below) and
+`backend_worktree_dirty` (agent-os#86's amendment below) — the last three are each the second
+trigger above in its concrete form, the same way `planner_run_cap_reached` already was, not a
+trigger of their own. The operational line a run prints to its journal stays English and
 separate from the page, because they have different readers.
 
 ## Amendment, 2026-09-16 (#392)
@@ -91,6 +92,18 @@ nothing on disk for the planner's own bookkeeping to ever notice. The condition 
 wording is the fifth `project.messages` key, `unreviewed_pull_request`, rendered the same way the
 amendments above require, and a template it cannot render is printed and skipped rather than
 allowed to stop the tick.
+
+## Amendment, 2026-09-25 (agent-os#86)
+A sixth mechanical page exists — the guard, once per distinct listing, when a backend's worktree
+is dirty while no run on it is alive — and it is the second trigger above in its concrete form, the
+same as #392's missing worktree one step later: `worker_task.sh start`, `resume` and `branch` refuse
+over that worktree, no event commits or cleans it, and only a human can. The backend's ready issues
+leave the dispatchable set, so no planner run is spent on the refusal. It is deduplicated on the
+listing rather than rate-limited by time: the same listing never pages twice, a changed one is news,
+and a clean worktree resets it. Its wording is the sixth `project.messages` key,
+`backend_worktree_dirty`; a template it cannot render is printed and skipped. Why the guard pages it
+and not the refusing driver:
+`2026-09-25-scratch-is-invisible-to-git-and-a-dirty-idle-worktree-is-paged-by-the-guard.md`.
 
 ## Consequences
 - A page always means "only you can move this forward now."

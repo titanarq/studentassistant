@@ -8,6 +8,37 @@ that closed several small issues at once name them all. This file starts on 2026
 
 ## Unreleased
 
+- agent-os#86 (PR #87) — a dirty worker worktree no longer deadlocks its backend unannounced.
+  `worker_task.sh` writes `scratchpad/.gitignore` containing `*` in every worker worktree it
+  touches (`hide_scratchpad_from_git`: before the dirty check in `start`, `resume` and `branch`,
+  and before a cut's freeze), so an untracked diary or scratch file never refuses a dispatch in
+  any run state and never lands in a `WIP: cut by guard` commit. The file lives in that worktree
+  only and ignores itself; one the host tracks is left alone. A diary git tracks still shows as
+  modified and #84 still covers it on `resume`. The #75 archive still empties `scratchpad/` for
+  each new run under the same conditions, now listing ignored files too and keeping the
+  `.gitignore`. What is still dirt is read by the guard on every tick (`backend_worktree_dirt`,
+  same exclusions as the driver, nothing while a run is alive): the backend's ready issues leave
+  the dispatchable set, so no planner run is woken to be refused, and the human is paged once per
+  distinct listing with the new `project.messages.backend_worktree_dirty`; a clean worktree
+  resets it. The issue asked for the page from the driver via `notify.sh`; the guard does it so
+  the same read also ends the planner's retries (ADR
+  `2026-09-25-scratch-is-invisible-to-git-and-a-dirty-idle-worktree-is-paged-by-the-guard.md`).
+  `prompts/worker.md` and `prompts/planner.md` say so. Host follow-up: add
+  `backend_worktree_dirty` to `project.messages` in `config/agents.yaml` (see
+  `config.example.yaml`; without it the guard prints `no page for the dirty worktree`), and the
+  `scratchpad/` entry in a worktree's `.git/info/exclude` can go.
+
+- agent-os#84 (PR #85) — `worker_task.sh resume` over a run whose `.state` is `DONE` no longer
+  refuses over that run's own diary. #22 left the diary out of `resume`'s dirty check only after
+  `CUT_BY_GUARD`, on the premise that a finished run is never resumed; but a run that opened its
+  pull request and exited is `DONE`, and it is exactly the one the planner resumes with the
+  validator's request-changes review (`prompts/planner.md`, CHANGES REQUESTED). On a host with no
+  ignore rule for `scratchpad/`, every request-changes loop was refused and needed a human.
+  `drop_the_cut_runs_diary` is renamed `drop_the_resumed_runs_diary` and accepts `DONE` as well,
+  same shapes, file untouched. Still refused: any other dirty path (another scratch file
+  included), and a `.state` of `STARTED`, `RESUMED …`, `FAILED_LAUNCH …` or `BLOCKED …`. Host
+  follow-up: the `scratchpad/` entry in a worktree's `.git/info/exclude` can go.
+
 - agent-os#82 (PR #83) — `tests/test_no_host_literals.py` no longer requires `AGENT_OS_DIR` to
   hold its own `.git`. `_repository_files` demanded `root / ".git"` before ever asking git
   anything, but a host consuming this mechanism as a subtree (ADOPTION.md step 7) has no such

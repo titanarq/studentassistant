@@ -148,8 +148,9 @@ LIVENESS: SAY WHAT YOU ARE DOING BEFORE YOU DO IT
   Two reasons, and neither is tidiness. It is not your work -- committed, it travelled inside a pull
   request onto `main`, and from then on every worker branch conflicted with `main` on it, so
   `open-pr` now refuses a branch whose diff against its base adds or modifies it and names the
-  commits that carry it. And its uncommitted lines are what keep this worktree dirty, which is the
-  signal that refuses to relaunch a run over a diary something is still writing to.
+  commits that carry it. And the driver hides `scratchpad/` from git in this worktree, so nothing
+  you put there -- the diary, a draft, an ad hoc script -- ever shows as uncommitted work, blocks
+  the next run, or lands in a freeze's commit; anything you leave anywhere else does all three.
 
 WRITING TO THE HUMAN
 Everything addressed to the human -- a `## Doubts` block, a question posted with
