@@ -22,7 +22,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/pdf/page-NNN.pKKK.txt|.jpg         page K's extracted text and thumbnail (derived)
   sources/pdf/page-NNN.yaml                  original_name, original_sha256, original_page_count, first_page, last_page, page_count
   sources/book/…  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
-  sessions/<session-id>/session.yaml         started/ended, host, duration, protocol version
+  sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
   state/observer-snapshot.json               fold snapshot (optimisation)
@@ -83,7 +83,10 @@ asked for under is not there or not readable.
 ### Sessions -- `session_models.py`, `sessions.py`
 `start_session(vault, subject_slug, topic_slug, host, protocol_version)` creates
 `sessions/<session-id>/` with `session.yaml` (`SessionMeta`: `id` `YYYYMMDD-HHMMSS` in UTC,
-`started_at`, `ended_at`, `host`, `protocol_version`), an empty `transcript.jsonl` and an empty
+`started_at`, `ended_at`, `host`, `protocol_version`, `kind`: `study`, the default and what a file
+without the key reads as, or `review` for a session the backend opens and ends at once only to hold
+events written outside a study session, such as a doubt's resolution; `SessionMeta.is_study`;
+`start_session(..., kind="review")` writes it), an empty `transcript.jsonl` and an empty
 `events.jsonl`, and appends the id to the topic's `sessions` list; a second session started in the
 same second takes the next free second. `resume_session(vault, subject_slug, topic_slug)` reopens
 the latest listed session whose `ended_at` is unset (`NoOpenSessionError` when there is none);

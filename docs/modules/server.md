@@ -77,8 +77,9 @@ Routes registered today:
     (`rest.subjects.create.request`) -> 201 `rest.subjects.create.response`.
   - `GET /api/subjects/{subject_id}/topics` -> `rest.topics.list.response`, each topic with
     `open_session_id` when it has an unended session and, for a caller speaking 1.1+ (the
-    principal's `protocol_version`), `last_session_at_ms` (its latest session's start, from
-    `vault.list_sessions`) when it has any session and `pending_count` (open items of
+    principal's `protocol_version`), `last_session_at_ms` (its latest study session's start, from
+    `vault.list_sessions`; review sessions, `kind: review`, are left out, #191) when it has any
+    and `pending_count` (open items of
     `observer.load_observer_snapshot(..., write_back=False)`, so listing writes nothing); either
     is left out, with a warning logged, when the vault or observer state cannot be read, and
     both are always left out for a device that paired as a 1.0 client. `POST /api/subjects/{subject_id}/topics`
@@ -175,8 +176,8 @@ Routes registered today:
   unknown subject or topic is 404 (`"No existe ese tema en la bóveda."`). Bodies are Pydantic
   models, so they appear in `GET /openapi.json`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/summary` -> `TopicSummary`: `sources`
-    (counts of `notes`, `book`, `pdf`, `web` from `list_sources`), `sessions` (their number) and
-    `session_minutes` (ended sessions by `ended_at - started_at`, an unended one up to now; minutes
+    (counts of `notes`, `book`, `pdf`, `web` from `list_sources`), `sessions` (the number of study sessions;
+    review sessions, `kind: review`, are left out, #191) and `session_minutes` (ended ones by `ended_at - started_at`, an unended one up to now; minutes
     rounded to 0.1), `open_pending` (`len(open_pending())` of the observer's
     `load_observer_snapshot`, which may write the refreshed snapshot back), `notes_version` (the
     highest `version` of `GitSync.list_notes_tags(subject_id, topic_id)`, `null` without tags)
@@ -196,7 +197,8 @@ Routes registered today:
     stored `state/digest.md`, `observer.topic_digest`; `null` before the first session end) and
     `excerpt` (its summary paragraph). Reads the file only, writes nothing (#56).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/sessions` -> `TopicSessions`: `sessions`, by
-    id, each `session_id`, `started_at`, `ended_at` (`null` while unended) and `minutes`.
+    id, each `session_id`, `started_at`, `ended_at` (`null` while unended), `minutes`, `kind` (`study` or `review`) and
+    `label` («Sesión de estudio» or «Revisión de dudas»).
   - `GET /api/sessions/{session_id}/transcript?subject=..&topic=..&t=HH:MM:SS-HH:MM:SS` ->
     `TranscriptSpan`: `ref` (`sessions/<id>#t=<span>`, ADR-0005's provenance form), `start_ms`,
     `end_ms` and the `segments` (`seq`, `t_start`, `t_end` in session milliseconds, `text`) that

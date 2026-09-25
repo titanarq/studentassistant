@@ -743,7 +743,9 @@ def _speaks_at_least(client: str, since: tuple[int, int]) -> bool:
 
 
 def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int | None, int | None]:
-    """The topic's latest session start (epoch ms) and open pending count, `None` when unknown.
+    """The topic's latest study session start (epoch ms) and open pending count, `None` if unknown.
+
+    A review session (a doubt's resolution) is not a study session, so it is left out (#191).
 
     Each is read on its own through the vault's and the observer's public functions; one that
     cannot be read is logged and left out, so a damaged session never hides the topic list.
@@ -754,8 +756,9 @@ def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int |
     except VaultError as error:
         logger.warning("topic %s/%s: sessions unreadable: %s", subject_id, topic_id, error)
     else:
-        if sessions:
-            last = _epoch_ms(max(meta.started_at for meta in sessions))
+        studied = [meta.started_at for meta in sessions if meta.is_study]
+        if studied:
+            last = _epoch_ms(max(studied))
     pending: int | None = None
     try:
         snapshot = load_observer_snapshot(vault, subject_id, topic_id, write_back=False)

@@ -27,6 +27,23 @@ def test_a_well_formed_session_starts_without_an_end() -> None:
     meta = SessionMeta(id="20260924-183000", started_at=STARTED, host="pc", protocol_version="1.0")
 
     assert meta.ended_at is None
+    # A session.yaml written before `kind` existed is a study session.
+    assert meta.kind == "study" and meta.is_study
+
+
+def test_a_review_session_is_not_a_study_session_and_an_unknown_kind_is_refused() -> None:
+    meta = SessionMeta(
+        id="20260924-183000", started_at=STARTED, host="pc", protocol_version="1.0", kind="review"
+    )
+    assert not meta.is_study
+    with pytest.raises(ValidationError):
+        SessionMeta(
+            id="20260924-183000",
+            started_at=STARTED,
+            host="pc",
+            protocol_version="1.0",
+            kind="exam",  # type: ignore[arg-type]
+        )
 
 
 def test_an_origin_outside_the_five_is_refused() -> None:

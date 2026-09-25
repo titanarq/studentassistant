@@ -63,6 +63,18 @@ def test_starting_a_session_writes_its_directory_files_and_topic_entry(
     assert meta.host == HOST
     assert meta.protocol_version == PROTOCOL
     assert get_topic(tmp_vault, *topic).topic.sessions == [session.id]
+    assert meta.kind == "study"
+
+
+def test_a_review_session_is_marked_in_its_session_file(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    session = start_session(tmp_vault, *topic, host=HOST, protocol_version=PROTOCOL, kind="review")
+
+    meta = read_yaml(
+        sessions_directory(tmp_vault, *topic) / session.id / SESSION_FILE_NAME, SessionMeta
+    )
+    assert meta.kind == "review" and session.meta.kind == "review"
 
 
 def test_ending_a_session_records_ended_at(tmp_vault: Vault, topic: tuple[str, str]) -> None:

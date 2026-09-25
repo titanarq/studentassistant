@@ -243,9 +243,10 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   `suggestion`, `chosen_source`, `discarded`, `keep_discarded`, `notes_changed`, `warning`); a
   question is `PENDING_QUESTION_KIND = "pending.question"` (origin `editor`, payload the
   `DoubtQuestion`). They go to a **review session**: a session of the topic started and ended at
-  once for them (`vault.start_session`/`end_session`, no transcript, no lifecycle events), so they
-  fold after every study session before it; it shows in the topic's session list with no
-  minutes. While the topic has an unended session nothing is sent or written
+  once for them (`vault.start_session(..., kind="review")`/`end_session`, no transcript, no
+  lifecycle events), so they fold after every study session before it; its `kind` keeps it out
+  of the topic's study sessions (#191): the session list labels it «Revisión de dudas», and the
+  topic list's `last_session_at_ms` and the topic card's counts leave it out. While the topic has an unended session nothing is sent or written
   (`OpenSessionError`), since that session's later events would fold before the review's. Then
   `review/pending.yaml` and the snapshot are regenerated (`load_observer_snapshot`), and the notes
   (`vault.write_notes`, when edited) and the events are committed with a Spanish summary
