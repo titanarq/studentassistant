@@ -29,6 +29,8 @@ from studentassistant.protocol.rest import (
     Topic,
     TopicCreateRequest,
     TopicsListResponse,
+    WebPageAddRequest,
+    WebPageAddResponse,
 )
 from studentassistant.protocol.server import (
     Command,
@@ -69,6 +71,8 @@ MODELS: dict[str, type[BaseModel]] = {
     "rest.sessions.captures.request": CaptureUploadRequest,
     "rest.sessions.captures.response": CaptureUploadResponse,
     "rest.search.response": SearchResponse,
+    "rest.topics.web_pages.create.request": WebPageAddRequest,
+    "rest.topics.web_pages.create.response": WebPageAddResponse,
 }
 
 

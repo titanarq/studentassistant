@@ -25,6 +25,7 @@ from studentassistant.sources.web import (
 from studentassistant.sources.web_searcher import (
     VOICE_COMMAND_KIND,
     KeepError,
+    NotAWebPageError,
     SearchNotDoneError,
     UnknownSearchError,
     WebSearcher,
@@ -182,6 +183,60 @@ async def test_keep_refusals(
     with pytest.raises(KeepError, match="PDF"):
         await searcher.keep(*_where(session), search_id, 1)
     assert list_sources(*_where(session)) == []
+
+
+async def test_keep_url_stores_a_page_given_by_its_address(
+    bus: SessionBus, session: Session, fake: FakeClaude, searcher: WebSearcher
+) -> None:
+    url = "https://historia.example.edu/bastilla"
+    fetch_reply(fake, url, title="La Bastilla")
+    kept, already = await asyncio.wait_for(
+        searcher.keep_url(*_where(session), f"  {url} ", added_via="share", session_id=session.id),
+        WAIT,
+    )
+    assert not already and kept.source_id == "sources/web/001-la-bastilla.md"
+    text = kept.path.read_text()
+    assert text.startswith("# La Bastilla\n\n> Copia de <https://historia.example.edu/bastilla>")
+    assert PAGE_TEXT in text
+    (source,) = list_sources(*_where(session))
+    assert source.meta is not None
+    assert source.meta["url"] == url and source.meta["external"] is True
+    assert source.meta["kept_by"] == "student" and source.meta["added_via"] == "share"
+    assert source.meta["session"] == session.id and "search_id" not in source.meta
+    (event,) = _kinds(session, WEB_SNAPSHOT_STORED_KIND)
+    assert event == {
+        "url": url,
+        "source_id": kept.source_id,
+        "title": "La Bastilla",
+        "kept_by": "student",
+        "added_via": "share",
+    }
+    (entry,) = read_ledger(*_where(session))
+    assert entry.session == session.id
+    # The same address again: the stored snapshot, nothing fetched, nothing published.
+    again, already = await searcher.keep_url(*_where(session), url)
+    assert already and again.source_id == kept.source_id and again.title == "La Bastilla"
+    assert len(fake.requests) == 1 and len(_kinds(session, WEB_SNAPSHOT_STORED_KIND)) == 1
+
+
+async def test_keep_url_without_a_session_and_its_refusals(
+    session: Session, fake: FakeClaude, searcher: WebSearcher
+) -> None:
+    with pytest.raises(NotAWebPageError):
+        await searcher.keep_url(*_where(session), "ftp://example.org/x")
+    with pytest.raises(NotAWebPageError):
+        await searcher.keep_url(*_where(session), "no es una dirección")
+    fetch_reply(fake, HITS[1][0], media_type="application/pdf", data="JVBERi0=")
+    with pytest.raises(KeepError, match="PDF"):
+        await searcher.keep_url(*_where(session), HITS[1][0])
+    fetch_reply(fake, HITS[1][0], title="Bastilla")
+    kept, already = await asyncio.wait_for(searcher.keep_url(*_where(session), HITS[1][0]), WAIT)
+    assert not already
+    (source,) = list_sources(*_where(session))
+    assert source.meta is not None and source.meta["added_via"] == "url"
+    assert "session" not in source.meta
+    assert _kinds(session, WEB_SNAPSHOT_STORED_KIND) == []
+    assert kept.url == HITS[1][0]
 
 
 async def test_a_reached_cost_cap_fails_the_search(

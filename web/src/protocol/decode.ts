@@ -56,6 +56,13 @@ export function num(opts: { min?: number; max?: number } = {}): Decoder<number> 
   };
 }
 
+export function bool(): Decoder<boolean> {
+  return (value, path) => {
+    if (typeof value !== "boolean") throw new ProtocolDecodeError(path, "expected a boolean");
+    return value;
+  };
+}
+
 export function literal<const T extends string | number>(...allowed: T[]): Decoder<T> {
   return (value, path) => {
     if (!(allowed as unknown[]).includes(value)) {

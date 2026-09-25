@@ -14,6 +14,12 @@ built when the app has an `llm_transport` and `[sources] web_search_enabled`).
 - `POST .../web-searches/{search_id}/results/{index}/keep` -> 201 `{"source_id", "vault_id",
   "title", "url"}` once the page is fetched and stored as `sources/web/NNN-<slug>.md`; keeping it
   again answers the first snapshot.
+- `POST /api/subjects/{s}/topics/{t}/web-pages` with `rest.topics.web_pages.create.request`
+  (`{"url", "via"?: "url" | "share"}`, #62: a URL pasted in the web UI or shared to the phone) ->
+  201 `rest.topics.web_pages.create.response` (`source_id`, `vault_id`, `title`, `url`,
+  `already_kept: false`) once the page is fetched and stored like a kept result; 200 with
+  `already_kept: true` when the topic already has a snapshot of that address (nothing fetched).
+  Bound to the topic's active session like a search. Not an http(s) address: 422.
 
 Errors, as `{"detail": "..."}` in Spanish: an unknown topic, search or result 404; a search with
 no results yet or a reached cost cap 409; an empty query, or a page that cannot be kept as text
@@ -26,16 +32,17 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
 from studentassistant.llm import CostCapError, LLMError, RefusalError
+from studentassistant.protocol import WebPageAddRequest, WebPageAddResponse
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.protocol.errors import ErrorCode
 from studentassistant.server.errors import ApiError
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
-from studentassistant.sources.web import WebSearchRecord, list_web_searches
+from studentassistant.sources.web import KeptWebSource, WebSearchRecord, list_web_searches
 from studentassistant.sources.web_searcher import KeepError, WebSearcher
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, Vault, get_topic
 
@@ -107,9 +114,9 @@ def _topic_session(request: Request, subject_id: str, topic_id: str) -> str | No
 
 
 def web_search_router() -> APIRouter:
-    router = APIRouter(prefix="/api/subjects/{subject_id}/topics/{topic_id}/web-searches")
+    router = APIRouter(prefix="/api/subjects/{subject_id}/topics/{topic_id}")
 
-    @router.get("")
+    @router.get("/web-searches")
     async def list_searches(
         request: Request, subject_id: SubjectId, topic_id: TopicId
     ) -> WebSearchList:
@@ -121,7 +128,7 @@ def web_search_router() -> APIRouter:
             searches = await searcher.list(vault, subject_id, topic_id)
         return WebSearchList(searches=searches)
 
-    @router.post("", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/web-searches", status_code=status.HTTP_202_ACCEPTED)
     async def queue_search(
         request: Request, subject_id: SubjectId, topic_id: TopicId, body: WebSearchRequest
     ) -> WebSearchQueued:
@@ -139,7 +146,9 @@ def web_search_router() -> APIRouter:
         )
         return WebSearchQueued(search_id=search_id)
 
-    @router.post("/{search_id}/results/{index}/keep", status_code=status.HTTP_201_CREATED)
+    @router.post(
+        "/web-searches/{search_id}/results/{index}/keep", status_code=status.HTTP_201_CREATED
+    )
     async def keep_result(
         request: Request,
         subject_id: SubjectId,
@@ -159,24 +168,63 @@ def web_search_router() -> APIRouter:
                 kept_by="student",
                 session_id=_topic_session(request, subject_id, topic_id),
             )
-        except KeepError as error:
-            raise HTTPException(error.status, str(error)) from error
-        except CostCapError as error:
-            raise ApiError(
-                status.HTTP_409_CONFLICT, COST_CAP_DETAIL, ErrorCode.COST_CAP_REACHED
-            ) from error
-        except RefusalError as error:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, REFUSED_DETAIL) from error
-        except LLMError as error:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, CLAUDE_FAILED_DETAIL) from error
+        except (KeepError, LLMError) as error:
+            raise _keep_failure(error) from error
         return KeptResponse(
             source_id=kept.source_id,
-            vault_id=kept.path.resolve().relative_to(vault.path.resolve()).as_posix(),
+            vault_id=_vault_id(vault, kept),
             title=kept.title,
             url=kept.url,
         )
 
+    @router.post("/web-pages", status_code=status.HTTP_201_CREATED)
+    async def add_web_page(
+        request: Request,
+        response: Response,
+        subject_id: SubjectId,
+        topic_id: TopicId,
+        body: WebPageAddRequest,
+    ) -> WebPageAddResponse:
+        searcher = _searcher(request)
+        vault = await _topic_vault(request, subject_id, topic_id)
+        try:
+            kept, already = await searcher.keep_url(
+                vault,
+                subject_id,
+                topic_id,
+                body.url,
+                added_via=body.via or "url",
+                kept_by="student",
+                session_id=_topic_session(request, subject_id, topic_id),
+            )
+        except (KeepError, LLMError) as error:
+            raise _keep_failure(error) from error
+        if already:
+            response.status_code = status.HTTP_200_OK
+        return WebPageAddResponse(
+            source_id=kept.source_id,
+            vault_id=_vault_id(vault, kept),
+            title=kept.title,
+            url=kept.url,
+            already_kept=already,
+        )
+
     return router
+
+
+def _vault_id(vault: Vault, kept: KeptWebSource) -> str:
+    return kept.path.resolve().relative_to(vault.path.resolve()).as_posix()
+
+
+def _keep_failure(error: Exception) -> HTTPException:
+    """The HTTP answer to a page that could not be fetched or stored."""
+    if isinstance(error, KeepError):
+        return HTTPException(error.status, str(error))
+    if isinstance(error, CostCapError):
+        return ApiError(status.HTTP_409_CONFLICT, COST_CAP_DETAIL, ErrorCode.COST_CAP_REACHED)
+    if isinstance(error, RefusalError):
+        return HTTPException(status.HTTP_502_BAD_GATEWAY, REFUSED_DETAIL)
+    return HTTPException(status.HTTP_502_BAD_GATEWAY, CLAUDE_FAILED_DETAIL)
 
 
 __all__ = ["KeptResponse", "WebSearchList", "WebSearchQueued", "web_search_router"]

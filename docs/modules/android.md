@@ -12,6 +12,8 @@ Thin capture client (ADR-0001), Spanish UI:
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
+- Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
+  (see "Share a web page (#62)").
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
   disconnected, resent in order on reconnect; an end while offline is completed later (see
   "Offline spool (#53)").
@@ -23,7 +25,7 @@ Thin capture client (ADR-0001), Spanish UI:
 
 - **`backend.BackendClient`** (interface) covers every REST endpoint of protocol v1: `pair`,
   `health`, `listSubjects`/`createSubject`, `listTopics`/`createTopic`,
-  `startSession`/`resumeSession`/`endSession` and `uploadCapture` (multipart: a `metadata` JSON
+  `startSession`/`resumeSession`/`endSession`, `addWebPage` (#62) and `uploadCapture` (multipart: a `metadata` JSON
   part plus `image_N` parts, typed by each `CaptureImage.content_type`). Authenticated calls take
   `BackendCredentials(baseUrl, token)` and send `Authorization: Bearer <token>`; `pair` and
   `health` take a bare base URL. Every call returns a `BackendResult`: `Success(value)` or a
@@ -100,6 +102,31 @@ Thin capture client (ADR-0001), Spanish UI:
 - Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
   paired backends); `Route.CAPTURE` shows the capture screen (below) for the session in
   `SessionHolder`, and goes back home when there is none.
+
+## Share a web page (#62)
+
+- **`share.ShareActivity`** (exported, `ACTION_SEND` + `text/plain`, label «Guardar en un tema»)
+  is the app's entry in the system share sheet. It reads `EXTRA_TEXT` / `EXTRA_SUBJECT` and shows
+  `share.ShareScreen` on its own (it never opens the main navigation); «Cerrar» / «Cancelar»
+  finish it.
+- **`share.extractSharedUrl(text, subject)`** takes the first `http(s)://` link of the text (a
+  browser often puts the page title first), else of the subject, leaving out punctuation glued
+  to its end (`.`, `,`, `»`, quotes, ...; a `)` only when it does not close a `(` of the link);
+  null when there is none or it is longer than `MAX_SHARED_URL_LENGTH` (2000, the protocol's).
+- **`share.ShareViewModel(sharedText, sharedSubject, client, store)`**
+  (`AppContainer.shareViewModelFactory`): without a link nothing is called («Lo compartido no
+  contiene ninguna dirección web»); without a paired backend it says so. Otherwise the active
+  backend's subjects, then the picked subject's topics (the one with an open session first, the
+  likely target), each with «Guardar aquí». A pick calls `BackendClient.addWebPage` (`POST
+  /api/subjects/{s}/topics/{t}/web-pages`, `rest.topics.web_pages.create.request` with `via:
+  share`); the backend fetches and stores the page -- the phone only carries the address
+  (ADR-0001). `ShareUiState.outcome` is `Saved(topic, title, alreadyKept)` («Guardada «<título>»
+  como fuente del tema «<tema>»», or that the topic already had it) or `Failed(topic, failure)`,
+  after which another topic can be picked. Error bodies are not read: 404 (unknown topic, or a
+  backend without this endpoint), 409 (cost cap), 422 (not a text page / not fetched), 502
+  (Claude failed) and 503 (web tools off) have their own Spanish messages.
+- `OkHttpBackendClient.addWebPage` uses a client with a longer read timeout
+  (`WEB_PAGE_READ_TIMEOUT_SECONDS`, 120 s): the backend answers after Claude fetched the page.
 
 ## Capture screen (#42)
 

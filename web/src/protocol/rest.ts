@@ -4,6 +4,7 @@
 
 import {
   array,
+  bool,
   captureId,
   type Decoder,
   epochMs,
@@ -174,6 +175,33 @@ export interface SearchResponse {
   hits: SearchHit[];
 }
 
+// POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages
+
+/** An http(s) address, as `rest.topics.web_pages.create.request` accepts it. */
+export const WEB_PAGE_URL_PATTERN = /^https?:\/\/\S+$/i;
+export const WEB_PAGE_URL_MAX = 2000;
+
+/**
+ * A web page the student gives by its address, stored as a source of the topic. `via`: pasted in
+ * the web UI (`url`, the default) or shared to the phone app (`share`).
+ */
+export interface WebPageAddRequest {
+  url: string;
+  via?: "url" | "share";
+}
+
+/**
+ * The stored snapshot: `source_id` (`sources/web/NNN-<slug>.md`), `vault_id` (vault-relative
+ * path), `title`, the fetched `url`, and `already_kept` when the topic had that page already.
+ */
+export interface WebPageAddResponse {
+  source_id: string;
+  vault_id: string;
+  title: string;
+  url: string;
+  already_kept: boolean;
+}
+
 // Decoders
 
 export const decodePairRequest: Decoder<PairRequest> = object({
@@ -290,4 +318,17 @@ export const decodeSearchHit: Decoder<SearchHit> = object(
 export const decodeSearchResponse: Decoder<SearchResponse> = object({
   query: str(),
   hits: array(decodeSearchHit),
+});
+
+export const decodeWebPageAddRequest: Decoder<WebPageAddRequest> = object(
+  { url: str({ pattern: WEB_PAGE_URL_PATTERN, maxLength: WEB_PAGE_URL_MAX }) },
+  { via: literal("url", "share") },
+);
+
+export const decodeWebPageAddResponse: Decoder<WebPageAddResponse> = object({
+  source_id: str({ minLength: 1 }),
+  vault_id: str({ minLength: 1 }),
+  title: str(),
+  url: str({ minLength: 1 }),
+  already_kept: bool(),
 });

@@ -175,7 +175,14 @@ token):
   query)` (`POST`, the new `search_id`), `keepWebResult(s, t, searchId, index)` (`POST
   .../{search_id}/results/{index}/keep` -> `KeptSource` `source_id`/`vault_id`/`title`/`url`), all
   `ApiResult` (`ok` | `refused` with the Spanish `detail` | `error` | `unreachable`), and
-  `describeApiFailure(result)`.
+  `describeApiFailure(result)`; `addWebPage(s, t, url)` (`POST .../web-pages` `{url, via: "url"}`
+  -> protocol `WebPageAddResponse`, checked with `decodeWebPageAddResponse`).
+  `WebPageForm` (#62, section "Añadir una página web", after the search panel): a «Dirección de
+  la página» URL box and «Guardar como fuente» («Descargando…» while the backend fetches it). An
+  address that is not `http(s)://...` is refused without calling («Pega la dirección completa de
+  la página...»); then «Página «<título>» guardada como fuente externa (<source_id>).», «Esa
+  página ya era una fuente del tema: «<título>».» (`already_kept`, the card is not reloaded) or
+  «No se ha guardado la página: <detail>». A stored page reloads the topic card (`onAdded`).
   The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, followed by
   "(versiones)", a link to the notes version history, and its
   Pendiente item always links to the pending-doubts panel.

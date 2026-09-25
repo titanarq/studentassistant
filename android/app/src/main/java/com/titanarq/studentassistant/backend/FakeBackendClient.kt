@@ -15,6 +15,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.WebPageAddRequest
+import com.titanarq.studentassistant.protocol.WebPageAddResponse
 
 /**
  * A scripted [BackendClient] for view-model tests (fakes over mocks, AGENTS.md). Each endpoint
@@ -34,6 +36,11 @@ class FakeBackendClient : BackendClient {
     var resumeSessionResult: BackendResult<Session> = notScripted
     var endSessionResult: BackendResult<SessionEndResponse> = notScripted
     var uploadCaptureResult: BackendResult<CaptureUploadResponse> = notScripted
+    var addWebPageResult: BackendResult<WebPageAddResponse> = notScripted
+
+    /** The last [WebPageAddRequest] sent, if any. */
+    var lastWebPageRequest: WebPageAddRequest? = null
+        private set
 
     /** The calls made so far, oldest first. */
     val calls: MutableList<String> = mutableListOf()
@@ -97,6 +104,16 @@ class FakeBackendClient : BackendClient {
         images: List<CaptureImageBytes>,
     ): BackendResult<CaptureUploadResponse> =
         record("uploadCapture", backend, metadata.captureId) { uploadCaptureResult }
+
+    override suspend fun addWebPage(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+        request: WebPageAddRequest,
+    ): BackendResult<WebPageAddResponse> {
+        lastWebPageRequest = request
+        return record("addWebPage", backend, "$subjectId/$topicId") { addWebPageResult }
+    }
 
     private fun <T> record(
         endpoint: String,

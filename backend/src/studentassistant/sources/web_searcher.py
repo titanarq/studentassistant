@@ -49,13 +49,16 @@ from studentassistant.sources.web import (
     WEB_SEARCH_FAILED_KIND,
     WEB_SEARCH_RESULTS_KIND,
     WEB_SNAPSHOT_STORED_KIND,
+    AddedVia,
     FailureReason,
     KeptBy,
     KeptWebSource,
     RequestedBy,
     WebFetchError,
     WebSearchRecord,
+    find_kept_url,
     find_web_search,
+    is_http_url,
     keep_snapshot,
     list_web_searches,
     new_search_id,
@@ -106,6 +109,10 @@ class KeepError(Exception):
     """A result that cannot be kept; `status` is the HTTP status, the message Spanish."""
 
     status = 422
+
+
+class NotAWebPageError(KeepError):
+    """`keep_url` of something that is not an http(s) address."""
 
 
 class UnknownSearchError(KeepError):
@@ -481,6 +488,71 @@ class WebSearcher:
         )
         return stored
 
+    async def keep_url(
+        self,
+        vault: Vault,
+        subject_slug: str,
+        topic_slug: str,
+        url: str,
+        *,
+        added_via: AddedVia = "url",
+        kept_by: KeptBy = "student",
+        session_id: str | None = None,
+    ) -> tuple[KeptWebSource, bool]:
+        """Fetch the page at `url` and store it as a web source of the topic, as `keep` does for
+        a search result; returns it and whether it was already stored (then nothing is fetched).
+
+        `session_id` is the topic's live session, if any: the fetch is recorded on its ledger and
+        `web.snapshot_stored` (no `search_id`) is published on it. Raises `NotAWebPageError` for a
+        non-http(s) address, `KeepError` (the page cannot be kept as text, or it looks like it
+        carries a key), the vault's topic errors and the client's `LLMError`s (a cost cap too).
+        """
+        url = url.strip()
+        if not is_http_url(url):
+            raise NotAWebPageError("Esa dirección no es una página web (http o https).")
+        where = _Topic(vault, subject_slug, topic_slug)
+        lock = self._keep_locks.setdefault(where.key, asyncio.Lock())
+        async with lock:
+            existing = await asyncio.to_thread(find_kept_url, vault, subject_slug, topic_slug, url)
+            if existing is not None:
+                return existing, True
+            client = self.client_factory(LedgerBinding(vault, subject_slug, topic_slug, session_id))
+            try:
+                snapshot = await snapshot_page(
+                    client, url, settings=self.settings, now=self.clock()
+                )
+            except WebFetchError as error:
+                raise KeepError(str(error)) from error
+            live_session = session_id if session_id and self.lookup(session_id) else None
+            try:
+                stored = await asyncio.to_thread(
+                    keep_snapshot,
+                    vault,
+                    subject_slug,
+                    topic_slug,
+                    snapshot,
+                    kept_by=kept_by,
+                    session_id=live_session,
+                    added_via=added_via,
+                )
+            except SecretRefused as error:
+                raise KeepError(
+                    "La página parece contener una clave o un token y no se ha guardado."
+                ) from error
+        self._wrote()
+        await self._publish(
+            session_id,
+            WEB_SNAPSHOT_STORED_KIND,
+            {
+                "url": stored.url,
+                "source_id": stored.source_id,
+                "title": stored.title,
+                "kept_by": kept_by,
+                "added_via": added_via,
+            },
+        )
+        return stored, False
+
     # -- helpers -------------------------------------------------------------------------------
 
     def _wrote(self) -> None:
@@ -513,6 +585,7 @@ __all__ = [
     "VOICE_COMMAND_KIND",
     "WEB_SEARCH_COMMAND",
     "KeepError",
+    "NotAWebPageError",
     "SearchNotDoneError",
     "UnknownSearchError",
     "WebSearcher",

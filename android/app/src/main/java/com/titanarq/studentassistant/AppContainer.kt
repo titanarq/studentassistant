@@ -26,6 +26,7 @@ import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.session.OpenSession
 import com.titanarq.studentassistant.session.SessionHolder
+import com.titanarq.studentassistant.share.ShareViewModel
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.spool.SpoolBudget
 import com.titanarq.studentassistant.spool.Spools
@@ -175,6 +176,11 @@ class AppContainer(
 
     private suspend fun credentialsFor(baseUrl: String): BackendCredentials? =
         backendStore.current().backends.firstOrNull { it.baseUrl == baseUrl }?.credentials
+
+    /** Creates the share screen's [ShareViewModel] for what another app shared ([sharedText], [sharedSubject]). */
+    fun shareViewModelFactory(sharedText: String?, sharedSubject: String?): ViewModelProvider.Factory = viewModelFactory {
+        initializer { ShareViewModel(sharedText, sharedSubject, backendClient, backendStore) }
+    }
 
     /** Creates the capture screen's [CaptureViewModel] for [session]. */
     fun captureViewModelFactory(session: OpenSession): ViewModelProvider.Factory = viewModelFactory {

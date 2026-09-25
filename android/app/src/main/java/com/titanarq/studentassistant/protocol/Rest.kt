@@ -251,3 +251,38 @@ data class SearchResponse(
     val query: String,
     val hits: List<SearchHit>,
 )
+
+// POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages
+
+/** How the address of a [WebPageAddRequest] arrived. */
+@Serializable
+enum class WebPageVia {
+    /** Pasted in the web UI. */
+    @SerialName("url")
+    URL,
+
+    /** Shared to this app ("Compartir -> Student Assistant"). */
+    @SerialName("share")
+    SHARE,
+}
+
+/** A web page the student gives by its [url] (http or https), stored as a source of the topic. */
+@Serializable
+data class WebPageAddRequest(
+    val url: String,
+    val via: WebPageVia? = null,
+)
+
+/**
+ * The stored snapshot: [sourceId] (`sources/web/NNN-<slug>.md`), [vaultId] (its vault-relative
+ * path), its [title], the fetched [url], and [alreadyKept] when the topic had that page already
+ * (nothing was fetched).
+ */
+@Serializable
+data class WebPageAddResponse(
+    @SerialName("source_id") val sourceId: String,
+    @SerialName("vault_id") val vaultId: String,
+    val title: String,
+    val url: String,
+    @SerialName("already_kept") val alreadyKept: Boolean,
+)
