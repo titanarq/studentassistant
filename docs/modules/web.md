@@ -157,8 +157,9 @@ token):
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
-  `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm` and
-  `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
+  `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
+  `WebSearchPanel`, `WebPageForm` and `BookTitleForm`; an unknown topic (404) shows the
+  backend's Spanish detail and none of the forms,
   and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
@@ -172,6 +173,16 @@ token):
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  `BookTitleForm` (#214, "Libro de texto", not shown for an unknown topic) shows the topic's
+  textbook title as `Libro «<title>»` (the title book pages are cited with) or "Este tema aún no
+  tiene libro de texto." when none is set, and a "Título del libro" input (`maxLength` 200,
+  `BOOK_TITLE_MAX`, prefilled with the stored title) with "Guardar"; the title the backend
+  answers replaces the shown one ("Título del libro guardado."). A 422's string `detail` (empty
+  title, or one that looks like a key) is shown as it comes; any other failure shows a generic
+  Spanish message and the shown title stays. `api.ts`: `fetchBook(s, t)` (`GET .../book`) and
+  `saveBook(s, t, title)` (`PUT .../book` with `{"title"}`) -> `BookResult`: `{kind: "ok",
+  title: string | null} | {kind: "refused", status, detail} | {kind: "error", status} | {kind:
+  "unreachable"}`.
   `WebSearchPanel` (#59, section "Buscar en Internet"): a "Qué buscar" search box and "Buscar"
   button (an empty query says "Escribe qué quieres buscar." without calling), then the topic's
   searches ("Búsquedas del tema", newest first, the ones asked by voice too): "«<query>» (pedida

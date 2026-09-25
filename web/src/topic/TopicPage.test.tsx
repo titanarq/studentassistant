@@ -31,8 +31,17 @@ function renderPage() {
   render(<TopicPage subjectId="historia" topicId="revolucion-francesa" />);
 }
 
-it("shows the subject and topic names, the topic card and the PDF upload", async () => {
-  stubApi({ "/api/subjects": SUBJECTS, "/api/subjects/historia/topics": TOPICS, [SUMMARY_PATH]: summary(0) });
+it("shows the subject and topic names, the topic card, the PDF upload and the book title", async () => {
+  stubApi({
+    "/api/subjects": SUBJECTS,
+    "/api/subjects/historia/topics": TOPICS,
+    [SUMMARY_PATH]: summary(0),
+    "/api/subjects/historia/topics/revolucion-francesa/book": jsonResponse({
+      subject_id: "historia",
+      topic_id: "revolucion-francesa",
+      title: "Historia del mundo contemporáneo",
+    }),
+  });
 
   renderPage();
 
@@ -43,6 +52,7 @@ it("shows the subject and topic names, the topic card and the PDF upload", async
   );
   expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "← Mesa de estudio" })).toHaveAttribute("href", "/");
+  expect(await screen.findByText("Libro «Historia del mundo contemporáneo»")).toBeInTheDocument();
 });
 
 it("reloads the card after a PDF is added", async () => {
@@ -89,6 +99,7 @@ it("shows the backend's Spanish detail for an unknown topic, without the upload"
     "No se pudo cargar el resumen del tema: No existe ese tema en la bóveda.",
   );
   expect(screen.queryByRole("form", { name: "Añadir un PDF" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("form", { name: "Libro de texto" })).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Tema La Revolución Francesa" })).toBeInTheDocument();
 });
 
