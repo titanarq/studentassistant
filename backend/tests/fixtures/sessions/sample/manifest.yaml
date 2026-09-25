@@ -1,0 +1,7 @@
+format_version: 1
+subject: biologia
+topic: la-celula
+language: es-ES
+stt_mode: client
+stt_provider: web-speech
+started_client_time_ms: 1760000000000

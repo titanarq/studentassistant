@@ -6,6 +6,7 @@ import struct
 import wave
 from pathlib import Path
 
+import pymupdf
 import pytest
 import yaml
 
@@ -240,3 +241,36 @@ def test_mode_mismatch_is_refused(tmp_path: Path) -> None:
         writer.append_transcript(_segment(TranscriptClientFinal, "s1", "hola", 0))
     with pytest.raises(RecordingError, match="server-mode"):
         read_recording(server)
+
+
+SAMPLE_DIR = Path(__file__).parent.parent / "fixtures" / "sessions" / "sample"
+
+
+def test_sample_fixture_loads_with_the_reader() -> None:
+    recording = read_recording(SAMPLE_DIR)
+
+    assert recording.manifest.stt_mode == "client"
+    assert recording.manifest.language == "es-ES"
+    assert recording.audio_path is None
+    finals = [m for m in recording.transcript if isinstance(m, TranscriptClientFinal)]
+    partials = [m for m in recording.transcript if isinstance(m, TranscriptClientPartial)]
+    assert len(finals) == 3
+    assert partials
+    assert finals[0].text == "La célula es la unidad básica de los seres vivos."
+    # Every partial precedes the final of its segment, and times are after the session start.
+    start = recording.manifest.started_client_time_ms
+    assert all(m.client_start_ms >= start for m in recording.transcript)
+    assert {m.segment_id for m in partials} <= {m.segment_id for m in finals}
+    (button,) = recording.events
+    assert isinstance(button, Button)
+    assert (button.button, button.source) == ("switch_source", "book")
+    (capture,) = recording.captures
+    # The capture comes after the switch, so it lands in the book's source context.
+    assert capture.metadata.client_time_ms > button.client_time_ms
+    (image,) = capture.metadata.images
+    (path,) = capture.image_paths
+    data = path.read_bytes()
+    assert data[:2] == b"\xff\xd8"  # JPEG
+    assert len(data) < 20_000
+    pixmap = pymupdf.Pixmap(str(path))
+    assert (pixmap.width, pixmap.height) == (image.width_px, image.height_px)
