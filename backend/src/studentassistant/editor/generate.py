@@ -12,6 +12,10 @@ patched. Then:
   committed without a tag, with the validator's errors as the warning; the last valid
   `apuntes.md`, if any, is left as it was.
 
+After a valid version, the editor looks for contradictions between the topic's sources
+(`contradictions.detect_contradictions`) and raises them as `contradiction` pending doubts; that
+second call failing, or an unended session of the topic, is only a warning of the result.
+
 Either way a `notes.generated` event is emitted (`on_event`, which the server publishes on the bus
 when a session of the topic is attached) and recorded in the editor's conversation
 (`conversations/editor.jsonl`), which keeps every call: a `context` record (model, prompt hash,
@@ -33,6 +37,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.contradictions import detect_contradictions as _detect
+from studentassistant.editor.doubts import OpenSessionError
 from studentassistant.editor.inputs import (
     MAX_ATTACHMENT_BYTES,
     MAX_PAGE_IMAGES,
@@ -84,6 +90,10 @@ class GenerationResult(BaseModel):
         default_factory=list, description="The validator's errors of the kept draft (Spanish)."
     )
     warning: str | None = Field(default=None, description="Spanish, for the student.")
+    contradictions: list[str] = Field(
+        default_factory=list,
+        description="Ids of the `contradiction` pending doubts raised after writing the notes.",
+    )
     model: str
 
 
@@ -127,12 +137,20 @@ async def generate_notes(
     clock: Clock = _utc_now,
     max_page_images: int = MAX_PAGE_IMAGES,
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
+    detect_contradictions: bool = True,
+    host: str | None = None,
 ) -> GenerationResult:
     """Write the topic's notes with the editor, validate, save, commit and tag them.
 
     `client` is an `editor` client (`get_client("editor", ledger=LedgerBinding(...))`; tests use
     `FakeClaude`); `sync` the vault's `GitSync`; `digest` reads the topic digest (#56);
     `on_event(kind, payload)` receives the `notes.generated` event.
+
+    After a valid version is written, and when `detect_contradictions` is true and the topic has
+    at least two citable sources (sessions included), the editor looks for contradictions between
+    the sources (`contradictions.detect_contradictions`, a second call); the ids it raises are in
+    `contradictions`. A failure there, or an unended session of the topic, never loses the notes:
+    it is a Spanish `warning` of the result.
 
     Raises:
         CostConfirmationRequiredError: a cost cap is reached and `confirm_over_cap` is false;
@@ -227,6 +245,25 @@ async def generate_notes(
         _save, vault, sync, subject_slug, topic_slug, assembled.topic_title, text, errors
     )
     result = result.model_copy(update={"attempts": attempts, "model": model})
+    if (
+        detect_contradictions
+        and not result.draft
+        and len(assembled.catalogue) + len(assembled.sessions) >= 2
+    ):
+        result = await _with_contradictions(
+            result,
+            vault,
+            subject_slug,
+            topic_slug,
+            client=client,
+            sync=sync,
+            host=host,
+            digest=digest,
+            confirm_over_cap=confirm_over_cap,
+            clock=clock,
+            max_page_images=max_page_images,
+            max_attachment_bytes=max_attachment_bytes,
+        )
     payload = result.model_dump(mode="json")
     await record(NOTES_GENERATED_KIND, model=model, prompt_hash=prompt.hash, detail=payload)
     sync.note_change()
@@ -238,6 +275,34 @@ async def generate_notes(
                 "could not publish notes.generated for %s/%s", subject_slug, topic_slug
             )
     return result
+
+
+OPEN_SESSION_WARNING = (
+    "Los apuntes están guardados, pero no se han buscado contradicciones entre tus fuentes porque"
+    " el tema tiene una sesión sin terminar: termínala y vuelve a preparar el tema."
+)
+DETECTION_FAILED_WARNING = (
+    "Los apuntes están guardados, pero no se han podido buscar contradicciones entre tus fuentes."
+)
+
+
+async def _with_contradictions(
+    result: GenerationResult,
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    **options: Any,
+) -> GenerationResult:
+    """`result` with the contradictions raised after it, or a warning when that failed."""
+    try:
+        found = await _detect(vault, subject_slug, topic_slug, **options)
+    except OpenSessionError:
+        return result.model_copy(update={"warning": OPEN_SESSION_WARNING})
+    except Exception:
+        # The notes are written and committed: nothing of the detection may lose them.
+        logger.exception("contradiction detection failed for %s/%s", subject_slug, topic_slug)
+        return result.model_copy(update={"warning": DETECTION_FAILED_WARNING})
+    return result.model_copy(update={"contradictions": found.raised, "warning": found.warning})
 
 
 def _save(

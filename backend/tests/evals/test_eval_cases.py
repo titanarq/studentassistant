@@ -77,7 +77,7 @@ def test_the_estimate_prices_every_role_from_the_configured_prices(tmp_path: Pat
     estimate = estimate_case(case, Settings())
     roles = {role.role: role for role in estimate.roles}
     assert set(roles) == {"observer", "transcriber", "editor"}
-    assert roles["transcriber"].calls == 1 and roles["editor"].calls == 1
+    assert roles["transcriber"].calls == 1 and roles["editor"].calls == 2
     assert roles["observer"].calls == 2  # three finals in one batch, plus the flush
     assert all(role.usd is not None and role.usd > 0 for role in roles.values())
     assert estimate.usd == pytest.approx(sum(role.usd or 0 for role in roles.values()))

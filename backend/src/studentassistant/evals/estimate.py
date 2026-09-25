@@ -9,7 +9,8 @@ cost of a run is read from its ledger afterwards and reported next to this.
   sends its prompt and the transcript so far (capped at `context_max_tokens`).
 - transcriber: one call per stored capture, `IMAGES_PER_PAGE` images each; out, the page's text.
 - editor: one "prepárame el tema", sending the whole transcript and every page; out, notes about
-  the length of the reference notes, plus its thinking.
+  the length of the reference notes, plus its thinking; then the search for contradictions
+  between the sources (#65), the same input again with its own prompt and a short answer.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ IMAGES_PER_PAGE = 2
 OBSERVER_OUTPUT_TOKENS = 1_000
 TRANSCRIBER_THINKING_TOKENS = 1_000
 EDITOR_THINKING_TOKENS = 8_000
+CONTRADICTIONS_OUTPUT_TOKENS = 3_000
 # A page with no reference text: about a full handwritten page.
 PAGE_TOKENS_DEFAULT = 600
 # The editor's context beyond sources: outline, pending queue, style guide, digest.
@@ -42,6 +44,7 @@ EDITOR_CONTEXT_TOKENS = 3_000
 OBSERVER_PROMPTS = ("observer", "structured-output")
 TRANSCRIBER_PROMPT = "page_transcription"
 EDITOR_PROMPT = "editor_generate"
+CONTRADICTIONS_PROMPT = "editor_contradictions"
 
 
 class RoleEstimate(BaseModel):
@@ -126,7 +129,10 @@ def estimate_case(case: EvalCase, settings: Settings) -> CaseEstimate:
         tout = sum(page_tokens) + pages * TRANSCRIBER_THINKING_TOKENS
         estimates.append(_price(settings, "transcriber", roles.transcriber.model, pages, tin, tout))
 
-    tin = _prompt_tokens(EDITOR_PROMPT) + transcript + sum(page_tokens) + EDITOR_CONTEXT_TOKENS
-    tout = math.ceil(tokens(case.reference_notes) * 1.5) + EDITOR_THINKING_TOKENS
-    estimates.append(_price(settings, "editor", roles.editor.model, 1, tin, tout))
+    topic = transcript + sum(page_tokens) + EDITOR_CONTEXT_TOKENS
+    notes_out = math.ceil(tokens(case.reference_notes) * 1.5)
+    tin = _prompt_tokens(EDITOR_PROMPT) + topic
+    tin += _prompt_tokens(CONTRADICTIONS_PROMPT) + topic + notes_out  # the notes are sent too
+    tout = notes_out + EDITOR_THINKING_TOKENS + CONTRADICTIONS_OUTPUT_TOKENS
+    estimates.append(_price(settings, "editor", roles.editor.model, 2, tin, tout))
     return CaseEstimate(case=case.name, roles=estimates)

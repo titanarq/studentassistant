@@ -28,6 +28,7 @@ from studentassistant.config import (
     SttSettings,
     VaultGitSettings,
 )
+from studentassistant.editor.contradictions import TOOL_NAME as CONTRADICTIONS_TOOL
 from studentassistant.editor.notes_format import (
     page_provenance,
     topic_source_resolver,
@@ -143,6 +144,7 @@ def test_a_replayed_session_becomes_pushed_master_notes(
                 REPLAY_TIMEOUT_S,
             )
             editor.reply_text(_notes(result.session_id))
+            editor.reply_tool(CONTRADICTIONS_TOOL, {"contradictions": []})
             generated = await asyncio.wait_for(
                 transport.request(
                     "POST",
@@ -158,7 +160,7 @@ def test_a_replayed_session_becomes_pushed_master_notes(
 
     assert status == 200, generated
     assert generated["version"] == 1 and generated["draft"] is False
-    assert observer.requests and len(transcriber.requests) == 1 and len(editor.requests) == 1
+    assert observer.requests and len(transcriber.requests) == 1 and len(editor.requests) == 2
 
     # -- what the remote holds: a fresh clone of the local "GitHub" --------------------------
     clone = tmp_path / "clone"

@@ -547,7 +547,30 @@ async def _assemble(
     max_page_images: int,
     max_attachment_bytes: int,
 ) -> tuple[EditorInput, str]:
-    prompt = load_prompt(PROMPT_NAME)
+    return await _assemble_with(
+        PROMPT_NAME,
+        vault,
+        subject_slug,
+        topic_slug,
+        instruction,
+        digest,
+        max_page_images,
+        max_attachment_bytes,
+    )
+
+
+async def _assemble_with(
+    prompt_name: str,
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    instruction: str,
+    digest: DigestReader | None,
+    max_page_images: int,
+    max_attachment_bytes: int,
+) -> tuple[EditorInput, str]:
+    """The topic assembled with the `prompt_name` prompt and a task instruction, and its hash."""
+    prompt = load_prompt(prompt_name)
     assembled = await asyncio.to_thread(
         assemble_input,
         vault,
