@@ -66,3 +66,5 @@ __all__ = [
     "register",
     "run_generator",
 ]
+
+from studentassistant.generators import quiz as quiz  # noqa: E402  (registers `quiz`)

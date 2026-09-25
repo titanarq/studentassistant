@@ -97,6 +97,35 @@ registry)` -> `MaterialsStatus` (`has_notes`, `notes_sha256`, `artifacts`: every
 sorted, then any other kind with a manifest). `read_artifact_meta(...)` reads one manifest
 (`GenerationError` when unreadable).
 
+### Quiz -- `quiz.py` (#75)
+
+Kind `quiz`, title "Quiz", prompt `prompts/generator_quiz.md`. Options (`QuizOptions`): `size`
+(1-30, default 10), `difficulty` (`easy`, `medium`, `hard` or `mixed`, the default), `types`
+(any of `multiple_choice`, `true_false`, `short_answer`; all by default). Claude records a
+`QuizDraft`; a question with no text or answer, a multiple choice whose answer is not one of its
+(de-duplicated) options, a true/false that is not `Verdadero`/`Falso`, or one of a type not asked
+for is dropped with a Spanish warning; the rest is cut to `size` (fewer is warned), numbered
+`q1`..., and no usable question at all is a `StructuredOutputError` (nothing written).
+
+`generated/quiz.yaml` (`Quiz`): `title`, `difficulty`, `questions` -- each `id`, `type`,
+`difficulty`, `question`, `options` (`[Verdadero, Falso]` for a true/false, empty for a short
+answer), `answer` (the option's exact text, or the expected short answer), `explanation`,
+`anchors` (its source ref: the note sections; also the item provenance of the manifest).
+
+Taking it: `read_quiz(vault, s, t) -> StoredQuiz | None` (`quiz`, the manifest's `built_at`,
+`notes_version`, `warnings`, `stale`, `stale_reason`). `record_quiz_result(vault, s, t,
+attempt, *, sync, clock) -> QuizResult` grades a `QuizAttempt` (`built_at` of the quiz answered,
+`answers` of `question` id, `given`, `self_assessed`, `duration_seconds`): a choice or a short
+answer equal to the expected one after `normalize_answer` (case, accents, spaces, surrounding
+punctuation) is right; a short answer that is not is judged by `self_assessed` when given
+(`graded_by: student`); no answer is wrong. The `QuizResult` (`time`, `quiz_built_at`,
+`generator_version`, `notes_version`, `notes_sha256`, `total`, `correct`, `duration_seconds`,
+`answers`: `GradedAnswer` with `expected`, `correct`, `graded_by`, `anchors`) is appended to
+`study/quiz-results.jsonl` (`vault.study`) and committed (`Resultado del quiz de s/t: c/n`).
+Refusals (`GenerationError`, Spanish): `QuizNotFoundError`, `QuizChangedError` (the quiz was
+generated again since `built_at`), `InvalidAttemptError`. `quiz_results(vault, s, t)` reads the
+history. REST: `server/quiz_routes.py` (`docs/modules/server.md`); web: `src/quiz/`.
+
 ### CLI and API
 
 - `studentassistant generate <kind> --topic <subject>/<topic> [-o key=value ...]

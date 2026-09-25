@@ -90,3 +90,11 @@ it("renders the live session view at /live, subscribed to the live stream", () =
   expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
   expect(opened).toEqual(["/api/live"]);
 });
+
+it("renders the quiz page at <topic>/quiz", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/quiz" />);
+
+  expect(screen.getByRole("heading", { name: "Quiz de revolucion-industrial" })).toBeInTheDocument();
+});

@@ -5,13 +5,14 @@ import { type TopicSummary, topicPath } from "../desk/api";
  * doubts pending review, and the notes version and generated material (✓ present, ○ not yet).
  * The notes item, once a version exists, links to the notes viewer (`<topic path>/notes`), and
  * the pending item to the pending-doubts panel (`<topic path>/pending`); beside the notes item,
- * "versiones" links to the notes version history (`<topic path>/versions`).
+ * "versiones" links to the notes version history (`<topic path>/versions`); "Quiz" links to the
+ * quiz page (`<topic path>/quiz`), where it can be generated and taken.
  */
 
 /** Generated material in the card's order, recognised by the file name under `generated/`. */
-export const MATERIALS: { label: string; stem: RegExp }[] = [
+export const MATERIALS: { label: string; stem: RegExp; page?: string }[] = [
   { label: "Esquema", stem: /^(outline|esquema)\b/i },
-  { label: "Quiz", stem: /^quiz\b/i },
+  { label: "Quiz", stem: /^quiz\b/i, page: "quiz" },
   { label: "Flashcards", stem: /^flashcards?\b/i },
   { label: "Examen", stem: /^(exam|examen|exercises|ejercicios)\b/i },
   { label: "Diapositivas", stem: /^(slides|diapositivas)\b/i },
@@ -45,7 +46,13 @@ function formatMinutes(minutes: number): string {
 
 export default function TopicCard({ summary }: { summary: TopicSummary }) {
   const { sessions, session_minutes, open_pending, notes_version, generated } = summary;
-  const materials = MATERIALS.map(({ label, stem }) => `${mark(hasMaterial(generated, stem))} ${label}`);
+  const base = topicPath(summary.subject_id, summary.topic_id);
+  const materials = MATERIALS.map(({ label, stem, page }) => (
+    <span key={label}>
+      {`  ${mark(hasMaterial(generated, stem))} `}
+      {page === undefined ? label : <a href={`${base}/${page}`}>{label}</a>}
+    </span>
+  ));
   return (
     <section aria-label="Resumen del tema">
       <dl>
@@ -75,7 +82,7 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
           ) : (
             "○ Apuntes"
           )}
-          {`  ${materials.join("  ")}`}
+          {materials}
         </dd>
       </dl>
     </section>

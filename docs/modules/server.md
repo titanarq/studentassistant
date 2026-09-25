@@ -416,6 +416,15 @@ Routes registered today:
   - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
     the same generation running 409, a reached cap 409 `cost_cap_reached` until
     `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.
+- **Quiz** (`server/quiz_routes.py`, #75): thin over `studentassistant.generators.quiz`;
+  generating it is `POST .../generated/quiz` above.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/quiz` -> `StoredQuiz` (`quiz`, `built_at`,
+    `notes_version`, `warnings`, `stale`, `stale_reason`); 404 when there is no quiz yet.
+  - `POST .../quiz/results`, body `QuizAttempt` (`built_at`, `answers`: `question`, `given`,
+    `self_assessed`; `duration_seconds`) -> `QuizResult`, graded, appended to
+    `study/quiz-results.jsonl` and committed. 404 no quiz, 409 the quiz was generated again
+    (`built_at` differs), 422 an answer to an unknown question or one twice.
+  - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
