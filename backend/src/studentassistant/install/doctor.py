@@ -105,7 +105,8 @@ def check_python_dependencies() -> Check:
         except metadata.PackageNotFoundError:
             missing.append(match.group(0))
     if missing:
-        return Check(name, "fallo", f"faltan {', '.join(missing)} (lanza `uv sync` en backend/)")
+        hint = "lanza `uv sync` en backend/, con `--extra whisper` si usas Whisper en el PC"
+        return Check(name, "fallo", f"faltan {', '.join(missing)} ({hint})")
     return Check(name, "ok", f"las {required} dependencias están instaladas")
 
 

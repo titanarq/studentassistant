@@ -55,8 +55,9 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   `[stt.options.faster-whisper]` `model` (default `DEFAULT_WHISPER_MODEL`, `large-v3-turbo`),
   `device` (`auto`|`cuda`|`cpu`, default `auto`) and `download_root` (default: the Hugging Face
   cache); `download` / `cached_model` via `faster_whisper.download_model`, `cuda_devices()` via
-  `ctranslate2.get_cuda_device_count()`. Both packages are optional and imported lazily; the
-  future faster-whisper provider (stt module) should read the same option keys.
+  `ctranslate2.get_cuda_device_count()`. Both packages come with the optional `whisper` extra
+  (`uv sync --extra whisper`; CI and `scripts/test.sh` never install it) and are imported
+  lazily; the future faster-whisper provider (stt module) should read the same option keys.
 - `doctor.py` -- `run_doctor(settings, *, api_call=False, probes=None) -> list[Check]`; every
   outside reach (GitHub host, the key check, the port, the running backend, the environment) is
   a `DoctorProbes` field. Checks, in order: Python dependencies (the distribution's

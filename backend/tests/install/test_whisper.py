@@ -59,8 +59,9 @@ def test_a_bad_model_is_a_spanish_error(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 def test_missing_faster_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
     hide_faster_whisper(monkeypatch)
-    with pytest.raises(whisper.WhisperError, match="faster-whisper no está instalado"):
+    with pytest.raises(whisper.WhisperError, match="faster-whisper no está instalado") as error:
         whisper.download(whisper.WhisperOptions("small", "auto", None))
+    assert "`uv sync --extra whisper`" in str(error.value)
 
 
 def test_cuda_devices(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
