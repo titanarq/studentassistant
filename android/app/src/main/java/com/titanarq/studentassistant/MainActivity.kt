@@ -19,6 +19,9 @@ import com.titanarq.studentassistant.capture.CaptureViewModel
 import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.PairedBackendsScreen
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
+import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.StudyDeskScreen
+import com.titanarq.studentassistant.desk.StudyDeskViewModel
 import com.titanarq.studentassistant.home.HomeScreen
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingScreen
@@ -49,6 +52,8 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
     val backendsViewModel: PairedBackendsViewModel = viewModel(factory = container.pairedBackendsViewModelFactory)
     val stored by backendsViewModel.backends.collectAsStateWithLifecycle()
     var route by rememberSaveable { mutableStateOf<Route?>(null) }
+    // The topic Route.DESK shows, as [subjectId, topicId, topicName] so it survives recreation.
+    var deskTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
 
     val current = stored
     LaunchedEffect(current == null) {
@@ -75,7 +80,25 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
             viewModel = viewModel<HomeViewModel>(factory = container.homeViewModelFactory),
             onSessionOpened = { route = Route.CAPTURE },
             onBackends = { route = Route.BACKENDS },
+            onReadNotes = { topic ->
+                deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
+                route = Route.DESK
+            },
         )
+        Route.DESK -> {
+            val topic = deskTopic?.takeIf { it.size == 3 }?.let { DeskTopic(it[0], it[1], it[2]) }
+            if (topic == null) {
+                LaunchedEffect(Unit) { route = Route.HOME }
+            } else {
+                StudyDeskScreen(
+                    viewModel = viewModel<StudyDeskViewModel>(
+                        key = "desk-${topic.subjectId}/${topic.topicId}",
+                        factory = container.studyDeskViewModelFactory(topic),
+                    ),
+                    onBack = { route = Route.HOME },
+                )
+            }
+        }
         Route.CAPTURE -> {
             val open by container.sessionHolder.current.collectAsStateWithLifecycle()
             val session = open
