@@ -1,0 +1,42 @@
+/* The subject's style guide page. */
+
+.style-guide-page {
+  max-width: 48rem;
+}
+
+.style-guide-intro {
+  color: #555;
+}
+
+.style-guide-rules li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #eee;
+}
+
+.style-guide-rule {
+  white-space: pre-wrap;
+  margin-right: 0.5rem;
+}
+
+.style-guide-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.style-guide-edit,
+.style-guide-add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-start;
+}
+
+.style-guide-edit textarea,
+.style-guide-add textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.style-guide-add {
+  margin-top: 1rem;
+}

@@ -42,7 +42,8 @@ token):
   `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, anything else
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`,
+  `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
@@ -60,7 +61,8 @@ token):
 - `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
   after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
   sesión: <fecha>" and "<n> dudas por revisar" when the list carries them ("Sesión abierta" is a
-  link to the live session view, `/live`). Empty states: no
+  link to the live session view, `/live`); under each subject's name a "Guía de estilo" link to
+  its style guide page. Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer) shows `TopicCard` and `PdfUploadForm`; an
@@ -161,6 +163,28 @@ token):
     4000 characters), "Enviar" and "Deshacer el último cambio" (enabled when `canUndo` and idle),
     and "Continuar igualmente" after a reached cost cap. An entry with `refs` lists "Fuentes:",
     each a button ("Ver la fuente: <text>") that opens it in the sources panel (`onOpenSource`).
+  - Proposed style rules (#216): a turn's `proposed_style_rules` (the `result` event and the
+    history turns, which carry only those the subject's guide does not have yet) become the
+    entry's `proposedRules`, shown in a group "Propuesta para la guía de estilo", each «rule»
+    with "Guardar para toda la asignatura" (named "Guardar para toda la asignatura: <rule>").
+    `useEditorChat`'s `confirmRule(rule)` posts it alone to `POST
+    /api/subjects/{s}/style-guide/rules` (one at a time, `confirming`); once saved, that rule and
+    any other already in the answered guide (`sameRule`) leave every entry, and `ruleNotice`
+    says "Guardado en la guía de estilo de la asignatura: «rule»." (or that the guide already
+    had it, or why it failed) with a "Ver la guía de estilo" link (`styleGuidePath`).
+- `src/styleGuide/` (#216): the subject's style guide over the API of #70
+  (docs/modules/server.md). `StyleGuidePage` (`/subjects/<s>/style-guide`: `← Mesa de estudio`,
+  "Guía de estilo de <subject name>") lists the rules ("Reglas de la guía de estilo"), each with
+  "Editar" (a "Regla <n>" text box, "Guardar"/"Cancelar") and "Borrar", and a "Nueva regla" box
+  with "Añadir" (disabled at `MAX_RULES`, 50; up to `MAX_RULE_CHARS`, 300, characters). Every
+  change writes the whole list (`PUT .../style-guide`) and shows the list the backend answers;
+  a rule already in the guide (`sameRule`: list marker dropped, spaces collapsed, case ignored)
+  is refused on the page; a refusal (422 invalid rule, 404 unknown subject, 503) shows its
+  Spanish `detail`. An unknown subject shows the backend's detail and no form.
+  - `api.ts`: `fetchStyleGuide(s) -> ReadResult<StyleGuide>` (`subject`, `rules`, `added`,
+    `commit`; `readStyleGuide`, lenient), `confirmStyleRules(s, rules)` (POST `.../rules`) and
+    `saveStyleGuide(s, rules)` (PUT) -> `ActionResult<StyleGuide>` (a FastAPI validation list as
+    `detail` is a plain `error`), `sameRule`, `styleGuidePagePath(s)`.
 - `src/pending/` (#80): the pending-doubts panel and the doubts-resolution flow. `PendingPage`
   (`← Tema <name>` link, "Dudas pendientes", "<N> dudas por revisar" in a polite live region, a
   "Por revisar / Cerradas / Todas" filter applied on the page, `applyFilter`) reads the editor's

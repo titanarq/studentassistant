@@ -6,7 +6,38 @@ import "./chat.css";
 /** Opens the sources panel on a footnote label; `trigger` gets the focus back on close. */
 export type OpenSource = (label: string, trigger: HTMLElement) => void;
 
-function Entry({ entry, onOpenSource }: { entry: ChatEntry; onOpenSource?: OpenSource }) {
+interface EntryProps {
+  entry: ChatEntry;
+  onOpenSource?: OpenSource;
+  /** The proposed rule being saved, if any: every "Guardar" waits for it. */
+  confirming: string | null;
+  onConfirmRule: (rule: string) => void;
+}
+
+function ProposedRules({ rules, confirming, onConfirmRule }: { rules: string[] } & Omit<EntryProps, "entry">) {
+  return (
+    <div className="chat-rules" role="group" aria-label="Propuesta para la guía de estilo">
+      <p>El editor propone guardarlo para toda la asignatura:</p>
+      <ul>
+        {rules.map((rule) => (
+          <li key={rule}>
+            <span className="chat-rule">«{rule}»</span>{" "}
+            <button
+              type="button"
+              aria-label={`Guardar para toda la asignatura: ${rule}`}
+              disabled={confirming !== null}
+              onClick={() => onConfirmRule(rule)}
+            >
+              {confirming === rule ? "Guardando…" : "Guardar para toda la asignatura"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Entry({ entry, onOpenSource, confirming, onConfirmRule }: EntryProps) {
   return (
     <li className="chat-entry" aria-busy={entry.streaming ? "true" : undefined}>
       <p className="chat-message">
@@ -44,6 +75,9 @@ function Entry({ entry, onOpenSource }: { entry: ChatEntry; onOpenSource?: OpenS
         </p>
       )}
       {entry.warning !== null && <p className="chat-warning">{entry.warning}</p>}
+      {entry.proposedRules.length > 0 && !entry.streaming && (
+        <ProposedRules rules={entry.proposedRules} confirming={confirming} onConfirmRule={onConfirmRule} />
+      )}
       {entry.failure !== null && (
         <p role="alert" className="chat-warning">
           No se pudo completar: {entry.failure}
@@ -59,7 +93,7 @@ function Entry({ entry, onOpenSource }: { entry: ChatEntry; onOpenSource?: OpenS
  * running turn as it streams, the diff each turn applied, "Deshacer el último cambio" and, when a
  * turn stopped at the cost cap, "Continuar igualmente". Enter sends; Shift+Enter is a new line.
  * A "¿Por qué pusiste esto?" answer lists the block's sources; `onOpenSource` opens one in the
- * sources panel.
+ * sources panel. The style rules a turn proposes each get "Guardar para toda la asignatura".
  */
 export default function EditorChat({ chat, onOpenSource }: { chat: Chat; onOpenSource?: OpenSource }) {
   const [draft, setDraft] = useState("");
@@ -88,12 +122,23 @@ export default function EditorChat({ chat, onOpenSource }: { chat: Chat; onOpenS
       )}
       <ol className="chat-log" role="log" aria-label="Conversación con el editor">
         {chat.entries.map((entry) => (
-          <Entry key={entry.key} entry={entry} onOpenSource={onOpenSource} />
+          <Entry
+            key={entry.key}
+            entry={entry}
+            onOpenSource={onOpenSource}
+            confirming={chat.confirming}
+            onConfirmRule={chat.confirmRule}
+          />
         ))}
       </ol>
       <div aria-live="polite">
         {chat.busy === "undo" && <p>Deshaciendo el último cambio…</p>}
         {chat.notice !== null && <p>{chat.notice}</p>}
+        {chat.ruleNotice !== null && (
+          <p className={chat.ruleNotice.saved ? undefined : "chat-warning"}>
+            {chat.ruleNotice.text} <a href={chat.styleGuidePath}>Ver la guía de estilo</a>
+          </p>
+        )}
       </div>
       {chat.overCap && idle && (
         <button type="button" onClick={chat.retry}>

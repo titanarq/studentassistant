@@ -3,9 +3,11 @@ import LivePage from "./live/LivePage";
 import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
 import PendingPage from "./pending/PendingPage";
+import StyleGuidePage from "./styleGuide/StyleGuidePage";
 import TopicPage from "./topic/TopicPage";
 import VersionsPage from "./versions/VersionsPage";
 
+const STYLE_GUIDE_PATH = /^\/subjects\/([^/]+)\/style-guide$/;
 const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions)?$/;
 
 function decode(segment: string): string | null {
@@ -24,6 +26,11 @@ export default function Router({ pathname = window.location.pathname }: { pathna
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/pair") return <PairPage />;
   if (path === "/live") return <LivePage />;
+  const guide = STYLE_GUIDE_PATH.exec(path);
+  if (guide) {
+    const subjectId = decode(guide[1]);
+    if (subjectId !== null) return <StyleGuidePage subjectId={subjectId} />;
+  }
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
     const subjectId = decode(topic[1]);

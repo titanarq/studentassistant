@@ -44,6 +44,10 @@ it("lists every subject with its topics, linking each to its topic page", async 
   const roman = within(historia).getByRole("link", { name: "El Imperio romano" });
   expect(roman.closest("li")).toHaveTextContent("Sesión abierta");
   expect(within(historia).getByRole("link", { name: "Sesión abierta" })).toHaveAttribute("href", "/live");
+  expect(within(historia).getByRole("link", { name: "Guía de estilo" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/style-guide",
+  );
   expect(roman.closest("li")).not.toHaveTextContent("Última sesión");
 
   const fisica = screen.getByRole("region", { name: "Física" });
