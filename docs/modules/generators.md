@@ -155,7 +155,11 @@ material.
   `state`): `PracticeAnswer` (`item`, `rating`, `given`, `self_assessed`). A flashcard needs a
   `rating` (`InvalidReviewError`); a question is graded by `quiz.grade` -- wrong is `again`, right
   is `good` unless the rating says `hard` or `easy`. An unknown key is
-  `PracticeItemNotFoundError`. One commit per review (`Repaso de s/t: <key> (<rating>)`).
+  `PracticeItemNotFoundError`. The review is appended to `study/practice.jsonl` before the call
+  returns, then only `sync.note_change()`: the reviews of one sitting are not checkpointed one by
+  one but committed together by `GitSync.run_due()` (after `commit_quiet_seconds` of quiet, at the
+  latest `commit_max_delay_seconds` after the first review) under the batch summary, or by
+  `flush()` at shutdown / `sync()` like any other pending change.
 
 Full quiz attempts (`quiz-results.jsonl`) do not feed the schedule. REST:
 `server/practice_routes.py` (`docs/modules/server.md`); web: `src/practice/`.

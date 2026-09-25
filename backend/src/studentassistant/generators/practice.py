@@ -67,12 +67,6 @@ MAX_NEW_LIMIT = 100
 
 Rating = Literal["again", "hard", "good", "easy"]
 Source = Literal["flashcards", "quiz"]
-RATING_NAMES: dict[Rating, str] = {
-    "again": "otra vez",
-    "hard": "difícil",
-    "good": "bien",
-    "easy": "fácil",
-}
 
 Clock = Callable[[], datetime]
 
@@ -436,7 +430,10 @@ def record_practice_review(
     sync: GitSync,
     clock: Clock = _utc_now,
 ) -> ReviewOutcome:
-    """Grade and store one review of a current practice item, commit it, answer its new state.
+    """Grade and store one review of a current practice item, answer its new state.
+
+    The record is on disk when this returns; the commit is left to `sync` (`note_change()`), so
+    the reviews of one sitting land in one commit (`run_due()`, `flush()`).
 
     Raises:
         PracticeItemNotFoundError: no current flashcard or quiz question has that key.
@@ -472,7 +469,8 @@ def record_practice_review(
             anchors=item.anchors,
         )
     append_study_record(vault, subject, topic, PRACTICE_LOG, review)
-    sync.checkpoint(f"Repaso de {subject}/{topic}: {item.key} ({RATING_NAMES[review.rating]})")
+    # The reviews of one sitting are committed together by the sync's quiet-period batch.
+    sync.note_change()
     state = replay(practice_history(vault, subject, topic)).get(item.key)
     assert state is not None  # just appended
     return ReviewOutcome(review=review, state=state)
