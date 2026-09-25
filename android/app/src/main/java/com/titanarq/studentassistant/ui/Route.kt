@@ -9,6 +9,9 @@ enum class Route {
     CAPTURE,
     BACKENDS,
     CONNECTION_TEST,
+
+    /** A topic's notes and the editor chat, in a WebView of the backend's web UI (#83). */
+    DESK,
 }
 
 /** Where the app opens: pairing when no backend is stored yet, else the subjects/topics home. */

@@ -18,6 +18,7 @@ from studentassistant.generators.base import (
     NotesBasis,
     NoteSection,
 )
+from studentassistant.generators.outline import OutlineGenerator as OutlineGenerator
 from studentassistant.generators.registry import (
     GeneratorRegistry,
     UnknownGeneratorError,
@@ -69,3 +70,5 @@ __all__ = [
     "register",
     "run_generator",
 ]
+
+from studentassistant.generators import quiz as quiz  # noqa: E402  (registers `quiz`)

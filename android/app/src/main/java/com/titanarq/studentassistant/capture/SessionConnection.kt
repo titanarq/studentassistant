@@ -41,8 +41,15 @@ sealed interface ConnectionState {
     /** Opening the first socket, or waiting for its `hello.ack`. */
     data object Connecting : ConnectionState
 
-    /** `hello.ack` received: the backend chose [sttMode]. */
-    data class Connected(val sttMode: SttMode, val clockOffsetMs: Long) : ConnectionState
+    /**
+     * `hello.ack` received: the backend chose [sttMode]. [vocabularyHints] is its
+     * `vocabulary_hints` (protocol 1.4, #228), null when it sent none.
+     */
+    data class Connected(
+        val sttMode: SttMode,
+        val clockOffsetMs: Long,
+        val vocabularyHints: List<String>? = null,
+    ) : ConnectionState
 
     /** The socket dropped; attempt [attempt] opens after a back-off. */
     data class Reconnecting(val attempt: Int, val reason: String) : ConnectionState
@@ -302,7 +309,7 @@ class SessionConnection(
         handshaken = true
         attempt = 0
         mode = ack.sttMode
-        _state.value = ConnectionState.Connected(ack.sttMode, ack.clockOffsetMs)
+        _state.value = ConnectionState.Connected(ack.sttMode, ack.clockOffsetMs, ack.vocabularyHints)
         val socket = socket ?: return
         if (ack.sttMode == SttMode.CLIENT) {
             val finals = backlog.finals()

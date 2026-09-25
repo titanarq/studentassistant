@@ -14,6 +14,7 @@ Thin capture client (ADR-0001), Spanish UI:
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
+- Study desk (#83): a topic's notes and the editor chat, the backend's web UI in a WebView.
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
   disconnected, resent in order on reconnect; an end while offline is completed later (see
   "Offline spool (#53)").
@@ -128,6 +129,39 @@ Thin capture client (ADR-0001), Spanish UI:
 - `OkHttpBackendClient.addWebPage` uses a client with a longer read timeout
   (`WEB_PAGE_READ_TIMEOUT_SECONDS`, 120 s): the backend answers after Claude fetched the page.
 
+## Study desk on the phone (#83)
+
+Package `desk`. The phone reads a topic's notes and talks to the editor through the backend's own
+web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes logic in the app
+(ADR-0001).
+
+- **«Apuntes»** on every topic card of the home screen opens `Route.DESK` for that
+  `DeskTopic(subjectId, topicId, topicName)` (kept by `MainActivity` across recreation).
+- **`StudyDesk.kt`** (pure, JVM-tested): `notesPageUrl(baseUrl, subjectId, topicId)` ->
+  `<base>/subjects/<s>/topics/<t>/notes` (each id percent-encoded as one segment, the base URL's
+  path/query dropped; null for a non-http(s) base), `backendOrigin(baseUrl)`,
+  `tokenCookie(token)` -> `sa_token=<token>; Path=/; HttpOnly; SameSite=Strict`,
+  `deskPage(baseUrl, token, topic)` -> `DeskPage(url, cookieUrl, cookie)` (its `toString()` hides
+  the cookie) and `isSameOrigin(url, baseUrl)` (scheme, host and port).
+- **Authentication**: a page cannot send `Authorization: Bearer` on its own loads and `fetch`
+  calls, so the backend also accepts the paired token from the `sa_token` cookie (server
+  `auth.TOKEN_COOKIE`, docs/modules/server.md). The screen sets it in the WebView `CookieManager`
+  for the backend's origin right before loading, and removes the WebView's cookies (then
+  flushes) when the screen is left, so the token does not stay in the WebView store. It is
+  never logged or put in a URL.
+- **`StudyDeskViewModel(store, topic)`** (`AppContainer.studyDeskViewModelFactory(topic)`, keyed
+  `desk-<subject>/<topic>`) reads the active backend once: `DeskUiState` `Loading`, `NoBackend`,
+  `InvalidBackend` or `Ready(backendName, baseUrl, page, reload, failure)`.
+  `onLoadFailed(status, detail)` records a main-frame failure (`401` ->
+  `DeskLoadFailure.Unauthorized`, «Vuelve a emparejarlo»; else `Failed("HTTP <n>" | detail)`);
+  `retry()` («Reintentar», «Recargar») clears it and bumps `reload`.
+- **`StudyDeskScreen`**: a bar with «Volver», «Apuntes de <tema>» and «Recargar» over the
+  WebView (JavaScript and DOM storage on, file/content access off). Links to another origin open
+  in the system browser; system back goes back in the WebView history, then home. A progress bar
+  shows while a page loads; a failure covers the page with its Spanish message.
+- Known gaps: the web layout is the desktop one (it wraps below 80rem, the chat under the notes);
+  no file chooser (PDF upload), downloads or microphone inside the WebView; nothing offline.
+
 ## Capture screen (#42)
 
 Package `capture`. The screen for one open session: CameraX preview, microphone in the STT mode
@@ -137,7 +171,9 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   (Spanish rationale; the session starts once the microphone is granted, the preview once the
   camera is), keeps the screen on (`View.keepScreenOn`) while shown, shows the back camera's
   CameraX `Preview`, the transcript (partials grey, finals black, auto-scrolled), the connection
-  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, and the
+  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, in
+  server STT mode the backend recognizer's warning while degraded (protocol 1.5 `stt.status`,
+  #222: its Spanish `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), and the
   buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
   **Terminar** (asks for confirmation). Back ("Salir") leaves the session open: the home screen
   offers "Continuar".
@@ -147,7 +183,8 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
   `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
   modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
-  `endFailure`). `start()` opens the socket; when `hello.ack` names the mode it starts the
+  `endFailure`, `sttWarning`: the last degraded `SttStatus`, cleared by an `ok` one and by every
+  new `hello.ack`, after which the backend repeats a status that still holds). `start()` opens the socket; when `hello.ack` names the mode it starts the
   `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
   `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
   `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops
@@ -179,7 +216,7 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `baseUrl + ws_path` with `Authorization: Bearer <token>` on its own OkHttp client (no read
   timeout, 10 s pings); tests use a scripted fake.
 - **`ClientTranscriber`** (ADR-0008's client-side interface: `providerId`, `language`,
-  `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
+  `vocabularyHints`, `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
   scope)`**, the default: continuous recognition by chaining one-utterance rounds of a
   `RecognizerEngine`, restarted at once after a result or silence and after 0.25/0.5/1/2/5 s when
   the recognizer fails; `Partial`s and one `Final` per utterance with client timestamps (start at
@@ -190,6 +227,15 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   `es-ES`, free-form, partial results, `EXTRA_PREFER_OFFLINE`, main thread only. The manifest
   declares `RECORD_AUDIO` and a `<queries>` entry for `android.speech.RecognitionService`
   (package visibility on Android 11+).
+- **Vocabulary hints** (protocol 1.4, #228): `CaptureViewModel.vocabularyHints` keeps the
+  session's latest list -- the one `hello.ack` brings (carried by `ConnectionState.Connected`, so
+  it is known before the microphone starts), replaced whenever a `notice` carries
+  `vocabulary_hints`; a missing list keeps the current one. It is set on every new transcriber
+  and on the running one, which passes it to `RecognizerEngine.startListening(language,
+  vocabularyHints, listener)` from its next round (a round in progress is not interrupted).
+  `AndroidSpeechRecognizerEngine` puts them in `RecognizerIntent.EXTRA_BIASING_STRINGS` on API
+  33+ (`biasingStrings(hints, sdkInt)`); older devices, and recognizers that do not support
+  biasing, ignore them.
 - **`AudioStreamer(source, clock, dispatcher)`** (server STT mode): reads an `AudioSource` in 100
   ms frames (1600 samples) off the main thread and hands each to `SessionConnection.sendAudio`
   with the client time of its first sample (the wall clock at the first frame plus the samples

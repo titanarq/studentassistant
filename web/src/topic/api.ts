@@ -81,3 +81,56 @@ export async function uploadPdf(
   if (!isImportedPdf(body)) return { kind: "error", status: response.status };
   return { kind: "ok", imported: body };
 }
+
+/**
+ * Client for `GET`/`PUT /api/subjects/{subject_id}/topics/{topic_id}/book` (#58, #214): the
+ * title of the topic's textbook, so book pages are cited as `Libro «Título», página N`. `title`
+ * is `null` when none was set. A refusal carries the backend's Spanish `detail` (422: an empty
+ * title, or one that looks like a key; 404: unknown topic).
+ */
+export type BookResult =
+  | { kind: "ok"; title: string | null }
+  | { kind: "refused"; status: number; detail: string }
+  | { kind: "error"; status: number }
+  | { kind: "unreachable" };
+
+/** The longest title the backend accepts (`MAX_TITLE_LENGTH` in `server/book_routes.py`). */
+export const BOOK_TITLE_MAX = 200;
+
+export function bookPath(subjectId: string, topicId: string): string {
+  return `/api/subjects/${encodeURIComponent(subjectId)}/topics/${encodeURIComponent(topicId)}/book`;
+}
+
+async function bookRequest(url: string, init?: RequestInit): Promise<BookResult> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    return { kind: "unreachable" };
+  }
+  const body = await readJson(response);
+  if (!response.ok) {
+    const detail = (body as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === "string" && detail !== "") {
+      return { kind: "refused", status: response.status, detail };
+    }
+    return { kind: "error", status: response.status };
+  }
+  const title = (body as { title?: unknown } | undefined)?.title;
+  if (typeof body !== "object" || body === null || !(title === null || typeof title === "string")) {
+    return { kind: "error", status: response.status };
+  }
+  return { kind: "ok", title };
+}
+
+export function fetchBook(subjectId: string, topicId: string): Promise<BookResult> {
+  return bookRequest(bookPath(subjectId, topicId));
+}
+
+export function saveBook(subjectId: string, topicId: string, title: string): Promise<BookResult> {
+  return bookRequest(bookPath(subjectId, topicId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+}

@@ -82,13 +82,16 @@ class FakeRecognizerEngine : RecognizerEngine {
         private set
     var lastLanguage: String? = null
         private set
+    var lastVocabularyHints: List<String>? = null
+        private set
     private var current: RecognizerListener? = null
 
     val listener: RecognizerListener get() = checkNotNull(current) { "not listening" }
 
-    override fun startListening(language: String, listener: RecognizerListener) {
+    override fun startListening(language: String, vocabularyHints: List<String>, listener: RecognizerListener) {
         starts++
         lastLanguage = language
+        lastVocabularyHints = vocabularyHints
         current = listener
     }
 
@@ -106,6 +109,11 @@ class FakeTranscriber(
     override val providerId: String = "android-speech",
     override val language: String = "es-ES",
 ) : ClientTranscriber {
+    override var vocabularyHints: List<String> = emptyList()
+
+    /** [vocabularyHints] when [start] was called. */
+    var hintsAtStart: List<String>? = null
+        private set
     var running = false
         private set
     var starts = 0
@@ -116,6 +124,7 @@ class FakeTranscriber(
     override fun start(onTranscript: (ClientTranscript) -> Unit, onError: (TranscriberError) -> Unit) {
         running = true
         starts++
+        hintsAtStart = vocabularyHints
         this.onTranscript = onTranscript
         this.onError = onError
     }

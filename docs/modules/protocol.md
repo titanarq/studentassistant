@@ -15,7 +15,8 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
   `capture_now`, `notice` e.g. pending count, `ack` of audio seq / captures). Since 1.4
   `hello.ack` and `notice` carry the optional `vocabulary_hints` (`protocol/README.md`
-  "Vocabulary hints").
+  "Vocabulary hints"); since 1.5 the server message `stt.status` reports the server-side STT
+  provider's state (`protocol/README.md` "STT status", #222).
 - REST error bodies `{"detail", "code"?}` (`code` since 1.2: `cost_cap_reached`,
   `doubt_closed`, `session_open`; `protocol/README.md` "REST errors"). Not a schema'd message:
   clients read error bodies leniently.
@@ -31,7 +32,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.4"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.5"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -39,7 +40,9 @@ Everything below is re-exported from the package root; other modules import only
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the
   discriminated union `ClientEvent`, its `CLIENT_EVENT_ADAPTER` and `parse_client_event`.
 - Server WS events: `HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`, `Notice`,
-  `ServerAck`; the union `ServerEvent`, `SERVER_EVENT_ADAPTER` and `parse_server_event`. Both parse
+  `SttStatus` (1.5: `state` `ok | reconnecting | unavailable`, optional `detail` of at most
+  `STT_STATUS_DETAIL_MAX_CHARS` = 300 characters; `STT_STATUS_SINCE` is `(1, 5)`), `ServerAck`;
+  the union `ServerEvent`, `SERVER_EVENT_ADAPTER` and `parse_server_event`. Both parse
   functions raise `pydantic.ValidationError` on an unknown or missing `type`. `HelloAck` and
   `Notice` carry the optional `vocabulary_hints` (1.4): 1 to `VOCABULARY_HINTS_MAX_ITEMS` (50)
   terms of 1 to `VOCABULARY_HINT_MAX_CHARS` (100) characters; `VOCABULARY_HINTS_SINCE` is `(1, 4)`.
@@ -63,14 +66,15 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.4"`: the capture page biases the browser recognizer towards
-  the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
+- Version: `PROTOCOL_VERSION` (`"1.5"`: the capture page shows the server-side STT status, #222;
+  since 1.4 it biases the browser recognizer towards the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`; the union
   `ClientEvent` discriminated on `type`, and `parseClientEvent`.
 - Server WS events: `HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`, `Notice`,
-  `ServerAck`; the union `ServerEvent` discriminated on `type`, and `parseServerEvent`. Both parse
+  `SttStatus` (1.5, `detail` bounded by `STT_STATUS_DETAIL_MAX_CHARS`), `ServerAck`; the union
+  `ServerEvent` discriminated on `type`, and `parseServerEvent`. Both parse
   functions throw on an unknown or missing `type`. `HelloAck` / `Notice` decode the 1.4
   `vocabulary_hints` (bounded by `VOCABULARY_HINTS_MAX_ITEMS` / `VOCABULARY_HINT_MAX_CHARS`).
 - REST bodies: the same names as the Python list above (`PairRequest` ... `CaptureUploadResponse`),
@@ -84,17 +88,17 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.3"`, for the topic's `digest_excerpt`; the 1.2 error `code`
-  needs nothing from the app, which decodes no error body, only the HTTP status; the 1.4
-  `vocabulary_hints` are decoded, as `HelloAck.vocabularyHints` / `Notice.vocabularyHints`, but
-  the app does not use them yet, so it keeps speaking 1.3),
+- Version: `PROTOCOL_VERSION` (`"1.5"`, for the server-side STT status `SttStatus`, #222; the
+  1.2 error `code` needs nothing from the app, which decodes no error body, only the HTTP status;
+  the 1.4 `vocabulary_hints`, decoded as `HelloAck.vocabularyHints` /
+  `Notice.vocabularyHints`, bias the client-side `SpeechRecognizer` on API 33+, #228),
   `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
   `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
   with the same message as the backend's) and `negotiate`.
 - Client WS events: the sealed `ClientEvent` (`Hello` with `ClientCapabilities` / `AudioFormat`,
   `TranscriptClientPartial`, `TranscriptClientFinal`, `Button`, `Marker`, `ClientAck`); server WS
   events: the sealed `ServerEvent` (`HelloAck`, `TranscriptPartial`, `TranscriptFinal`, `Command`,
-  `Notice`, `ServerAck`). Both are discriminated on the wire field `type` (`@SerialName` +
+  `Notice`, `SttStatus` with the enum `SttState`, `ServerAck`). Both are discriminated on the wire field `type` (`@SerialName` +
   `@JsonClassDiscriminator`); `decodeClientEvent` / `decodeServerEvent` throw
   `SerializationException` on an unknown or missing `type`, and `encodeClientEvent` /
   `encodeServerEvent` write it.

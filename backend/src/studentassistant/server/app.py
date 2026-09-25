@@ -56,6 +56,8 @@ from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMid
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
+from studentassistant.server.practice_routes import practice_router
+from studentassistant.server.quiz_routes import quiz_router
 from studentassistant.server.read_routes import read_router
 from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.redaction import install_log_redaction
@@ -64,6 +66,7 @@ from studentassistant.server.search_routes import search_router
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.style_guide_routes import style_guide_router
+from studentassistant.server.tutor_routes import tutor_router
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.web_search_routes import web_search_router
@@ -278,9 +281,12 @@ def create_app(
     app.include_router(doubts_router())
     app.include_router(revise_router())
     app.include_router(versions_router())
+    app.include_router(tutor_router())
     app.include_router(style_guide_router())
     app.include_router(generators_router())
     app.include_router(live_router())
+    app.include_router(quiz_router())
+    app.include_router(practice_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)

@@ -36,6 +36,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   notes/apuntes.md                           master notes (ADR-0005)
   notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
+  study/quiz-results.jsonl                   every quiz attempt, graded (generators, #75)
   ledger.jsonl                               LLM usage and cost per call
 ```
 
@@ -212,6 +213,15 @@ backslashes, NUL, anything outside a topic's `sources/<kind>/`, or a file that r
 followed) anywhere but that directory is a `SourcePathError`; a well-formed path with no file is a
 `SourceNotFoundError`; a sidecar that is not a YAML mapping is a `SourceFileError` (all three are
 `SourceError`s). A symlinked sidecar is never followed. Neither function writes or runs git.
+
+### Study history -- `study.py`
+`study/<name>.jsonl` under a topic: what the student did with the generated material (#75 writes
+`quiz-results`). `append_study_record(vault, s, t, name, record)` appends any Pydantic `record`
+(`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`) and returns the path;
+`read_study_records(vault, s, t, name, model)` reads them back (empty when there is none);
+`study_log_path`, `study_directory`. A name that is not `[a-z0-9-]` is `StudyLogError`; an
+unknown topic raises as `get_topic`. Nothing here runs git. Imported from
+`studentassistant.vault.study` (not re-exported by the package).
 
 ### Notes and generated material -- `notes.py`
 `read_notes(vault, subject_slug, topic_slug)` returns the text of `notes/apuntes.md`, or `None`

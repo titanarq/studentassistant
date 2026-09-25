@@ -47,6 +47,14 @@ hints hands the new list to the provider and, to a 1.4+ client, sends a `notice`
 last known `pending_count`, which the notice repeats); while that count is unknown, the new hints
 ride on the next forwarded observer `notice` instead. Terms that cannot be read cost only the hints.
 
+STT status (#222): in server mode the gateway reads the provider's `status` after every fed chunk
+(and at the handshake). When it turns degraded (`reconnecting`, `unavailable`) or recovers, the
+change is logged and published once as a persisted `stt.status` event (`{"state", "detail"?}`,
+`state` in `ok | reconnecting | unavailable`); each socket of the session forwards it as the 1.5
+`stt.status` message to a client that negotiated 1.5 or higher, and a client connecting while the
+provider is degraded gets the current status right after `hello.ack`. A socket never sends the
+same state twice in a row.
+
 Recording (`serve --record`): with a `SessionRecorder`, the handshake opens the session's
 recording, and each accepted client transcript message, `button`/`marker` and fed audio frame is
 appended to it (in a worker thread) as it is received; a recording that cannot be written is logged
@@ -71,6 +79,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from studentassistant.config import SttSettings
 from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY, STATE_OP_EVENT_KIND
 from studentassistant.protocol import (
+    STT_STATUS_SINCE,
     VOCABULARY_HINTS_SINCE,
     AudioFormat,
     AudioFrameError,
@@ -83,6 +92,7 @@ from studentassistant.protocol import (
     Marker,
     Notice,
     ServerAck,
+    SttStatus,
     TranscriptClientFinal,
     TranscriptClientPartial,
     TranscriptFinal,
@@ -103,6 +113,7 @@ from studentassistant.stt import (
     ClientSegment,
     InMemoryTranscriptSink,
     NormalisedSegment,
+    ProviderStatus,
     SpeechToTextProvider,
     TranscriptSink,
     provider_from_settings,
@@ -117,11 +128,14 @@ TRANSCRIPT_FINAL = "transcript.final"
 BUTTON = "button"
 MARKER = "marker"
 COMMAND_ACK = "command.ack"
+STT_STATUS = "stt.status"
 # Bus event kinds it forwards to the client (besides the transcript ones).
 COMMAND = "command"
 NOTICE = "notice"
 CAPTURE_STORED = CAPTURE_EVENT_KIND
-FORWARDED_KINDS = frozenset({TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, COMMAND, NOTICE, CAPTURE_STORED})
+FORWARDED_KINDS = frozenset(
+    {TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, COMMAND, NOTICE, CAPTURE_STORED, STT_STATUS}
+)
 # Bus event kinds a socket follows without forwarding them: the observer's ops (vocabulary hints).
 SUBSCRIBED_KINDS = FORWARDED_KINDS | {STATE_OP_EVENT_KIND}
 
@@ -145,6 +159,19 @@ client-clock reading at session start, as `InMemoryTranscriptSink` takes it)."""
 ProviderFactory = Callable[[SttSettings], SpeechToTextProvider]
 TermsLoader = Callable[[OpenSession], Awaitable[TopicTerms]]
 """Reads the terms of a session's topic for its vocabulary hints (never raises)."""
+
+
+SttState = Literal["ok", "reconnecting", "unavailable"]
+"""What the capture client is told about the server-side provider (protocol 1.5 `stt.status`)."""
+
+_OK: tuple[SttState, str | None] = ("ok", None)
+
+
+def _client_stt_status(status: ProviderStatus) -> tuple[SttState, str | None]:
+    """The provider's status as the client sees it: `idle` and `streaming` are both `ok`."""
+    if status.state == "reconnecting" or status.state == "unavailable":
+        return status.state, status.detail
+    return _OK
 
 
 def _default_sink(settings: SttSettings, clock_offset: float) -> TranscriptSink:
@@ -183,6 +210,8 @@ class ReceiveState:
     ended: bool = False
     # Backend clock minus client clock (ms), from the latest `hello` of the session.
     clock_offset_ms: int | None = None
+    # The server-side provider's status last published (`stt.status`); a session starts `ok`.
+    stt_status: tuple[SttState, str | None] = _OK
 
     @property
     def last_contiguous_seq(self) -> int | None:
@@ -296,6 +325,37 @@ class SessionGateway:
             if self._states.get(session_id) is state:
                 del self._states[session_id]
 
+    async def check_stt_status(self, state: ReceiveState, *, t: int) -> None:
+        """Publish `stt.status` when the provider's status changed since the last one (the caller
+        holds `state.lock`); `t` is the session time (ms) of the event.
+
+        Raises:
+            SessionNotAttachedError: the session is no longer on the bus.
+        """
+        if state.provider is None:
+            return
+        try:
+            current = _client_stt_status(state.provider.status)
+        except Exception:
+            logger.exception(
+                "the STT provider's status of session %s is unreadable", state.session_id
+            )
+            return
+        if current[0] == state.stt_status[0]:
+            return
+        state.stt_status = current
+        stt_state, detail = current
+        if stt_state == "ok":
+            logger.info("server-side STT of session %s recovered", state.session_id)
+        else:
+            logger.warning(
+                "server-side STT of session %s is %s: %s", state.session_id, stt_state, detail
+            )
+        payload: dict[str, Any] = {"state": stt_state}
+        if detail:
+            payload["detail"] = detail
+        await self.publish(state.session_id, STT_STATUS, "stt", payload, t=t)
+
     async def publish_segment(
         self,
         state: ReceiveState,
@@ -385,6 +445,9 @@ class _Connection:
         self.sends_hints = False
         self.sent_hints: list[str] = []
         self.pending_count: int | None = None
+        # Whether the negotiated version has `stt.status`, and the last state this socket sent.
+        self.sends_stt_status = False
+        self.sent_stt_state: SttState = "ok"
 
     # -- time ----------------------------------------------------------------------------------
 
@@ -473,6 +536,7 @@ class _Connection:
         self.vocabulary = SessionVocabulary(settings, terms)
         self.pending_count = terms.pending_count
         self.sends_hints = parse_version(version) >= VOCABULARY_HINTS_SINCE
+        self.sends_stt_status = parse_version(version) >= STT_STATUS_SINCE
         if self.mode == "server":
             if self.state.provider is None:
                 try:
@@ -515,6 +579,21 @@ class _Connection:
         if self.mode == "server" and acked is not None:
             # A reconnecting client learns where to resume its audio.
             await self.send(ServerAck(type="ack", audio_seq=acked, server_time_ms=now))
+        if self.mode == "server":
+            async with self.state.lock:
+                self._check_not_ended()
+                try:
+                    await self.gateway.check_stt_status(
+                        self.state, t=self.session_ms(hello.client_time_ms)
+                    )
+                except SessionNotAttachedError:
+                    raise self._not_active() from None
+                current = self.state.stt_status
+            # A client joining a degraded session is told at once (the event of a change this
+            # check just published is then not sent twice: see `_stt_status_message`).
+            message = self._stt_status_message({"state": current[0], "detail": current[1]})
+            if message is not None:
+                await self.send(message)
 
     async def _receive_loop(self) -> None:
         while True:
@@ -633,6 +712,10 @@ class _Connection:
                         await self._publish_segment(
                             state.server_segment_id(segment.is_final), segment, self.language
                         )
+                    try:
+                        await self.gateway.check_stt_status(state, t=round(chunk.end * 1000))
+                    except SessionNotAttachedError:
+                        raise self._not_active() from None
             acked = state.last_contiguous_seq
         if acked is not None:
             await self.send(
@@ -684,6 +767,8 @@ class _Connection:
                 message: ProtocolModel | None = self._on_state_op(event.payload)
             elif event.kind == CAPTURE_STORED and not event.persisted:
                 continue  # only a stored (persisted) capture is acknowledged
+            elif event.kind == STT_STATUS:
+                message = self._stt_status_message(event.payload)
             else:
                 message = _server_message(event.kind, event.payload, self.gateway.clock)
                 if isinstance(message, Notice):
@@ -694,6 +779,34 @@ class _Connection:
                 await self.send(message)
             except Exception:
                 return  # the socket is gone; the receive loop ends the connection
+
+    # -- STT status ----------------------------------------------------------------------------
+
+    def _stt_status_message(self, payload: Mapping[str, Any]) -> SttStatus | None:
+        """The `stt.status` for this client, or None: an older client, or no change for it."""
+        if not self.sends_stt_status:
+            return None
+        stt_state = payload.get("state")
+        if (
+            stt_state not in ("ok", "reconnecting", "unavailable")
+            or stt_state == self.sent_stt_state
+        ):
+            return None
+        detail = payload.get("detail") if stt_state != "ok" else None
+        try:
+            message = SttStatus(
+                type="stt.status",
+                state=stt_state,
+                detail=detail or None,
+                server_time_ms=self.gateway.clock(),
+            )
+        except ValidationError:
+            # A detail past the protocol's bound: the state still reaches the client.
+            message = SttStatus(
+                type="stt.status", state=stt_state, server_time_ms=self.gateway.clock()
+            )
+        self.sent_stt_state = stt_state
+        return message
 
     # -- vocabulary hints ----------------------------------------------------------------------
 
@@ -789,6 +902,7 @@ __all__ = [
     "MARKER",
     "MAX_PENDING_FRAMES",
     "NOTICE",
+    "STT_STATUS",
     "SUBSCRIBED_KINDS",
     "TRANSCRIPT_FINAL",
     "TRANSCRIPT_PARTIAL",

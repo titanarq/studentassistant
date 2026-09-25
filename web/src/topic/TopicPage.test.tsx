@@ -31,8 +31,17 @@ function renderPage() {
   render(<TopicPage subjectId="historia" topicId="revolucion-francesa" />);
 }
 
-it("shows the subject and topic names, the topic card and the PDF upload", async () => {
-  stubApi({ "/api/subjects": SUBJECTS, "/api/subjects/historia/topics": TOPICS, [SUMMARY_PATH]: summary(0) });
+it("shows the subject and topic names, the topic card, the PDF upload and the book title", async () => {
+  stubApi({
+    "/api/subjects": SUBJECTS,
+    "/api/subjects/historia/topics": TOPICS,
+    [SUMMARY_PATH]: summary(0),
+    "/api/subjects/historia/topics/revolucion-francesa/book": jsonResponse({
+      subject_id: "historia",
+      topic_id: "revolucion-francesa",
+      title: "Historia del mundo contemporáneo",
+    }),
+  });
 
   renderPage();
 
@@ -43,6 +52,7 @@ it("shows the subject and topic names, the topic card and the PDF upload", async
   );
   expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "← Mesa de estudio" })).toHaveAttribute("href", "/");
+  expect(await screen.findByText("Libro «Historia del mundo contemporáneo»")).toBeInTheDocument();
 });
 
 it("reloads the card after a PDF is added", async () => {
@@ -89,6 +99,7 @@ it("shows the backend's Spanish detail for an unknown topic, without the upload"
     "No se pudo cargar el resumen del tema: No existe ese tema en la bóveda.",
   );
   expect(screen.queryByRole("form", { name: "Añadir un PDF" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("form", { name: "Libro de texto" })).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Tema La Revolución Francesa" })).toBeInTheDocument();
 });
 
@@ -100,4 +111,31 @@ it("keeps the ids as names and shows an error when the backend is down", async (
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo conectar con el servidor.");
   expect(screen.getByRole("heading", { name: "Tema revolucion-francesa" })).toBeInTheDocument();
   expect(screen.getByText("Asignatura historia")).toBeInTheDocument();
+});
+
+it("shows the study materials and reloads the card after generating one", async () => {
+  let summaries = 0;
+  const generated = "/api/subjects/historia/topics/revolucion-francesa/generated";
+  stubApi({
+    "/api/subjects": SUBJECTS,
+    "/api/subjects/historia/topics": TOPICS,
+    [SUMMARY_PATH]: () => {
+      summaries++;
+      return summary(0);
+    },
+    "/api/generators": jsonResponse([]),
+    [generated]: jsonResponse({
+      subject: "historia",
+      topic: "revolucion-francesa",
+      has_notes: true,
+      artifacts: [{ kind: "esquema", title: "Esquema", generated: false, files: [] }],
+    }),
+    [`POST ${generated}/esquema`]: jsonResponse({ kind: "esquema", notes: { sha256: "f", version: 3 }, warnings: [] }),
+  });
+
+  renderPage();
+
+  expect(await screen.findByRole("heading", { name: "Material de estudio" })).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Generar" }));
+  await vi.waitFor(() => expect(summaries).toBe(2));
 });

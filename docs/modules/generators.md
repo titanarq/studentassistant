@@ -97,6 +97,73 @@ registry)` -> `MaterialsStatus` (`has_notes`, `notes_sha256`, `artifacts`: every
 sorted, then any other kind with a manifest). `read_artifact_meta(...)` reads one manifest
 (`GenerationError` when unreadable).
 
+### Quiz -- `quiz.py` (#75)
+
+Kind `quiz`, title "Quiz", prompt `prompts/generator_quiz.md`. Options (`QuizOptions`): `size`
+(1-30, default 10), `difficulty` (`easy`, `medium`, `hard` or `mixed`, the default), `types`
+(any of `multiple_choice`, `true_false`, `short_answer`; all by default). Claude records a
+`QuizDraft`; a question with no text or answer, a multiple choice whose answer is not one of its
+(de-duplicated) options, a true/false that is not `Verdadero`/`Falso`, or one of a type not asked
+for is dropped with a Spanish warning; the rest is cut to `size` (fewer is warned), numbered
+`q1`..., and no usable question at all is a `StructuredOutputError` (nothing written).
+
+`generated/quiz.yaml` (`Quiz`): `title`, `difficulty`, `questions` -- each `id`, `type`,
+`difficulty`, `question`, `options` (`[Verdadero, Falso]` for a true/false, empty for a short
+answer), `answer` (the option's exact text, or the expected short answer), `explanation`,
+`anchors` (its source ref: the note sections; also the item provenance of the manifest).
+
+Taking it: `read_quiz(vault, s, t) -> StoredQuiz | None` (`quiz`, the manifest's `built_at`,
+`notes_version`, `warnings`, `stale`, `stale_reason`). `record_quiz_result(vault, s, t,
+attempt, *, sync, clock) -> QuizResult` grades a `QuizAttempt` (`built_at` of the quiz answered,
+`answers` of `question` id, `given`, `self_assessed`, `duration_seconds`): a choice or a short
+answer equal to the expected one after `normalize_answer` (case, accents, spaces, surrounding
+punctuation) is right; a short answer that is not is judged by `self_assessed` when given
+(`graded_by: student`); no answer is wrong. The `QuizResult` (`time`, `quiz_built_at`,
+`generator_version`, `notes_version`, `notes_sha256`, `total`, `correct`, `duration_seconds`,
+`answers`: `GradedAnswer` with `expected`, `correct`, `graded_by`, `anchors`) is appended to
+`study/quiz-results.jsonl` (`vault.study`) and committed (`Resultado del quiz de s/t: c/n`).
+Refusals (`GenerationError`, Spanish): `QuizNotFoundError`, `QuizChangedError` (the quiz was
+generated again since `built_at`), `InvalidAttemptError`. `quiz_results(vault, s, t)` reads the
+history. REST: `server/quiz_routes.py` (`docs/modules/server.md`); web: `src/quiz/`.
+
+### Practice with spaced repetition -- `practice.py` (#81)
+
+Not a generator: it practises the topic's current flashcards and quiz questions. Items
+(`practice_items(vault, s, t) -> (items, warnings)`) are `PracticeItem` (`key`, `source`
+`flashcards|quiz`, `prompt`, `answer`, `question_type`, `options`, `explanation`, `anchors`), keyed
+stably: `flashcards:<card id>` and `quiz:<first 12 hex of sha256(normalize_answer(question))>`
+(`quiz_item_key`), so a regenerated quiz asking the same question keeps its history; an item that
+leaves the material is no longer offered. Warnings (Spanish): no flashcards nor quiz, a stale
+material.
+
+- History: every review is a `PracticeReview` (`time`, `item`, `source`, `rating`, and for a
+  question `given`, `correct`, `graded_by`; `anchors`) appended to `study/practice.jsonl`
+  (`vault.study`, merges by union). `practice_history(...)` reads it. The schedule is never
+  stored: `replay(reviews)` recomputes each item's `ItemState` (`reviews`, `repetitions`,
+  `lapses`, `ease`, `interval_days`, `first_review`, `last_review`, `last_rating`, `due`) in time
+  order, so two PCs' logs give the same schedule.
+- `schedule(state, rating, now)` (pure), SM-2 variant, ratings `again|hard|good|easy`: ease starts
+  at 2.5, never under 1.3 nor over 3.5; `again` -0.2 ease, repetitions to 0 (a lapse when it was
+  learned), due in 10 minutes; `hard` -0.15 ease, 1 day first, else interval × 1.2; `good` 1 day,
+  then 6, then interval × ease; `easy` +0.15 ease, 4 days first, else interval × ease × 1.3;
+  intervals capped at 365 days.
+- `practice_queue(vault, s, t, *, now=None, new_limit=10, tz=None) -> PracticeQueue`: `queue` of
+  `QueuedItem` (`item`, `state` or none) -- the items due (oldest due first), then never-seen items
+  up to `new_limit` minus those first reviewed on the day of `now` (in `tz`, local by default) --,
+  `counts` (`total`, `due`, `new`, `unseen`, `learned`, `new_today`), `next_due`, `warnings`.
+- `record_practice_review(vault, s, t, answer, *, sync, clock) -> ReviewOutcome` (`review`,
+  `state`): `PracticeAnswer` (`item`, `rating`, `given`, `self_assessed`). A flashcard needs a
+  `rating` (`InvalidReviewError`); a question is graded by `quiz.grade` -- wrong is `again`, right
+  is `good` unless the rating says `hard` or `easy`. An unknown key is
+  `PracticeItemNotFoundError`. The review is appended to `study/practice.jsonl` before the call
+  returns, then only `sync.note_change()`: the reviews of one sitting are not checkpointed one by
+  one but committed together by `GitSync.run_due()` (after `commit_quiet_seconds` of quiet, at the
+  latest `commit_max_delay_seconds` after the first review) under the batch summary, or by
+  `flush()` at shutdown / `sync()` like any other pending change.
+
+Full quiz attempts (`quiz-results.jsonl`) do not feed the schedule. REST:
+`server/practice_routes.py` (`docs/modules/server.md`); web: `src/practice/`.
+
 ### CLI and API
 
 - `studentassistant generate <kind> --topic <subject>/<topic> [-o key=value ...]
@@ -105,6 +172,37 @@ sorted, then any other kind with a manifest). `read_artifact_meta(...)` reads on
   it. Values of `-o` are JSON when they parse (`size=10`, `split=true`), text otherwise.
 - REST (`server/generators_routes.py`, see `docs/modules/server.md`): `GET /api/generators`,
   `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`.
+
+## Outline -- kind `esquema` (#74)
+
+`generators/outline.py`; `OutlineGenerator` (title `Esquema`, version 1, no options) is registered
+on `default_registry`, so `studentassistant generate esquema --topic <s>/<t>` and
+`POST .../generated/esquema` run it. It writes one file, `generated/esquema.md`, plus the
+framework's `generated/esquema.meta.yaml` (notes version, provenance, stale marking).
+
+- Claude (role `generator`, prompt `prompts/generator_outline.v1.md`, tool `record_outline`)
+  answers an `OutlineDraft`: a **flat** list of `OutlineDraftNode` (`id`, `parent` -- an earlier
+  node's id or null --, `title`, `gloss` or null, `anchors`), because strict tools refuse
+  recursive schemas. The draft is checked (unique ids, parents before children, at most
+  `MAX_DEPTH` = 4 levels, no empty title); a draft that fails is re-asked once by
+  `llm.structured`. `OutlineDraft.to_outline(title)` builds the tree.
+- `Outline` (`title` -- the topic's, the mind map's root --, `nodes`) and `OutlineNode` (`title`,
+  `gloss`, `anchors` without `#`, `children`): titles and glosses are one line, an empty title or
+  more than `MAX_DEPTH` levels is a `ValidationError`. `walk()` yields `(number, level, node)` in
+  document order (`"1"`, `"1.2"`, `"1.2.1"`); `provenance()` is one `ItemProvenance` per node,
+  named by that number.
+- `render_outline(outline, *, known_anchors=None) -> str` (pure): `# Esquema: <tema>`, top-level
+  nodes as `## 1. Título` with their gloss and `Apuntes:` links (`../notes/apuntes.md#<anchor>`),
+  deeper nodes as nested bullets `- **1.2 Título**: glosa · [#ancla](...)`, then `## Mapa mental`
+  with `render_mindmap(outline)`: one fenced `mermaid` `mindmap` block (`root(("Tema"))`, level 1
+  `n1("...")`, deeper `n1_2["..."]`). `mermaid_label(text)` quotes each label and replaces what
+  mermaid would misread (`"` and backtick -> `'`, `<...>` -> `‹...›`, `#name;` entity codes,
+  `%%`); `<` in the Markdown body is written `&lt;`.
+- Provenance: a node with no anchor, or citing an anchor the notes lack, is kept, marked in the
+  Markdown (`*(sin sección de los apuntes)*`, `` `#x` *(no está en los apuntes)* ``) and reported
+  by the framework in `unresolved` and a warning.
+- Golden rendering: `backend/tests/fixtures/generators/esquema.md` (open it on GitHub to see the
+  mind map).
 
 ## Flashcards -- `flashcards.py` (kind `flashcards`, #76)
 
@@ -126,7 +224,7 @@ note's GUID is `guid_for(subject, topic, card id)`. A card's `id` (`c<8 hex>[-n]
 generations (`assign_ids`): the previous cards are shown to Claude, whose reused `id` is kept when
 it is an earlier card's and not given twice; else a card whose normalized front equals an earlier
 card's takes its id; else a new id from the front's hash. Items are the card ids with their
-anchors. The web downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
+anchors. The web ("Material de estudio", #79) downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
 
 ## Exercises and mock exam -- `exam.py` (kind `examen`, #77)
 
@@ -150,7 +248,8 @@ printed. Files under `generated/`, the statements apart from the solutions:
 Extra items beyond the options are cut, questions without points, questions not adding up to
 `total_points` and rubrics not adding up to their question's points are kept and reported as
 Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
-web lists the two PDFs under "Descargas" through `GET .../generated/files/{name}` (#76).
+web lists the two PDFs and previews the Markdown in "Material de estudio" (#79) through `GET
+.../generated/files/{name}`.
 
 ## Slides -- `slides.py` (kind `diapositivas`, #78)
 
@@ -177,6 +276,6 @@ Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["ma
 `["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
 (unset: Marp finds Chrome/Chromium itself). Marp needs Node and a Chromium-based browser; it is
 not a Python dependency. Items are the slides (`d01`, `d02`...) with their anchors. The web lists
-the PDF/PPTX under Descargas through `GET .../generated/files/{name}`. Tests use a stand-in
+the PDF/PPTX in "Material de estudio" (#79) through `GET .../generated/files/{name}`. Tests use a stand-in
 exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
 `@pytest.mark.integration` (`SA_TEST_MARP`).

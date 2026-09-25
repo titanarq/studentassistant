@@ -105,7 +105,7 @@ class SessionConnectionTest {
         connection.send(Button(ButtonName.IMPORTANT, null, 7))
         socket.open()
         runCurrent()
-        assertEquals(listOf(Hello("1.3", capabilities, clock.now)), socket.sent)
+        assertEquals(listOf(Hello("1.5", capabilities, clock.now)), socket.sent)
 
         socket.receive(ack(SttMode.CLIENT, offset = 42))
         runCurrent()

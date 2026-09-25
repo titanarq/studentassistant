@@ -19,12 +19,44 @@
   hints (protocol 1.4, #227): the list of `hello.ack.vocabulary_hints`, replaced by every
   `notice` that carries one, becomes the `phrases` of each recognition it (re)starts where the
   browser has contextual biasing (`SpeechRecognitionPhrase`); a browser without it, or whose
-  service answers `phrases-not-supported`, recognizes without them and shows nothing. A server `capture_now` command takes a burst with that `command_id` and is
+  service answers `phrases-not-supported`, recognizes without them and shows nothing. In
+  `server` mode a degraded `stt.status` (protocol 1.5, #222) shows its Spanish `detail` (or a
+  fallback sentence per state) as an alert, "Estado de la transcripción", until an `ok` status
+  clears it; the session goes on meanwhile. A server `capture_now` command takes a burst with that `command_id` and is
   answered with an `ack`. Denied or missing camera/microphone, a browser without
   `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
   Spanish explanation. The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
+- **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
+  offers "Preguntar al tutor" (section "Estudiar con el tutor"; `SessionPicker`'s optional
+  `onTutor(TutorTopic {subjectId, topicId, subjectName, topicName})`), and `CapturePage` shows
+  `TutorScreen` for that topic instead -- no session is opened; "← Volver" returns to the picker.
+  The student asks by voice ("Preguntar por voz": one Web Speech recognition, `es-ES`, not
+  continuous, its interim text shown as "Lo que te oigo"; pressing again stops it; the final text
+  is sent at once) or types ("Escribe tu pregunta", Enter or "Preguntar", up to 1000 characters).
+  The answer streams ("El tutor está pensando…" until the first delta), each `[^label]` shown as
+  `[label]`, then "Fuentes:" lists its refs (`[label] text`); a "Ver los apuntes del tema" link
+  leads to the notes page and its sources panel. With "Leer las respuestas en voz alta" (on by
+  default where `speechSynthesis` exists) the answer is read aloud in Spanish without the marks,
+  and "Parar de leer" stops it. The topic's earlier questions are shown first. A missing
+  recognition API, a denied microphone, silence, a network or other recognition failure each get
+  their own Spanish sentence (`VOICE_PROBLEMS`) and typing still works; a browser without
+  synthesis says the answers are only written. A reached cost cap offers "Continuar
+  igualmente" (the same question with `confirm_over_cap`).
+  - `api.ts`: `fetchTutorHistory(s, t) -> ReadResult<TutorTurn[]>` (`GET .../tutor`),
+    `askTutor(s, t, question, {confirmOverCap, onDelta}) -> StreamOutcome<TutorAnswer>` (`POST
+    .../tutor`, read with the editor chat's `streamTurn`), `describeTutorFailure`,
+    `readTutorAnswer`, `readTutorHistory`, `tutorPath`.
+  - `voiceQuestion.ts`: `listenForQuestion(callbacks)` (a `VoiceQuestionStarter`:
+    `onInterim`, `onFinal`, `onProblem(VoiceProblemCode)`, `onEnd`; returns `{stop()}`),
+    `voiceQuestionSupported()`; the recognition constructor comes from
+    `capture/webSpeechTranscriber.ts`.
+  - `speech.ts`: `SpeechOutput {supported, speak(text, onEnd?), cancel()}`,
+    `browserSpeechOutput()` (`speechSynthesis`, `es-ES`, a Spanish voice when the browser lists
+    one), `spokenText(reply)` and `shownText(reply)`.
+  - `TutorScreen({subjectId, topicId, subjectName, topicName, onClose?, speech?, listen?,
+    voiceSupported?})`: the last three are the seams tests use.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -60,8 +92,8 @@ token):
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
-  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`,
-  `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../practice` -> `PracticePage`,
+  `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except
@@ -97,7 +129,7 @@ token):
     `sendTranscript(segment, kind)`, `sendButton(button, clientTimeMs, source?)`,
     `sendAck(commandId, clientTimeMs)` and `sendAudio(frame)`, and `close()`. Decoded server
     events arrive through `onEvent` as `SessionSocketEvent` (`transcript`, `command`, `notice`,
-    `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
+    `sttStatus` (1.5), `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
     (pcm16 / 16 kHz / mono) and `WEB_SPEECH_PROVIDER` are the `hello` defaults.
   - `transcriber.ts`: the seam a provider is swapped at (ADR-0008) --
     `ClientTranscriber {readonly provider: string; start(): Promise<void>; stop(): void;
@@ -153,21 +185,33 @@ token):
   its style guide page. Empty states: no
   subjects, a subject without topics; a failing topic list is reported inside its subject only.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer) shows `TopicCard`, `PdfUploadForm` and
-  `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
+  <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
+  `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
+  `WebSearchPanel`, `WebPageForm` and `BookTitleForm`; an unknown topic (404) shows the
+  backend's Spanish detail and none of the forms,
   and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
-  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`),
-  and, when there are any, Descargas: a `download` link per generated `.apkg`/`.csv`/`.pdf`/`.pptx`
-  (`flashcards (Anki)`, `flashcards (CSV)`...) to `GET /api/.../generated/files/<name>`.
-  `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
+  Generating, previewing and downloading each material is `MaterialsPanel` (#79; the card's
+  former "Descargas" row moved there, per material).
+  `PrepareTopic` ("Prepárame el tema", below) sits above the materials and the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  `BookTitleForm` (#214, "Libro de texto", not shown for an unknown topic) shows the topic's
+  textbook title as `Libro «<title>»` (the title book pages are cited with) or "Este tema aún no
+  tiene libro de texto." when none is set, and a "Título del libro" input (`maxLength` 200,
+  `BOOK_TITLE_MAX`, prefilled with the stored title) with "Guardar"; the title the backend
+  answers replaces the shown one ("Título del libro guardado."). A 422's string `detail` (empty
+  title, or one that looks like a key) is shown as it comes; any other failure shows a generic
+  Spanish message and the shown title stays. `api.ts`: `fetchBook(s, t)` (`GET .../book`) and
+  `saveBook(s, t, title)` (`PUT .../book` with `{"title"}`) -> `BookResult`: `{kind: "ok",
+  title: string | null} | {kind: "refused", status, detail} | {kind: "error", status} | {kind:
+  "unreachable"}`.
   `WebSearchPanel` (#59, section "Buscar en Internet"): a "Qué buscar" search box and "Buscar"
   button (an empty query says "Escribe qué quieres buscar." without calling), then the topic's
   searches ("Búsquedas del tema", newest first, the ones asked by voice too): "«<query>» (pedida
@@ -382,6 +426,57 @@ token):
     time, the `page_path` image through `sourceUrl`, "Transcribiendo…"/"Transcrita"/"No se pudo
     transcribir: <message>" and the transcription in a `details`). The stream is closed when the
     page goes away.
+- `src/quiz/` (#75): `QuizPage` at `<topic path>/quiz` (the topic card's "Quiz" links to it;
+  `← Tema <name>` link, heading "Quiz de <name>", "<n> preguntas · dificultad <d> · de los
+  apuntes v<N>", a `note` when the quiz is stale). Each question is a group "Pregunta <n>" with
+  radios (multiple choice, true/false) or a "Tu respuesta" text; "Corregir" shows per question
+  "✓ Correcta" or "✗ Incorrecta. La respuesta es: …", the explanation and "En los apuntes:" links
+  to `<topic path>/notes#<anchor>`; a short answer that does not match (compared like the backend,
+  `normalizeAnswer`) asks "¿La has acertado?" (Sí/No). "Aciertos: <c> de <n>"; "Guardar
+  resultado" (once every short answer is judged) posts the attempt and shows "Resultado guardado:
+  <c> de <n>." with "Repetir el quiz". "Intentos anteriores" lists the latest ten results. The
+  form "Generar un quiz" ("Número de preguntas" 1-30, "Dificultad" Variada/Fácil/Media/Difícil,
+  "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
+  the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->
+  `ActionResult` (read leniently: `readStoredQuiz`, `readResult(s)`).
+- `src/practice/` (#81): `PracticePage` at `<topic path>/practice` (the topic card's "Práctica" ->
+  "Practicar con repetición espaciada" links to it; heading "Practicar <name>", "<d> para repasar
+  · <n> nuevas · <l> de <t> ya vistas", the backend's warnings as `note`s). One `article` at a
+  time: a flashcard ("Mostrar respuesta", its back and "En los apuntes:" links, then the ratings
+  "Otra vez"/"Difícil"/"Bien"/"Fácil") or a quiz question (radios or "Tu respuesta", "Comprobar",
+  "✓ Correcta"/"✗ Incorrecta…" -- a short answer that does not match asks "¿La has acertado?" --,
+  the explanation, then "Difícil"/"Bien"/"Fácil" for a right answer or "Siguiente" for a wrong
+  one). Each review is posted at once; the `status` line says when the item comes back ("Bien:
+  volverá en 6 días."), an item rated "Otra vez" is asked again at the end of the session, a
+  refusal is an `alert` and keeps the item. With nothing left: "¡Hecho! Has repasado…" or "No
+  tienes nada que repasar ahora." with "Próximo repaso: <fecha>", and "Volver a comprobar".
+  `api.ts`: `fetchPractice`, `sendReview` -> `ActionResult` (read leniently: `readQueue`,
+  `readOutcome`), `describeInterval`.
+- `src/materials/` (#79): `MaterialsPanel`, section "Material de estudio" on the topic page, over
+  `GET .../generated` (`MaterialsStatus`) and `GET /api/generators` (only for each kind's
+  description). One item per kind in the order of study (`STUDY_ORDER`: esquema, quiz, flashcards,
+  examen, diapositivas, then any other alphabetically), named by its Spanish title: "○ Sin
+  generar" or "✓ Generado el <fecha y hora> · de los apuntes v<N>", a "Desactualizado" badge with
+  the backend's `stale_reason` when stale, then its links -- "Hacer el quiz" (the quiz page),
+  "Ver <nombre>" per top-level `.md` file (the preview page), a `download` link per
+  `.apkg`/`.csv`/`.pdf`/`.pptx` ("flashcards (Anki)", "diapositivas (PowerPoint)"...) -- and
+  "Generar" / "Generar de nuevo" ("Generando…" while it runs), which posts `POST
+  .../generated/<kind>` with default options (`{options: {}, confirm_over_cap}`; the quiz page
+  keeps its own options form). The button is disabled while running and while the topic has no
+  notes ("Todavía no hay apuntes: prepara el tema..."); a kind no longer registered (no title)
+  has none. A refusal is an `alert` with the Spanish `detail`, plus "Generar igualmente" past the
+  cost cap; a generation's warnings are listed under the item. After a generation the page
+  reloads (`onGenerated`: the card and, through `refreshKey`, the section); without
+  `onGenerated` the section reads itself again. A list that cannot be read is plain text.
+  `MaterialPreviewPage` at `<topic path>/material/<name>` (a top-level file name): `← Tema
+  <name>`, heading "<title> de <tema>" (the file's stem in brackets when it is not the kind's own,
+  "Ejercicios y examen (examen-soluciones)"), "De los apuntes v<N> · Descargar <name>", a `note`
+  "Desactualizado <reason>" when stale, then the file (`GET .../generated/files/<name>` as text)
+  rendered by `NotesView` over `parseNotes`, so no markup of it reaches the DOM (a mind map or a
+  Marp deck shows as its Markdown source). `api.ts`: `fetchGenerators`, `fetchMaterials`,
+  `fetchGeneratedText` (`ReadResult`), `generateMaterial(s, t, kind, confirmOverCap)`
+  (`ActionResult<Generated>`: `kind`, `notesVersion`, `warnings`), `fileUrl`, `previewPath`,
+  `generatedName`; lenient readers `readGenerators`, `readMaterials`, `readGenerated`.
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>

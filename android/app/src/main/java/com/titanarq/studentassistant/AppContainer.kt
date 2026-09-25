@@ -22,6 +22,8 @@ import com.titanarq.studentassistant.capture.OkHttpSessionSocketFactory
 import com.titanarq.studentassistant.capture.SessionFinisher
 import com.titanarq.studentassistant.capture.SessionSocketFactory
 import com.titanarq.studentassistant.capture.StillCamera
+import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.StudyDeskViewModel
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.session.OpenSession
@@ -176,6 +178,11 @@ class AppContainer(
 
     private suspend fun credentialsFor(baseUrl: String): BackendCredentials? =
         backendStore.current().backends.firstOrNull { it.baseUrl == baseUrl }?.credentials
+
+    /** Creates the study desk screen's [StudyDeskViewModel] for [topic] (#83). */
+    fun studyDeskViewModelFactory(topic: DeskTopic): ViewModelProvider.Factory = viewModelFactory {
+        initializer { StudyDeskViewModel(backendStore, topic) }
+    }
 
     /** Creates the share screen's [ShareViewModel] for what another app shared ([sharedText], [sharedSubject]). */
     fun shareViewModelFactory(sharedText: String?, sharedSubject: String?): ViewModelProvider.Factory = viewModelFactory {

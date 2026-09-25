@@ -20,7 +20,7 @@ from typing import ClassVar
 
 from studentassistant.config import DEFAULT_STT_MAX_BACKLOG_SECONDS, SttSettings
 from studentassistant.stt.models import AudioChunk, NormalisedSegment
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import ProviderStatus, SpeechToTextProvider
 from studentassistant.stt.registry import provider_from_settings
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,11 @@ class BufferedProvider(SpeechToTextProvider):
         """Pass the hints straight to the wrapped provider (they apply to its next inference)."""
         super().set_vocabulary(hints)
         self.inner.set_vocabulary(hints)
+
+    @property
+    def status(self) -> ProviderStatus:
+        """The wrapped provider's status."""
+        return self.inner.status
 
     @property
     def backlog_seconds(self) -> float:

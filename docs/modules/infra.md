@@ -81,7 +81,10 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`
   and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
   means git's own); the server port is free or answered by our `/api/health`; the service is
-  `active`. The CLI adds a first `Configuración` line (an invalid config is a `FALLO`).
+  `active`; Marp CLI (`check_marp`: `generators.marp_command[0]` found on the `environ` probe's
+  `PATH`, `<command> --version` within 30 s gives the version; missing or failing is an `aviso`
+  with the `npm install -g @marp-team/marp-cli` hint, since only the slides' PDF/PPTX export
+  needs it). The CLI adds a first `Configuración` line (an invalid config is a `FALLO`).
 
 ### `create_app()`
 `studentassistant/server/app.py`. A factory, not a module-level `app`: uvicorn, the CLI and every

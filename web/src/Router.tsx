@@ -1,15 +1,19 @@
 import App from "./App";
 import CapturePage from "./capture/CapturePage";
 import LivePage from "./live/LivePage";
+import MaterialPreviewPage from "./materials/MaterialPreviewPage";
 import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
 import PendingPage from "./pending/PendingPage";
+import PracticePage from "./practice/PracticePage";
+import QuizPage from "./quiz/QuizPage";
 import StyleGuidePage from "./styleGuide/StyleGuidePage";
 import TopicPage from "./topic/TopicPage";
 import VersionsPage from "./versions/VersionsPage";
 
 const STYLE_GUIDE_PATH = /^\/subjects\/([^/]+)\/style-guide$/;
-const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions)?$/;
+const MATERIAL_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)\/material\/([^/]+)$/;
+const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions|\/quiz|\/practice)?$/;
 
 function decode(segment: string): string | null {
   try {
@@ -35,6 +39,13 @@ export default function Router({ pathname = window.location.pathname }: { pathna
     const subjectId = decode(guide[1]);
     if (subjectId !== null) return <StyleGuidePage subjectId={subjectId} />;
   }
+  const material = MATERIAL_PATH.exec(path);
+  if (material) {
+    const [subjectId, topicId, name] = material.slice(1).map(decode);
+    if (subjectId !== null && topicId !== null && name !== null) {
+      return <MaterialPreviewPage subjectId={subjectId} topicId={topicId} name={name} />;
+    }
+  }
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
     const subjectId = decode(topic[1]);
@@ -42,6 +53,8 @@ export default function Router({ pathname = window.location.pathname }: { pathna
     if (subjectId !== null && topicId !== null) {
       if (topic[3] === "/notes") return <NotesPage subjectId={subjectId} topicId={topicId} />;
       if (topic[3] === "/versions") return <VersionsPage subjectId={subjectId} topicId={topicId} />;
+      if (topic[3] === "/quiz") return <QuizPage subjectId={subjectId} topicId={topicId} />;
+      if (topic[3] === "/practice") return <PracticePage subjectId={subjectId} topicId={topicId} />;
       if (topic[3] === "/pending") return <PendingPage subjectId={subjectId} topicId={topicId} />;
       return <TopicPage subjectId={subjectId} topicId={topicId} />;
     }

@@ -3,7 +3,12 @@
 from studentassistant.stt.buffered import BufferedProvider, buffered_provider_from_settings
 from studentassistant.stt.models import AudioChunk, ClientSegment, NormalisedSegment
 from studentassistant.stt.pipeline import EventBus, SessionLookup, TranscriptPipeline
-from studentassistant.stt.provider import SpeechToTextProvider
+from studentassistant.stt.provider import (
+    DEGRADED_STATES,
+    ProviderState,
+    ProviderStatus,
+    SpeechToTextProvider,
+)
 from studentassistant.stt.registry import (
     ENTRY_POINT_GROUP,
     NotServerModeError,
@@ -24,6 +29,7 @@ from studentassistant.stt.vocabulary import (
 )
 
 __all__ = [
+    "DEGRADED_STATES",
     "ENTRY_POINT_GROUP",
     "AudioChunk",
     "BufferedProvider",
@@ -32,6 +38,8 @@ __all__ = [
     "InMemoryTranscriptSink",
     "NormalisedSegment",
     "NotServerModeError",
+    "ProviderState",
+    "ProviderStatus",
     "SessionLookup",
     "SpeechToTextProvider",
     "TranscriptAssembler",

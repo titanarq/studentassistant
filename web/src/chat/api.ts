@@ -124,7 +124,7 @@ export function readRevision(body: unknown): RevisionResult | null {
   };
 }
 
-function readRefs(value: unknown): ChatRef[] {
+export function readRefs(value: unknown): ChatRef[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((ref) =>
     isObject(ref) && typeof ref.label === "string" ? [{ label: ref.label, kind: text(ref.kind), text: text(ref.text, ref.label) }] : [],
@@ -217,7 +217,7 @@ function parseData(data: string): unknown {
  * an `error` event inside the stream as `refused` with its own status (a reached cost cap is
  * `overCap` by its `code` `cost_cap_reached`, so the caller can repeat it with `confirm_over_cap`).
  */
-async function streamTurn<T>(
+export async function streamTurn<T>(
   path: string,
   body: Json,
   read: (body: unknown) => T | null,

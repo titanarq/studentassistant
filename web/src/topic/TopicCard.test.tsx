@@ -113,26 +113,29 @@ it.each([
   );
 });
 
-it("links the flashcards deck and CSV for download", () => {
-  const root = "subjects/historia/topics/revolucion-francesa/generated";
-  render(
-    <TopicCard
-      summary={summary({
-        generated: [`${root}/flashcards.apkg`, `${root}/flashcards.csv`, `${root}/flashcards.yaml`],
-      })}
-    />,
-  );
+it("links the quiz item to the quiz page", () => {
+  render(<TopicCard summary={summary()} />);
 
-  expect(field("Material")).toHaveTextContent("✓ Flashcards");
-  const files = "/api/subjects/historia/topics/revolucion-francesa/generated/files";
-  const anki = screen.getByRole("link", { name: "flashcards (Anki)" });
-  expect(anki).toHaveAttribute("href", `${files}/flashcards.apkg`);
-  expect(anki).toHaveAttribute("download");
-  expect(screen.getByRole("link", { name: "flashcards (CSV)" })).toHaveAttribute("href", `${files}/flashcards.csv`);
-  expect(screen.queryByRole("link", { name: /yaml/ })).toBeNull();
+  expect(screen.getByRole("link", { name: "Quiz" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/quiz",
+  );
 });
 
-it("has no downloads section without downloadable files", () => {
-  render(<TopicCard summary={summary()} />);
+it("marks the flashcards present and leaves their downloads to the materials section", () => {
+  const root = "subjects/historia/topics/revolucion-francesa/generated";
+  render(<TopicCard summary={summary({ generated: [`${root}/flashcards.apkg`, `${root}/flashcards.csv`] })} />);
+
+  expect(field("Material")).toHaveTextContent("✓ Flashcards");
   expect(screen.queryByText("Descargas", { selector: "dt" })).toBeNull();
+  expect(screen.queryByRole("link", { name: /Anki/ })).toBeNull();
+});
+
+it("links the spaced-repetition practice", () => {
+  render(<TopicCard summary={summary()} />);
+
+  expect(screen.getByRole("link", { name: "Practicar con repetición espaciada" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/practice",
+  );
 });

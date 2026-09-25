@@ -807,6 +807,26 @@ describe("what the backend sends back", () => {
     );
   });
 
+  it("warns while the server's recognizer is degraded and clears the warning when it recovers", async () => {
+    renderScreen();
+    await open("server");
+    const warning = () => screen.queryByRole("alert", { name: "Estado de la transcripción" });
+    expect(warning()).not.toBeInTheDocument();
+
+    const lost = "Se ha perdido la conexión con Google Cloud; se reintenta en 5 s.";
+    await push({ type: "stt.status", state: "reconnecting", detail: lost, server_time_ms: NOW });
+    expect(warning()).toHaveTextContent(lost);
+
+    await push({ type: "stt.status", state: "ok", server_time_ms: NOW });
+    expect(warning()).not.toBeInTheDocument();
+
+    // A status without a detail of its own still says what it means.
+    await push({ type: "stt.status", state: "unavailable", server_time_ms: NOW });
+    expect(warning()).toHaveTextContent("La transcripción del servidor no está disponible");
+    // The session goes on: nothing blocks the page.
+    expect(screen.getByRole("button", { name: "Importante" })).toBeEnabled();
+  });
+
   it("takes a burst and answers the ack when the backend asks for capture_now", async () => {
     renderScreen();
     await open();
@@ -874,5 +894,34 @@ describe("CapturePage", () => {
 
     expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
     expect(fakes.videoTrack.readyState).toBe("ended");
+  });
+
+  it("leads from the chosen topic to the voice tutor and back, without opening a session", async () => {
+    backend({
+      "/api/subjects": () =>
+        jsonResponse({ subjects: [{ subject_id: "biologia", name: "Biología" }] }),
+      "/api/subjects/biologia/topics": () =>
+        jsonResponse({
+          subject_id: "biologia",
+          topics: [{ topic_id: "fotosintesis", subject_id: "biologia", name: "Fotosíntesis" }],
+        }),
+      "/api/subjects/biologia/topics/fotosintesis/tutor": () =>
+        jsonResponse({ subject: "biologia", topic: "fotosintesis", turns: [] }),
+    });
+    render(<CapturePage now={() => NOW} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Biología" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Fotosíntesis" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Preguntar al tutor" }));
+
+    expect(await screen.findByRole("heading", { name: "Preguntar al tutor" })).toBeInTheDocument();
+    expect(screen.getByText(/Biología · Fotosíntesis/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Todavía no le has preguntado nada sobre este tema."),
+    ).toBeInTheDocument();
+    expect(fakes.sockets).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "← Volver" }));
+    expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
   });
 });

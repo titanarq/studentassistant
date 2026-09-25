@@ -19,6 +19,7 @@ import {
   PROTOCOL_VERSION,
   ProtocolDecodeError,
   type ServerEvent,
+  STT_STATUS_DETAIL_MAX_CHARS,
   VOCABULARY_HINT_MAX_CHARS,
   VOCABULARY_HINTS_MAX_ITEMS,
 } from "./index";
@@ -129,17 +130,31 @@ describe("vocabulary hints", () => {
   });
 });
 
+describe("stt.status", () => {
+  const status = { type: "stt.status", state: "ok", server_time_ms: 1 };
+
+  it("has a known state and an optional bounded detail", () => {
+    expect(parseMessage("server.stt.status", status)).toStrictEqual(status);
+    const degraded = { ...status, state: "unavailable", detail: "x".repeat(STT_STATUS_DETAIL_MAX_CHARS) };
+    expect(parseMessage("server.stt.status", degraded)).toStrictEqual(degraded);
+    expect(() => parseMessage("server.stt.status", { ...status, state: "idle" })).toThrow(/state/);
+    for (const bad of ["", "x".repeat(STT_STATUS_DETAIL_MAX_CHARS + 1)]) {
+      expect(() => parseMessage("server.stt.status", { ...status, detail: bad })).toThrow(/detail/);
+    }
+  });
+});
+
 describe("protocol_version", () => {
-  it("is 1.4", () => {
-    expect(PROTOCOL_VERSION).toBe("1.4");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 4]);
+  it("is 1.5", () => {
+    expect(PROTOCOL_VERSION).toBe("1.5");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 5]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.4; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.5; update the older side so both share MAJOR version 1",
     );
   });
 
@@ -168,6 +183,8 @@ function describeServerEvent(event: ServerEvent): string {
       return event.command;
     case "notice":
       return `${event.pending_count} pending`;
+    case "stt.status":
+      return event.detail ?? event.state;
     case "ack":
       return `ack ${event.audio_seq ?? ""} ${event.capture_ids?.join(",") ?? ""}`;
     default:

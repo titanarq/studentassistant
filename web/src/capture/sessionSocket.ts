@@ -26,6 +26,7 @@ import {
   type ServerAck,
   type ServerEvent,
   type SourceKind,
+  type SttStatus,
   type TranscriptClientFinal,
   type TranscriptClientPartial,
   type TranscriptFinal,
@@ -81,6 +82,11 @@ export type SessionSocketEvent =
   | { kind: "command"; event: Command }
   /** Status for the student, such as how many doubts await review. */
   | { kind: "notice"; event: Notice }
+  /**
+   * Since 1.5, server STT mode: the backend's own recognizer stopped or resumed transcribing the
+   * audio this page streams. Sent once per change; `ok` clears the warning.
+   */
+  | { kind: "sttStatus"; event: SttStatus }
   /** The backend stored audio up to `audio_seq` and/or the listed captures. */
   | { kind: "ack"; event: ServerAck }
   /**
@@ -258,6 +264,9 @@ export class SessionSocket {
         break;
       case "notice":
         this.notify({ kind: "notice", event: decoded });
+        break;
+      case "stt.status":
+        this.notify({ kind: "sttStatus", event: decoded });
         break;
       case "ack":
         this.notify({ kind: "ack", event: decoded });

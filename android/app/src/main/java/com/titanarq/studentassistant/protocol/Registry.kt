@@ -49,6 +49,7 @@ val MESSAGE_CODECS: Map<String, MessageCodec> = mapOf(
     "server.transcript.final" to server<TranscriptFinal>(),
     "server.command" to server<Command>(),
     "server.notice" to server<Notice>(),
+    "server.stt.status" to server<SttStatus>(),
     "server.ack" to server<ServerAck>(),
     "rest.pair.request" to rest<PairRequest>(),
     "rest.pair.response" to rest<PairResponse>(),

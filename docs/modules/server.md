@@ -390,6 +390,25 @@ Routes registered today:
     ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
     nothing to undo or a file changed after that turn 409. Needs the bearer check like every
     non-exempt route.
+- **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over
+  `editor.tutor` (`docs/modules/editor.md`), over the vault and `GitSync` of the
+  `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only
+  reads the notes, so it does **not** take the notes lock (it answers while "prepárame el tema" or
+  a chat turn runs); one question per topic runs at a time (its own lock). Used by the web capture
+  page's tutor; the phone follows in #248.
+  - `POST /api/subjects/{subject_id}/topics/{topic_id}/tutor`, body `{"question": "¿Qué era la
+    derivada?", "confirm_over_cap": false}` (`question` 1-1000 characters) -> the same
+    Server-Sent Events stream as `notes/why`: `reply.delta` `{"text", "attempt": 1}`, then
+    `result` -- the `TutorAnswer`: `question`, `reply` (with the notes' `[^label]` marks),
+    `refs` (`{label, kind, text, source_id, path}` per notes footnote the answer cites, in
+    order), `warning`, `model` -- or `error` `{"status", "detail", "code"?}` (a reached cost cap
+    409 `cost_cap_reached` until `confirm_over_cap`; a Claude refusal or failure 502). The
+    question runs in its own task; the answer is appended to `conversations/tutor.jsonl`.
+  - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, question, reply, refs, warning}`, oldest
+    first). Reads only; works without `llm_transport`.
+  - Errors before the stream, Spanish `detail`: no `llm_transport` 503, a vault that cannot be
+    opened 503, an unknown topic 404, no notes yet 409, another question of the topic running
+    409, an empty or too long question 422. Needs the bearer check like every non-exempt route.
 - **Notes versions** (`server/versions_routes.py`): thin over `editor.versions`
   (`docs/modules/editor.md`), over the vault and `GitSync` of the `SessionService`. No Claude
   call: every route works without `llm_transport`.
@@ -439,6 +458,23 @@ Routes registered today:
   - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
     the same generation running 409, a reached cap 409 `cost_cap_reached` until
     `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.
+- **Quiz** (`server/quiz_routes.py`, #75): thin over `studentassistant.generators.quiz`;
+  generating it is `POST .../generated/quiz` above.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/quiz` -> `StoredQuiz` (`quiz`, `built_at`,
+    `notes_version`, `warnings`, `stale`, `stale_reason`); 404 when there is no quiz yet.
+  - `POST .../quiz/results`, body `QuizAttempt` (`built_at`, `answers`: `question`, `given`,
+    `self_assessed`; `duration_seconds`) -> `QuizResult`, graded, appended to
+    `study/quiz-results.jsonl` and committed. 404 no quiz, 409 the quiz was generated again
+    (`built_at` differs), 422 an answer to an unknown question or one twice.
+  - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
+- **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
+    (`now`, `queue` of `{item, state}`, `counts`, `next_due`, `warnings`); `new_limit` 0-100,
+    default 10 new items a day. 500 when a material cannot be read.
+  - `POST .../practice/reviews`, body `PracticeAnswer` (`item`, `rating`, `given`,
+    `self_assessed`) -> `ReviewOutcome` (`review`, `state`), appended to `study/practice.jsonl`
+    and committed with the sitting's batch (`note_change()`). 404 an item no longer in the
+    material, 422 a flashcard review without a rating.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
@@ -489,14 +525,24 @@ Every request passes three ASGI middlewares, in this order:
 3. **Bearer check** (`server/auth.py`, `BearerAuthMiddleware`): every HTTP route except
    `EXEMPT_ROUTES` -- `GET /api/health`, `POST /api/pair`, `POST /api/pair/codes` -- needs
    `Authorization: Bearer <token>` of a paired device, else 401 with `WWW-Authenticate: Bearer`.
-   A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
+   Without that header the token is also taken from the `sa_token` cookie (`auth.TOKEN_COOKIE`,
+   #83): the Android app sets it in its WebView's cookie jar to show the web UI on the phone,
+   since a page cannot put a header on its own loads and `fetch` calls. A present bearer header
+   wins (a wrong one is 401 even with a valid cookie). The cookie is ambient, so against CSRF a
+   request authenticated **only** by it (no bearer header; a device token, not the loopback
+   trust) whose method is not GET/HEAD/OPTIONS must come from this backend's own pages
+   (`auth.same_site_origin`): its `Origin` -- or, without one, its `Referer` -- must name the
+   same host as the request's `Host`, and that host must be one the Host allowlist accepts
+   (`network.allowed_host_names` or a loopback/private literal). A missing, `null` or other
+   origin gets 403. Requests with a bearer header are not checked. A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
    works on the PC itself. This includes the static web app: a browser on another machine gets
    401 for `/`. Whoever passed is in `request.state.principal` (`Principal(device_id, local, protocol_version)`: the version the device sent at pairing, this backend's own for the PC).
 
 **WebSocket routes** are not covered by the bearer middleware. Each one calls
 `await authenticate_websocket(websocket)` (`server/auth.py`) before `accept()`. It reads the token
-from `Authorization: Bearer <token>` or from the `?token=` query parameter (browsers cannot set
-WebSocket headers), applies the same loopback trust, and returns the `Principal`. If
+from `Authorization: Bearer <token>`, the `?token=` query parameter (browsers cannot set
+WebSocket headers) or the `sa_token` cookie -- a handshake authenticated only by the cookie
+must also pass `same_site_origin` (else 1008), against cross-site WebSocket hijacking --, applies the same loopback trust, and returns the `Principal`. If
 authentication fails, it closes with 1008 and returns `None`, and the route must just return.
 
 **Paired devices** (`server/devices.py`, `DeviceStore`): `issue_token(name, protocol_version)`,
@@ -635,6 +681,16 @@ replace them.
   knows (from the terms or the last forwarded notice). While that count is unknown, the new hints
   ride on the next forwarded observer `notice`; a forwarded notice carries hints only when they
   changed since the last ones sent.
+- **STT status** (#222, protocol 1.5): in server mode, after every fed chunk and at each
+  handshake, `SessionGateway.check_stt_status(state, t=...)` reads the provider's `status`
+  (`stt.ProviderStatus`) and maps it to the client's `ok | reconnecting | unavailable` (`idle`
+  and `streaming` are `ok`). When that differs from the last one (`ReceiveState.stt_status`, `ok`
+  at first, so a session that never degrades publishes nothing) it logs it (WARNING when
+  degraded, INFO on recovery) and publishes a persisted `stt.status` event (origin `stt`, `t` the
+  session time of the chunk's end, payload `{"state", "detail"?}`). Each connection forwards it as
+  `SttStatus` to a client that negotiated 1.5+, never the same state twice in a row; a client
+  connecting while the provider is degraded gets the current status right after `hello.ack` (and
+  the resume `ack`). A detail over 300 characters is left out, the state is still sent.
 - **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
   missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
   binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a
@@ -666,7 +722,8 @@ replace them.
     client `ack`, origin `phone`, each with `client_time_ms`, `backend_time_ms` (client time +
     offset) and `t` = its session time.
 - **Forwarded to the client**: each connection subscribes to its session's `FORWARDED_KINDS`
-  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`) before
+  (`transcript.partial`, `transcript.final`, `command`, `notice`, `capture.stored`,
+  `stt.status`) before
   `hello.ack` and sends each as the matching server message (`transcript.*` from the payload
   fields above; `command` from `command_id`, `command`; `notice` from `pending_count`;
   `server_time_ms` from the payload or the clock). A persisted `capture.stored` (the capture

@@ -102,6 +102,14 @@ it("renders the live session view at /live, subscribed to the live stream", () =
   expect(opened).toEqual(["/api/live"]);
 });
 
+it("renders the quiz page at <topic>/quiz", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/quiz" />);
+
+  expect(screen.getByRole("heading", { name: "Quiz de revolucion-industrial" })).toBeInTheDocument();
+});
+
 it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
   const fetchMock = stubFetch();
 
@@ -110,4 +118,24 @@ it("renders the subject's style guide at /subjects/<subject>/style-guide", async
   expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
+});
+
+it("renders the preview of a generated Markdown file at <topic>/material/<name>", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/material/examen-soluciones.md" />);
+
+  expect(screen.getByRole("heading", { name: "examen-soluciones de revolucion-industrial" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/subjects/historia/topics/revolucion-industrial/generated/files/examen-soluciones.md",
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el material");
+});
+
+it("renders the practice page at <topic>/practice", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/practice" />);
+
+  expect(screen.getByRole("heading", { name: "Practicar revolucion-industrial" })).toBeInTheDocument();
 });

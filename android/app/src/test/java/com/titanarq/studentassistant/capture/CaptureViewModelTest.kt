@@ -18,6 +18,8 @@ import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.SttState
+import com.titanarq.studentassistant.protocol.SttStatus
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
 import com.titanarq.studentassistant.protocol.SessionEndResponse
@@ -97,7 +99,7 @@ class CaptureViewModelTest {
         assertEquals("http://192.168.1.20:8000/ws/sessions/s1", socket.url)
         assertEquals("sa_tok", socket.token)
         assertEquals(
-            Hello("1.3", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
+            Hello("1.5", ClientCapabilities(SttMode.CLIENT, "android-speech", AudioFormat()), clock.now),
             socket.sent.first(),
         )
         assertEquals(CapturePhase.RUNNING, viewModel.state.value.phase)
@@ -237,6 +239,32 @@ class CaptureViewModelTest {
     }
 
     @Test
+    fun `a degraded server recognizer is shown until it recovers or the socket says hello again`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel, SttMode.SERVER)
+        val socket = sockets.last
+        assertNull(viewModel.state.value.sttWarning)
+
+        val lost = SttStatus(SttState.RECONNECTING, "Se ha perdido la conexión; se reintenta en 5 s.", 7)
+        socket.receive(lost)
+        runCurrent()
+        assertEquals(lost, viewModel.state.value.sttWarning)
+
+        socket.receive(SttStatus(SttState.OK, serverTimeMs = 8))
+        runCurrent()
+        assertNull(viewModel.state.value.sttWarning)
+
+        socket.receive(SttStatus(SttState.UNAVAILABLE, serverTimeMs = 9))
+        runCurrent()
+        assertEquals(SttState.UNAVAILABLE, viewModel.state.value.sttWarning?.state)
+        // A new handshake starts clean: the backend repeats a status that still holds after it.
+        socket.receive(HelloAck("1.5", SttMode.SERVER, AudioFormat(), 0, clock.now))
+        runCurrent()
+        assertNull(viewModel.state.value.sttWarning)
+        viewModel.leave()
+    }
+
+    @Test
     fun `a dropped socket reconnects while the transcriber keeps running`() = runTest(main.dispatcher) {
         val viewModel = viewModel()
         connect(viewModel)
@@ -307,6 +335,48 @@ class CaptureViewModelTest {
         runCurrent()
         assertFalse(viewModel.state.value.micPaused) // ...for a few seconds
         assertEquals(1, sockets.sockets.size)
+        viewModel.leave()
+    }
+
+    @Test
+    fun `the vocabulary hints of hello_ack reach the transcriber and a notice replaces them`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        viewModel.start()
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.5", SttMode.CLIENT, null, 0, clock.now, listOf("Historia", "El feudalismo")))
+        runCurrent()
+        assertEquals(listOf("Historia", "El feudalismo"), transcriber.hintsAtStart)
+        assertEquals(listOf("Historia", "El feudalismo"), viewModel.vocabularyHints)
+
+        // A notice without a list keeps the current one.
+        sockets.last.receive(Notice(2, clock.now))
+        runCurrent()
+        assertEquals(listOf("Historia", "El feudalismo"), transcriber.vocabularyHints)
+
+        val replaced = listOf("Historia", "El feudalismo", "vasallaje")
+        sockets.last.receive(Notice(2, clock.now, replaced))
+        runCurrent()
+        assertEquals(replaced, transcriber.vocabularyHints)
+        assertEquals(replaced, viewModel.vocabularyHints)
+
+        // A restarted microphone starts with the latest list, not the one of hello.ack.
+        viewModel.onBackground()
+        viewModel.onForeground()
+        runCurrent()
+        assertEquals(2, transcriber.starts)
+        assertEquals(replaced, transcriber.hintsAtStart)
+
+        // A reconnect's hello.ack brings the backend's list again; one without hints keeps ours.
+        sockets.last.drop()
+        advanceTimeBy(100)
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.5", SttMode.CLIENT, null, 0, clock.now))
+        runCurrent()
+        assertEquals(replaced, transcriber.vocabularyHints)
         viewModel.leave()
     }
 

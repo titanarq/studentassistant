@@ -29,6 +29,7 @@ class SpeechRecognizerTranscriberTest {
         transcriber()
         assertEquals(1, engine.starts)
         assertEquals("es-ES", engine.lastLanguage)
+        assertEquals(emptyList<String>(), engine.lastVocabularyHints)
 
         engine.listener.onSpeechStart()
         clock.now = 10_400
@@ -140,6 +141,30 @@ class SpeechRecognizerTranscriberTest {
         transcriber.start({ emitted += it }, { errors += it })
         assertEquals(2, engine.starts)
         assertFalse(errors.isNotEmpty())
+    }
+
+    @Test
+    fun `vocabulary hints reach the engine and a change applies from the next round`() = runTest {
+        val transcriber = SpeechRecognizerTranscriber(engine, clock, backgroundScope, segmentPrefix = "and-x")
+        transcriber.vocabularyHints = listOf("Historia", "feudalismo")
+        transcriber.start({ emitted += it }, { errors += it })
+        assertEquals(listOf("Historia", "feudalismo"), engine.lastVocabularyHints)
+
+        transcriber.vocabularyHints = listOf("Historia", "feudalismo", "vasallaje")
+        assertEquals(1, engine.starts) // the round in progress is not interrupted
+        engine.listener.onResult("el vasallaje", null)
+        assertEquals(2, engine.starts)
+        assertEquals(listOf("Historia", "feudalismo", "vasallaje"), engine.lastVocabularyHints)
+    }
+
+    @Test
+    fun `biasing strings are used from API 33 and ignored before`() {
+        val hints = listOf("Historia", "feudalismo")
+        assertEquals(arrayListOf("Historia", "feudalismo"), AndroidSpeechRecognizerEngine.biasingStrings(hints, 33))
+        assertEquals(arrayListOf("Historia", "feudalismo"), AndroidSpeechRecognizerEngine.biasingStrings(hints, 35))
+        assertEquals(null, AndroidSpeechRecognizerEngine.biasingStrings(hints, 32))
+        assertEquals(null, AndroidSpeechRecognizerEngine.biasingStrings(hints, 28))
+        assertEquals(null, AndroidSpeechRecognizerEngine.biasingStrings(emptyList(), 35))
     }
 
     @Test

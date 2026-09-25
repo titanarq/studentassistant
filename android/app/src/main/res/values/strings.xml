@@ -78,6 +78,14 @@
     </plurals>
     <string name="home_session_conflict">Hay otra sesión abierta. Termínala o continúala antes de empezar una nueva; la lista se ha actualizado.</string>
     <string name="home_dismiss">Entendido</string>
+    <string name="home_read_notes">Apuntes</string>
+
+    <!-- Study desk on the phone: the topic's notes and the editor chat (#83) -->
+    <string name="desk_title">Apuntes de %1$s</string>
+    <string name="desk_reload">Recargar</string>
+    <string name="desk_invalid_backend">La dirección del ordenador activo no es válida. Vuelve a emparejarlo.</string>
+    <string name="desk_unauthorized">El ordenador ya no acepta este teléfono. Vuelve a emparejarlo desde «Ordenadores».</string>
+    <string name="desk_load_failed">No se han podido abrir los apuntes en %1$s (%2$s). Comprueba que el ordenador está encendido y en la misma red.</string>
     <string name="create_topic_title">Nuevo tema</string>
     <string name="create_topic_subject">Asignatura</string>
     <string name="create_topic_subject_hint">Elige una o escribe una nueva</string>
@@ -110,6 +118,8 @@
     <string name="camera_unavailable_capture">No se pudo abrir la cámara.</string>
     <string name="capture_mic_denied">El micrófono no tiene permiso: no se está transcribiendo.</string>
     <string name="capture_mic_paused">Micrófono en pausa</string>
+    <string name="capture_stt_reconnecting">El servidor ha perdido la transcripción y está reintentando; lo que digas mientras tanto no se transcribe</string>
+    <string name="capture_stt_unavailable">La transcripción del servidor no está disponible; lo que digas no se transcribe</string>
     <string name="capture_spool_near_cap">Queda poco espacio para guardar sin conexión: si no vuelve la conexión se perderá el audio más antiguo</string>
     <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
     <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
