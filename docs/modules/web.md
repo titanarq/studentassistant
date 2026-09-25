@@ -25,7 +25,17 @@
   clears it; the session goes on meanwhile. A server `capture_now` command takes a burst with that `command_id` and is
   answered with an `ack`. Denied or missing camera/microphone, a browser without
   `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
-  Spanish explanation. The page runs on the PC itself under loopback trust
+  Spanish explanation. A long session does not silently lose the screen or the camera (#256):
+  while a session runs the screen holds a Screen Wake Lock (`wakeLock.ts`), asked for again each
+  time the page becomes visible and released on **Terminar**, a lost connection or unmount (a
+  browser without the API, or a refusal, is silent); a camera track that ends mid-session (lid
+  closed, unplugged, another app took it) shows the "Cámara desconectada" alert ("La cámara se ha
+  desconectado…") with **Reactivar cámara**, which requests the camera again on the same preview
+  (a refusal keeps the alert with its own sentence) while **Capturar** stays disabled; and coming
+  back to a tab that was hidden mid-session shows a discreet status line, "Aviso de pestaña
+  oculta", that transcription may have paused (Chrome throttles background tabs), cleared by the
+  next `transcript.final`. None of the three touches the socket, the transcript or the uploaded
+  bursts. The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
 - **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
@@ -112,6 +122,10 @@ token):
     message of the page. Also exports `captureCapabilities()` (which omits `audio_format` when
     `audioStreamSupported()` is false, so the backend cannot pick a `server` mode the client
     could not obey), `shutterClick()` and `FLASH_MS`.
+  - `wakeLock.ts`: `ScreenWakeLock({wakeLock?, visibility?})` -- `start()` / `stop()`
+    (both idempotent) and `held`; requests `navigator.wakeLock.request("screen")`, re-requests on
+    `visibilitychange` to visible after the browser released it, releases a lock that arrives
+    after `stop()`, and never throws or reports.
   - `api.ts`: the REST client -- `listSubjects()`, `createSubject(name)`, `listTopics(id)`,
     `createTopic(id, name)`, `startSession(subjectId, topicId, clientTimeMs)`,
     `resumeSession(id)`, `endSession(id, reason, clientTimeMs)` and
@@ -508,6 +522,10 @@ family each, `installCanvasFakes()` and `fakePreview()` cover the canvas fallbac
 element), and every installer returns a `restore()`. `installSpeechRecognitionFake(globals,
 {phrases: true})` (or `installCaptureFakes({speechPhrases: true})`) is a browser with contextual
 biasing: `FakeBiasingSpeechRecognition` records the `phrases` each `start()` found in
-`phrasesAtStart`, and `FakeSpeechRecognitionPhrase` sits on the `SpeechRecognitionPhrase` global. Tests drive them -- a fake recognition emits
+`phrasesAtStart`, and `FakeSpeechRecognitionPhrase` sits on the `SpeechRecognitionPhrase` global. `installCaptureFakes()`
+also installs a fake `navigator.wakeLock` (`installWakeLockFake()`, `FakeWakeLock` /
+`FakeWakeLockSentinel` with `releaseFromBrowser()`; `{wakeLock: false}` is a browser without the
+API), `setVisibility("hidden" | "visible")` hides or shows the tab and fires `visibilitychange`,
+and `devices.plugInCamera()` hands out a fresh live video track after the old one ended. Tests drive them -- a fake recognition emits
 results, ends and errors, a fake socket records what was sent and lets a test push server events
 in -- so no test touches a real camera, microphone, network or backend.

@@ -23,6 +23,7 @@ import {
   FakeSpeechRecognitionPhrase,
   type FakeWebSocket,
   installCaptureFakes,
+  setVisibility,
   swapGlobal,
   swapProperty,
 } from "./testing";
@@ -389,10 +390,145 @@ describe("the camera", () => {
       fakes.videoTrack.endFromDevice();
     });
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "La cámara se ha desconectado o otra aplicación se la ha quedado.",
+    expect(await screen.findByRole("alert", { name: "Cámara desconectada" })).toHaveTextContent(
+      "La cámara se ha desconectado",
     );
     expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reactivar cámara" })).toBeEnabled();
+    // Only the camera is gone: the session and its socket carry on.
+    expect(socket().closeCalls).toEqual([]);
+    expect(screen.getByRole("button", { name: "Importante" })).toBeEnabled();
+  });
+
+  it("asks for the camera again on Reactivar cámara and resumes the preview", async () => {
+    const { container } = renderScreen();
+    await open();
+    await act(async () => {
+      fakes.videoTrack.endFromDevice();
+    });
+    const replugged = fakes.devices.plugInCamera();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Reactivar cámara" }));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent(
+        "La cámara está en marcha.",
+      ),
+    );
+    expect(fakes.devices.getUserMediaCalls).toHaveLength(2);
+    expect(container.querySelector("video")?.srcObject).toBe(fakes.devices.streams[1]);
+    expect(fakes.devices.streams[1].getVideoTracks()).toEqual([replugged]);
+    expect(screen.queryByRole("alert", { name: "Cámara desconectada" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
+    expect(socket().closeCalls).toEqual([]);
+
+    await capture();
+    await waitFor(() => expect(capturePost()).toBeDefined());
+  });
+
+  it("keeps the notice up with the reason when the camera cannot come back yet", async () => {
+    renderScreen();
+    await open();
+    await act(async () => {
+      fakes.videoTrack.endFromDevice();
+    });
+    fakes.devices.failure = "NotReadableError";
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Reactivar cámara" }));
+    });
+
+    const notice = await screen.findByRole("alert", { name: "Cámara desconectada" });
+    await waitFor(() =>
+      expect(notice).toHaveTextContent("Otra aplicación está usando la cámara."),
+    );
+    expect(screen.getByRole("button", { name: "Reactivar cámara" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
+  });
+});
+
+describe("a long session on a laptop", () => {
+  it("holds the screen awake while the session runs and lets it go on Terminar", async () => {
+    renderScreen();
+    await open();
+
+    expect(fakes.wakeLock.held()).toHaveLength(1);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Terminar" }));
+    });
+    await waitFor(() => expect(fakes.wakeLock.held()).toHaveLength(0));
+  });
+
+  it("asks for the wake lock again when the tab comes back and lets it go on unmount", async () => {
+    restores.push(swapProperty(document, "visibilityState", "visible"));
+    const { unmount } = renderScreen();
+    await open();
+
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+      fakes.wakeLock.sentinels[0].releaseFromBrowser();
+    });
+    await act(async () => {
+      restores.push(setVisibility("visible"));
+    });
+
+    await waitFor(() => expect(fakes.wakeLock.requestCount).toBe(2));
+    expect(fakes.wakeLock.held()).toHaveLength(1);
+    unmount();
+    expect(fakes.wakeLock.held()).toHaveLength(0);
+  });
+
+  it("runs the session as usual in a browser without the wake lock API", async () => {
+    fakes.restore();
+    fakes = installCaptureFakes({ wakeLock: false });
+    renderScreen();
+    await open();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
+  });
+
+  it("says transcription may have paused while the tab was hidden, until the next final", async () => {
+    renderScreen();
+    await open();
+    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
+
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
+    await act(async () => {
+      restores.push(setVisibility("visible"));
+    });
+
+    expect(screen.getByRole("status", { name: "Aviso de pestaña oculta" })).toHaveTextContent(
+      "la transcripción puede haberse pausado",
+    );
+
+    await push({
+      type: "transcript.partial",
+      segment_id: "seg-1",
+      session_start_ms: 1000,
+      session_end_ms: 2500,
+      language: "es",
+      text: "la clorofila",
+    });
+    expect(screen.getByRole("status", { name: "Aviso de pestaña oculta" })).toBeInTheDocument();
+
+    await push({
+      type: "transcript.final",
+      segment_id: "seg-1",
+      session_start_ms: 1000,
+      session_end_ms: 2500,
+      language: "es",
+      text: "la clorofila absorbe luz",
+    });
+    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
+    // The session itself was never touched.
+    expect(socket().closeCalls).toEqual([]);
   });
 });
 
