@@ -126,6 +126,18 @@ with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
   `issues.py update N --title`).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
   the planner retries with `task/<issue>-<slug>`.
+- agent-os#75 a finished run's stray `scratchpad/` files (not just `progress.log`) still leave
+  the worktree "dirty" and block the next `start`/`resume`/`branch` on that backend, the way
+  agent-os#18 did before #20's fix -- #20 only retires the diary when the dirty set is *exactly*
+  `?? scratchpad/progress.log`; other leftovers (temp scripts, `__pycache__/`, or no
+  `progress.log` at all) still refuse dispatch. Observed on the qwen worktree after issue #19
+  (2026-09-24): `scratchpad/` held `check_vault_doc_symbols.py`, `commit-msg-stage6.txt` and
+  `__pycache__/`, blocking dispatch of unrelated issues #40 and #47. Workaround (host-owned,
+  outside `agent_os/`): move the stray `scratchpad/` aside by hand (e.g. to
+  `.cache/qwen-scratchpad-backup-<date>/`) and confirm `git -C <worktree> status --porcelain` is
+  clean; a human/control-plane comment on the blocked issue(s) then clears
+  `status:blocked-on-human` on the next guard tick. Remove this note once agent-os#75 is fixed and
+  the subtree is pulled.
 - agent-os#17 `_the_projects_package()` (`agent_os/tests/test_agent_task.py`) assumes the host
   root has exactly one top-level Python package; studentassistant has none (its Python package lives under backend/src), so
   `test_a_role_that_runs_tests_gets_a_worktree_of_its_own_and_pythonpath_at_it` and
