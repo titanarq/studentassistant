@@ -21,7 +21,9 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/pdf/page-NNN.pdf                   imported PDF (only the kept page range)
   sources/pdf/page-NNN.pKKK.txt|.jpg         page K's extracted text and thumbnail (derived)
   sources/pdf/page-NNN.yaml                  original_name, original_sha256, original_page_count, first_page, last_page, page_count
-  sources/book/…  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
+  sources/book/page-NNN.*                    textbook pages, as notes pages; the sidecar adds book_page (+ _from, _printed, _spoken)
+  sources/book/book.yaml                     the topic's textbook: title (never listed as a source)
+  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
   sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
@@ -190,6 +192,12 @@ transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf`
 (`vault_relative_path` is the page or any file derived from it, checked like `read_source`'s),
 atomically, guarded, under the directory's lock, replacing an earlier one; `SourcePathError` for
 anything else, `SourceNotFoundError` when the page's sidecar is not there.
+`update_page_meta(vault, vault_relative_path, updates) -> Path` merges `updates` into a stored
+page's sidecar (same path rules and errors; other keys kept in order; guarded, atomic, under the
+directory's lock): what `sources` learns after storing, such as a textbook page's `book_page`.
+`set_book(vault, subject_slug, topic_slug, title) -> Book` / `get_book(...) -> Book | None` keep
+the topic's textbook (`Book(title)`, spaces collapsed; `ValueError` for an empty title) in
+`sources/book/book.yaml`, which is not a source, not numbered and not indexed as one.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
 content's vault-relative POSIX path --, `meta` -- the parsed sidecar, or `None`) per stored source,
 ordered by kind (`SOURCE_KINDS` order) then number; sidecars, derived files (`page-NNN.md` beside

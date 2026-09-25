@@ -127,7 +127,10 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   client. First user message: the **catalogue** of citable sources with the exact footnote
   definition of each (`[Apuntes, página 1](../sources/notes/page-001.jpg)`; a PDF page as
   `[PDF, página 84](../sources/pdf/page-001.pdf#page=3)`: the link counts pages of the stored file,
-  the text shows `sources.original_page`); the **sources** -- each notes and book page as its
+  the text shows `sources.original_page`; a book page as `[Libro «<título>», página 83](...)`,
+  `page_citation_text`: the page number printed on it or said, `book_page` in its sidecar (#58),
+  else its stored number, and the topic's book title when `vault.get_book` has one, also in the
+  heading `## Páginas del libro «<título>»`); the **sources** -- each notes and book page as its
   transcription (`sources/<kind>/page-NNN.md`, #50, or a sidecar `transcription` string) plus its
   image (the cropped `page-NNN.page.jpg`, else the still) when `needs_image(transcription, meta)`:
   no transcription, a scheme (mermaid block, nested list, arrow), an uncertain word `[[?...]]` or a

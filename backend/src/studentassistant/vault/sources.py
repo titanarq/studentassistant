@@ -35,8 +35,15 @@ from pydantic import TypeAdapter
 from yaml import YAMLError, safe_load
 
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.files import dump_yaml, write_bytes_atomic, write_text_atomic
+from studentassistant.vault.files import (
+    dump_yaml,
+    read_yaml,
+    write_bytes_atomic,
+    write_text_atomic,
+    write_yaml_atomic,
+)
 from studentassistant.vault.locking import directory_lock
+from studentassistant.vault.models import VaultFileModel
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.slugs import is_slug, slugify
 from studentassistant.vault.subjects import SUBJECTS_DIRNAME
@@ -277,6 +284,103 @@ def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) ->
     with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         write_text_atomic(target, text)
     return target
+
+
+def update_page_meta(vault: Vault, vault_relative_path: str, updates: Mapping[str, Any]) -> Path:
+    """Merge `updates` into the sidecar (`page-NNN.yaml`) of a stored page and return its path.
+
+    For what `sources` learns about a page after it was stored (a textbook page's printed page
+    number, found by its transcription). `vault_relative_path` names the page or a file derived
+    from it, as for `put_page_transcription`. The keys of `updates` replace the sidecar's own of
+    the same name (a key set to `None` is written as `null`); every other key is kept, in its
+    order. The result passes the secret guard and is written atomically under the directory's
+    lock, so it never interleaves with a store into the same directory.
+
+    Raises:
+        SourcePathError: when the path is not a page of a paged kind.
+        SourceNotFoundError: when the page's sidecar is not there.
+        SourceFileError: when the sidecar is not a readable YAML mapping.
+        SecretRefused: when the merged metadata looks like it carries a key; nothing is written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    if parts[5] not in PAGED_KINDS or _PAGE_NUMBER.match(parts[-1]) is None:
+        raise SourcePathError(f"{vault_relative_path!r} is not a page of a paged source kind")
+    directory = vault.path.joinpath(*parts[:-1])
+    if directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourcePathError(
+            f"{vault_relative_path!r} goes through a symlink out of its sources directory"
+        )
+    sidecar = directory / f"{parts[-1].split('.', 1)[0]}{SIDECAR_SUFFIX}"
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        if not sidecar.is_file() or sidecar.is_symlink():
+            raise SourceNotFoundError(f"there is no stored page at {vault_relative_path!r}")
+        meta = _read_sidecar(sidecar) or {}
+        meta.update(updates)
+        text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
+        guard(text)
+        write_text_atomic(sidecar, text)
+    return sidecar
+
+
+# -- the textbook of a topic -----------------------------------------------------------------------
+
+BOOK_FILE_NAME = "book.yaml"
+"""`sources/book/book.yaml`: which textbook the topic's `book` pages come from."""
+
+
+class Book(VaultFileModel):
+    """`sources/book/book.yaml`: the textbook a topic's book pages are photographed from."""
+
+    title: str
+
+
+def book_path(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
+    return sources_directory(vault, subject_slug, topic_slug, "book") / BOOK_FILE_NAME
+
+
+def get_book(vault: Vault, subject_slug: str, topic_slug: str) -> Book | None:
+    """The topic's textbook, `None` when none was set. Nothing is written.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: as
+            `require_topic`.
+        SourceFileError: when `book.yaml` is there but is not a `Book`.
+    """
+    require_topic(vault, subject_slug, topic_slug)
+    path = book_path(vault, subject_slug, topic_slug)
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return read_yaml(path, Book)
+    except (OSError, UnicodeDecodeError, YAMLError, ValueError) as error:
+        raise SourceFileError(f"{path} is not a book this backend can read: {error}") from error
+
+
+def set_book(vault: Vault, subject_slug: str, topic_slug: str, title: str) -> Book:
+    """Record the topic's textbook (`title`, stripped) in `sources/book/book.yaml`.
+
+    `book.yaml` is never listed as a source nor numbered as a page. Returns the book as written
+    (the file is not rewritten when it already holds that title).
+
+    Raises:
+        ValueError: `title` is empty once stripped; nothing is written.
+        SecretRefused: the title looks like a key; nothing is written.
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: as
+            `require_topic`.
+    """
+    cleaned = " ".join(title.split())
+    if not cleaned:
+        raise ValueError("a book needs a title")
+    book = Book(title=cleaned)
+    current = get_book(vault, subject_slug, topic_slug)
+    if current == book:
+        return book
+    directory = sources_directory(vault, subject_slug, topic_slug, "book")
+    guard(cleaned)
+    directory.mkdir(parents=True, exist_ok=True)
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        write_yaml_atomic(directory / BOOK_FILE_NAME, book)
+    return book
 
 
 # -- reading ---------------------------------------------------------------------------------------

@@ -66,6 +66,7 @@ from studentassistant.vault.sessions import (
 )
 from studentassistant.vault.sources import (
     SOURCE_KINDS,
+    Book,
     SourceContent,
     SourceError,
     SourceFileError,
@@ -74,11 +75,14 @@ from studentassistant.vault.sources import (
     SourcePathError,
     StoredSource,
     UnknownSourceKindError,
+    get_book,
     list_sources,
     put_page_transcription,
     put_source,
     read_source,
+    set_book,
     sources_directory,
+    update_page_meta,
 )
 from studentassistant.vault.state import (
     DigestFileError,
@@ -138,6 +142,7 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "Book",
     "ConversationError",
     "ConversationRecord",
     "append_conversation_record",
@@ -213,6 +218,7 @@ __all__ = [
     "create_topic",
     "end_session",
     "generated_directory",
+    "get_book",
     "get_subject",
     "get_topic",
     "guard",
@@ -243,12 +249,14 @@ __all__ = [
     "read_source",
     "read_topic_events",
     "require_topic",
+    "set_book",
     "set_fidelity_mode",
     "set_style_guide",
     "release_active_host",
     "resume_session",
     "sessions_directory",
     "sources_directory",
+    "update_page_meta",
     "start_session",
     "subject_directory",
     "topic_directory",
