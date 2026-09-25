@@ -17,7 +17,8 @@ from studentassistant.observer.state import EventRef, TopicState
 
 # Bumped whenever the fold's meaning changes: a snapshot of another version is folded again from
 # scratch rather than trusted.
-STATE_VERSION = 1
+STATE_VERSION = 2
+# 2 (#55): pending items carry kind/text/refs/created_by/status, duplicates merge (aliases).
 
 
 class ObserverSnapshot(BaseModel):

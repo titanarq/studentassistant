@@ -75,6 +75,48 @@ def test_a_path_id_outside_the_protocol_pattern_is_422(
     assert response.status_code == 422
 
 
+# -- pending review -----------------------------------------------------------------------------
+
+
+def test_pending_lists_the_queue_open_items_first(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    base = f"/api/subjects/{read_vault.subject}/topics/{read_vault.topic}/pending"
+    response = reader.get(base)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["subject_id"], body["topic_id"]) == (read_vault.subject, read_vault.topic)
+    assert body["open_count"] == 1
+    assert [(i["id"], i["kind"], i["status"]) for i in body["items"]] == [
+        ("p2", "incomplete", "open"),
+        ("p1", "illegible", "auto_resolved"),
+    ]
+    first = body["items"][1]
+    assert first["text"] == "x" and first["resolution"] == "dice «aceleración»"
+    assert first["created_by"] == "observer"
+    assert first["refs"] == {"pages": [], "segments": [], "sources": []}
+
+    open_only = reader.get(base, params={"status": "open"}).json()
+    assert [i["id"] for i in open_only["items"]] == ["p2"] and open_only["open_count"] == 1
+    closed = reader.get(base, params={"status": "closed"}).json()
+    assert [i["id"] for i in closed["items"]] == ["p1"]
+    assert reader.get(base, params={"status": "later"}).status_code == 422
+
+
+def test_pending_of_an_empty_topic_is_empty_and_of_an_unknown_one_404(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    empty = reader.get(
+        f"/api/subjects/{read_vault.subject}/topics/{read_vault.empty_topic}/pending"
+    )
+    assert empty.status_code == 200
+    assert empty.json()["open_count"] == 0 and empty.json()["items"] == []
+    unknown = reader.get(f"/api/subjects/{read_vault.subject}/topics/optica/pending")
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "No existe ese tema en la bóveda."
+
+
 # -- transcript spans ---------------------------------------------------------------------------
 
 
@@ -212,6 +254,7 @@ def test_every_read_route_is_503_when_the_vault_cannot_be_opened(
         "/api/subjects/fisica/topics/cinematica/sessions",
         "/api/subjects/fisica/topics/cinematica/summary",
         "/api/subjects/fisica/topics/cinematica/notes",
+        "/api/subjects/fisica/topics/cinematica/pending",
         "/api/sessions/20260924-100000/transcript?subject=fisica&topic=cinematica&t=00:00:00-00:00:01",
         "/api/sources/subjects/fisica/topics/cinematica/sources/notes/page-001.jpg",
         "/api/sources/subjects/fisica/topics/cinematica/sources/notes/page-001.jpg/meta",

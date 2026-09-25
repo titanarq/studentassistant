@@ -32,6 +32,13 @@ Cost caps (#120): the client is bound to the session's ledger, so a reached cap 
 the next trigger tries again; `status: running` is published when a call succeeds again. Any other
 Claude failure keeps the batch too and publishes `status: error`.
 
+Pending-review queue (#55): whenever a folded event changes the topic's pending items (an
+`add_pending`, a merge into an open item, a `resolve_pending` of any origin), the loop publishes a
+`notice` (not persisted; the gateway forwards it to the phone as the protocol `notice`) with the
+open count as `pending_count`, and regenerates `review/pending.yaml` from the fold
+(`write_pending_review`). The count is also published when the loop starts observing a session, so
+the phone's counter is right from the start. The student is never interrupted: only the counter.
+
 Ending: `flush(session_id)` is the `add_before_ended` hook -- it waits for the call in flight and
 sends what is still waiting, so the ops land before `session.ended`. `session.ended` forgets the
 session.
@@ -81,6 +88,7 @@ from studentassistant.observer.ops import (
     op_payload,
     parse_op,
 )
+from studentassistant.observer.pending import pending_review
 from studentassistant.observer.snapshot import ObserverSnapshot, advance_snapshot
 from studentassistant.observer.state import EventRef, TopicState
 from studentassistant.vault import (
@@ -93,6 +101,7 @@ from studentassistant.vault import (
     append_conversation_record,
     get_subject,
     get_topic,
+    write_pending_review,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +113,8 @@ TOOL_DESCRIPTION = (
 )
 PROMPT_NAME = "observer"
 STATUS_EVENT_KIND = "observer.status"
+NOTICE_EVENT_KIND = "notice"
+"""The transient bus event the gateway forwards to the phone as the protocol `notice`."""
 SESSION_STARTED = "session.started"
 SESSION_RESUMED = "session.resumed"
 SESSION_ENDED = "session.ended"
@@ -407,8 +418,8 @@ class ObserverLoop:
             observed = await self._open(session_id, resumed=event.kind == SESSION_RESUMED)
             if observed is None:
                 return
-        if event.seq is not None:
-            self._fold(observed, event)
+        if event.seq is not None and self._fold(observed, event):
+            await self._pending_changed(observed)
         item = batch_item(event.kind, str(event.origin), event.t, event.payload)
         if item is not None:
             observed.items.append(item)
@@ -438,6 +449,7 @@ class ObserverLoop:
             context=render_state(snapshot.state, session_id=session_id, resumed=resumed),
         )
         self._observed[session_id] = observed
+        await self._notify_pending(observed)
         await self._record(
             observed,
             ConversationRecord(
@@ -462,11 +474,13 @@ class ObserverLoop:
         topic_title = get_topic(vault, subject, topic).topic.title
         return snapshot, subject_name, topic_title, self.digest(vault, subject, topic)
 
-    def _fold(self, observed: _Observed, event: BusEventLike) -> None:
+    def _fold(self, observed: _Observed, event: BusEventLike) -> bool:
+        """Fold one persisted event; whether it changed the topic's pending items."""
         assert event.seq is not None
         ref = EventRef(session_id=event.session_id, seq=event.seq)
         if observed.folded_past(ref):
-            return  # already in the snapshot loaded from the vault
+            return False  # already in the snapshot loaded from the vault
+        before = observed.snapshot.state.pending
         stored = Event(
             seq=event.seq,
             t=event.t,
@@ -481,6 +495,42 @@ class ObserverLoop:
             # Keep the cursor moving, so the batches that wait for this event are not stuck.
             observed.snapshot = observed.snapshot.model_copy(
                 update={"cursor": ref, "event_count": observed.snapshot.event_count + 1}
+            )
+        return observed.snapshot.state.pending != before
+
+    # -- pending-review queue ----------------------------------------------------------------
+
+    async def _pending_changed(self, observed: _Observed) -> None:
+        """Publish the open count and regenerate `review/pending.yaml` from the fold."""
+        await self._notify_pending(observed)
+        session = observed.session
+        review = pending_review(observed.snapshot.state)
+        try:
+            await asyncio.to_thread(
+                write_pending_review,
+                session.vault,
+                session.subject_slug,
+                session.topic_slug,
+                review,
+            )
+        except SecretRefused:
+            logger.warning("the pending review of session %s looks like a secret", observed.id)
+        except (VaultError, OSError):
+            logger.exception("the pending review of session %s cannot be written", observed.id)
+
+    async def _notify_pending(self, observed: _Observed) -> None:
+        count = len(observed.snapshot.state.open_pending())
+        try:
+            await self.bus.publish(
+                observed.id,
+                NOTICE_EVENT_KIND,
+                OBSERVER_ORIGIN,
+                {"pending_count": count},
+                persist=False,
+            )
+        except Exception as error:  # the session ended meanwhile
+            logger.warning(
+                "observer of session %s: pending count not published: %s", observed.id, error
             )
 
     # -- batches -----------------------------------------------------------------------------
@@ -754,6 +804,7 @@ def _with_breakpoint(turn: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "NOTICE_EVENT_KIND",
     "OBSERVER_KINDS",
     "STATUS_EVENT_KIND",
     "TOOL_NAME",

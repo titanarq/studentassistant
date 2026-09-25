@@ -1,10 +1,13 @@
-"""Topic state: the derived files under a topic's `state/` directory.
+"""Topic state: the derived files under a topic's `state/` directory, and `review/pending.yaml`.
 
 What lives there is an optimisation, never the source of truth: `state/observer-snapshot.json` is
 the observer's fold of the topic's event logs (ADR-0003), which can always be rebuilt by replaying
 them. The vault stores it so the observer never touches a vault file itself (ADR-0002), but the
 vault does not know what it holds: the caller passes the Pydantic model in, and this module only
 writes it atomically, through the secret guard, and reads it back into the model it is given.
+
+`review/pending.yaml` is derived the same way: the observer regenerates it from its fold after
+every change of the pending-review queue, and the vault only writes the model it is handed as YAML.
 """
 
 from __future__ import annotations
@@ -15,12 +18,14 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.files import write_json_atomic
+from studentassistant.vault.files import dump_yaml, write_json_atomic, write_text_atomic
 from studentassistant.vault.topics import get_topic, topic_directory
 from studentassistant.vault.vault import Vault
 
 STATE_DIRNAME = "state"
 OBSERVER_SNAPSHOT_FILE_NAME = "observer-snapshot.json"
+REVIEW_DIRNAME = "review"
+PENDING_REVIEW_FILE_NAME = "pending.yaml"
 
 
 class StateError(VaultError):
@@ -58,6 +63,35 @@ def write_observer_snapshot(
     path = observer_snapshot_path(vault, subject_slug, topic_slug)
     path.parent.mkdir(exist_ok=True)
     write_json_atomic(path, snapshot)
+    return path
+
+
+def pending_review_path(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
+    """The path of a topic's `review/pending.yaml`, whether or not one was written."""
+    return (
+        topic_directory(vault, subject_slug, topic_slug) / REVIEW_DIRNAME / PENDING_REVIEW_FILE_NAME
+    )
+
+
+def write_pending_review(
+    vault: Vault, subject_slug: str, topic_slug: str, review: BaseModel
+) -> Path:
+    """Write `review` as YAML to the topic's `review/pending.yaml`; return its path.
+
+    The dump is `model_dump(mode="json")` in the model's key order (deterministic, so a diff shows
+    only what changed), written atomically through the secret guard. The model belongs to the
+    observer; the vault does not interpret it.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read; nothing is written.
+        SecretRefused: when the dump looks like it carries a key; the previous file stays.
+        OSError: when the directory or the file cannot be written.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = pending_review_path(vault, subject_slug, topic_slug)
+    path.parent.mkdir(exist_ok=True)
+    write_text_atomic(path, dump_yaml(review.model_dump(mode="json")))
     return path
 
 
