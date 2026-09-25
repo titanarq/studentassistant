@@ -144,7 +144,13 @@ taken from `name`) and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug f
 `page-NNN.<suffix>` -- a suffix is dot-separated lowercase letters and digits with at least one
 dot, e.g. `p003.txt`, `p003.jpg` for a PDF's page 3 -- all guarded before anything is written and
 removed again if any write fails; they are never listed as sources. The number is one past
-the highest already in the directory, derived files included. `sources_directory(...)` gives the
+the highest already in the directory, derived files included. Numbering is atomic per
+`sources/<kind>/` directory across every thread of the process: choosing the number and writing
+the content, derived files and sidecar under it happen under one process-wide lock of that
+directory, so concurrent writers into one topic (a capture stored while a PDF upload runs, say)
+always get distinct numbers and never overwrite each other.
+Two separate processes writing the same topic at once are not covered: the backend is the vault's
+single writer. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
