@@ -61,3 +61,12 @@ it("renders the pending-doubts panel at the topic's /pending path", async () => 
   expect(screen.getByRole("heading", { name: "Dudas pendientes" })).toBeInTheDocument();
   expect(await screen.findByText(/No se pudieron cargar las dudas/)).toBeInTheDocument();
 });
+
+it("renders the notes versions page at the topic's /versions path", () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/versions" />);
+
+  expect(screen.getByRole("heading", { name: "Versiones de los apuntes de revolucion-industrial" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/topics/revolucion-industrial/notes/versions");
+});

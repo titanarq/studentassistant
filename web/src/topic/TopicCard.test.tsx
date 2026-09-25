@@ -31,7 +31,7 @@ it("shows the card of VISION §2: sources, sessions, pending and material", () =
   expect(field("Sesiones")).toHaveTextContent("✓ 2 (31 min de conversación)");
   expect(field("Pendiente")).toHaveTextContent("4 dudas por revisar");
   expect(field("Material")).toHaveTextContent(
-    "✓ Apuntes v3 ○ Esquema ○ Quiz ○ Flashcards ○ Examen ○ Diapositivas",
+    "✓ Apuntes v3 (versiones) ○ Esquema ○ Quiz ○ Flashcards ○ Examen ○ Diapositivas",
   );
 });
 
@@ -44,7 +44,7 @@ it("marks the generated material present from the files under generated/", () =>
   );
 
   expect(field("Material")).toHaveTextContent(
-    "✓ Apuntes v3 ✓ Esquema ✓ Quiz ○ Flashcards ○ Examen ✓ Diapositivas",
+    "✓ Apuntes v3 (versiones) ✓ Esquema ✓ Quiz ○ Flashcards ○ Examen ✓ Diapositivas",
   );
 });
 
@@ -88,12 +88,17 @@ it("links the notes version to the notes viewer", () => {
     "href",
     "/subjects/historia/topics/revolucion-francesa/notes",
   );
+  expect(screen.getByRole("link", { name: "versiones" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/versions",
+  );
 });
 
 it("has no notes link before the first notes version", () => {
   render(<TopicCard summary={summary({ notes_version: null })} />);
 
   expect(screen.queryByRole("link", { name: /Apuntes/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "versiones" })).not.toBeInTheDocument();
 });
 
 it.each([
