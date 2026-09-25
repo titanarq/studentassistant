@@ -28,12 +28,16 @@ studentassistant = "studentassistant.cli:cli"
 [project.entry-points."studentassistant.stt_providers"]
 fake = "studentassistant.stt.fakes:FakeProvider"
 faster-whisper = "studentassistant.stt.faster_whisper:FasterWhisperProvider"
+google-cloud = "studentassistant.stt.google_cloud:GoogleCloudSpeechProvider"
 
 [project.optional-dependencies]
 whisper = [
     "faster-whisper>=1.2.1",
     "nvidia-cublas-cu12>=12,<13 ; sys_platform == 'linux'",
     "nvidia-cudnn-cu12>=9,<10 ; sys_platform == 'linux'",
+]
+google-cloud = [
+    "google-cloud-speech>=2",
 ]
 
 [build-system]

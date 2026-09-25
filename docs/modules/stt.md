@@ -92,6 +92,23 @@ Everything below is importable from `studentassistant.stt` (the fakes from
 - `backend=` takes any `WhisperBackend` (`speech_spans`, `transcribe`;
   blocking) for tests. `studentassistant stt download` fetches the configured model (as `setup`
   does).
+- `GoogleCloudSpeechProvider` (`stt/google_cloud.py`, entry point `google-cloud`; needs the
+  `google-cloud` extra, `uv sync --extra google-cloud`, imported only when the first stream
+  opens) -- Google Cloud Speech-to-Text v1 streaming with interim results. `feed` queues the chunk
+  on a gRPC stream a worker thread drives and returns the partials/finals that arrived since the
+  previous call (never waits for the network); a segment starts where the stream's previous final
+  ended and ends at the result's `result_end_time`, clamped to the audio the stream consumed. A
+  new stream opens every `stream_limit_seconds` of audio (Google caps a stream at ~5 min), on a
+  gap over 2 s (shorter gaps are filled with silence) and on a new sample rate; only 16-bit PCM.
+  Credentials come from this machine (`credentials_file` or Application Default Credentials),
+  never the vault. Errors never raise into the session: `status` (`ProviderStatus(state,
+  detail)`, `state` in `idle | streaming | reconnecting | unavailable`, `detail` a Spanish
+  sentence) turns `reconnecting` when a stream fails (the audio of the next `retry_seconds` is
+  dropped and counted in `dropped_seconds`, then a new stream opens) and `unavailable` when the
+  library or the credentials are missing (all audio dropped from then on). `finish` half-closes
+  the stream and waits at most `finish_timeout_seconds` for its last results. `client=` takes any
+  `SpeechStreamClient` (`stream(audio, *, sample_rate) -> Iterator[StreamResult]`, blocking) for
+  tests; `GoogleSpeechClient` is the real one.
 - Fakes: `FakeProvider` (registered as `fake`; `segments=` or `options["segments"]`, each
   scripted segment is yielded once the fed audio reaches its `end`, the rest on `finish`) and
   `ScriptedClientSource(segments)` (`play_into(sink)`).
@@ -115,6 +132,17 @@ device = "auto"                 # auto | cuda | cpu
 # min_silence_ms = 600          # silence that ends an utterance
 # max_utterance_seconds = 20.0
 # vad_threshold = 0.5
+```
+```toml
+[stt.options.google-cloud]  # stt.mode = "server", stt.provider = "google-cloud"
+# credentials_file = "~/.config/studentassistant/google-stt.json"  # unset: Application Default Credentials
+# language_code = "es-ES"       # default: from stt.language (es -> es-ES)
+model = "latest_long"           # the default
+# phrases = ["derivada", "integral"]  # vocabulary hints
+# automatic_punctuation = true
+# stream_limit_seconds = 240.0  # audio per stream before a new one opens
+# retry_seconds = 5.0           # after a failed stream, audio dropped before reconnecting
+# finish_timeout_seconds = 10.0
 ```
 Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
 `SA_STT__MAX_BACKLOG_SECONDS`.
@@ -141,6 +169,9 @@ stamped on every segment by the `TranscriptSink`.
 
 ## Tests
 Pipeline and grammar tested with `FakeProvider` and scripted segments; `FasterWhisperProvider`
-with a scripted `WhisperBackend` and a stand-in `faster_whisper` module. Real-model tests are
+with a scripted `WhisperBackend` and a stand-in `faster_whisper` module. `GoogleCloudSpeechProvider`
+with a scripted `SpeechStreamClient` and a stand-in `google.cloud.speech` module. Real-model tests are
 `integration`: `SA_TEST_SPANISH_WAV=<16 kHz mono PCM16 WAV> [SA_TEST_SPANISH_WORDS="..."]
-uv run pytest -m integration -k spanish` (needs the `whisper` extra).
+uv run pytest -m integration -k spanish` (needs the `whisper` extra; the Google one also
+`SA_TEST_GOOGLE_CREDENTIALS=<key.json>` or `SA_TEST_GOOGLE_CLOUD=1` with Application Default
+Credentials, and the `google-cloud` extra).
