@@ -29,6 +29,7 @@ import com.titanarq.studentassistant.session.SessionHolder
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.spool.SpoolBudget
 import com.titanarq.studentassistant.spool.Spools
+import com.titanarq.studentassistant.spool.StaleSpoolSweeper
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +64,8 @@ object SystemClock : Clock {
  * @param uploadScope the app-wide scope capture uploads run on, so they outlive the capture screen.
  * @param spoolMaxBytes the byte cap of the offline spool (audio of every session plus pending
  *   captures) under `filesDir/spool`.
+ * @param spoolGraceMs how long a session's spooled data is kept untouched before it may be swept
+ *   when its backend reports the session ended or unknown.
  * @param ioContext where disk-backed session connections run (never the main thread).
  */
 class AppContainer(
@@ -79,6 +82,7 @@ class AppContainer(
     captureFeedbackFactory: () -> CaptureFeedback = { NoCaptureFeedback },
     private val uploadScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val spoolMaxBytes: Long = SpoolBudget.DEFAULT_MAX_BYTES,
+    private val spoolGraceMs: Long = StaleSpoolSweeper.DEFAULT_GRACE_MS,
     private val ioContext: CoroutineContext = Dispatchers.IO,
 ) {
     /** The app-wide clock, created on first access and shared afterwards. */
@@ -110,7 +114,7 @@ class AppContainer(
 
     /** Creates the home screen's [HomeViewModel]. */
     val homeViewModelFactory: ViewModelProvider.Factory by lazy {
-        viewModelFactory { initializer { HomeViewModel(backendClient, backendStore, sessionHolder, clock) } }
+        viewModelFactory { initializer { HomeViewModel(backendClient, backendStore, sessionHolder, clock, sessionFinisher) } }
     }
 
     /** The camera every capture burst is taken with. */
@@ -144,12 +148,26 @@ class AppContainer(
         )
     }
 
+    /** Deletes the spooled data of sessions over on their backend, after [spoolGraceMs]. */
+    val staleSpoolSweeper: StaleSpoolSweeper by lazy {
+        StaleSpoolSweeper(
+            spools = spools,
+            client = backendClient,
+            clock = clock,
+            pairedBackends = { backendStore.current().backends.map { it.credentials } },
+            activeSessionId = { sessionHolder.current.value?.session?.sessionId },
+            graceMs = spoolGraceMs,
+        )
+    }
+
     /**
-     * At app start: queues again the captures an earlier run left unsent and resumes its pending
-     * session ends, on [uploadScope].
+     * At app start: sweeps the spooled data of sessions over on their backend, then queues again
+     * the captures an earlier run left unsent and resumes its pending session ends, on
+     * [uploadScope].
      */
     fun recoverSpool() {
         uploadScope.launch(ioContext) {
+            staleSpoolSweeper.sweep()
             captureUploads.restore(::credentialsFor)
             sessionFinisher.restore()
         }
@@ -161,6 +179,7 @@ class AppContainer(
     /** Creates the capture screen's [CaptureViewModel] for [session]. */
     fun captureViewModelFactory(session: OpenSession): ViewModelProvider.Factory = viewModelFactory {
         initializer {
+            spools.bind(session.session.sessionId, session.backend.baseUrl)
             CaptureViewModel(
                 open = session,
                 backendClient = backendClient,

@@ -8,9 +8,11 @@ import kotlinx.coroutines.flow.asStateFlow
  * The byte cap shared by every spool of the app (audio of every session plus pending captures).
  *
  * Each spool reports what it adds and removes; [nearCap] turns true at [warnFraction] of
- * [maxBytes] (the capture screen warns), and [overCap] tells the audio spool to drop its oldest
+ * [maxBytes] (the capture screen warns), and [overCap] means some audio must go. With an
+ * [evictor] set ([Spools] sets one that drops the oldest audio of any session), a spool calls
+ * [enforce] after it grew, outside its own lock; without one, an audio spool drops its own oldest
  * audio. Captures are never dropped to make room: when they alone pass the cap, the audio shrinks
- * to its newest segment and the warning stays on. Thread-safe.
+ * as far as it can and the warning stays on. Thread-safe.
  */
 class SpoolBudget(val maxBytes: Long, private val warnFraction: Double = DEFAULT_WARN_FRACTION) {
     init {
@@ -29,6 +31,23 @@ class SpoolBudget(val maxBytes: Long, private val warnFraction: Double = DEFAULT
 
     /** True while the spools hold more than [maxBytes]. */
     val overCap: Boolean get() = synchronized(this) { used > maxBytes }
+
+    @Volatile
+    private var evictor: (() -> Unit)? = null
+
+    /** True once [setEvictor] was called: spools leave eviction to it. */
+    val hasEvictor: Boolean get() = evictor != null
+
+    /** [evictor] frees space across every spool while [overCap]; called by [enforce]. */
+    fun setEvictor(evictor: () -> Unit) {
+        this.evictor = evictor
+    }
+
+    /** A spool grew: when over the cap, the [evictor] makes room. Never call it holding a spool's lock. */
+    fun enforce() {
+        val evict = evictor ?: return
+        if (overCap) evict()
+    }
 
     /** A spool wrote ([delta] > 0) or deleted ([delta] < 0) bytes. */
     fun add(delta: Long) {

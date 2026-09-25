@@ -99,14 +99,23 @@ class MemoryAudioBacklog(private val maxFrames: Int) : AudioBacklog {
  *
  * Every byte is reported to [budget]; after an append that leaves the budget over its cap, the
  * oldest segments are deleted (acknowledged or not) until it fits or only the segment being
- * written is left.
+ * written is left. When the budget has an evictor ([Spools]), that choice is left to it, across
+ * sessions, through [oldestDroppableTimeMs] and [dropOldest].
  */
 class AudioSpool(
     private val dir: File,
     private val budget: SpoolBudget,
     private val segmentFrames: Int = DEFAULT_SEGMENT_FRAMES,
 ) : AudioBacklog {
-    private class Segment(val first: Long, var last: Long, var file: File, var bytes: Long, var open: Boolean)
+    private class Segment(
+        val first: Long,
+        var last: Long,
+        var file: File,
+        var bytes: Long,
+        var open: Boolean,
+        /** Client time of the first frame: the age [Spools] evicts by. */
+        val firstTimeMs: Long,
+    )
 
     private val segments = ArrayDeque<Segment>()
     private var floor = -1L
@@ -132,10 +141,15 @@ class AudioSpool(
     override val bytes: Long get() = synchronized(this) { total }
     override val hasUnacked: Boolean get() = synchronized(this) { segments.any { it.last > acked } }
 
-    override fun append(frame: SpooledFrame): Unit = synchronized(this) {
+    override fun append(frame: SpooledFrame) {
+        synchronized(this) { appendLocked(frame) }
+        budget.enforce()
+    }
+
+    private fun appendLocked(frame: SpooledFrame) {
         if (frame.seq <= lastSeq) return
         val record = encode(frame)
-        val segment = segments.lastOrNull()?.takeIf { it.open } ?: startSegment(frame.seq)
+        val segment = segments.lastOrNull()?.takeIf { it.open } ?: startSegment(frame.seq, frame.clientTimeMs)
         try {
             val stream = out ?: FileOutputStream(segment.file, true).also { out = it }
             stream.write(record)
@@ -149,7 +163,7 @@ class AudioSpool(
         openFrames += frame
         openCount++
         if (openCount >= segmentFrames) closeSegment(segment)
-        evictOverCap()
+        if (!budget.hasEvictor) evictOverCap()
     }
 
     override fun after(seq: Long, limit: Int): List<SpooledFrame> = synchronized(this) {
@@ -175,13 +189,32 @@ class AudioSpool(
         if (segments.size == before && floorAcked < 0) writeFloor() // the first ack ever
     }
 
-    override fun rebaseAfter(seq: Long): Unit = synchronized(this) {
-        val frames = after(-1, Int.MAX_VALUE)
-        while (segments.isNotEmpty()) deleteFirst()
-        floor = seq
-        acked = seq
-        writeFloor()
-        frames.forEachIndexed { index, frame -> append(SpooledFrame(seq + 1 + index, frame.clientTimeMs, frame.samples)) }
+    override fun rebaseAfter(seq: Long) {
+        synchronized(this) {
+            val frames = after(-1, Int.MAX_VALUE)
+            while (segments.isNotEmpty()) deleteFirst()
+            floor = seq
+            acked = seq
+            writeFloor()
+            frames.forEachIndexed { index, frame -> appendLocked(SpooledFrame(seq + 1 + index, frame.clientTimeMs, frame.samples)) }
+        }
+        budget.enforce()
+    }
+
+    /**
+     * Client time of the oldest segment the cap may drop, or null when there is none: the segment
+     * being written is never dropped.
+     */
+    fun oldestDroppableTimeMs(): Long? = synchronized(this) {
+        segments.firstOrNull()?.takeIf { !it.open }?.firstTimeMs
+    }
+
+    /** Drops the oldest segment (acknowledged or not) to make room; false when [oldestDroppableTimeMs] is null. */
+    fun dropOldest(): Boolean = synchronized(this) {
+        val oldest = segments.firstOrNull()?.takeIf { !it.open } ?: return false
+        droppedFrames += countUnacked(oldest)
+        deleteFirst()
+        true
     }
 
     /** Closes the segment being written; the spool stays usable (a later append reopens a segment). */
@@ -190,8 +223,8 @@ class AudioSpool(
         out = null
     }
 
-    private fun startSegment(first: Long): Segment {
-        val segment = Segment(first, first - 1, File(dir, "seg-${pad(first)}$OPEN_SUFFIX"), 0, open = true)
+    private fun startSegment(first: Long, firstTimeMs: Long): Segment {
+        val segment = Segment(first, first - 1, File(dir, "seg-${pad(first)}$OPEN_SUFFIX"), 0, open = true, firstTimeMs = firstTimeMs)
         segments.addLast(segment)
         openCount = 0
         openFrames.clear()
@@ -258,7 +291,7 @@ class AudioSpool(
                 val closed = File(dir, "seg-${pad(frames.first().seq)}-${pad(frames.last().seq)}$CLOSED_SUFFIX")
                 if (file.renameTo(closed)) target = closed
             }
-            val segment = Segment(frames.first().seq, frames.last().seq, target, target.length(), open = false)
+            val segment = Segment(frames.first().seq, frames.last().seq, target, target.length(), open = false, frames.first().clientTimeMs)
             segments.addLast(segment)
             grow(segment.bytes)
         }

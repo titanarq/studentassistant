@@ -86,6 +86,15 @@ Thin capture client (ADR-0001), Spanish UI:
   **`session.SessionHolder`** (in memory, `AppContainer.sessionHolder`) and the app opens
   `Route.CAPTURE`. A 409 (another session open) is `SessionFailure.Conflict`; a 409 or 404 also
   refreshes the topic list so the session that is really open shows "Continuar".
+- **Pending ends** (#198): `HomeViewModel(..., pendingEnds)` takes a `session.PendingEnds` (the
+  `SessionFinisher` in the app, `NoPendingEnds` by default). A row whose `open_session_id` is in
+  `pending` has `TopicRow.ending` and shows «Terminando sesión…» instead of «Sesión abierta»; when a
+  session leaves `pending` the topics are fetched again. "Continuar" always resumes through
+  `PendingEnds.continueInstead(sessionId) { resume }`: the finisher's attempt in flight is cancelled
+  and joined first (its flush socket is let go), so no end races the resume; a successful resume
+  drops the pending end for good (also one refused earlier, so a later start never ends a session
+  in use), a failed one lets a running end go on. An end the backend already took shows up as a 409
+  on the resume (the conflict message, the list refreshed).
 - Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
   paired backends); `Route.CAPTURE` shows the capture screen (below) for the session in
   `SessionHolder`, and goes back home when there is none.
@@ -213,6 +222,7 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
 | transcript finals not confirmed, events queued offline | `EventSpool` (`EventBacklog`) | `sessions/<session_id>/events.json` |
 | capture bursts not confirmed | `CaptureSpool` | `captures/<capture_id>/{meta.json,image_N,thumbnail}` |
 | sessions ended but not yet told to the backend | `PendingEnd` | `ends/<session_id>.json` |
+| the backend a session's spool belongs to | `Spools.bind` | `sessions/<session_id>/session.json` |
 
 - **`AudioSpool(dir, budget, segmentFrames = 50)`**: each frame (`SpooledFrame(seq, clientTimeMs,
   samples)`) is written through as it is produced into 5 s segment files (`seg-<first>.open`, renamed
@@ -232,9 +242,21 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   ids)` marks captures the backend already holds as uploaded without sending them.
 - **Cap** (`SpoolBudget(maxBytes)`, `AppContainer(spoolMaxBytes = 512 MiB)`): one byte budget for
   all of the above. From 80 % `nearCap` is true and the capture screen shows «Queda poco espacio
-  para guardar sin conexión…» (`capture_spool_near_cap`). Past the cap an audio append deletes that
-  session's oldest segments first (acknowledged or not) down to the one being written; captures are
-  never dropped to make room.
+  para guardar sin conexión…» (`capture_spool_near_cap`). Past the cap (#198) `Spools`, the
+  budget's evictor, drops whole audio segments (acknowledged or not) of any session, the oldest
+  first by the client time of their first frame (`AudioSpool.oldestDroppableTimeMs` /
+  `dropOldest`), never a segment being written and never a capture. It runs after every audio
+  append and capture write (`SpoolBudget.enforce`, outside the spool's own lock) and once at start,
+  so audio left over a lowered cap is trimmed. An `AudioSpool` on a budget with no evictor still
+  trims only itself.
+- **Stale sessions** (#198, `spool.StaleSpoolSweeper`, `AppContainer(spoolGraceMs = 24 h)`): at app
+  start (`recoverSpool`, before captures are queued again) the audio/events of a session and the
+  captures untouched for the grace period are deleted when the backend reports the session ended
+  or unknown: no topic of `GET /api/subjects` + `GET .../topics` lists it as `open_session_id` (read
+  only; a resume would reopen it). The backend asked is the one `Spools.bind` recorded when the
+  capture screen opened the session (a capture's own `base_url`); a session with none must be
+  absent from every paired backend. Any failed list call, a backend no longer paired, a pending
+  end, the session in `SessionHolder` or one bound in this process keeps the data.
 - **Reconnect order** (`SessionConnection` over the session's spools, on `Dispatchers.IO`): after
   `hello.ack`, queued events go out first; in client mode every unconfirmed final is resent (the
   backend drops a final it already has without echoing it, so a resent final not echoed within 25 s
@@ -261,10 +283,9 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   2/5/10/30/60 s; a refusal (401, 403, 400, ...) leaves the pending end on disk.
   `AppContainer.recoverSpool()` (from `StudentAssistantApp.onCreate`) restores the captures and
   resumes the pending ends of an earlier process.
-- Known gaps: a session that is neither continued nor ended keeps its spool (and its share of the
-  cap) until it is; eviction only drops the audio of the session being recorded; spools are opened
-  lazily, possibly on the main thread the first time the capture screen is built; the home screen
-  does not show sessions with a pending end, and "Continuar" on one races the finisher.
+- Known gaps: spools are opened lazily, possibly on the main thread the first time the home or
+  capture screen is built; the stale sweep runs only at app start, and data of a backend that is no
+  longer paired is never swept.
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The

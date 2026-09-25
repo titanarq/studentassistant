@@ -41,7 +41,13 @@ class CaptureSpool(private val dir: File, private val budget: SpoolBudget) {
     }
 
     /** Stores a burst. Returns false (nothing kept) when it could not be written. */
-    fun put(meta: SpooledCaptureMeta, images: List<CaptureImageBytes>, thumbnail: CaptureImageBytes?): Boolean = synchronized(this) {
+    fun put(meta: SpooledCaptureMeta, images: List<CaptureImageBytes>, thumbnail: CaptureImageBytes?): Boolean {
+        val stored = synchronized(this) { putLocked(meta, images, thumbnail) }
+        budget.enforce()
+        return stored
+    }
+
+    private fun putLocked(meta: SpooledCaptureMeta, images: List<CaptureImageBytes>, thumbnail: CaptureImageBytes?): Boolean {
         require(images.size == meta.request.images.size) { "one image per metadata entry" }
         val target = captureDir(meta.captureId) ?: return false
         if (File(target, META_FILE).isFile) return true
@@ -58,7 +64,7 @@ class CaptureSpool(private val dir: File, private val budget: SpoolBudget) {
             return false
         }
         budget.add(sizeOf(target))
-        true
+        return true
     }
 
     /** The complete stored captures, oldest trigger first. */
@@ -95,6 +101,12 @@ class CaptureSpool(private val dir: File, private val budget: SpoolBudget) {
 
     fun contains(captureId: String): Boolean = synchronized(this) {
         captureDir(captureId)?.let { File(it, META_FILE).isFile } == true
+    }
+
+    /** When [captureId] was stored (its `meta.json`'s modification time), or null when it is not. */
+    fun storedAtMs(captureId: String): Long? = synchronized(this) {
+        val meta = captureDir(captureId)?.let { File(it, META_FILE) } ?: return null
+        meta.lastModified().takeIf { meta.isFile }
     }
 
     /** The backend has [captureId] (or it is given up): its files are deleted. */
