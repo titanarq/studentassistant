@@ -18,6 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path, Request, status
 
 from studentassistant import protocol
+from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.auth import Principal
 from studentassistant.server.sessions import (
@@ -77,7 +78,9 @@ def session_router() -> APIRouter:
     @router.get("/subjects/{subject_id}/topics", response_model_exclude_none=True)
     async def list_topics(request: Request, subject_id: SubjectId) -> protocol.TopicsListResponse:
         async with _http_errors():
-            return await _service(request).list_topics(subject_id)
+            principal = _principal(request)
+            client = principal.protocol_version if principal is not None else PROTOCOL_VERSION
+            return await _service(request).list_topics(subject_id, protocol_version=client)
 
     @router.post(
         "/subjects/{subject_id}/topics",

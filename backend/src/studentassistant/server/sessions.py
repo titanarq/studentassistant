@@ -60,7 +60,7 @@ from studentassistant.observer import (
     ObserverStateError,
     load_observer_snapshot,
 )
-from studentassistant.protocol.version import PROTOCOL_VERSION
+from studentassistant.protocol.version import PROTOCOL_VERSION, negotiate, parse_version
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
 from studentassistant.vault import (
@@ -91,6 +91,9 @@ SESSION_ENDED = "session.ended"
 LIFECYCLE_KINDS = frozenset({SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED})
 
 T = TypeVar("T")
+
+TOPIC_ACTIVITY_SINCE = (1, 1)
+"""The protocol version that added a topic's `last_session_at_ms` and `pending_count`."""
 
 DEFAULT_SYNC_INTERVAL_SECONDS = 1.0
 """How often the background loop asks `GitSync.run_due()` whether a commit or push is due."""
@@ -310,12 +313,22 @@ class SessionService:
         self._note_change()
         return _subject(stored)
 
-    async def list_topics(self, subject_id: str) -> protocol.TopicsListResponse:
+    async def list_topics(
+        self, subject_id: str, *, protocol_version: str = PROTOCOL_VERSION
+    ) -> protocol.TopicsListResponse:
+        """The subject's topics, shaped for a client speaking `protocol_version`.
+
+        Peers speak the lower MINOR, and a client refuses unknown fields, so a topic carries
+        `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client.
+        """
         vault = await self._ready()
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
-        activity = await asyncio.to_thread(
-            lambda: [_topic_activity(vault, subject_id, t.slug) for t in stored]
-        )
+        if _speaks_at_least(protocol_version, TOPIC_ACTIVITY_SINCE):
+            activity = await asyncio.to_thread(
+                lambda: [_topic_activity(vault, subject_id, t.slug) for t in stored]
+            )
+        else:
+            activity = [(None, None)] * len(stored)
         return protocol.TopicsListResponse(
             subject_id=subject_id,
             topics=[
@@ -617,6 +630,14 @@ class SessionService:
             last_session_at_ms=last_session_at_ms,
             pending_count=pending_count,
         )
+
+
+def _speaks_at_least(client: str, since: tuple[int, int]) -> bool:
+    """Whether the version negotiated with a client speaking `client` is at least `since`."""
+    try:
+        return parse_version(negotiate(client)) >= since
+    except ValueError:
+        return False
 
 
 def _topic_activity(vault: Vault, subject_id: str, topic_id: str) -> tuple[int | None, int | None]:

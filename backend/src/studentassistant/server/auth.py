@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
 from studentassistant.config import ServerSettings
+from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.network import client_host, is_loopback, send_json
 
@@ -33,10 +34,15 @@ WS_POLICY_VIOLATION = 1008
 
 @dataclass(frozen=True)
 class Principal:
-    """Who is calling: a paired device (`device_id`), or the PC itself (`local`, no token)."""
+    """Who is calling: a paired device (`device_id`), or the PC itself (`local`, no token).
+
+    `protocol_version` is the version the device sent when it paired (REST requests carry none),
+    and this backend's own for the PC, whose web UI is served by this very build.
+    """
 
     device_id: str | None
     local: bool = False
+    protocol_version: str = PROTOCOL_VERSION
 
 
 def _bearer(authorization: str | None) -> str | None:
@@ -58,7 +64,7 @@ def authenticate(
     if token:
         device = devices.verify_token(token)
         if device is not None:
-            return Principal(device_id=device.id)
+            return Principal(device_id=device.id, protocol_version=device.protocol_version)
     if server.trust_localhost and is_loopback(host):
         return Principal(device_id=None, local=True)
     return None

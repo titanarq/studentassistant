@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
@@ -94,11 +95,32 @@ def test_the_file_is_private_to_its_owner(devices_path: Path) -> None:
     assert list(devices_path.parent.iterdir()) == [devices_path]  # no temporary file left
 
 
-def test_listing_shows_id_name_and_creation_time_only(devices_path: Path) -> None:
+def test_listing_shows_no_secret(devices_path: Path) -> None:
     store = DeviceStore(devices_path)
     device, _ = store.issue_token("uno")
 
     [listed] = store.list_devices()
 
-    assert set(listed.model_dump()) == {"id", "name", "created_at"}
+    assert set(listed.model_dump()) == {"id", "name", "created_at", "protocol_version"}
     assert listed == device
+
+
+def test_the_pairing_protocol_version_is_kept(devices_path: Path) -> None:
+    store = DeviceStore(devices_path)
+    _, token = store.issue_token("uno", "1.1")
+
+    verified = DeviceStore(devices_path).verify_token(token)
+
+    assert verified is not None and verified.protocol_version == "1.1"
+
+
+def test_a_device_paired_before_versioning_is_a_1_0_client(devices_path: Path) -> None:
+    store = DeviceStore(devices_path)
+    _, token = store.issue_token("uno", "1.1")
+    stored = json.loads(devices_path.read_text())
+    del stored["devices"][0]["protocol_version"]
+    devices_path.write_text(json.dumps(stored))
+
+    verified = store.verify_token(token)
+
+    assert verified is not None and verified.protocol_version == "1.0"

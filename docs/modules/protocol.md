@@ -13,6 +13,9 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
   `capture_now`, `notice` e.g. pending count, `ack` of audio seq / captures).
 - A `protocol_version`; both sides refuse an incompatible major version with a clear message.
+  Peers speak the lower MINOR: REST requests carry no version, so the backend answers a device's
+  REST calls in the version it sent at pairing (stored with the device, 1.0 when absent) and
+  omits fields newer than that; the WebSocket negotiates in `hello` / `hello.ack`.
 
 ## Boundaries
 - Pure data definitions and (de)serialisation; no I/O.

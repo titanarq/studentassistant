@@ -70,10 +70,12 @@ Routes registered today:
   - `GET /api/subjects` -> `rest.subjects.list.response`; `POST /api/subjects`
     (`rest.subjects.create.request`) -> 201 `rest.subjects.create.response`.
   - `GET /api/subjects/{subject_id}/topics` -> `rest.topics.list.response`, each topic with
-    `open_session_id` when it has an unended session, `last_session_at_ms` (its latest
-    session's start, from `vault.list_sessions`) when it has any session, and `pending_count`
-    (open items of `observer.load_observer_snapshot(..., write_back=False)`, so listing writes nothing); either is left out, with a warning logged,
-    when the vault or observer state cannot be read. `POST /api/subjects/{subject_id}/topics`
+    `open_session_id` when it has an unended session and, for a caller speaking 1.1+ (the
+    principal's `protocol_version`), `last_session_at_ms` (its latest session's start, from
+    `vault.list_sessions`) when it has any session and `pending_count` (open items of
+    `observer.load_observer_snapshot(..., write_back=False)`, so listing writes nothing); either
+    is left out, with a warning logged, when the vault or observer state cannot be read, and
+    both are always left out for a device that paired as a 1.0 client. `POST /api/subjects/{subject_id}/topics`
     (`rest.topics.create.request`) -> 201 `rest.topics.create.response`.
   - `POST /api/sessions` (`rest.sessions.start.request`) -> 201 `rest.sessions.start.response`;
     `POST /api/sessions/{id}/resume` (no body) -> `rest.sessions.resume.response`;
@@ -251,7 +253,7 @@ Every request passes three ASGI middlewares, in this order:
    `Authorization: Bearer <token>` of a paired device, else 401 with `WWW-Authenticate: Bearer`.
    A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
    works on the PC itself. This includes the static web app: a browser on another machine gets
-   401 for `/`. Whoever passed is in `request.state.principal` (`Principal(device_id, local)`).
+   401 for `/`. Whoever passed is in `request.state.principal` (`Principal(device_id, local, protocol_version)`: the version the device sent at pairing, this backend's own for the PC).
 
 **WebSocket routes** are not covered by the bearer middleware. Each one calls
 `await authenticate_websocket(websocket)` (`server/auth.py`) before `accept()`. It reads the token
@@ -259,11 +261,12 @@ from `Authorization: Bearer <token>` or from the `?token=` query parameter (brow
 WebSocket headers), applies the same loopback trust, and returns the `Principal`. If
 authentication fails, it closes with 1008 and returns `None`, and the route must just return.
 
-**Paired devices** (`server/devices.py`, `DeviceStore`): `issue_token(name)`,
+**Paired devices** (`server/devices.py`, `DeviceStore`): `issue_token(name, protocol_version)`,
 `verify_token(token)`, `list_devices()` and `revoke(device_id)` over the JSON file at
 `server.devices_path` (default `~/.local/share/studentassistant/devices.json`, never inside the
 vault). The file is written atomically with mode 600. It keeps, per device, an id, the name, the
-creation time and a salted SHA-256 hash of the token (compared with `hmac.compare_digest`), never
+creation time, the `protocol_version` of its pairing request (read as `1.0` when a record
+predates it) and a salted SHA-256 hash of the token (compared with `hmac.compare_digest`), never
 the token itself. A token is `sa_` + `secrets.token_urlsafe(32)`. The file is re-read on every
 check, so a revocation from the CLI takes effect in the running server immediately.
 
