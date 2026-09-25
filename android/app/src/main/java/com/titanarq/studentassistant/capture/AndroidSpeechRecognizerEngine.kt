@@ -2,6 +2,7 @@ package com.titanarq.studentassistant.capture
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -10,12 +11,14 @@ import android.speech.SpeechRecognizer
 /**
  * [RecognizerEngine] over Android's [SpeechRecognizer] (Google on most phones, ADR-0008): free-form
  * dictation in the requested language with partial results, preferring the offline model when the
- * device has one. Must be used from the main thread, as [SpeechRecognizer] requires.
+ * device has one, and biased towards the session's vocabulary hints on API 33+
+ * ([RecognizerIntent.EXTRA_BIASING_STRINGS]; older devices ignore them). Must be used from the main
+ * thread, as [SpeechRecognizer] requires.
  */
 class AndroidSpeechRecognizerEngine(private val context: Context) : RecognizerEngine {
     private var recognizer: SpeechRecognizer? = null
 
-    override fun startListening(language: String, listener: RecognizerListener) {
+    override fun startListening(language: String, vocabularyHints: List<String>, listener: RecognizerListener) {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             listener.onError(RecognizerError.UNAVAILABLE)
             return
@@ -29,6 +32,9 @@ class AndroidSpeechRecognizerEngine(private val context: Context) : RecognizerEn
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        biasingStrings(vocabularyHints, Build.VERSION.SDK_INT)?.let {
+            intent.putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, it)
+        }
         recognizer.startListening(intent)
     }
 
@@ -71,6 +77,16 @@ class AndroidSpeechRecognizerEngine(private val context: Context) : RecognizerEn
     }
 
     companion object {
+        /** The first API level with [RecognizerIntent.EXTRA_BIASING_STRINGS] (Android 13). */
+        const val BIASING_MIN_SDK: Int = 33
+
+        /**
+         * The biasing strings to put in the intent on [sdkInt]: [hints] from API 33 on, null
+         * (nothing to add) on older devices or without hints.
+         */
+        fun biasingStrings(hints: List<String>, sdkInt: Int): ArrayList<String>? =
+            if (sdkInt < BIASING_MIN_SDK || hints.isEmpty()) null else ArrayList(hints)
+
         fun mapError(error: Int): RecognizerError = when (error) {
             SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> RecognizerError.NO_SPEECH
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> RecognizerError.BUSY

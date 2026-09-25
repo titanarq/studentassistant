@@ -90,8 +90,8 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
 - Version: `PROTOCOL_VERSION` (`"1.5"`, for the server-side STT status `SttStatus`, #222; the
   1.2 error `code` needs nothing from the app, which decodes no error body, only the HTTP status;
-  the 1.4 `vocabulary_hints` are decoded, as `HelloAck.vocabularyHints` /
-  `Notice.vocabularyHints`, and ignored: the app does not use them yet),
+  the 1.4 `vocabulary_hints`, decoded as `HelloAck.vocabularyHints` /
+  `Notice.vocabularyHints`, bias the client-side `SpeechRecognizer` on API 33+, #228),
   `parseVersion` (-> `ProtocolVersion`), `isCompatible`,
   `checkCompatible` (throws `IncompatibleProtocolVersionException`, an `IllegalArgumentException`
   with the same message as the backend's) and `negotiate`.
