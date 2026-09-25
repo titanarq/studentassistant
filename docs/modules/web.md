@@ -35,7 +35,13 @@
   back to a tab that was hidden mid-session shows a discreet status line, "Aviso de pestaña
   oculta", that transcription may have paused (Chrome throttles background tabs), cleared by the
   next `transcript.final`. None of the three touches the socket, the transcript or the uploaded
-  bursts. The page runs on the PC itself under loopback trust
+  bursts. Failures behind the scenes (#262) show as a discreet status list,
+  "Estado del servidor", one Spanish line per problem ("El observador ha fallado 3 veces: …",
+  "El observador está en pausa: …", "No se han podido transcribir N páginas: …", "La bóveda no se
+  ha podido subir a GitHub (N veces): …"), nothing while the session is healthy and never a
+  modal: the screen asks `GET /api/sessions/{id}/health` every `HEALTH_POLL_MS` (15 s; the first
+  ask after one interval, one ask at a time) while the session runs, and stops on **Terminar**, a
+  lost connection, unmount or a 404. The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
 - **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
@@ -122,6 +128,11 @@ token):
     message of the page. Also exports `captureCapabilities()` (which omits `audio_format` when
     `audioStreamSupported()` is false, so the backend cannot pick a `server` mode the client
     could not obey), `shutterClick()` and `FLASH_MS`.
+  - `sessionHealth.ts` (#262): `useSessionHealth(sessionId, active, intervalMs = HEALTH_POLL_MS)`
+    -> the lines to show; `fetchSessionHealth(id)` (the summary, `"gone"` on 404, `null` for an
+    unusable answer, which keeps the previous lines), `healthLines(health)` (the Spanish lines,
+    none when healthy) and `sessionHealthPath(id)`. The body is checked by hand (web-only route,
+    no protocol schema).
   - `wakeLock.ts`: `ScreenWakeLock({wakeLock?, visibility?})` -- `start()` / `stop()`
     (both idempotent) and `held`; requests `navigator.wakeLock.request("screen")`, re-requests on
     `visibilitychange` to visible after the browser released it, releases a lock that arrives

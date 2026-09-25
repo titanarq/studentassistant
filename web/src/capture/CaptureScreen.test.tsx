@@ -17,6 +17,7 @@ import { decodeCaptureUploadRequest, PROTOCOL_VERSION, type Session } from "../p
 import CapturePage from "./CapturePage";
 import CaptureScreen, { type CaptureScreenProps, captureCapabilities } from "./CaptureScreen";
 import type { PcmWorkletChunk } from "./pcmWorklet";
+import { HEALTH_POLL_MS } from "./sessionHealth";
 import {
   type CaptureFakes,
   FakeBiasingSpeechRecognition,
@@ -254,6 +255,50 @@ afterEach(() => {
   fakes.restore();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("the session health line (#262)", () => {
+  const HEALTH_PATH = `/api/sessions/${SESSION.session_id}/health`;
+  const quiet = { count: 0, message: null };
+
+  it("stays hidden while healthy and shows a discreet line when the observer fails", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      const answers = [
+        { ok: true, observer: quiet },
+        { ok: false, observer: { count: 3, message: "Claude no responde (sin conexión o saturado)" } },
+      ];
+      backend({
+        [HEALTH_PATH]: () =>
+          jsonResponse({
+            session_id: SESSION.session_id,
+            observer_paused: false,
+            observer_paused_message: null,
+            transcription: quiet,
+            push: quiet,
+            ...(answers.shift() ?? answers[0]),
+          }),
+      });
+      renderScreen();
+      await open();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HEALTH_POLL_MS);
+      });
+      expect(sent.some((call) => call.path === HEALTH_PATH)).toBe(true);
+      expect(screen.queryByRole("status", { name: "Estado del servidor" })).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HEALTH_POLL_MS);
+      });
+      expect(screen.getByRole("status", { name: "Estado del servidor" })).toHaveTextContent(
+        "El observador ha fallado 3 veces: Claude no responde (sin conexión o saturado).",
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("the session socket", () => {

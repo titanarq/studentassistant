@@ -11,6 +11,9 @@ An end with `prepare_notes: true` (1.6) answers as soon as the session has ended
 generating the topic's notes in the background (`NotesGenerator.start_background`); the response's
 `notes_generation` says whether it `started`, one was already `running`, or the backend has no
 Claude transport (`unavailable`).
+`GET /api/sessions/{id}/health` (#262, web-only) answers the session's failure counts
+(`session_health.py`): observer calls, page transcriptions, the vault's push streak, and whether the
+observer is paused by a cost cap; every count 0 for a healthy session.
 Every route sits behind the LAN guard, the Host allowlist and the bearer check.
 """
 
@@ -28,6 +31,7 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.auth import Principal
 from studentassistant.server.errors import ApiError
 from studentassistant.server.notes_routes import NotesGenerator
+from studentassistant.server.session_health import SessionHealth, SessionHealthResponse
 from studentassistant.server.sessions import (
     ActiveSessionExistsError,
     SessionConflictError,
@@ -35,7 +39,7 @@ from studentassistant.server.sessions import (
     UnknownSessionError,
     VaultUnavailableError,
 )
-from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError
+from studentassistant.vault import SubjectNotFoundError, SyncStatus, TopicNotFoundError
 
 # Path ids follow the protocol's id pattern, so `..` or a dotted name never reaches the vault.
 SubjectId = Annotated[str, Path(pattern=ID_PATTERN)]
@@ -141,5 +145,15 @@ def session_router() -> APIRouter:
         if generator is not None and topic is not None:
             start = generator.start_background(service, *topic)
         return ended.model_copy(update={"notes_generation": start})
+
+    @router.get("/sessions/{session_id}/health")
+    async def session_health(request: Request, session_id: SessionId) -> SessionHealthResponse:
+        service = _service(request)
+        async with _http_errors():
+            if not await service.is_known(session_id):
+                raise UnknownSessionError(f"no existe la sesión {session_id}")
+        health: SessionHealth = request.app.state.health
+        sync = service.sync
+        return health.summary(session_id, SyncStatus() if sync is None else sync.status())
 
     return router

@@ -170,6 +170,24 @@ Routes registered today:
   `SessionService` checks `.sa/active.yaml` into `host_warning` (logged, never refused), claims it
   for its host once the session exists, checkpoints (`sesión <id> iniciada en <host>`) and calls
   `GitSync.request_push()`; the end releases the claim before its checkpoint and push.
+- `GET /api/sessions/{id}/health` (`server/session_routes.py` + `server/session_health.py`, #262,
+  web-only, not phone protocol) -> `SessionHealthResponse` `{session_id, ok, observer,
+  observer_paused, observer_paused_message, transcription, push}`, each of `observer`,
+  `transcription`, `push` a `{count, message}` whose `message` is the latest failure in Spanish
+  (`null` while `count` is 0). `observer` counts the observer's failed calls (its transient
+  `observer.call_failed` notices, `kind` -> "Claude no responde (sin conexión o saturado)",
+  "Claude ha rechazado la petición", ...); `transcription` the session's
+  `page.transcription_failed` events (`reason` `cost_cap` / `refused` / `error`);
+  `observer_paused` whether the latest `observer.status` is `paused` (a cost cap; the message
+  names the `session` or `day` cap). `push` is the vault's current push streak, not per
+  session: `GitSync.status().consecutive_push_failures` and `last_push_failure.kind` (`offline`
+  -> "no hay conexión con GitHub", `auth`, `rejected`, `error`), cleared by a successful push.
+  `ok` is true when every count is 0 and the observer is not paused. The counts live in memory
+  (`app.state.health`, a `SessionHealth` holding one bus subscription made with the app, folded
+  on each request; no task runs), start at 0 on a restarted backend and are forgotten on
+  `session.ended`, so an ended session answers zeros. An id no topic lists is 404 (`no existe la
+  sesión <id>`), a path id outside the protocol's id pattern 422, a vault that cannot be opened
+  503. Bearer check like every non-exempt route.
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
