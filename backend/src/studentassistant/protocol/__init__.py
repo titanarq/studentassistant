@@ -46,6 +46,8 @@ from studentassistant.protocol.rest import (
     Topic,
     TopicCreateRequest,
     TopicsListResponse,
+    WebPageAddRequest,
+    WebPageAddResponse,
 )
 from studentassistant.protocol.server import (
     SERVER_EVENT_ADAPTER,
@@ -117,6 +119,8 @@ __all__ = [
     "Topic",
     "TopicCreateRequest",
     "TopicsListResponse",
+    "WebPageAddRequest",
+    "WebPageAddResponse",
     "TranscriptClientFinal",
     "TranscriptClientPartial",
     "TranscriptFinal",

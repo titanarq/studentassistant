@@ -17,6 +17,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.WebPageAddRequest
+import com.titanarq.studentassistant.protocol.WebPageAddResponse
 import com.titanarq.studentassistant.protocol.isCompatible
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.KSerializer
@@ -45,6 +47,9 @@ fun defaultOkHttpClient(): OkHttpClient =
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
+
+/** How long [OkHttpBackendClient.addWebPage] waits for the answer: the backend fetches the page through Claude. */
+const val WEB_PAGE_READ_TIMEOUT_SECONDS = 120L
 
 /**
  * [BackendClient] over OkHttp, encoding and decoding the `protocol` classes with [ProtocolJson].
@@ -149,6 +154,26 @@ class OkHttpBackendClient(
         )
     }
 
+    override suspend fun addWebPage(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+        request: WebPageAddRequest,
+    ): BackendResult<WebPageAddResponse> =
+        call(
+            backend.baseUrl,
+            backend.token,
+            listOf("api", "subjects", subjectId, "topics", topicId, "web-pages"),
+            jsonBody(WebPageAddRequest.serializer(), request),
+            WebPageAddResponse.serializer(),
+            http = slowHttp,
+        )
+
+    /** [http] with the longer read timeout of the calls the backend answers after asking Claude. */
+    private val slowHttp: OkHttpClient by lazy {
+        http.newBuilder().readTimeout(WEB_PAGE_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
+    }
+
     // --- plumbing ---
 
     private fun <T> jsonBody(serializer: KSerializer<T>, value: T): RequestBody =
@@ -183,6 +208,7 @@ class OkHttpBackendClient(
         segments: List<String>,
         body: RequestBody?,
         serializer: KSerializer<T>,
+        http: OkHttpClient = this.http,
     ): BackendResult<T> {
         val url = buildUrl(baseUrl, segments)
             ?: return BackendResult.Unreachable("invalid backend URL")

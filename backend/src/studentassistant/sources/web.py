@@ -49,6 +49,7 @@ from studentassistant.vault import (
     ConversationRecord,
     Vault,
     append_conversation_record,
+    list_sources,
     put_source,
     read_conversation,
 )
@@ -70,6 +71,8 @@ WEB_SNAPSHOT_STORED_KIND = "web.snapshot_stored"
 
 RequestedBy = Literal["voice", "web", "editor"]
 KeptBy = Literal["student", "assistant", "editor"]
+AddedVia = Literal["url", "share"]
+"""How a page given by its address arrived: pasted in the web UI, or shared from the phone."""
 FailureReason = Literal["cost_cap", "refused", "error", "interrupted"]
 
 _HTTP_URL = re.compile(r"^https?://[^\s/$.?#][^\s]*$", re.IGNORECASE)
@@ -356,8 +359,12 @@ def keep_snapshot(
     query: str | None = None,
     kept_by: KeptBy = "student",
     session_id: str | None = None,
+    added_via: AddedVia | None = None,
 ) -> KeptWebSource:
     """Store `snapshot` as `sources/web/NNN-<slug>.md` with its sidecar (blocking).
+
+    `added_via` is set for a page the student gave by its address (`url`, `share`) rather than
+    kept from a search.
 
     Raises the vault's `SecretRefused` when the page looks like it carries a key (nothing is
     written) and its topic errors for an unknown topic.
@@ -383,6 +390,8 @@ def keep_snapshot(
         meta["summary"] = result.summary
     if session_id:
         meta["session"] = session_id
+    if added_via:
+        meta["added_via"] = added_via
     path = put_source(
         vault,
         subject_slug,
@@ -395,6 +404,28 @@ def keep_snapshot(
     return KeptWebSource(
         path=path, source_id=f"sources/web/{path.name}", title=title, url=snapshot.url
     )
+
+
+def find_kept_url(
+    vault: Vault, subject_slug: str, topic_slug: str, url: str
+) -> KeptWebSource | None:
+    """The topic's web snapshot of `url` (its sidecar's `url` or `requested_url`), if stored.
+
+    Blocking; raises the vault's topic errors for an unknown topic.
+    """
+    wanted = url.strip()
+    for source in list_sources(vault, subject_slug, topic_slug):
+        meta = source.meta or {}
+        if source.kind != "web" or wanted not in (meta.get("url"), meta.get("requested_url")):
+            continue
+        path = vault.path / source.path
+        return KeptWebSource(
+            path=path,
+            source_id=f"sources/web/{path.name}",
+            title=str(meta.get("title") or meta.get("url") or wanted),
+            url=str(meta.get("url") or wanted),
+        )
+    return None
 
 
 # -- the topic's search log ---------------------------------------------------------------------
@@ -612,6 +643,7 @@ __all__ = [
     "WEB_SEARCH_FAILED_KIND",
     "WEB_SEARCH_RESULTS_KIND",
     "WEB_SNAPSHOT_STORED_KIND",
+    "AddedVia",
     "KeptResult",
     "KeptWebSource",
     "OfferedResult",
@@ -622,6 +654,7 @@ __all__ = [
     "WebSearchError",
     "WebSearchRecord",
     "WebSnapshot",
+    "find_kept_url",
     "find_web_search",
     "is_http_url",
     "keep_snapshot",

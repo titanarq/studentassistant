@@ -276,6 +276,13 @@ Routes registered today:
   Spanish: unknown topic, search or result 404; no results yet or a reached cost cap 409; empty
   query, or a page that cannot be kept (a PDF, an error, a key) 422; Claude failure or refusal
   502; no transport, web search disabled, or no vault 503. See `docs/modules/sources.md`.
+  The same router has `POST /api/subjects/{s}/topics/{t}/web-pages` (#62, a URL pasted in the web
+  UI or shared to the phone): protocol `rest.topics.web_pages.create.request` (`url`, `via`?
+  `url` | `share`) -> 201 `rest.topics.web_pages.create.response` (`source_id`, `vault_id`,
+  `title`, `url`, `already_kept: false`), or 200 with `already_kept: true` when the topic already
+  has that address (nothing fetched); `WebSearcher.keep_url`, bound to the topic's active session
+  like a search. Refusals as for keeping a result (the cost cap with `code:
+  cost_cap_reached`); a body that is not an http(s) `url` 422.
 - `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
   `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
   `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a

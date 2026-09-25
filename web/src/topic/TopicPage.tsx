@@ -10,6 +10,7 @@ import {
 import PdfUploadForm from "./PdfUploadForm";
 import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
+import WebPageForm from "./WebPageForm";
 import WebSearchPanel from "./WebSearchPanel";
 
 /**
@@ -17,7 +18,8 @@ import WebSearchPanel from "./WebSearchPanel";
  * "<subject> / <topic>" (names from the subject and topic lists, ids until they arrive), the
  * topic card from the read API's summary, and the PDF upload (#149), after which the card is
  * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
- * the card is reloaded too, and "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page.
+ * the card is reloaded too, "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
+ * "Añadir una página web" (`WebPageForm`, #62), after storing one.
  */
 export default function TopicPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [subjectName, setSubjectName] = useState(subjectId);
@@ -69,6 +71,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
           <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={refresh} />
           <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
           <WebSearchPanel subjectId={subjectId} topicId={topicId} onKept={refresh} />
+          <WebPageForm subjectId={subjectId} topicId={topicId} onAdded={refresh} />
         </>
       )}
     </main>

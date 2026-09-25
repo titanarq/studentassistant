@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.topics.web_pages.create.response.schema.json",
+  "title": "rest.topics.web_pages.create.response",
+  "description": "The stored web snapshot (201), or the one the topic already had for that address (200, already_kept).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_id",
+    "vault_id",
+    "title",
+    "url",
+    "already_kept"
+  ],
+  "properties": {
+    "source_id": {
+      "description": "sources/web/NNN-<slug>.md, as provenance cites it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "vault_id": {
+      "description": "The snapshot's vault-relative path.",
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "url": {
+      "description": "The address the page was fetched from (after redirects).",
+      "type": "string",
+      "minLength": 1
+    },
+    "already_kept": {
+      "type": "boolean"
+    }
+  }
+}

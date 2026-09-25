@@ -16,8 +16,8 @@
 
 ## Public surface (`from studentassistant.sources import ...`)
 
-What exists today, after issues #34, #44, #50, #58 and #59: PDF import, capture processing,
-page transcription, textbook pages and web search.
+What exists today, after issues #34, #44, #50, #58, #59 and #62: PDF import, capture processing,
+page transcription, textbook pages, web search and web pages by URL.
 
 ### Capture processing -- `captures.py`
 - `store_capture(vault, subject_slug, topic_slug, kind, stills, meta, session_t_ms, settings)
@@ -226,7 +226,8 @@ from `[llm] web_search_tool` / `web_fetch_tool`, `*_20260209` by default).
   the slug from the title): `# <title>`, `> Copia de <url>, descargada el YYYY-MM-DD.`, then the
   text; sidecar `url`, `title`, `fetched_at`, `retrieved_at`, `media_type`, `external: true`,
   `kept_by` (`student` | `assistant` | `editor`), and when known `requested_url`, `query`,
-  `search_id`, `summary`, `session`. A page that looks like it carries a key: `SecretRefused`,
+  `search_id`, `summary`, `session`, `added_via` (`url` | `share`, a page given by its address,
+  #62). A page that looks like it carries a key: `SecretRefused`,
   nothing written. The editor reads it as any web snapshot and cites it
   `[Web: <título>](../sources/web/NNN-<slug>.md)`; the web UI marks those citations as external
   sources (green, "fuente externa").
@@ -259,6 +260,16 @@ from `[llm] web_search_tool` / `web_fetch_tool`, `*_20260209` by default).
   messages. `list(vault, s, t)` is `list_web_searches` with a `queued` search no job runs shown as
   failed, `reason: interrupted` (the server stopped). `stop()` cancels what is running;
   `wait_idle()` waits for every queued search.
+- `keep_url(vault, s, t, url, *, added_via="url", kept_by="student", session_id=None) ->
+  (KeptWebSource, already_kept)` (#62) keeps a page the student gave by its address (pasted in the
+  web UI: `url`; shared to the phone: `share`) the same way: `snapshot_page` with a client bound
+  to the topic's ledger and `session_id` (the topic's live session, if any), `keep_snapshot`
+  with `added_via` in the sidecar (no `search_id`/`query`/`summary`), `on_write`, and
+  `web.snapshot_stored` (`url`, `source_id`, `title`, `kept_by`, `added_via`) on the live session.
+  No search record is written. An address the topic already has (`web.find_kept_url(vault, s, t,
+  url)`: a web sidecar whose `url` or `requested_url` is it, after trimming) is returned with
+  `already_kept` true and nothing fetched. `NotAWebPageError` (a `KeepError`, 422) for a
+  non-http(s) address; the other refusals as `keep`.
 - Server: `create_app` builds one when it gets an `llm_transport` and `[sources]
   web_search_enabled`; the routes are `server/web_search_routes.py`
   (`GET/POST /api/subjects/{s}/topics/{t}/web-searches`, `POST

@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import jsonschema
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from studentassistant.config import ObserverSettings, ServerSettings, Settings, SourcesSettings
+from studentassistant.config import (
+    LlmSettings,
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+    SourcesSettings,
+)
 from studentassistant.llm import FakeClaude
+from studentassistant.protocol import model_for
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.vault import Vault, create_subject, create_topic, list_sources, read_source
@@ -19,6 +28,7 @@ from web_search_helpers import HITS, PAGE_TEXT, fetch_reply, search_reply
 
 LOCAL_BASE_URL = "http://localhost:8765"
 WAIT_SECONDS = 10.0
+PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "protocol"
 AppFactory = Callable[..., FastAPI]
 
 
@@ -128,3 +138,85 @@ def test_without_a_transport_searching_is_unavailable(
     with _client(make_app(FakeClaude(), SourcesSettings(web_search_enabled=False))) as client:
         assert client.post(_base(topic), json={"query": "bastilla"}).status_code == 503
     assert list_sources(tmp_vault, *topic) == []
+
+
+def _pages(topic: tuple[str, str]) -> str:
+    return f"/api/subjects/{topic[0]}/topics/{topic[1]}/web-pages"
+
+
+def _check_contract(name: str, body: dict) -> None:
+    schema = json.loads((PROTOCOL_DIR / f"{name}.schema.json").read_text("utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(body)
+    model_for(name).model_validate(body)
+
+
+def test_add_a_web_page_by_its_url(
+    client: TestClient, fake: FakeClaude, topic: tuple[str, str], tmp_vault: Vault
+) -> None:
+    url = HITS[1][0]
+    request = {"url": url, "via": "share"}
+    _check_contract("rest.topics.web_pages.create.request", request)
+    fetch_reply(fake, url, title="La Bastilla")
+    added = client.post(_pages(topic), json=request)
+    assert added.status_code == 201, added.text
+    body = added.json()
+    _check_contract("rest.topics.web_pages.create.response", body)
+    assert body == {
+        "source_id": "sources/web/001-la-bastilla.md",
+        "vault_id": f"subjects/{topic[0]}/topics/{topic[1]}/sources/web/001-la-bastilla.md",
+        "title": "La Bastilla",
+        "url": url,
+        "already_kept": False,
+    }
+    stored = read_source(tmp_vault, body["vault_id"])
+    assert PAGE_TEXT in stored.content.decode()
+    assert stored.meta is not None and stored.meta["added_via"] == "share"
+
+    again = client.post(_pages(topic), json={"url": url})
+    assert again.status_code == 200 and again.json() == {**body, "already_kept": True}
+    assert len(fake.requests) == 1
+
+
+def test_add_a_web_page_refusals(
+    client: TestClient, fake: FakeClaude, topic: tuple[str, str], tmp_vault: Vault
+) -> None:
+    assert client.post(_pages(topic), json={"url": "ftp://example.org"}).status_code == 422
+    assert client.post(_pages(topic), json={"url": "https://x.org", "via": "x"}).status_code == 422
+    unknown = client.post("/api/subjects/nada/topics/nada/web-pages", json={"url": HITS[0][0]})
+    assert unknown.status_code == 404
+    fetch_reply(fake, HITS[0][0], error_code="url_not_accessible")
+    failed = client.post(_pages(topic), json={"url": HITS[0][0]})
+    assert failed.status_code == 422 and "url_not_accessible" in failed.json()["detail"]
+    assert list_sources(tmp_vault, *topic) == []
+
+
+def test_add_a_web_page_over_the_cost_cap(
+    devices_path: Path,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    topic: tuple[str, str],
+) -> None:
+    fake = FakeClaude()
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=ServerSettings(devices_path=devices_path),
+        codes=codes,
+        vault=tmp_vault,
+        sources=SourcesSettings(transcription_enabled=False),
+        llm_transport=fake,
+        llm_settings=Settings(
+            observer=ObserverSettings(enabled=False), llm=LlmSettings(max_usd_per_day=0)
+        ),
+    )
+    with _client(app) as client:
+        capped = client.post(_pages(topic), json={"url": HITS[0][0]})
+    assert capped.status_code == 409 and capped.json()["code"] == "cost_cap_reached"
+    assert fake.requests == []
+
+
+def test_without_a_transport_adding_a_page_is_unavailable(
+    make_app: AppFactory, topic: tuple[str, str]
+) -> None:
+    with _client(make_app(None)) as client:
+        assert client.post(_pages(topic), json={"url": HITS[0][0]}).status_code == 503

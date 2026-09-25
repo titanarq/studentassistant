@@ -87,6 +87,10 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/end` | `rest.sessions.end.request` | `rest.sessions.end.response` |
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
 | `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
+| `POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages` | `rest.topics.web_pages.create.request` | `rest.topics.web_pages.create.response` |
+
+A new endpoint is not a version bump: its messages are new types, never new fields of an old
+one, and a backend that predates it answers 404, which a client reports as "update the server".
 
 ### REST errors
 
@@ -182,6 +186,18 @@ as a prefix, accents and case ignored), optional `subject` and `topic` ids (`top
   is the vault-relative file the text is in, `source` the vault-relative source it belongs to
   (absent for notes and transcripts); a transcript hit carries its `session`, the segment's `seq`
   and `t_start` (session time, ms). `snippet` marks each matched term between U+0002 and U+0003.
+
+### Web pages
+
+- `rest.topics.web_pages.create.request`: a web page the student gives by its address, stored as
+  a source of the topic: `url` (http or https, at most 2000 characters) and the optional `via`,
+  how it arrived (`url`: pasted in the web UI, the default; `share`: shared to the phone app).
+- `rest.topics.web_pages.create.response`: the stored snapshot, `{source_id, vault_id, title,
+  url, already_kept}`: `source_id` is `sources/web/NNN-<slug>.md` (what provenance cites),
+  `vault_id` its vault-relative path, `url` the address it was fetched from. 201 when the page
+  was fetched and stored; 200 with `already_kept: true` when the topic already had that address
+  (nothing fetched). Refusals: 404 unknown topic, 409 cost cap (`cost_cap_reached`), 422 not an
+  http(s) address or not a text page, 502 Claude could not fetch it, 503 no web tools.
 
 ## WebSocket `/ws/sessions/{id}`
 

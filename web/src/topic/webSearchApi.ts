@@ -7,8 +7,13 @@
  * - `POST .../web-searches/{search_id}/results/{index}/keep` fetches the page and stores it as a
  *   web source of the topic (201).
  *
+ * - `POST /api/subjects/{s}/topics/{t}/web-pages` `{url, via: "url"}` (#62) fetches a page given by
+ *   its address and stores it as a web source (201; 200 with `already_kept` when the topic had it).
+ *
  * A refusal carries a Spanish `detail` that is shown as it comes.
  */
+
+import { decodeWebPageAddResponse, type WebPageAddRequest, type WebPageAddResponse } from "../protocol";
 
 export interface WebResult {
   url: string;
@@ -122,6 +127,28 @@ export function keepWebResult(subjectId: string, topicId: string, searchId: stri
     `${webSearchesPath(subjectId, topicId)}/${encodeURIComponent(searchId)}/results/${index}/keep`,
     { method: "POST" },
     isKept,
+  );
+}
+
+function isAdded(body: unknown): body is WebPageAddResponse {
+  try {
+    decodeWebPageAddResponse(body, "");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function webPagesPath(subjectId: string, topicId: string): string {
+  return `/api/subjects/${encodeURIComponent(subjectId)}/topics/${encodeURIComponent(topicId)}/web-pages`;
+}
+
+export function addWebPage(subjectId: string, topicId: string, url: string): Promise<ApiResult<WebPageAddResponse>> {
+  const request: WebPageAddRequest = { url, via: "url" };
+  return call(
+    webPagesPath(subjectId, topicId),
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) },
+    isAdded,
   );
 }
 

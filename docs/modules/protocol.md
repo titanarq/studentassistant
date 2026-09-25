@@ -8,7 +8,8 @@
 The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), documented in `protocol/README.md`:
 - REST: `POST /api/pair`, `GET /api/health`, subjects/topics listing and creation, session
   start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`),
-  `GET /api/search` (the web's search over the vault index).
+  `GET /api/search` (the web's search over the vault index), `POST .../topics/{t}/web-pages`
+  (a web page by URL, #62).
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
@@ -46,7 +47,8 @@ Everything below is re-exported from the package root; other modules import only
   `SubjectCreateRequest`, `Topic`, `TopicsListResponse`, `TopicCreateRequest`,
   `SessionStartRequest`, `Session` (start and resume response), `SessionEndRequest`,
   `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`,
-  `SearchResponse` (with `SearchHit`). `Topic` carries the optional `last_session_at_ms`,
+  `SearchResponse` (with `SearchHit`), `WebPageAddRequest`, `WebPageAddResponse` (#62).
+  `Topic` carries the optional `last_session_at_ms`,
   `pending_count` (1.1) and `digest_excerpt` (1.3, at most `DIGEST_EXCERPT_MAX` = 400 chars).
 - REST error codes: `ErrorCode` (a `StrEnum`: `COST_CAP_REACHED`, `DOUBT_CLOSED`,
   `SESSION_OPEN`) and `ERROR_CODE_SINCE` (`(1, 2)`); the server's `server.errors` puts them in
