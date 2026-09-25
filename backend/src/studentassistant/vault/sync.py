@@ -23,7 +23,10 @@ pushed with the branch.
 
 Time is read from an injectable `Clock`, and nothing here sleeps or starts a thread: `run_due()`
 does whatever is due now, and `run()` is the asyncio loop that calls it in a worker thread, so git
-never blocks the event loop. Every git command is serialised by one lock.
+never blocks the event loop. Every git command is serialised by one lock, shared by the threads of
+the process and by every other process on the vault (`locking.py`, an `flock` under `.git/`): the
+CLI committing an import while the server commits a batch never trips over git's `index.lock`.
+A process that cannot get the lock within `timeout_seconds` treats it as a failed git command.
 """
 
 from __future__ import annotations
@@ -34,14 +37,16 @@ import re
 import threading
 import time
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from studentassistant.config import VaultGitSettings
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.git import GitIdentity, GitResult, GitRunner
+from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
+from studentassistant.vault.locking import VaultBusyError, git_lock
 from studentassistant.vault.vault import ACTIVE_HOST_MERGE_DRIVER, MAIN_BRANCH, Vault
 
 logger = logging.getLogger(__name__)
@@ -51,6 +56,8 @@ SyncOutcome = Literal["ok", "conflict", "offline", "auth", "error"]
 
 NOTES_TAG_SUFFIX = "apuntes-v"
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+_TEMPORARY_FILES_PATHSPEC = ":(exclude,glob)**/.*.tmp"
 
 DIVERGENCE_REF_PREFIX = "refs/studentassistant/divergence/"
 DIVERGENCE_LOCAL_REF = DIVERGENCE_REF_PREFIX + "local"
@@ -253,9 +260,10 @@ class GitSync:
             email=self.settings.author_email,
         )
         self.git = GitRunner(vault.path, self.identity, timeout=self.settings.timeout_seconds)
-        # `_git_lock` serialises git; `_state_lock` guards the fields below and is never held
-        # while git runs, so `note_change()` and `status()` never wait for a push.
-        self._git_lock = threading.Lock()
+        # `_git_lock` serialises git, across threads and processes (`locked()`); `_state_lock`
+        # guards the fields below and is never held while git runs, so `note_change()` and
+        # `status()` never wait for a push.
+        self._git_lock = git_lock(vault.path)
         self._state_lock = threading.Lock()
         self._first_change_at: float | None = None
         self._last_change_at: float | None = None
@@ -289,6 +297,35 @@ class GitSync:
             if self._push_due_at is None:
                 self._push_due_at = self.clock.monotonic() + delay
 
+    # -- the git lock --------------------------------------------------------------------------
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold the vault's git lock (threads and processes) for the `with` body.
+
+        For a caller running git on this vault outside these methods (the purge's history
+        rewrite). Waits at most `timeout_seconds`.
+
+        Raises:
+            VaultBusyError: another process kept git on the vault busy for longer.
+        """
+        with self._git_lock.hold(self.settings.timeout_seconds):
+            yield
+
+    @contextmanager
+    def _git_locked_or_raise(self) -> Iterator[None]:
+        """`locked()`, a busy lock raised as the `GitCommandError` these methods document."""
+        try:
+            with self.locked():
+                yield
+        except VaultBusyError as busy:
+            raise GitCommandError(self._busy_result(busy)) from busy
+
+    @staticmethod
+    def _busy_result(busy: VaultBusyError) -> GitResult:
+        """A lock that could not be had, as the failed git command it stands in for."""
+        return GitResult(args=("lock",), returncode=-1, stdout="", stderr=str(busy))
+
     # -- commits -------------------------------------------------------------------------------
 
     def checkpoint(self, message: str) -> str | None:
@@ -297,8 +334,13 @@ class GitSync:
         Returns the new commit, or `None` when there was nothing to commit or the commit failed
         (the failure is in `status().last_error`; it is never raised).
         """
-        with self._git_lock:
-            return self._commit(message)
+        try:
+            with self.locked():
+                return self._commit(message)
+        except VaultBusyError as busy:
+            logger.warning("vault commit failed: %s", busy)
+            self._update(last_error=str(busy))
+            return None
 
     def run_due(self) -> None:
         """Commit the pending batch and push if their time has come. Never raises."""
@@ -310,15 +352,23 @@ class GitSync:
             )
             push_due = self._push_due_at is not None and now >= self._push_due_at
         if commit_due:
-            with self._git_lock:
-                self._commit(None)
+            self._commit_now()
         if push_due:
             self.push_now()
+
+    def _commit_now(self) -> None:
+        """Commit the pending batch under the lock; a busy lock is kept as `last_error`."""
+        try:
+            with self.locked():
+                self._commit(None)
+        except VaultBusyError as busy:
+            logger.warning("vault commit failed: %s", busy)
+            self._update(last_error=str(busy))
 
     def _commit(self, subject: str | None) -> str | None:
         """Stage everything and commit it; `subject=None` makes the summary the subject.
 
-        The caller holds `_git_lock`. Changes noted while this runs stay pending for the next batch.
+        The caller holds the git lock. Changes noted meanwhile stay pending for the next batch.
         """
         with self._state_lock:
             first, last = self._first_change_at, self._last_change_at
@@ -344,7 +394,10 @@ class GitSync:
         return sha
 
     def _commit_locked(self, subject: str | None) -> str | None:
-        self._must(self.git.run("add", "--all"))
+        # A writer's temporary file (`files.py`: `.<name>.<random>.tmp`, renamed into place a
+        # moment later) is never staged: another thread or process may be mid-write while this
+        # runs, and git would commit the half-written file or fail when it vanishes under it.
+        self._must(self.git.run("add", "--all", "--", ".", _TEMPORARY_FILES_PATHSPEC))
         if self.git.run("diff", "--cached", "--quiet").returncode == 0:
             return None  # no empty commits
         summary = self._staged_summary()
@@ -385,11 +438,14 @@ class GitSync:
 
     def push_now(self) -> bool:
         """Push the branch and its notes tags now; on failure schedule a retry. Never raises."""
-        with self._git_lock:
-            result = self.git.run(
-                "push", "--follow-tags", "--porcelain", self.settings.remote, MAIN_BRANCH
-            )
-            pending = self._count_unpushed()
+        try:
+            with self.locked():
+                result = self.git.run(
+                    "push", "--follow-tags", "--porcelain", self.settings.remote, MAIN_BRANCH
+                )
+                pending = self._count_unpushed()
+        except VaultBusyError as busy:
+            result, pending = self._busy_result(busy), self.status().pending_commits
         now = self.clock.monotonic()
         if result.ok:
             with self._state_lock:
@@ -432,8 +488,7 @@ class GitSync:
 
     def flush(self) -> SyncStatus:
         """Commit whatever is pending and push now: session end and shutdown. Never raises."""
-        with self._git_lock:
-            self._commit(None)
+        self._commit_now()
         self.push_now()
         return self.status()
 
@@ -445,12 +500,16 @@ class GitSync:
         JSONL files merge by union. Any other conflict aborts the rebase: HEAD, the local commits
         and the working tree are left as they were before, and the result lists the paths.
         """
-        with self._git_lock:
-            self._commit(None)
-            result, divergence = self._pull_locked()
-            if result.ok:
-                self._forget_divergence_locked()
-            pending = self._count_unpushed()
+        try:
+            with self.locked():
+                self._commit(None)
+                result, divergence = self._pull_locked()
+                if result.ok:
+                    self._forget_divergence_locked()
+                pending = self._count_unpushed()
+        except VaultBusyError as busy:
+            result = SyncResult(outcome="error", message=str(busy))
+            divergence, pending = None, self.status().pending_commits
         changes: dict[str, object] = {"last_sync": result, "pending_commits": pending}
         if result.ok:
             changes["divergence"] = None
@@ -527,9 +586,12 @@ class GitSync:
         divergence = self.status().divergence
         if divergence is None or path not in divergence.paths:
             return None
-        with self._git_lock:
-            local = self.git.run("show", f"{divergence.local_commit}:{path}")
-            remote = self.git.run("show", f"{divergence.remote_commit}:{path}")
+        try:
+            with self.locked():
+                local = self.git.run("show", f"{divergence.local_commit}:{path}")
+                remote = self.git.run("show", f"{divergence.remote_commit}:{path}")
+        except VaultBusyError as busy:
+            local = remote = self._busy_result(busy)
         return DivergentVersions(
             path=path,
             local=local.stdout if local.ok else None,
@@ -546,9 +608,13 @@ class GitSync:
     # -- notes version tags --------------------------------------------------------------------
 
     def list_notes_tags(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
-        """Every `<subject-slug>/<topic-slug>/apuntes-vN` tag, oldest version first."""
+        """Every `<subject-slug>/<topic-slug>/apuntes-vN` tag, oldest version first.
+
+        Raises:
+            GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
+        """
         _check_slugs(subject_slug, topic_slug)
-        with self._git_lock:
+        with self._git_locked_or_raise():
             return self._list_tags_locked(subject_slug, topic_slug)
 
     def _list_tags_locked(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
@@ -577,10 +643,11 @@ class GitSync:
 
         Raises:
             ValueError: when `subject_slug` or `topic_slug` is not a slug.
-            GitCommandError: when git refuses the tag (this is not the capture path).
+            GitCommandError: when git refuses the tag (this is not the capture path), or another
+                process kept git on the vault busy past `timeout_seconds`.
         """
         _check_slugs(subject_slug, topic_slug)
-        with self._git_lock:
+        with self._git_locked_or_raise():
             self._commit(None)
             existing = self._list_tags_locked(subject_slug, topic_slug)
             version = (existing[-1].version if existing else 0) + 1
@@ -608,13 +675,13 @@ class GitSync:
         Raises:
             RevertConflictError: a path is not, at HEAD, what `commit` left.
             ValueError: `commit` is not a commit of the vault, or a path is outside it.
-            GitCommandError: git failed.
+            GitCommandError: git failed, or another process kept git busy past `timeout_seconds`.
         """
         relative = list(dict.fromkeys(paths))
         for path in relative:
             if path.startswith("/") or ".." in path.split("/") or not path:
                 raise ValueError(f"{path!r} is not a vault-relative path")
-        with self._git_lock:
+        with self._git_locked_or_raise():
             if not self.git.run("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}").ok:
                 raise ValueError(f"{commit!r} is not a commit of the vault")
             self._commit(None)

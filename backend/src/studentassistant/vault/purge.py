@@ -51,6 +51,7 @@ from studentassistant.vault.errors import VaultError
 from studentassistant.vault.files import write_bytes_atomic
 from studentassistant.vault.git import GitRunner
 from studentassistant.vault.jsonl import encode_line
+from studentassistant.vault.locking import VaultBusyError
 from studentassistant.vault.notes import list_generated, read_notes
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.session_models import Event, Origin, SessionMeta
@@ -481,14 +482,26 @@ def _remote_exists(git: GitRunner, remote: str) -> bool:
 def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
     """Drop `paths` from every commit of `main` and the tags, prune, force-push. The `--hard` part.
 
+    Runs under the vault's git lock (`GitSync.locked`), so no other process commits meanwhile.
+
     The working tree must be clean (the purge commit just made it so). The branch is pushed with
     `--force-with-lease` against the remote-tracking `main`, so a remote that moved on since the
     last fetch refuses it instead of losing another PC's commits; every local tag is pushed with a
     lease on the value `git ls-remote` gave before the rewrite (absent: it must still be absent).
 
     Raises:
-        PurgeError: git refused a step; the message names it and what to do.
+        PurgeError: git refused a step, or another process kept git on the vault busy (the
+            rewrite then never started); the message names it and what to do.
     """
+    try:
+        with sync.locked():
+            return _rewrite_history(sync, paths)
+    except VaultBusyError as busy:
+        raise PurgeError(str(busy)) from busy
+
+
+def _rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
+    """The body of `rewrite_history`; the caller holds the vault's git lock."""
     vault = sync.vault
     git = GitRunner(
         vault.path,

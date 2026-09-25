@@ -176,13 +176,13 @@ taken from `name`) and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug f
 dot, e.g. `p003.txt`, `p003.jpg` for a PDF's page 3 -- all guarded before anything is written and
 removed again if any write fails; they are never listed as sources. The number is one past
 the highest already in the directory, derived files included. Numbering is atomic per
-`sources/<kind>/` directory across every thread of the process: choosing the number and writing
-the content, derived files and sidecar under it happen under one process-wide lock of that
-directory, so concurrent writers into one topic (a capture stored while a PDF upload runs, say)
-always get distinct numbers and never overwrite each other.
-Two separate processes writing the same topic at once are not covered (the CLI's `import-pdf`
-while the server runs, say): the active-host record below is about PCs, not processes, and
-cross-process safety on one PC is #165. `sources_directory(...)` gives the
+`sources/<kind>/` directory across every thread and every process on the vault: choosing the
+number and writing the content, derived files and sidecar under it happen under that directory's
+vault lock (see "Cross-process locks" below), so concurrent writers into one topic (a capture
+stored while a PDF upload runs, or the CLI's `import-pdf` while the server runs) always get
+distinct numbers and never overwrite each other. A writer waits at most
+`SOURCE_LOCK_TIMEOUT_SECONDS` (120) and then raises `VaultBusyError` with nothing written.
+`sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
 `put_page_transcription(vault, vault_relative_path, text) -> Path` writes a page's Markdown
@@ -222,6 +222,32 @@ Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `li
 goes through `require_topic(vault, subject_slug, topic_slug)` (`topics.py`): a value that is not a
 slug (`slugs.is_slug`: `[a-z0-9]` runs joined by single hyphens) is a `SubjectNotFoundError` or a
 `TopicNotFoundError` without touching the disk, so an id from a URL cannot walk out of its topic.
+
+### Cross-process locks -- `locking.py`
+Decision (#165): two processes on one PC (the server and a CLI command, or two CLI commands) are
+kept apart by locks, not by the CLI refusing while a server runs. Each lock is an advisory
+`fcntl.flock` on `.git/studentassistant-locks/<name>.lock` (`LOCKS_DIRNAME`): inside git's private
+directory, so never committed, pushed or indexed; the OS drops it when its process dies, so a
+crash never leaves the vault locked. `vault_lock(root, name)` returns the process-wide
+`VaultLock` of that name (one object per lock file, shared by the threads of the process;
+re-entrant per thread, only the outermost hold touches the file); `lock.hold(timeout)` is the
+context manager, and a lock not obtained in time raises `VaultBusyError` (a `VaultError`, Spanish
+message naming the lock) -- no wait is unbounded. Two locks exist:
+- `directory_lock(root, directory)` -- one per `sources/<kind>/` (named by a hash of its
+  vault-relative path), around number allocation and the writes under it (`sources.py`).
+- `git_lock(root)` -- around every git command `GitSync` runs, held for a whole operation (the
+  `add`/`diff`/`commit` of a batch, a push, a `pull --rebase` with its abort and refs, a tag, a
+  revert) and by `rewrite_history` for the whole purge rewrite (`GitSync.locked()`). The wait is
+  the `timeout_seconds` of `[vault.git]`; a busy lock counts as a failed git command: `checkpoint`
+  returns `None` with `last_error` set and the batch still pending, `push_now` schedules a retry,
+  `sync` is an `error` result, `list_notes_tags`/`create_notes_tag`/`revert_paths` raise
+  `GitCommandError`, `rewrite_history` a `PurgeError`.
+A vault without a `.git/` directory only gets the in-process part. The batch commit stages
+`git add --all -- . ':(exclude,glob)**/.*.tmp'`: a writer's temporary file (`files.py`) is never
+staged, so a commit while another thread or process is mid-write neither fails on the file
+vanishing nor commits half of it. Not locked: the other writers (sessions, JSONL, notes, state)
+of two processes writing the same file at once, `setup` (a fresh vault), and the index's
+read-only git commands.
 
 ### Secret guard -- `secrets.py`
 `looks_like_secret(content)` returns the name of the first pattern the text or bytes match

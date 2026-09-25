@@ -7,9 +7,10 @@ the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the 
 The next number is found by scanning the directory, so numbering resumes after whatever is there
 already, including the derived files the `sources` module adds next to a page (`page-NNN.md`,
 `page-NNN.page.jpg`). Allocating a number and writing the files under it happen under one lock per
-`sources/<kind>/` directory, shared by every thread of the process, so two writers storing into
-the same topic at once (a capture and a PDF upload, say) get distinct numbers and never overwrite
-each other.
+`sources/<kind>/` directory (`locking.py`), shared by every thread of the process and by every
+other process on the vault (an `flock` under `.git/`), so two writers storing into the same topic
+at once (a capture and a PDF upload, or the server and the CLI's `import-pdf`) get distinct
+numbers and never overwrite each other.
 
 Nothing here processes what it stores: the transcription of a page and the cropped page image are
 derived by `sources`, which hands them back for storage. Both the content and the sidecar pass the
@@ -25,7 +26,6 @@ from __future__ import annotations
 
 import mimetypes
 import re
-import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -36,6 +36,7 @@ from yaml import YAMLError, safe_load
 
 from studentassistant.vault.errors import VaultError
 from studentassistant.vault.files import dump_yaml, write_bytes_atomic, write_text_atomic
+from studentassistant.vault.locking import directory_lock
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.slugs import is_slug, slugify
 from studentassistant.vault.subjects import SUBJECTS_DIRNAME
@@ -56,10 +57,9 @@ _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
 _DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
-# One lock per resolved `sources/<kind>/` directory, held from choosing a number until the files
-# under it are on disk. The registry lock only guards the dictionary itself.
-_DIRECTORY_LOCKS: dict[Path, threading.Lock] = {}
-_DIRECTORY_LOCKS_GUARD = threading.Lock()
+# How long a writer waits for another process (or thread) to finish storing into the same
+# `sources/<kind>/` directory before giving up with `VaultBusyError`.
+SOURCE_LOCK_TIMEOUT_SECONDS = 120.0
 
 
 class SourceError(VaultError):
@@ -144,6 +144,8 @@ def put_source(
             is written.
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
             is not one this backend can read.
+        VaultBusyError: when another process kept the directory locked for longer than
+            `SOURCE_LOCK_TIMEOUT_SECONDS`; nothing is written.
     """
     if kind not in SOURCE_KINDS:
         raise UnknownSourceKindError(
@@ -174,9 +176,9 @@ def put_source(
             WEB_SUFFIX,
         )
 
-    with _directory_lock(directory):
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         # Scanning for the next number and writing under it is one step for every writer of the
-        # process; outside the lock, two writers could both see the same highest number.
+        # vault; outside the lock, two writers could both see the same highest number.
         stem = stem_template.format(_next_number(directory, pattern))
         return _store(directory, stem, content_suffix, content, sidecar_text, derived_files)
 
@@ -207,16 +209,6 @@ def _store(
             path.unlink(missing_ok=True)
         raise
     return content_path
-
-
-def _directory_lock(directory: Path) -> threading.Lock:
-    """The process-wide lock of one `sources/<kind>/` directory, made on first use."""
-    key = directory.resolve()
-    with _DIRECTORY_LOCKS_GUARD:
-        lock = _DIRECTORY_LOCKS.get(key)
-        if lock is None:
-            lock = _DIRECTORY_LOCKS[key] = threading.Lock()
-        return lock
 
 
 def _write(path: Path, data: bytes | str) -> None:
@@ -282,7 +274,7 @@ def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) ->
         raise SourceNotFoundError(f"there is no stored page {stem} at {vault_relative_path!r}")
     guard(text)
     target = directory / f"{stem}{TRANSCRIPTION_SUFFIX}"
-    with _directory_lock(directory):
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         write_text_atomic(target, text)
     return target
 
