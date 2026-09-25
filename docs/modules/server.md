@@ -413,6 +413,10 @@ Routes registered today:
   - `POST .../generated/{kind}`, optional body `{"options": {...}, "confirm_over_cap": false}` ->
     `GenerateResult`. Needs `llm_transport` (503 otherwise; `MaterialGenerators`, one run per
     topic and kind); a `generator` client bound to the topic's ledger.
+  - `GET .../generated/files/{name}` -> the bytes of `generated/<name>` (subdirectories allowed)
+    as a download: `Content-Disposition: attachment; filename="<topic>-<file>"`, the media type
+    by extension (`.apkg` octet-stream, `.csv` `text/csv; charset=utf-8`...); 404 when there is
+    no such file or the name is not one (`vault.read_generated`). The web's download links.
   - Errors, Spanish `detail`: an unknown topic or kind 404, invalid options 422, no notes yet or
     the same generation running 409, a reached cap 409 `cost_cap_reached` until
     `confirm_over_cap`, a Claude failure or refusal 502, a vault that cannot be opened 503.

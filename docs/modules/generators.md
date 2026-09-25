@@ -105,3 +105,25 @@ sorted, then any other kind with a manifest). `read_artifact_meta(...)` reads on
   it. Values of `-o` are JSON when they parse (`size=10`, `split=true`), text otherwise.
 - REST (`server/generators_routes.py`, see `docs/modules/server.md`): `GET /api/generators`,
   `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`.
+
+## Flashcards -- `flashcards.py` (kind `flashcards`, #76)
+
+Options `size` (1-100, default 20: at most that many cards). Claude (prompt
+`prompts/generator_flashcards.md`, tool `record_flashcards`) returns `DraftDeck`: cards with a
+Spanish `front` (question), `back` (answer), `anchors` and, optionally, the `id` of an earlier card
+it restates. Files under `generated/`:
+
+- `flashcards.yaml` (`FlashcardsFile`: `deck` = `<subject name>::<topic title>`, `deck_id`,
+  `cards`: `id`, `front`, `back`, `anchors`) -- read back by the next generation;
+- `flashcards.csv` (`id,anverso,reverso,secciones`, the section titles joined with `; `);
+- `flashcards.apkg` (genanki, built in memory): one deck per topic, note type `ANKI_MODEL_ID`
+  (fields Anverso, Reverso, Apuntes; `$..$`/`$$..$$` as MathJax, `**bold**`, line breaks), tags
+  the subject and topic slugs.
+
+Stable ids, so re-importing the deck into Anki updates the notes instead of duplicating them:
+`deck_id_for(subject, topic)` is derived from the slugs, the note type id is fixed, and each
+note's GUID is `guid_for(subject, topic, card id)`. A card's `id` (`c<8 hex>[-n]`) is kept across
+generations (`assign_ids`): the previous cards are shown to Claude, whose reused `id` is kept when
+it is an earlier card's and not given twice; else a card whose normalized front equals an earlier
+card's takes its id; else a new id from the front's hash. Items are the card ids with their
+anchors. The web downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
