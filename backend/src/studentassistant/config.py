@@ -305,6 +305,8 @@ DEFAULT_STT_LANGUAGE = "es"
 # model is cached (unset: the Hugging Face cache).
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 DEFAULT_WHISPER_DEVICE = "auto"
+# `[stt.options.google-cloud]` (Google Cloud Speech-to-Text v1 streaming): the recognition model.
+DEFAULT_GOOGLE_SPEECH_MODEL = "latest_long"
 # Server mode: seconds of audio queued for the provider past which superseded partials are dropped.
 DEFAULT_STT_MAX_BACKLOG_SECONDS = 10.0
 
