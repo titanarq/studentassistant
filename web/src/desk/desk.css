@@ -1,0 +1,29 @@
+/* The study desk (`/`). Wider than the phone breakpoint it keeps the browser's default flow;
+   below it (48rem, docs/modules/web.md) it is one column with 44 px touch targets and no
+   horizontal scroll. */
+
+@media (max-width: 48rem) {
+  .desk {
+    padding: 0 0.5rem 2rem;
+    overflow-wrap: anywhere;
+  }
+
+  .desk ul {
+    padding-left: 1rem;
+  }
+
+  .desk li {
+    padding: 0.25rem 0;
+  }
+
+  .desk a,
+  .desk button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+
+  .desk button {
+    min-width: 2.75rem;
+  }
+}

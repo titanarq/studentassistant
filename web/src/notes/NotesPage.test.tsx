@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
-import { jsonResponse, stubApi } from "../test/mockApi";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import NotesPage from "./NotesPage";
 import { NOTES } from "./testNotes";
 
@@ -260,4 +260,63 @@ it("never renders the notes' HTML as markup", async () => {
   const paragraph = await screen.findByText(/<img src=x/);
   expect(paragraph.querySelector("img")).toBeNull();
   expect(screen.queryByRole("link", { name: "clic" })).not.toBeInTheDocument();
+});
+
+describe("phone-width collapse controls", () => {
+  it("starts with the sources panel and the chat collapsed and toggles each one", async () => {
+    renderPage();
+    const sources = await screen.findByRole("button", { name: "Fuentes" });
+    const chat = screen.getByRole("button", { name: "Chat con el editor" });
+    expect(sources).toHaveAttribute("aria-expanded", "false");
+    expect(chat).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById(sources.getAttribute("aria-controls") ?? "")).toHaveClass("notes-collapsed");
+    expect(document.getElementById(chat.getAttribute("aria-controls") ?? "")).toHaveClass("notes-collapsed");
+    expect(screen.getByText("Toca una referencia de los apuntes para ver aquí su fuente.")).toBeInTheDocument();
+
+    fireEvent.click(sources);
+    expect(sources).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("notes-sources-body")).not.toHaveClass("notes-collapsed");
+    fireEvent.click(chat);
+    expect(chat).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("notes-chat-body")).not.toHaveClass("notes-collapsed");
+
+    fireEvent.click(sources);
+    fireEvent.click(chat);
+    expect(sources).toHaveAttribute("aria-expanded", "false");
+    expect(chat).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("expands the sources panel on the cited source when a footnote is followed, and collapses it on close", async () => {
+    renderPage();
+    const sources = await screen.findByRole("button", { name: "Fuentes" });
+    const ref = await openRef("Fuente: Apuntes, página 1", 1);
+
+    const panel = await screen.findByRole("dialog", { name: "Apuntes, página 1" });
+    expect(sources).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById("notes-sources-body")).toContainElement(panel);
+
+    fireEvent.click(sources);
+    expect(sources).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("dialog", { name: "Apuntes, página 1" })).toBeInTheDocument();
+    await openRef("Fuente: Apuntes, página 1", 1);
+    expect(sources).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cerrar" }));
+    expect(sources).toHaveAttribute("aria-expanded", "false");
+    expect(ref).toHaveFocus();
+  });
+
+  it("expands the chat when the editor is asked why", async () => {
+    renderPage({
+      ...ROUTES,
+      "POST /api/subjects/historia/topics/revolucion-industrial/notes/why": sseResponse([
+        ["result", { question: "¿Por qué?", reply: "Porque sí.", refs: [], warning: null }],
+      ]),
+    });
+    const chat = await screen.findByRole("button", { name: "Chat con el editor" });
+    const why = await screen.findAllByRole("button", { name: "¿Por qué pusiste esto?" });
+    fireEvent.click(why[0]);
+    expect(chat).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText("Porque sí.")).toBeInTheDocument();
+  });
 });

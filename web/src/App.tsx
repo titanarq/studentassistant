@@ -11,6 +11,7 @@ import type { ActiveSession } from "./desk/costApi";
 import DeskCost from "./desk/DeskCost";
 import type { Subject, Topic } from "./protocol";
 import { styleGuidePagePath } from "./styleGuide/api";
+import "./desk/desk.css";
 
 /**
  * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
@@ -107,7 +108,7 @@ export default function App() {
   }, []);
 
   return (
-    <main>
+    <main className="desk">
       <h1>Mesa de estudio</h1>
       <DeskCost session={openSession(desk)} />
       {desk.state === "loading" && <p>Cargando asignaturas…</p>}

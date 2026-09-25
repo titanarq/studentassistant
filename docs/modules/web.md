@@ -206,7 +206,9 @@ token):
   observador está en pausa y el editor pedirá confirmación antes de cada llamada.",
   `PAUSED_BANNER`) when `observer_paused` or `editor_needs_confirmation` is true, and a `note`
   when unpriced calls make the spend an underestimate. A failed read is one plain Spanish line
-  (no alert). Caps are changed in the configuration file only.
+  (no alert). Caps are changed in the configuration file only. Below the phone breakpoint
+  (48rem, `src/desk/desk.css` on `main.desk`) the desk is one column with 44 px links and
+  buttons and no horizontal scroll; wider it keeps the browser's default flow.
 - `src/desk/costApi.ts` (#260): `fetchCostStatus(session?)` (`GET /api/cost`, decoded as
   `CostStatus`) and `fetchTopicCost(s, t)` (`GET /api/subjects/{s}/topics/{t}/cost`, decoded as
   `TopicCost`: `total`, `sessions[]` with `session_id` and `started_at_ms`, `no_session`), both
@@ -215,7 +217,9 @@ token):
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
   `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
-  `WebSearchPanel`, `WebPageForm`, `BookTitleForm` and `TopicCostBlock`; an unknown topic (404) shows the
+  `WebSearchPanel`, `WebPageForm`, `BookTitleForm` and `TopicCostBlock` (below the phone
+  breakpoint, 48rem, `topic/topic.css` on `main.topic-page`: one column, full-width fields,
+  44 px links, buttons and fields, no horizontal scroll); an unknown topic (404) shows the
   backend's Spanish detail and none of the forms,
   and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
@@ -299,8 +303,21 @@ token):
     "PDF «<original_name>», página <original page>" and an "Abrir el PDF" link; a web snapshot its
     text and "Fuente externa: copia de <url> (<fetched_at>)" from its sidecar; a transcript span its segments with `MM:SS` timestamps
     (`GET /api/sessions/{id}/transcript`). Focus moves to the panel title; Escape or "Cerrar"
-    closes it and returns the focus to the reference. The panel is fixed to the viewport edge
-    (a bottom sheet under 40rem), so it never scrolls or rewraps the notes.
+    closes it and returns the focus to the reference. From the phone breakpoint up the panel is
+    fixed to the viewport edge, so it never scrolls or rewraps the notes; below it, see
+    "Phone width" next.
+  - Phone width (#263): below **48rem** (the phone breakpoint, 360-430 px phones and the Android
+    study desk WebView; `@media (max-width: 48rem)` in `notes.css`, `desk/desk.css` and
+    `topic/topic.css`) the notes page is one column -- notes, then the sources panel (in flow,
+    sticky to the bottom of the screen), then the chat -- with no horizontal scroll of the page
+    and 44 px buttons. The sources panel and the chat are collapsible there, both collapsed at
+    first: the "Fuentes" and "Chat con el editor" toggle buttons (`aria-expanded`,
+    `aria-controls`; hidden from 48rem up, where nothing collapses) show or hide them. A footnote
+    (or a chat source) expands the sources panel on the cited source, "Cerrar"/Escape collapses it
+    again, and "¿Por qué pusiste esto?" expands the chat before scrolling to it; with no source
+    open the expanded panel says "Toca una referencia de los apuntes para ver aquí su fuente.".
+    From 48rem to 80rem the layout is the wide one with the chat under the notes; from 80rem up
+    the chat is the sticky column beside them.
   - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
     `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
     localhost trust as every other request of the web app.

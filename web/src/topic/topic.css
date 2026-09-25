@@ -1,0 +1,66 @@
+/* The topic page (`/subjects/<s>/topics/<t>`). Wider than the phone breakpoint it keeps the
+   browser's default flow; below it (48rem, docs/modules/web.md) every block is one column,
+   fields take the full width and buttons, links and fields keep a 44 px touch target, with no
+   horizontal scroll. */
+
+@media (max-width: 48rem) {
+  .topic-page {
+    padding: 0 0.5rem 2rem;
+    overflow-wrap: anywhere;
+  }
+
+  .topic-page ul,
+  .topic-page ol {
+    padding-left: 1rem;
+  }
+
+  .topic-page a,
+  .topic-page button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+
+  .topic-page button {
+    min-width: 2.75rem;
+    margin-top: 0.25rem;
+  }
+
+  .topic-page input[type="file"] {
+    padding: 0.4rem 0;
+  }
+
+  .topic-page input[type="file"]::file-selector-button {
+    min-height: 2.75rem;
+  }
+
+  .topic-page input:not([type="checkbox"]):not([type="radio"]),
+  .topic-page select,
+  .topic-page textarea {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-height: 2.75rem;
+    font: inherit;
+  }
+
+  .topic-page input[type="checkbox"],
+  .topic-page input[type="radio"] {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  .topic-page label {
+    display: block;
+  }
+
+  .topic-page dd {
+    margin-left: 1rem;
+  }
+
+  .topic-page table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
