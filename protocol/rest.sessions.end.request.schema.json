@@ -21,6 +21,10 @@
         "command"
       ],
       "description": "Ended with the button or by a voice command (ADR-0006)."
+    },
+    "prepare_notes": {
+      "type": "boolean",
+      "description": "Since 1.6: once the session has ended, prepare the topic's notes in the background (GET .../notes/generation reports it)."
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "type": "hello",
-  "protocol_version": "1.5",
+  "protocol_version": "1.6",
   "capabilities": {
     "stt": "client",
     "stt_provider": "web-speech",

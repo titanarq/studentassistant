@@ -5,6 +5,7 @@ import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadStatus
 import com.titanarq.studentassistant.protocol.ClientKind
+import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.ProtocolJson
 import com.titanarq.studentassistant.protocol.SessionEndReason
@@ -89,7 +90,7 @@ class OkHttpBackendClientTest {
 
         val result = client.pair(baseUrl, PairRequest("C", "Pixel", ClientKind.ANDROID, "1.0"))
 
-        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = "1.5"), result)
+        assertEquals(BackendResult.IncompatibleVersion(peer = "2.0", ours = PROTOCOL_VERSION), result)
     }
 
     @Test
@@ -186,7 +187,7 @@ class OkHttpBackendClientTest {
     fun `a session on another MAJOR version is refused`() = runTest {
         enqueue(sessionJson.replace("\"1.0\"", "\"2.1\""))
 
-        assertEquals(BackendResult.IncompatibleVersion("2.1", "1.5"), client.resumeSession(backend, "s1"))
+        assertEquals(BackendResult.IncompatibleVersion("2.1", PROTOCOL_VERSION), client.resumeSession(backend, "s1"))
     }
 
     @Test

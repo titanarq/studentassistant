@@ -39,6 +39,7 @@ export interface MessageTypes {
   "rest.search.response": rest.SearchResponse;
   "rest.topics.web_pages.create.request": rest.WebPageAddRequest;
   "rest.topics.web_pages.create.response": rest.WebPageAddResponse;
+  "rest.topics.notes.generation.response": rest.NotesGenerationStatus;
 }
 
 export type MessageName = keyof MessageTypes;
@@ -76,6 +77,7 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "rest.search.response": rest.decodeSearchResponse,
   "rest.topics.web_pages.create.request": rest.decodeWebPageAddRequest,
   "rest.topics.web_pages.create.response": rest.decodeWebPageAddResponse,
+  "rest.topics.notes.generation.response": rest.decodeNotesGenerationStatus,
 };
 
 export function isMessageName(name: string): name is MessageName {

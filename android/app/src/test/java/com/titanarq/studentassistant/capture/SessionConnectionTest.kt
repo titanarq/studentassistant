@@ -10,6 +10,7 @@ import com.titanarq.studentassistant.protocol.ClientCapabilities
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.ServerEvent
 import com.titanarq.studentassistant.protocol.SttMode
@@ -105,7 +106,7 @@ class SessionConnectionTest {
         connection.send(Button(ButtonName.IMPORTANT, null, 7))
         socket.open()
         runCurrent()
-        assertEquals(listOf(Hello("1.5", capabilities, clock.now)), socket.sent)
+        assertEquals(listOf(Hello(PROTOCOL_VERSION, capabilities, clock.now)), socket.sent)
 
         socket.receive(ack(SttMode.CLIENT, offset = 42))
         runCurrent()

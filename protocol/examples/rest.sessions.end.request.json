@@ -1,4 +1,5 @@
 {
   "client_time_ms": 1790252400000,
-  "reason": "button"
+  "reason": "button",
+  "prepare_notes": true
 }

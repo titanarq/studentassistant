@@ -150,12 +150,46 @@ class Session(ProtocolModel):
 class SessionEndRequest(ProtocolModel):
     client_time_ms: EpochMs
     reason: Literal["button", "command"]
+    # Since 1.6: once the session has ended, prepare the topic's notes in the background.
+    prepare_notes: bool | None = None
+
+
+# Since 1.6, what became of `prepare_notes`: `started` (a background generation began), `running`
+# (one of that topic was already running, not duplicated), `unavailable` (the backend does not
+# use Claude).
+NotesGenerationStart = Literal["started", "running", "unavailable"]
 
 
 class SessionEndResponse(ProtocolModel):
     session_id: Id
     status: Literal["ended"]
     ended_at_ms: EpochMs
+    # Since 1.6, only when the request said `prepare_notes: true`.
+    notes_generation: NotesGenerationStart | None = None
+
+
+# GET /api/subjects/{s}/topics/{t}/notes/generation (since 1.6)
+
+NotesGenerationState = Literal["idle", "running", "done", "failed", "needs_confirmation"]
+
+
+class NotesGenerationStatus(ProtocolModel):
+    """The topic's latest notes generation since the backend started (`idle`: none).
+
+    `done` carries the `version` written (`null` for a `draft` that did not pass the validator)
+    and an optional Spanish `warning`; `failed` and `needs_confirmation` (a reached cost cap,
+    nothing spent) a Spanish `detail`.
+    """
+
+    subject_id: Id
+    topic_id: Id
+    status: NotesGenerationState
+    started_at_ms: EpochMs | None = None
+    finished_at_ms: EpochMs | None = None
+    version: Annotated[int, Field(ge=1)] | None = None
+    draft: bool | None = None
+    warning: str | None = None
+    detail: str | None = None
 
 
 # POST /api/sessions/{id}/captures (multipart/form-data)

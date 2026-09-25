@@ -333,6 +333,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await web_searcher.stop()
         if observer is not None:
             await observer.stop()
+        notes: NotesGenerator | None = app.state.notes
+        if notes is not None:
+            # Background "prepárame el tema" of an ended session (#258): finish or cancel it.
+            await notes.shutdown()
         await sessions.shutdown()
         recorder: SessionRecorder | None = app.state.recorder
         if recorder is not None:

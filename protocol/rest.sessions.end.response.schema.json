@@ -22,6 +22,14 @@
       "type": "integer",
       "minimum": 0,
       "description": "Backend clock, Unix epoch ms."
+    },
+    "notes_generation": {
+      "enum": [
+        "started",
+        "running",
+        "unavailable"
+      ],
+      "description": "Since 1.6, only when the request said prepare_notes: a background generation started, one of the topic was already running (not duplicated), or the backend does not use Claude."
     }
   }
 }

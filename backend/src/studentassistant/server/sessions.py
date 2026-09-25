@@ -568,6 +568,18 @@ class SessionService:
                 session_id=session.id, status="ended", ended_at_ms=_epoch_ms(meta.ended_at)
             )
 
+    async def topic_of(self, session_id: str) -> tuple[str, str] | None:
+        """`(subject_id, topic_id)` of the unended session `session_id`; None when none is open.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+        """
+        await self._ready()
+        for key, open_id in self._open.items():
+            if open_id == session_id:
+                return key
+        return None
+
     # -- the active session, for the other routes ----------------------------------------------
 
     async def require_active(self, session_id: str) -> Session:
