@@ -1,4 +1,5 @@
 import App from "./App";
+import CapturePage from "./capture/CapturePage";
 import LivePage from "./live/LivePage";
 import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
@@ -25,6 +26,9 @@ function decode(segment: string): string | null {
 export default function Router({ pathname = window.location.pathname }: { pathname?: string }) {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/pair") return <PairPage />;
+  // The capture client (#40): the student picks the subject and topic, opens the session and the
+  // page gives way to the capture screen that runs it.
+  if (path === "/capture") return <CapturePage />;
   if (path === "/live") return <LivePage />;
   const guide = STYLE_GUIDE_PATH.exec(path);
   if (guide) {

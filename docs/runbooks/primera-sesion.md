@@ -4,10 +4,8 @@ Guía para la primera prueba de verdad en este PC (el portátil `Titan`): unos 2
 cuaderno o el libro delante de la cámara del portátil, hablando, y después revisar los apuntes en
 la web. Complementa a `install.md` (instalación y `doctor` en detalle).
 
-> **Requisito pendiente:** la página de captura (`/capture`) llega con la tarea #40. Hasta que
-> esté fusionada en `main`, los pasos 1-4 se pueden hacer, pero la sesión (paso 5) no: `/capture`
-> muestra el escritorio de estudio en lugar de la cámara. Los comandos de voz ("mira aquí",
-> "ya está, prepárame el tema") llegan con #47; mientras tanto se usan los botones.
+> **Pendiente:** los comandos de voz ("mira aquí", "ya está, prepárame el tema") llegan con
+> #47; mientras tanto se usan los botones de `/capture`.
 
 Marcado con **(tú)**: pasos interactivos que tienes que hacer a mano (claves, GitHub, permisos
 del navegador, hablar). Lo demás son comandos que se pueden copiar tal cual.
@@ -92,12 +90,13 @@ código vale 5 minutos y un solo uso. Para esta prueba en el portátil no hace f
 ## 5. La sesión (tú, unos 20 minutos)
 
 1. Abre `http://localhost:8765/capture` en Chrome y **permite cámara y micrófono**.
-2. Elige o crea la asignatura y el tema (una sesión = un tema). Si el tema tiene una sesión
-   abierta, la página la continúa.
+2. Elige o crea la asignatura y el tema (una sesión = un tema). Si el tema tiene una sesión sin
+   terminar, puedes pulsar **Continuar la sesión abierta**; si no, **Empezar una sesión nueva**.
 3. Habla con normalidad sobre lo que enseñas. La transcripción en directo aparece en gris
    (provisional) y pasa a negro (definitiva).
 4. Para cada página: ponla delante de la cámara, bien iluminada y entera, y pulsa **Capturar**
-   (hace una ráfaga de 3 fotos; verás un destello y la miniatura pasará a "guardada").
+   (hace una ráfaga de 3 fotos; verás un destello y la miniatura pasará de "Subiendo…" a
+   "Guardada").
 5. **Libro** / **Apuntes** indican de qué es la página siguiente; **Importante** marca el momento.
 6. Al acabar, pulsa **Terminar**.
 
