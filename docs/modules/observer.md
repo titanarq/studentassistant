@@ -12,13 +12,13 @@
   possible error, contradiction between sources; deduplicated; count published to the phone.
 - Topic digest at session end, used to resume a topic and as editor input.
 - Context purge: roll the live conversation over to snapshot + digest + tail past a token
-  threshold and at session end; context is always one topic only (ADR-0003).
+  threshold and at session end (#60); context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29, #31, #51, #55, #176 and #56: the knowledge-state model, its
-ops, the pure fold, the snapshot, the vault-backed loader, the live loop, the pending-review queue,
-the compaction the vault purge (#31) writes and the topic digest. The context purge (#60) is not
-written yet. Everything below except the live loop is
+What exists today, after issues #29, #31, #51, #55, #176, #56 and #60: the knowledge-state model,
+its ops, the pure fold, the snapshot, the vault-backed loader, the live loop with its context
+purge, the pending-review queue, the compaction the vault purge (#31) writes and the topic digest.
+Everything below except the live loop is
 re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
 (its batch rendering `studentassistant.observer.context`), kept out of the package root so that
 importing the state model never imports the llm module.
@@ -197,6 +197,24 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
   are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
   open writes a baseline ack (`through` = the newest event before it, `null` for none). The
   `context` record carries the `catch_up` count.
+- **Context purge** (#60, `[observer] context_max_tokens`, default 80000, and
+  `context_tail_segments`, default 8): the size of the conversation is the last call's prompt
+  (uncached, cache-written and cache-read input tokens) plus its output. After an answered batch
+  (its ops published and its `observer.ack` written) that leaves it at the threshold or more, the
+  conversation is dropped: no tool result is owed any more, and the next call opens a new one
+  with the same system blocks (prompt + topic block with the digest) and tool, so the cached
+  prefix still hits, then a single user turn: `render_state(..., rolled=True, tail=...)` -- the
+  state folded when that call is made (so it holds the ops just published) plus the batch lines
+  of the newest `context_tail_segments` answered segments --, and the batch. Batch numbers go on.
+  Once that first call is answered, a persisted `observer.context_rolled` event
+  (`CONTEXT_ROLLED_EVENT_KIND`, origin `observer`; ignored by the fold and the catch-up) records
+  it: `reason: threshold`, `before_tokens`, `after_tokens` (that call's prompt tokens),
+  `threshold_tokens`, `dropped_turns`, `tail_segments`. At session end (`flush`, after the last
+  batch) the conversation is always dropped the same way: `reason: session_end`,
+  `after_tokens: 0`, when there was one. The conversation file keeps every dropped turn as history
+  and gets a `context` record (reason `rollover`, `before_tokens`, `event_count`, `cursor`,
+  `tail_segments`; or reason `session_end`); nothing ever reads it back into a context. The
+  catch-up is unaffected: a batch is only dropped from the conversation after its ack.
 - **Purge** (#31): `compactable_snapshot(events)` (`catchup.py`) is the fold of the topic up to
   the newest acknowledged `through` (`acknowledged_through`), and it is all the vault purge may
   compact. The unanswered events and the newest `observer.ack` (always written after what it

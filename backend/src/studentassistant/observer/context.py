@@ -12,7 +12,7 @@ topic.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -152,15 +152,31 @@ def _refs(refs: PendingRefs) -> str:
     return f"; {'; '.join(parts)}" if parts else ""
 
 
-def render_state(state: TopicState, *, session_id: str, resumed: bool) -> str:
+def render_state(
+    state: TopicState,
+    *,
+    session_id: str,
+    resumed: bool,
+    rolled: bool = False,
+    tail: Sequence[str] = (),
+) -> str:
     """The record of the topic as the observer starts (or resumes) watching `session_id`.
 
     Segment texts are not repeated: the conversation is rebuilt from this state and the digest,
-    never from the full history of the topic.
+    never from the full history of the topic. `rolled` is a context purge (#60) in the middle of
+    the session: the conversation so far was dropped, and `tail` (the batch lines of the newest
+    segments already answered) is repeated so the next batch reads in context.
     """
     out: list[str] = []
-    verb = "resumes" if resumed else "starts"
-    out.append(f"Session {session_id} {verb} now. The record of this topic so far:")
+    if rolled:
+        out.append(
+            f"Session {session_id} continues. The conversation so far was dropped to keep the"
+            " context small; nothing is lost, the record below holds everything it decided."
+            " The record of this topic so far:"
+        )
+    else:
+        verb = "resumes" if resumed else "starts"
+        out.append(f"Session {session_id} {verb} now. The record of this topic so far:")
     if not state.sections:
         out.append("\nOutline: empty.")
     else:
@@ -210,5 +226,10 @@ def render_state(state: TopicState, *, session_id: str, resumed: bool) -> str:
     if state.notes:
         out.append("\nObserver notes (most recent last):")
         out.extend(f"- {note.text}" for note in state.notes[-MAX_CONTEXT_NOTES:])
+    if tail:
+        out.append(
+            "\nThe newest segments of this session, already answered (do not handle them again):"
+        )
+        out.extend(tail)
     out.append("\nThe batches of this session follow.")
     return "\n".join(out)
