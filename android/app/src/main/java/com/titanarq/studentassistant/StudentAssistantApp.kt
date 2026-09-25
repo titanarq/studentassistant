@@ -28,5 +28,6 @@ class StudentAssistantApp : Application() {
             stillCameraFactory = { stillCamera },
             captureFeedbackFactory = { AndroidCaptureFeedback(applicationContext) },
         )
+        container.recoverSpool()
     }
 }

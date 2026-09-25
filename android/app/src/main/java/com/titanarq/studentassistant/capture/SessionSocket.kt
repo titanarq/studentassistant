@@ -16,6 +16,9 @@ interface SessionSocket {
 
     fun sendBinary(bytes: ByteArray): Boolean
 
+    /** Bytes accepted by the send methods and not transmitted yet. */
+    fun queuedBytes(): Long = 0
+
     /** Closes normally; the listener then hears nothing more from this socket. */
     fun close()
 }
@@ -38,11 +41,14 @@ fun interface SessionSocketFactory {
     fun open(url: String, token: String, listener: SessionSocketListener): SessionSocket
 }
 
+/** How often a session socket pings; a missing pong fails the socket (OkHttp). */
+const val SESSION_SOCKET_PING_INTERVAL_MS: Long = 10_000
+
 /** The [OkHttpClient] of session sockets: no read timeout, pings every 10 s to notice a dead LAN. */
 fun sessionSocketHttpClient(): OkHttpClient =
     defaultOkHttpClient().newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(10, TimeUnit.SECONDS)
+        .pingInterval(SESSION_SOCKET_PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
         .build()
 
 /** [SessionSocketFactory] over OkHttp's WebSocket; the token travels as `Authorization: Bearer`. */
@@ -59,6 +65,8 @@ class OkHttpSessionSocketFactory(
             override fun sendText(text: String): Boolean = socket.send(text)
 
             override fun sendBinary(bytes: ByteArray): Boolean = socket.send(bytes.toByteString())
+
+            override fun queuedBytes(): Long = socket.queueSize()
 
             override fun close() {
                 socket.close(NORMAL_CLOSURE, null)

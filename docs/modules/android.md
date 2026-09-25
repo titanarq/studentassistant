@@ -12,7 +12,9 @@ Thin capture client (ADR-0001), Spanish UI:
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
-- Offline resilience: local spool of audio and photos while disconnected, resumed by `seq`.
+- Offline resilience: disk spool of audio, transcript lines, session events and photos while
+  disconnected, resent in order on reconnect; an end while offline is completed later (see
+  "Offline spool (#53)").
 
 ## Boundaries
 - No study logic, no LLM calls, no vault access. Talks only the `protocol` contract.
@@ -124,14 +126,13 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   protocol v1 socket client. Sends `hello` (`stt: client`, `stt_provider: android-speech`,
   `audio_format` pcm16/16 kHz/mono, since the app can stream), waits for `hello.ack` and exposes
   `state: StateFlow<ConnectionState>` (`Connecting`, `Connected(sttMode, clockOffsetMs)`,
-  `Reconnecting(attempt, reason)`, `Failed(ConnectionFailure)`, `Stopped`) and `events:
-  SharedFlow<ServerEvent>`. Reconnects on a drop with back-off 0.5/1/2/5/10 s, resending from
-  in-memory buffers (the disk spool is android-offline): finals until the backend echoes their
-  `transcript.final` (same `segment_id`; the backend ignores a final it already has), buttons /
-  markers / acks queued while offline (at most 100), audio frames until the server `ack`'s
-  `audio_seq` covers them (at most 600, ~60 s; when the backend already acknowledges more frames
-  than this connection produced -- a restarted app on a resumed session -- the buffered frames are
-  renumbered after that `seq`). Partials are dropped while offline. A close with 4404 (session not
+  `Reconnecting(attempt, reason)`, `Failed(ConnectionFailure)`, `Stopped`), `events:
+  SharedFlow<ServerEvent>` and `drained: StateFlow<Boolean>`. Reconnects on a drop with back-off
+  0.5/1/2/5/10 s, resending from its two backlogs (in memory by default, the disk spool in the
+  app; see "Offline spool (#53)"): finals until the backend echoes their `transcript.final`,
+  buttons / markers / acks queued while offline, audio frames until the server `ack`'s
+  `audio_seq` covers them (renumbered after it when the backend acknowledges more than this
+  connection produced). Partials are dropped while offline. A close with 4404 (session not
   active, e.g. the backend restarted) runs `resume` (`POST .../resume`) and reconnects; a refused
   handshake (`HTTP 40x`) is `Failed(Unauthorized)`, a 1008 close or an invalid server message
   `Failed(Refused(reason))`; `retry()` tries again. All state lives on one coroutine fed by a
@@ -165,7 +166,6 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   new transcriber, so new segment ids; audio `seq` continues on the same connection) and
   `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). The camera preview is
   bound to the same lifecycle through CameraX, which closes the camera on `ON_STOP`.
-- Known gap: nothing here is spooled to disk (android-offline).
 
 ## Still capture (#46)
 
@@ -198,11 +198,79 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
 - **Thumbnail strip** (`CaptureScreen`): a row above the transcript, one 64 dp tile per capture
   with a badge (spinner while capturing/uploading, «↑» pending, «✓» sent, «!» failed) and a Spanish
   content description.
-- Known gaps: the queue is in memory (a process restart loses unsent captures; the disk spool is
-  #53); the server's WebSocket `ack` of `capture_ids` is not used, the upload's answer is.
+- In the app the queue spools every burst to disk before its first upload (see "Offline spool
+  (#53)"); a WebSocket `ack`'s `capture_ids` and a resume's `received_capture_ids` mark captures
+  uploaded without sending them again.
+
+## Offline spool (#53)
+
+Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`, created by
+`AppContainer.spools`):
+
+| what | class | where |
+|---|---|---|
+| audio frames (server STT mode) not acknowledged | `AudioSpool` (`AudioBacklog`) | `sessions/<session_id>/audio/seg-*.pcm` |
+| transcript finals not confirmed, events queued offline | `EventSpool` (`EventBacklog`) | `sessions/<session_id>/events.json` |
+| capture bursts not confirmed | `CaptureSpool` | `captures/<capture_id>/{meta.json,image_N,thumbnail}` |
+| sessions ended but not yet told to the backend | `PendingEnd` | `ends/<session_id>.json` |
+
+- **`AudioSpool(dir, budget, segmentFrames = 50)`**: each frame (`SpooledFrame(seq, clientTimeMs,
+  samples)`) is written through as it is produced into 5 s segment files (`seg-<first>.open`, renamed
+  `seg-<first>-<last>.pcm` when full; a record cut short by a crash is truncated away on reopen).
+  `after(seq, limit)` reads in `seq` order, `acknowledge(seq)` deletes fully acknowledged segments,
+  `rebaseAfter(seq)` renumbers the held frames right after `seq`; a `floor` file keeps numbering
+  going after a restart with an empty spool. `MemoryAudioBacklog(600)` is the in-memory default.
+- **`EventSpool(file)`**: the finals (at most 200) and queued events (at most 100) as one JSON file,
+  rewritten atomically on each change and deleted when empty. `MemoryEventBacklog` is the default.
+- **`CaptureSpool(dir, budget)`**: `put(SpooledCaptureMeta(session_id, base_url, request), images,
+  thumbnail)` writes `meta.json` last, so an interrupted burst is discarded; `list()`, `images(id)`,
+  `thumbnail(id)`, `remove(id)`. The backend is stored by base URL only; its token is looked up in
+  the paired backends when the upload resumes. `CaptureUploadQueue(..., spool)` writes each burst
+  before its first upload, reads the stills back from disk for each attempt and deletes them once
+  uploaded (`stored` or `duplicate`); `restore(credentials)` queues the spooled ones again at app
+  start (oldest first; a backend no longer paired leaves them on disk), `confirmReceived(sessionId,
+  ids)` marks captures the backend already holds as uploaded without sending them.
+- **Cap** (`SpoolBudget(maxBytes)`, `AppContainer(spoolMaxBytes = 512 MiB)`): one byte budget for
+  all of the above. From 80 % `nearCap` is true and the capture screen shows «Queda poco espacio
+  para guardar sin conexión…» (`capture_spool_near_cap`). Past the cap an audio append deletes that
+  session's oldest segments first (acknowledged or not) down to the one being written; captures are
+  never dropped to make room.
+- **Reconnect order** (`SessionConnection` over the session's spools, on `Dispatchers.IO`): after
+  `hello.ack`, queued events go out first; in client mode every unconfirmed final is resent (the
+  backend drops a final it already has without echoing it, so a resent final not echoed within 25 s
+  -- more than two 10 s ping intervals, so the socket is proven alive -- counts as held); in server mode, with frames held, the connection waits up to
+  1 s for the backend's `ack` (sent right after `hello.ack`), then resends every frame after the
+  acknowledged `seq` in order, 20 at a time while OkHttp's send queue is under 1 MiB, and only then
+  sends live frames (a live frame produced meanwhile joins the backlog). Frames are renumbered only
+  on a real `ack`: when the held frames do not follow its `seq` (older audio dropped at the cap)
+  and none past it was sent on this socket, they are renumbered after it, since the backend places
+  audio by client time and never skips a missing `seq`. Without an `ack` in time they go out as
+  numbered, renumbered from 0 only when the backlog never saw any `ack` (its last acknowledged
+  `seq` is kept in the `floor` file) and its first frame is not 0. After an app restart,
+  "Continuar" opens the same spools, so everything left is resent the same way.
+- **Captures on resume**: the session start/resume's `received_capture_ids` (the capture screen's
+  start and every 4404 resume) are confirmed and failed captures of the session retried.
+- **Ending** (`CaptureViewModel` with `CaptureSpooling`): "Terminar" while not connected, or
+  answered with a transient failure (unreachable, 408/425/429/5xx), writes a `PendingEnd` and hands
+  it to **`SessionFinisher`** (`AppContainer.sessionFinisher`, on the app-wide scope); the screen
+  ends at once. Online, "Terminar" first waits up to 10 s for `drained` and the session's uploads.
+  The finisher, per pending end: `POST .../resume` (409: skip the flush; 404: drop), a
+  `SessionConnection` over the spools until `drained` (at most 120 s), the session's captures
+  uploaded (at most 300 s), then `POST .../end` with the original "Terminar" time; success, 404 or
+  409 deletes the session's spools and its pending end. Transient failures retry after
+  2/5/10/30/60 s; a refusal (401, 403, 400, ...) leaves the pending end on disk.
+  `AppContainer.recoverSpool()` (from `StudentAssistantApp.onCreate`) restores the captures and
+  resumes the pending ends of an earlier process.
+- Known gaps: a session that is neither continued nor ended keeps its spool (and its share of the
+  cap) until it is; eviction only drops the audio of the session being recorded; spools are opened
+  lazily, possibly on the main thread the first time the capture screen is built; the home screen
+  does not show sessions with a pending end, and "Continuar" on one races the finisher.
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
+spool tests (`spool/AudioSpoolTest`, `spool/CaptureSpoolTest`, `capture/SpooledUploadQueueTest`,
+`capture/SessionFinisherTest`, `capture/CaptureViewModelOfflineTest`) use a JUnit
+`TemporaryFolder`, never `filesDir`. The
 capture tests use `capture/Fakes.kt` (test sources): `FakeSessionSocketFactory` (the test plays the
 backend: open, receive, drop, close), `FakeRecognizerEngine`, `FakeTranscriber`, `FakeAudioSource`
 and `FakeClock`. View-model tests give their `BackendStore` a scope on an

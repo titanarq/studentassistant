@@ -7,6 +7,8 @@ import com.titanarq.studentassistant.backend.CaptureImageBytes
 import com.titanarq.studentassistant.protocol.CaptureImage
 import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
+import com.titanarq.studentassistant.spool.CaptureSpool
+import com.titanarq.studentassistant.spool.SpooledCaptureMeta
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -68,13 +70,19 @@ data class CaptureShot(
  * 404, 413, 422, an incompatible version) marks the capture [ShotStatus.FAILED]. The full-size
  * stills are dropped once uploaded; only the thumbnail stays.
  *
- * In memory only: the disk spool of android-offline (#53) is what survives a process restart.
+ * With a [spool], every taken burst is written to disk before its first upload and deleted once
+ * the backend has it, so an unsent capture survives the app process dying: [restore] queues the
+ * spooled ones again at the next start, and the stills are read back from disk only for the
+ * upload. Without one (tests) the stills stay in memory. [confirmReceived] takes the
+ * `received_capture_ids` of a session resume (or a WebSocket `ack`'s `capture_ids`): those are
+ * uploaded already and are never sent again.
  */
 class CaptureUploadQueue(
     private val scope: CoroutineScope,
     private val client: BackendClient,
     private val retryDelaysMs: List<Long> = DEFAULT_RETRY_DELAYS_MS,
     private val maxConflictAttempts: Int = MAX_CONFLICT_ATTEMPTS,
+    private val spool: CaptureSpool? = null,
 ) {
     init {
         require(retryDelaysMs.isNotEmpty()) { "retryDelaysMs must not be empty" }
@@ -84,9 +92,13 @@ class CaptureUploadQueue(
         val shot: CaptureShot,
         val backend: BackendCredentials,
         val commandId: String?,
-        val stills: List<Still>? = null,
+        /** The upload's metadata, once the burst is taken. */
+        val request: CaptureUploadRequest? = null,
+        /** The stills' bytes when kept in memory; null when they are on disk (or uploaded). */
+        val images: List<CaptureImageBytes>? = null,
     ) {
-        fun with(shot: CaptureShot, stills: List<Still>? = this.stills) = Entry(shot, backend, commandId, stills)
+        fun with(shot: CaptureShot, images: List<CaptureImageBytes>? = this.images) =
+            Entry(shot, backend, commandId, request, images)
     }
 
     private val entries = MutableStateFlow<List<Entry>>(emptyList())
@@ -114,20 +126,109 @@ class CaptureUploadQueue(
         mutate { list -> if (list.any { it.shot.captureId == captureId }) list else list + Entry(shot, backend, commandId) }
     }
 
-    /** The burst of [captureId] is taken: queue its upload. */
+    /** The burst of [captureId] is taken: spool it and queue its upload. */
     fun submit(captureId: String, burst: Burst) {
+        val entry = find(captureId)?.takeIf { it.shot.status == ShotStatus.CAPTURING } ?: return
+        val request = request(entry.shot, entry.commandId, burst.stills)
+        val images = burst.stills.map { it.bytes }
+        val onDisk = spool?.put(
+            SpooledCaptureMeta(entry.shot.sessionId, entry.backend.baseUrl, request),
+            images,
+            burst.thumbnail,
+        ) == true
         var queued = false
         mutate { list ->
-            list.map { entry ->
-                if (entry.shot.captureId != captureId || entry.shot.status != ShotStatus.CAPTURING) {
-                    entry
+            list.map {
+                if (it.shot.captureId != captureId || it.shot.status != ShotStatus.CAPTURING) {
+                    it
                 } else {
                     queued = true
-                    entry.with(entry.shot.copy(status = ShotStatus.PENDING, thumbnail = burst.thumbnail), burst.stills)
+                    Entry(
+                        it.shot.copy(status = ShotStatus.PENDING, thumbnail = burst.thumbnail),
+                        it.backend,
+                        it.commandId,
+                        request,
+                        if (onDisk) null else images,
+                    )
                 }
             }
         }
         if (queued) launchUpload(captureId)
+    }
+
+    /**
+     * Queues again every capture left in the spool by an earlier run of the app (oldest first),
+     * with the credentials [credentials] gives for its backend's base URL; one whose backend is no
+     * longer paired stays on disk untouched.
+     */
+    suspend fun restore(credentials: suspend (baseUrl: String) -> BackendCredentials?) {
+        val spool = spool ?: return
+        for (meta in spool.list()) {
+            if (find(meta.captureId) != null) continue
+            val backend = credentials(meta.baseUrl) ?: continue
+            val request = meta.request
+            val shot = CaptureShot(
+                request.captureId,
+                meta.sessionId,
+                request.trigger,
+                request.clientTimeMs,
+                ShotStatus.PENDING,
+                thumbnail = if (meta.hasThumbnail) spool.thumbnail(meta.captureId) else null,
+            )
+            var added = false
+            mutate { list ->
+                if (list.any { it.shot.captureId == meta.captureId }) {
+                    list
+                } else {
+                    added = true
+                    list + Entry(shot, backend, request.commandId, request)
+                }
+            }
+            if (added) launchUpload(meta.captureId)
+        }
+    }
+
+    /**
+     * The backend already holds [captureIds] of [sessionId] (a resume's `received_capture_ids`, a
+     * WebSocket `ack`'s `capture_ids`): they count as uploaded and are never sent again.
+     */
+    fun confirmReceived(sessionId: String, captureIds: Collection<String>) {
+        if (captureIds.isEmpty()) return
+        val ids = captureIds.toSet()
+        val confirmed = mutableListOf<String>()
+        mutate { list ->
+            list.map { entry ->
+                val done = entry.shot.sessionId == sessionId && entry.shot.captureId in ids &&
+                    entry.request != null && entry.shot.status != ShotStatus.UPLOADED
+                if (done) {
+                    confirmed += entry.shot.captureId
+                    entry.with(entry.shot.copy(status = ShotStatus.UPLOADED, lastFailure = null), images = null)
+                } else {
+                    entry
+                }
+            }
+        }
+        confirmed.forEach { spool?.remove(it) }
+    }
+
+    /** Uploads every [ShotStatus.FAILED] capture of [sessionId] again (the session was resumed). */
+    fun retryFailed(sessionId: String) {
+        entries.value.filter { it.shot.sessionId == sessionId && it.shot.status == ShotStatus.FAILED }
+            .forEach { retry(it.shot.captureId) }
+    }
+
+    /** True while a capture of [sessionId] is being taken or waits to upload. */
+    fun hasPending(sessionId: String): Boolean = entries.value.any {
+        it.shot.sessionId == sessionId && it.shot.status in ACTIVE_STATUSES
+    }
+
+    /**
+     * [sessionId] has ended on the backend: its captures refused for good can never be uploaded, so
+     * their spooled files are deleted (they stay [ShotStatus.FAILED] in [all]).
+     */
+    fun forgetSession(sessionId: String) {
+        entries.value.filter { it.shot.sessionId == sessionId && it.shot.status == ShotStatus.FAILED }
+            .forEach { spool?.remove(it.shot.captureId) }
     }
 
     /** The camera took nothing for [captureId]. */
@@ -141,7 +242,7 @@ class CaptureUploadQueue(
     fun retry(captureId: String) {
         var requeued = false
         update(captureId) { entry ->
-            if (entry.shot.status == ShotStatus.FAILED && entry.stills != null) {
+            if (entry.shot.status == ShotStatus.FAILED && entry.request != null) {
                 requeued = true
                 entry.with(entry.shot.copy(status = ShotStatus.PENDING))
             } else {
@@ -157,17 +258,20 @@ class CaptureUploadQueue(
         while (true) {
             val result = uploadPermit.withPermit {
                 val entry = find(captureId) ?: return@launch
-                val stills = entry.stills ?: return@launch
+                if (entry.shot.status == ShotStatus.UPLOADED) return@launch // confirmed meanwhile
+                val request = entry.request ?: return@launch
+                val images = entry.images ?: spool?.images(captureId)
+                if (images == null) {
+                    // The spooled files are gone (deleted or unreadable): nothing left to send.
+                    update(captureId) { it.with(it.shot.copy(status = ShotStatus.FAILED)) }
+                    return@launch
+                }
                 setStatus(captureId, ShotStatus.UPLOADING)
-                client.uploadCapture(
-                    entry.backend,
-                    entry.shot.sessionId,
-                    request(entry, stills),
-                    stills.map { it.bytes },
-                )
+                client.uploadCapture(entry.backend, entry.shot.sessionId, request, images)
             }
             if (result is BackendResult.Success) {
-                update(captureId) { it.with(it.shot.copy(status = ShotStatus.UPLOADED, lastFailure = null), stills = null) }
+                update(captureId) { it.with(it.shot.copy(status = ShotStatus.UPLOADED, lastFailure = null), images = null) }
+                spool?.remove(captureId)
                 return@launch
             }
             val failure = result as BackendResult.Failure
@@ -181,11 +285,11 @@ class CaptureUploadQueue(
         }
     }
 
-    private fun request(entry: Entry, stills: List<Still>) = CaptureUploadRequest(
-        captureId = entry.shot.captureId,
-        trigger = entry.shot.trigger,
-        commandId = entry.commandId,
-        clientTimeMs = entry.shot.clientTimeMs,
+    private fun request(shot: CaptureShot, commandId: String?, stills: List<Still>) = CaptureUploadRequest(
+        captureId = shot.captureId,
+        trigger = shot.trigger,
+        commandId = commandId,
+        clientTimeMs = shot.clientTimeMs,
         images = stills.mapIndexed { index, still ->
             CaptureImage("image_$index", still.contentType, still.widthPx, still.heightPx, still.clientTimeMs)
         },
@@ -214,6 +318,8 @@ class CaptureUploadQueue(
         const val MAX_CONFLICT_ATTEMPTS: Int = 10
 
         private val TRANSIENT_STATUSES = setOf(408, 409, 425, 429)
+
+        private val ACTIVE_STATUSES = setOf(ShotStatus.CAPTURING, ShotStatus.PENDING, ShotStatus.UPLOADING)
 
         internal fun isTransient(failure: BackendResult.Failure): Boolean = when (failure) {
             is BackendResult.Unreachable -> true

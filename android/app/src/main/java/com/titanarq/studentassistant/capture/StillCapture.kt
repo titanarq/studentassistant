@@ -7,6 +7,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
@@ -23,6 +24,18 @@ interface StillCapture {
 
     /** Uploads a [ShotStatus.FAILED] capture again (same `capture_id`). */
     fun retry(captureId: String) = Unit
+
+    /** The backend holds [captureIds] (a WebSocket `ack`'s `capture_ids`): never upload them again. */
+    fun confirmReceived(captureIds: List<String>) = Unit
+
+    /**
+     * The session was started or resumed and the backend holds [receivedCaptureIds]: those are
+     * confirmed, and captures that failed for good are tried again.
+     */
+    fun resumed(receivedCaptureIds: List<String>) = Unit
+
+    /** Suspends until no capture of this session is being taken or waiting to upload. */
+    suspend fun awaitUploads() = Unit
 }
 
 /** The placeholder [StillCapture]: takes nothing. */
@@ -68,6 +81,17 @@ class BurstStillCapture(
     }
 
     override fun retry(captureId: String) = uploads.retry(captureId)
+
+    override fun confirmReceived(captureIds: List<String>) = uploads.confirmReceived(sessionId, captureIds)
+
+    override fun resumed(receivedCaptureIds: List<String>) {
+        uploads.confirmReceived(sessionId, receivedCaptureIds)
+        uploads.retryFailed(sessionId)
+    }
+
+    override suspend fun awaitUploads() {
+        uploads.all.first { !uploads.hasPending(sessionId) }
+    }
 
     companion object {
         /** Stills per capture; the backend keeps the sharpest (#44). */

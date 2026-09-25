@@ -5,15 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.titanarq.studentassistant.Clock
 import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendResult
-import com.titanarq.studentassistant.protocol.AudioFormat
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
 import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.ClientAck
-import com.titanarq.studentassistant.protocol.ClientCapabilities
 import com.titanarq.studentassistant.protocol.Command
 import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Notice
+import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.ServerEvent
 import com.titanarq.studentassistant.protocol.SessionEndReason
 import com.titanarq.studentassistant.protocol.SessionEndRequest
@@ -25,6 +24,13 @@ import com.titanarq.studentassistant.protocol.TranscriptFinal
 import com.titanarq.studentassistant.protocol.TranscriptPartial
 import com.titanarq.studentassistant.session.OpenSession
 import com.titanarq.studentassistant.session.SessionHolder
+import com.titanarq.studentassistant.spool.AudioBacklog
+import com.titanarq.studentassistant.spool.EventBacklog
+import com.titanarq.studentassistant.spool.MemoryAudioBacklog
+import com.titanarq.studentassistant.spool.MemoryEventBacklog
+import com.titanarq.studentassistant.spool.PendingEnd
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -32,9 +38,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** One line of the live transcript; a partial is shown greyed until its final replaces it. */
 data class TranscriptLine(val segmentId: String, val text: String, val final: Boolean)
@@ -77,6 +85,22 @@ data class CaptureUiState(
      * true while in the background and for [CaptureViewModel.PAUSE_NOTICE_MS] after returning.
      */
     val micPaused: Boolean = false,
+    /** The offline spool is close to its cap: the oldest audio is about to be dropped. */
+    val spoolNearCap: Boolean = false,
+)
+
+/**
+ * Where the capture screen keeps what the backend may not have yet (android-offline, #53): the
+ * session's [audio] and [events] backlogs on disk, the shared cap's [nearCap] flag, the
+ * [finisher] that completes an end the backend could not take, and the [loopContext] (an I/O
+ * dispatcher) the connection runs on.
+ */
+class CaptureSpooling(
+    val audio: AudioBacklog,
+    val events: EventBacklog,
+    val nearCap: StateFlow<Boolean>,
+    val finisher: SessionFinisher,
+    val loopContext: CoroutineContext = EmptyCoroutineContext,
 )
 
 /**
@@ -88,6 +112,13 @@ data class CaptureUiState(
  * the session (the home screen offers "Continuar"); [end] ends it. [onBackground] / [onForeground]
  * (the screen's `ON_STOP` / `ON_START`) pause and resume the microphone while the socket stays
  * open, so the session goes on where it was.
+ *
+ * With [spooling] (the app), audio, finals and queued events go through its disk backlogs, so they
+ * survive the process dying and are resent when the session is continued. "Terminar" while
+ * offline, or answered with a transient failure, becomes a [PendingEnd] that the
+ * [SessionFinisher] completes when the backend is back: the screen ends at once. Online,
+ * "Terminar" first waits (at most [END_FLUSH_TIMEOUT_MS]) for the connection to drain and the
+ * session's captures to upload. Without it (tests), everything stays in memory.
  */
 class CaptureViewModel(
     private val open: OpenSession,
@@ -99,9 +130,18 @@ class CaptureViewModel(
     private val audioStreamerFactory: () -> AudioStreamer,
     private val stillCapture: StillCapture = NoStillCapture,
     private val reconnectDelaysMs: List<Long> = SessionConnection.DEFAULT_RECONNECT_DELAYS_MS,
+    private val spooling: CaptureSpooling? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CaptureUiState(open.subjectName, open.topicName))
     val state: StateFlow<CaptureUiState> = _state.asStateFlow()
+
+    init {
+        spooling?.let { spooling ->
+            viewModelScope.launch { spooling.nearCap.collect { near -> _state.update { it.copy(spoolNearCap = near) } } }
+        }
+    }
+
+    private var resumedOnce = false
 
     /** This session's captures for the thumbnail strip, oldest first, with their upload state. */
     val shots: StateFlow<List<CaptureShot>> =
@@ -125,17 +165,22 @@ class CaptureViewModel(
             url = SessionConnection.socketUrl(open.backend.baseUrl, open.session.wsPath),
             token = open.backend.token,
             clock = clock,
-            capabilities = ClientCapabilities(
-                stt = SttMode.CLIENT,
-                sttProvider = SpeechRecognizerTranscriber.PROVIDER_ID,
-                audioFormat = AudioFormat(),
-            ),
+            capabilities = SessionConnection.CAPTURE_CAPABILITIES,
             resume = {
-                backendClient.resumeSession(open.backend, open.session.sessionId) is BackendResult.Success
+                val resumed = backendClient.resumeSession(open.backend, open.session.sessionId)
+                if (resumed is BackendResult.Success) stillCapture.resumed(resumed.value.receivedCaptureIds)
+                resumed is BackendResult.Success
             },
             reconnectDelaysMs = reconnectDelaysMs,
+            audio = spooling?.audio ?: MemoryAudioBacklog(SessionConnection.MAX_BUFFERED_FRAMES),
+            backlog = spooling?.events ?: MemoryEventBacklog(),
+            loopContext = spooling?.loopContext ?: EmptyCoroutineContext,
         )
         this.connection = connection
+        if (!resumedOnce) {
+            resumedOnce = true
+            stillCapture.resumed(open.session.receivedCaptureIds)
+        }
         _state.update { it.copy(phase = CapturePhase.RUNNING, micProblem = null) }
         jobs = listOf(
             viewModelScope.launch {
@@ -220,30 +265,66 @@ class CaptureViewModel(
         sendButton(ButtonName.SWITCH_SOURCE, next)
     }
 
-    /** "Terminar": `button end_session`, then `POST /api/sessions/{id}/end`. */
+    /**
+     * "Terminar": `button end_session`, then `POST /api/sessions/{id}/end`. With [spooling], an end
+     * the backend cannot take now is handed to the [SessionFinisher] (see the class doc).
+     */
     fun end() {
         if (_state.value.phase != CapturePhase.RUNNING) return
         _state.update { it.copy(phase = CapturePhase.ENDING, endFailure = null) }
+        val endedAtMs = clock.nowMillis()
         sendButton(ButtonName.END_SESSION, force = true)
+        val connection = connection
+        val spooling = spooling
+        if (spooling != null && connection?.state?.value !is ConnectionState.Connected) {
+            handOffEnd(spooling, endedAtMs)
+            return
+        }
         viewModelScope.launch {
+            if (spooling != null && connection != null) {
+                stopMic()
+                withTimeoutOrNull(END_FLUSH_TIMEOUT_MS) {
+                    connection.drained.first { it }
+                    stillCapture.awaitUploads()
+                }
+            }
             val result = backendClient.endSession(
                 open.backend,
                 open.session.sessionId,
-                SessionEndRequest(clock.nowMillis(), SessionEndReason.BUTTON),
+                SessionEndRequest(endedAtMs, SessionEndReason.BUTTON),
             )
             // 404/409: the session is already gone or ended (e.g. by voice); ended either way.
             val ended = result is BackendResult.Success ||
                 (result is BackendResult.HttpError && result.status in ENDED_STATUSES)
-            if (ended) {
-                leave()
-                sessionHolder.clear()
-                _state.update { it.copy(phase = CapturePhase.ENDED) }
-            } else {
-                _state.update {
-                    it.copy(phase = CapturePhase.RUNNING, endFailure = result as BackendResult.Failure)
+            when {
+                ended -> {
+                    leave()
+                    spooling?.finisher?.ended(open.session.sessionId)
+                    sessionHolder.clear()
+                    _state.update { it.copy(phase = CapturePhase.ENDED) }
+                }
+                spooling != null && CaptureUploadQueue.isTransient(result as BackendResult.Failure) &&
+                    !(result is BackendResult.HttpError && result.status == 409) -> handOffEnd(spooling, endedAtMs)
+                else -> {
+                    val state = connection?.state?.value
+                    if (state is ConnectionState.Connected) startMic(state.sttMode)
+                    _state.update {
+                        it.copy(phase = CapturePhase.RUNNING, endFailure = result as BackendResult.Failure)
+                    }
                 }
             }
         }
+    }
+
+    /** The backend cannot take the end now: the finisher completes it once the spool is flushed. */
+    private fun handOffEnd(spooling: CaptureSpooling, endedAtMs: Long) {
+        leave()
+        spooling.finisher.finish(
+            open.backend,
+            PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON),
+        )
+        sessionHolder.clear()
+        _state.update { it.copy(phase = CapturePhase.ENDED) }
     }
 
     private fun sendButton(button: ButtonName, source: SourceKind? = null, force: Boolean = false) {
@@ -294,6 +375,7 @@ class CaptureViewModel(
             is TranscriptPartial -> showLine(TranscriptLine(event.segmentId, event.text, final = false))
             is TranscriptFinal -> showLine(TranscriptLine(event.segmentId, event.text, final = true))
             is Notice -> _state.update { it.copy(pendingCount = event.pendingCount) }
+            is ServerAck -> event.captureIds?.let(stillCapture::confirmReceived)
             is Command -> when (event.command) {
                 CommandName.CAPTURE_NOW -> {
                     stillCapture.capture(CaptureTrigger.COMMAND, event.commandId)
@@ -325,6 +407,9 @@ class CaptureViewModel(
         private const val SHOTS_STOP_TIMEOUT_MS = 5_000L
 
         private val ENDED_STATUSES = setOf(404, 409)
+
+        /** How long an online "Terminar" waits for the spool to drain and captures to upload. */
+        const val END_FLUSH_TIMEOUT_MS: Long = 10_000
 
         internal fun toEvent(transcript: ClientTranscript, transcriber: ClientTranscriber) = when (transcript) {
             is ClientTranscript.Partial -> TranscriptClientPartial(
