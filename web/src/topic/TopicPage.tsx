@@ -15,6 +15,7 @@ import TopicCard from "./TopicCard";
 import TopicCostBlock from "./TopicCostBlock";
 import WebPageForm from "./WebPageForm";
 import WebSearchPanel from "./WebSearchPanel";
+import "./topic.css";
 
 /**
  * `/subjects/<subject>/topics/<topic>`: the topic page, reached from the study desk. It shows
@@ -61,7 +62,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
   return (
-    <main>
+    <main className="topic-page">
       <p>
         <a href="/">← Mesa de estudio</a>
       </p>

@@ -173,8 +173,11 @@ web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes 
   «Descarga iniciada: <archivo>», «No se pudo descargar el archivo.», «Solo se descargan
   archivos del ordenador emparejado.». The decisions live in `DeskFiles.kt` (pure, JVM-tested),
   the Android glue in `DeskDownloader.kt`.
-- Known gaps: the web layout is the desktop one (it wraps below 80rem, the chat under the notes);
-  no microphone inside the WebView (the voice tutor is native, #248); nothing offline.
+- The web layout is responsive (#263): below 48rem (docs/modules/web.md, "Phone width") the
+  study desk, the topic page and the notes page are one column, and the notes page's sources
+  panel and editor chat collapse behind "Fuentes" and "Chat con el editor"; nothing changes on
+  the phone side.
+- Known gaps: no microphone inside the WebView (the voice tutor is native, #248); nothing offline.
 
 ## Voice tutor on the phone (#248)
 

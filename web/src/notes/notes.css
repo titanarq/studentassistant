@@ -1,7 +1,8 @@
 /* The notes viewer and its sources panel. The panel is fixed to the viewport edge so opening it
    never rewraps nor scrolls the notes (the reading position stays put); on a wide screen the
-   column slides left, at its same width, to stay clear of it; at phone width it is a bottom
-   sheet. */
+   column slides left, at its same width, to stay clear of it. Below the phone breakpoint
+   (48rem) the page is one column -- notes, sources panel (sticky to the screen bottom), chat --
+   and the sources panel and chat collapse behind their toggles (see the end of this file). */
 
 .notes-page main {
   max-width: 46rem;
@@ -162,26 +163,6 @@ button,
   min-height: 1.5rem;
 }
 
-@media (max-width: 40rem) {
-  .source-panel {
-    top: auto;
-    left: 0;
-    width: auto;
-    height: 70vh;
-    border-left: 0;
-    border-top: 1px solid #ccc;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
-  }
-
-  .notes-page-with-panel main {
-    padding-bottom: 72vh;
-  }
-
-  .source-image-frame {
-    max-height: 45vh;
-  }
-}
-
 /* The editor chat (#71): beside the notes on a wide screen, below them otherwise. The sources
    panel still floats over the viewport edge, above the chat. */
 .notes-chat {
@@ -237,4 +218,95 @@ button,
 .notes-block:hover .notes-why,
 .notes-why:focus-visible {
   opacity: 1;
+}
+
+/* The phone-width toggles and the hint of the empty sources panel exist only below the
+   breakpoint; wider, the sources panel floats as a dialog and nothing collapses. */
+.notes-toggle,
+.notes-sources-hint {
+  display: none;
+}
+
+/* Phone width (360-430 px, the Android study desk WebView): one column, no horizontal scroll,
+   44 px touch targets. Keep this breakpoint in sync with docs/modules/web.md. */
+@media (max-width: 48rem) {
+  .notes-page {
+    overflow-x: clip;
+  }
+
+  .notes-page main {
+    padding-bottom: 1.5rem;
+  }
+
+  .notes-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0.5rem 0.75rem;
+    font: inherit;
+    font-weight: 600;
+    background: #f3f5f9;
+    border: 1px solid #c8cfdc;
+    border-radius: 0.25rem;
+    color: inherit;
+  }
+
+  .notes-collapsed {
+    display: none;
+  }
+
+  .notes-sources {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    background: #fff;
+    border-top: 1px solid #ccc;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+    padding: 0.5rem 1rem;
+  }
+
+  .notes-sources-hint {
+    display: block;
+    margin: 0.5rem 0;
+    color: #555;
+  }
+
+  .source-panel {
+    position: static;
+    width: auto;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .source-panel-header {
+    padding: 0.5rem 0;
+  }
+
+  .source-panel-body {
+    max-height: 55vh;
+    padding: 0 0 0.5rem;
+    overflow-wrap: anywhere;
+  }
+
+  .source-image-frame {
+    max-height: 40vh;
+  }
+
+  .notes-chat {
+    padding: 1rem 1rem 2rem;
+    overflow-wrap: anywhere;
+  }
+
+  .notes-page button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  .notes-ref a {
+    display: inline-block;
+    min-width: 1.75rem;
+    text-align: center;
+  }
 }
