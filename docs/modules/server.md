@@ -454,7 +454,8 @@ Routes registered today:
     default 10 new items a day. 500 when a material cannot be read.
   - `POST .../practice/reviews`, body `PracticeAnswer` (`item`, `rating`, `given`,
     `self_assessed`) -> `ReviewOutcome` (`review`, `state`), appended to `study/practice.jsonl`
-    and committed. 404 an item no longer in the material, 422 a flashcard review without a rating.
+    and committed with the sitting's batch (`note_change()`). 404 an item no longer in the
+    material, 422 a flashcard review without a rating.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
