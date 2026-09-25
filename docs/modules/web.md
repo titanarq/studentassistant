@@ -40,7 +40,8 @@ token):
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
-  -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`, anything else
+  -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
@@ -73,7 +74,8 @@ token):
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
-  The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, and its
+  The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, followed by
+  "(versiones)", a link to the notes version history, and its
   Pendiente item always links to the pending-doubts panel.
 - `src/notes/` (#52): the notes viewer. `NotesPage` (`← Tema <name>` link, "Apuntes de <name> ·
   versión <N>") fetches `GET /api/subjects/{s}/topics/{t}/notes` and renders it with `NotesView`;
@@ -195,6 +197,26 @@ token):
     `notes_changed`, `warning`}, `ResolutionResult` {`pending_id`, `status`, `resolution`,
     `notes_changed`, `warning`}), `describeActionFailure`, `describeReview`, `isOverCap(code)`, and the
     generic `postAction(path, body, read)`.
+- `src/versions/` (#72): the notes version history over the versions API of #64
+  (docs/modules/server.md). `VersionsPage` (`← Tema <name>` link, "Versiones de los apuntes de
+  <name>") lists every version newest first ("Versión <N>", "la de los apuntes actuales" on the
+  one `apuntes.md` is, the tag date in `es-ES`, the commit message) and says when the notes
+  changed after the latest version. "Comparar": "Desde"/"Hasta" selects ("Hasta" also offers
+  "Apuntes actuales", `to` `null`), starting at `defaultComparison` (the latest version against
+  the current notes when they changed after it, else the latest two; none with a single unchanged
+  version); only the latest comparison read is shown. "Ver los cambios": "En línea" or "Lado a
+  lado". "Restaurar la versión <N>" (every version but the current one) asks for a confirmation
+  (a group with "Sí, restaurar" / "Cancelar"), then says "Se ha restaurado la versión <K> como
+  versión <N>." and the backend's warning, and reads the history (and so the comparison) again;
+  a refusal (409 another notes operation, already that version) shows its Spanish `detail`.
+  - `VersionDiffView`: one `article` "<title>: <Nueva|Quitada|Modificada>" per section that
+    changed or moved (`sectionTitle`: the newer title, "Inicio de los apuntes" for the preamble),
+    with "Sección renombrada, antes «<old>», cambiada de sitio.", the line counts and the section's
+    diff, inline (`<ins>`/`<del>`) or as a two-column table (`sideBySide(lines)`, removed runs
+    paired with the added runs next to them); the unchanged sections in a closed `details`; the
+    footnote labels under "Fuentes citadas"; identical versions say so.
+  - `api.ts`: `fetchVersions`, `fetchVersionDiff(s, t, from, to | null)`, `restoreVersion(s, t,
+    n)` -> `ActionResult` (bodies read leniently: `readVersions`, `readDiff`, `readRestore`).
 - `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
   confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
   then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
