@@ -41,11 +41,14 @@ fun interface SessionSocketFactory {
     fun open(url: String, token: String, listener: SessionSocketListener): SessionSocket
 }
 
+/** How often a session socket pings; a missing pong fails the socket (OkHttp). */
+const val SESSION_SOCKET_PING_INTERVAL_MS: Long = 10_000
+
 /** The [OkHttpClient] of session sockets: no read timeout, pings every 10 s to notice a dead LAN. */
 fun sessionSocketHttpClient(): OkHttpClient =
     defaultOkHttpClient().newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(10, TimeUnit.SECONDS)
+        .pingInterval(SESSION_SOCKET_PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
         .build()
 
 /** [SessionSocketFactory] over OkHttp's WebSocket; the token travels as `Authorization: Bearer`. */

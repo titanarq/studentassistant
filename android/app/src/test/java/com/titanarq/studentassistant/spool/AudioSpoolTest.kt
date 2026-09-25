@@ -73,6 +73,7 @@ class AudioSpoolTest {
         reopened.acknowledge(4)
         reopened.close()
         assertEquals(4L, spool().lastSeq)
+        assertEquals(4L, spool().ackedSeq) // the reopened spool knows audio was acknowledged
     }
 
     @Test
@@ -129,6 +130,14 @@ class AudioSpoolTest {
         assertEquals(44L, spool.lastSeq)
         spool.close()
         assertEquals(listOf(42L, 43L, 44L), spool().after(-1, 10).map { it.seq })
+
+        // Renumbering below frames dropped at the cap (from 0 again) is allowed too.
+        val fresh = AudioSpool(File(folder.root, "fresh"), SpoolBudget(1_000_000), 3)
+        (5L..6L).forEach { fresh.append(frame(it)) }
+        fresh.rebaseAfter(-1)
+        assertEquals(listOf(0L, 1L), fresh.after(-1, 10).map { it.seq })
+        fresh.append(frame(2))
+        assertEquals(2L, fresh.lastSeq)
     }
 
     @Test

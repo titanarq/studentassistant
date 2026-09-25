@@ -73,20 +73,22 @@ sealed interface ConnectionFailure {
  * [com.titanarq.studentassistant.spool] classes) so it survives the app process dying:
  * - [backlog]: transcript finals until the backend echoes the `transcript.final` with the same
  *   `segment_id`; they are resent after every `hello.ack` in client mode (the backend drops a final
- *   it saw already, without echoing it, so a resent final not echoed within [finalGraceMs] of a
- *   connection that stayed up counts as held). `button`, `marker` and `ack` sent while
+ *   it saw already, without echoing it, so a resent final not echoed within [finalGraceMs] --
+ *   more than two ping intervals -- of a connection that stayed up counts as held). `button`, `marker` and `ack` sent while
  *   disconnected are queued and sent after `hello.ack`. Partials are dropped while disconnected
  *   (their final supersedes them).
  * - [audio]: every frame until the server `ack`'s `audio_seq` covers it. After a `hello.ack` in
  *   server mode with frames held, the connection waits up to [ackWaitMs] for the `ack` the backend
- *   sends right after it (where it stands), then resends in `seq` order everything after the
- *   acknowledged `seq`, a batch at a time while the socket's send queue is under
+ *   sends right after it whenever it holds audio (where it stands), then resends in `seq` order
+ *   everything after the acknowledged `seq`, a batch at a time while the socket's send queue is under
  *   [maxSocketQueueBytes], and only then live frames (a live frame produced meanwhile joins the
- *   backlog behind them). When the held frames do not follow the acknowledged `seq` (older audio
- *   was dropped at the spool's cap) or the backend acknowledges more frames than this connection
- *   produced (a restarted app on a resumed session without a spool), the held frames are
- *   renumbered right after the acknowledged `seq`: the backend places audio by client time, never
- *   by `seq`, and never skips a missing `seq`.
+ *   backlog behind them). Renumbering happens only on a real `ack`: when the held frames do not
+ *   follow its `seq` and none past it was sent on this socket (older audio was dropped at the
+ *   spool's cap), or when it covers more frames than this connection produced (a restarted app on
+ *   a resumed session without a spool), the held frames are renumbered right after it; the backend
+ *   places audio by client time, never by `seq`, and never skips a missing `seq`. Without an
+ *   `ack` in time the frames go out as numbered (renumbered from 0 only when this backlog never
+ *   saw any `ack` and its first frame is not 0).
  *
  * [drained] is true while connected with nothing left to deliver in the negotiated mode.
  *
@@ -218,7 +220,7 @@ class SessionConnection(
             }
             is Input.Send -> onSend(input.event)
             is Input.Audio -> onAudio(input.samples, input.clientTimeMs)
-            is Input.AckWaitOver -> if (input.generation == generation && handshaken && !pumpOpen) openPump()
+            is Input.AckWaitOver -> if (input.generation == generation && handshaken && !pumpOpen) openPumpWithoutAck()
             is Input.Pump -> if (input.generation == generation) {
                 pumpScheduled = false
                 pump()
@@ -341,22 +343,41 @@ class SessionConnection(
             rebase(acked)
             return
         }
+        // Nothing sent past it on this socket yet: a gap after the backend's position (older audio
+        // dropped at the cap) is closed by renumbering. Only a real `ack` ever triggers this.
+        val unsentGap = sentThrough <= acked && firstHeldAfter(acked)?.let { it > acked + 1 } == true
         audio.acknowledge(acked)
         sentThrough = maxOf(sentThrough, acked)
-        if (handshaken && mode == SttMode.SERVER && !pumpOpen) openPump()
-    }
-
-    /** Resending starts: renumber the held frames when they do not follow the backend's `seq`. */
-    private fun openPump() {
-        pumpOpen = true
-        val acked = maxOf(socketAcked, audio.ackedSeq)
-        val first = audio.after(acked, 1).firstOrNull()
-        if (first != null && first.seq > acked + 1) {
+        if (unsentGap && handshaken && mode == SttMode.SERVER) {
             rebase(acked)
             return
         }
-        sentThrough = maxOf(sentThrough, acked)
+        if (handshaken && mode == SttMode.SERVER && !pumpOpen) openPump()
+    }
+
+    private fun firstHeldAfter(seq: Long): Long? = audio.after(seq, 1).firstOrNull()?.seq
+
+    /** Resending starts after the backend's `ack` on this socket (or when nothing is held). */
+    private fun openPump() {
+        pumpOpen = true
+        sentThrough = maxOf(sentThrough, socketAcked, audio.ackedSeq)
         pump()
+    }
+
+    /**
+     * No `ack` came within [ackWaitMs] of `hello.ack`. The backend sends one right behind
+     * `hello.ack` whenever it holds audio, so either it holds none or the link is dying. Resend
+     * without renumbering after the local ack, except when this backlog never saw an `ack` at all
+     * and its frames do not start at 0 (older audio dropped at the cap before any was delivered):
+     * then the backend holds nothing and the frames are renumbered from 0.
+     */
+    private fun openPumpWithoutAck() {
+        val first = firstHeldAfter(-1)
+        if (audio.ackedSeq < 0 && first != null && first > 0) {
+            rebase(-1)
+            return
+        }
+        openPump()
     }
 
     private fun rebase(acked: Long) {
@@ -510,8 +531,13 @@ class SessionConnection(
         /** How long to wait after `hello.ack` for the backend's `ack` before resending audio. */
         const val ACK_WAIT_MS: Long = 1_000
 
-        /** A resent final not echoed within this time of a live connection is held by the backend. */
-        const val FINAL_GRACE_MS: Long = 5_000
+        /**
+         * A resent final not echoed within this time of a connection that stayed up is held by the
+         * backend (which drops a repeated final without echoing it). Longer than two ping intervals
+         * of the session socket: OkHttp fails a socket whose pong is missing, so a socket still up
+         * after this long proves the backend read what was sent before the pings (TCP keeps order).
+         */
+        const val FINAL_GRACE_MS: Long = 2 * SESSION_SOCKET_PING_INTERVAL_MS + 5_000
 
         /** Resending pauses while the socket has this much queued (OkHttp fails a send past 16 MiB). */
         const val MAX_SOCKET_QUEUE_BYTES: Long = 1L shl 20

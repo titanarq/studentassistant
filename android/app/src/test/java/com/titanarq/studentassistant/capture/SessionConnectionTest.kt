@@ -456,6 +456,73 @@ class SessionConnectionTest {
     }
 
     @Test
+    fun `resent finals survive a reconnect whose link dies unnoticed before the grace time`() = runTest {
+        val connection = connection()
+        connection.start()
+        runCurrent()
+        handshake(SttMode.CLIENT)
+        connection.send(final("a-0"))
+        connection.send(final("a-1"))
+        runCurrent()
+        sockets.last.drop()
+        settle()
+        handshake(SttMode.CLIENT) // resends a-0, a-1 ...
+        assertEquals(listOf(final("a-0"), final("a-1")), sockets.last.sent.drop(1))
+        // ... but the link is already dead: silent, and noticed only by the pings (~20 s).
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertFalse(connection.drained.value)
+        sockets.last.drop("ping timeout")
+        settle()
+        handshake(SttMode.CLIENT)
+        assertEquals(listOf(final("a-0"), final("a-1")), sockets.last.sent.drop(1)) // nothing lost
+        sockets.last.receive(echo("a-0"))
+        runCurrent()
+        advanceTimeBy(SessionConnection.FINAL_GRACE_MS) // a-1 never echoed on a live link: held
+        runCurrent()
+        assertTrue(connection.drained.value)
+    }
+
+    @Test
+    fun `without the backend's ack in time frames go out as numbered and are never renumbered later`() = runTest {
+        val audio = MemoryAudioBacklog(maxFrames = 3)
+        val connection = connection(audio = audio)
+        connection.start()
+        runCurrent()
+        handshake(SttMode.SERVER)
+        repeat(3) { i -> connection.sendAudio(shortArrayOf(i.toShort()), 1_000L + i) }
+        runCurrent()
+        sockets.last.receive(ServerAck(audioSeq = 0, serverTimeMs = 1))
+        runCurrent()
+        sockets.last.drop()
+        repeat(6) { i -> connection.sendAudio(shortArrayOf(i.toShort()), 2_000L + i) } // 3..8; 1..5 dropped
+        settle()
+        handshake(SttMode.SERVER)
+        advanceTimeBy(SessionConnection.ACK_WAIT_MS) // the link dies: no ack
+        runCurrent()
+        assertEquals(listOf(6L, 7L, 8L), sockets.last.frames.map { it.seq })
+        sockets.last.receive(ServerAck(audioSeq = 2, serverTimeMs = 2)) // late: frames past it were sent
+        runCurrent()
+        assertEquals(listOf(6L, 7L, 8L), sockets.last.frames.map { it.seq })
+        assertEquals(listOf(6L, 7L, 8L), audio.after(-1, 10).map { it.seq })
+    }
+
+    @Test
+    fun `a backlog that never saw an ack and lost its first frames starts again from 0`() = runTest {
+        val connection = connection(audio = MemoryAudioBacklog(maxFrames = 2))
+        connection.start()
+        runCurrent()
+        sockets.last.drop()
+        repeat(4) { i -> connection.sendAudio(shortArrayOf(i.toShort()), 1_000L + i) } // 0..1 dropped
+        settle()
+        handshake(SttMode.SERVER)
+        advanceTimeBy(SessionConnection.ACK_WAIT_MS) // the backend holds no audio: it sends no ack
+        runCurrent()
+        assertEquals(listOf(0L, 1L), sockets.last.frames.map { it.seq })
+        assertEquals(listOf(1_002L, 1_003L), sockets.last.frames.map { it.clientTimeMs })
+    }
+
+    @Test
     fun `the socket url joins the base url and ws_path`() {
         assertEquals(
             "http://pc:8000/ws/sessions/s1",

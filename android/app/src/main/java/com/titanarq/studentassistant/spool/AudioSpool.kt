@@ -94,7 +94,8 @@ class MemoryAudioBacklog(private val maxFrames: Int) : AudioBacklog {
  * full. A record is `seq` (i64), client time (i64), sample count (i32), then the PCM16 samples
  * little-endian; a record cut short by a crash is truncated away on the next open. A segment is
  * deleted once every frame in it is acknowledged, and `floor` keeps the highest `seq` ever deleted
- * so numbering continues after a restart with an empty spool.
+ * and the highest acknowledged one at that point, so numbering continues after a restart with an
+ * empty spool and a reopened spool knows the backend acknowledged audio before.
  *
  * Every byte is reported to [budget]; after an append that leaves the budget over its cap, the
  * oldest segments are deleted (acknowledged or not) until it fits or only the segment being
@@ -110,6 +111,7 @@ class AudioSpool(
     private val segments = ArrayDeque<Segment>()
     private var floor = -1L
     private var acked = -1L
+    private var floorAcked = -1L
     private var out: FileOutputStream? = null
     private var openCount = 0
     private val openFrames = mutableListOf<SpooledFrame>()
@@ -168,15 +170,17 @@ class AudioSpool(
     override fun acknowledge(seq: Long): Unit = synchronized(this) {
         if (seq <= acked) return
         acked = seq
+        val before = segments.size
         while (segments.isNotEmpty() && segments.first().last <= seq) deleteFirst()
+        if (segments.size == before && floorAcked < 0) writeFloor() // the first ack ever
     }
 
     override fun rebaseAfter(seq: Long): Unit = synchronized(this) {
         val frames = after(-1, Int.MAX_VALUE)
         while (segments.isNotEmpty()) deleteFirst()
-        floor = maxOf(floor, seq)
-        writeFloor()
+        floor = seq
         acked = seq
+        writeFloor()
         frames.forEachIndexed { index, frame -> append(SpooledFrame(seq + 1 + index, frame.clientTimeMs, frame.samples)) }
     }
 
@@ -237,7 +241,10 @@ class AudioSpool(
     }
 
     private fun load() {
-        floor = File(dir, FLOOR_FILE).takeIf { it.isFile }?.readText()?.trim()?.toLongOrNull() ?: -1L
+        val stored = File(dir, FLOOR_FILE).takeIf { it.isFile }?.readText()?.trim()?.split(' ').orEmpty()
+        floor = stored.getOrNull(0)?.toLongOrNull() ?: -1L
+        acked = stored.getOrNull(1)?.toLongOrNull() ?: -1L
+        floorAcked = acked
         val files = dir.listFiles().orEmpty().filter { it.name.startsWith("seg-") }.sortedBy { it.name }
         for (file in files) {
             val frames = read(file, truncate = true)
@@ -260,9 +267,11 @@ class AudioSpool(
     private fun writeFloor() {
         val file = File(dir, FLOOR_FILE)
         val temp = File(dir, "$FLOOR_FILE.tmp")
+        val text = "$floor $acked"
+        floorAcked = acked
         try {
-            temp.writeText(floor.toString())
-            if (!temp.renameTo(file)) file.writeText(floor.toString())
+            temp.writeText(text)
+            if (!temp.renameTo(file)) file.writeText(text)
         } catch (e: IOException) {
             // Numbering after a restart falls back to the frames still on disk.
         }

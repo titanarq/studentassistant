@@ -237,13 +237,16 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   never dropped to make room.
 - **Reconnect order** (`SessionConnection` over the session's spools, on `Dispatchers.IO`): after
   `hello.ack`, queued events go out first; in client mode every unconfirmed final is resent (the
-  backend drops a final it already has without echoing it, so a resent final not echoed within 5 s
-  of a live connection counts as held); in server mode, with frames held, the connection waits up to
+  backend drops a final it already has without echoing it, so a resent final not echoed within 25 s
+  -- more than two 10 s ping intervals, so the socket is proven alive -- counts as held); in server mode, with frames held, the connection waits up to
   1 s for the backend's `ack` (sent right after `hello.ack`), then resends every frame after the
   acknowledged `seq` in order, 20 at a time while OkHttp's send queue is under 1 MiB, and only then
-  sends live frames (a live frame produced meanwhile joins the backlog). Held frames that do not
-  follow the acknowledged `seq` (older audio dropped at the cap) are renumbered after it, since the
-  backend places audio by client time and never skips a missing `seq`. After an app restart,
+  sends live frames (a live frame produced meanwhile joins the backlog). Frames are renumbered only
+  on a real `ack`: when the held frames do not follow its `seq` (older audio dropped at the cap)
+  and none past it was sent on this socket, they are renumbered after it, since the backend places
+  audio by client time and never skips a missing `seq`. Without an `ack` in time they go out as
+  numbered, renumbered from 0 only when the backlog never saw any `ack` (its last acknowledged
+  `seq` is kept in the `floor` file) and its first frame is not 0. After an app restart,
   "Continuar" opens the same spools, so everything left is resent the same way.
 - **Captures on resume**: the session start/resume's `received_capture_ids` (the capture screen's
   start and every 4404 resume) are confirmed and failed captures of the session retried.
