@@ -3,7 +3,8 @@
  * - `GET /api/subjects/{s}/topics/{t}/quiz` -> `StoredQuiz` (404 when there is none yet).
  * - `POST .../generated/quiz` (the generators API, #67), body `{options, confirm_over_cap}`.
  * - `POST .../quiz/results`, body `QuizAttempt` -> `QuizResult` (graded by the backend, kept in
- *   `study/quiz-results.jsonl`); 409 when the quiz was generated again meanwhile.
+ *   `study/quiz-results.jsonl`); 409 when the quiz was generated again meanwhile. A partial attempt
+ *   (`questions`: the ids asked, #282) is graded on those only and recorded as such.
  * - `GET .../quiz/results` -> `QuizResult[]`, oldest first.
  *
  * Every call answers an `ActionResult` (`pending/doubts.ts`); a refusal keeps the backend's Spanish
@@ -52,12 +53,16 @@ export interface QuizAttempt {
   built_at: string;
   answers: QuizAnswer[];
   duration_seconds?: number;
+  /** A partial attempt (retaking the questions answered wrong): the ids asked. */
+  questions?: string[];
 }
 
 export interface QuizResult {
   time: string;
   total: number;
   correct: number;
+  /** Whether only some questions were asked (the backend's `questions` is a list). */
+  partial: boolean;
 }
 
 export interface QuizOptions {
@@ -131,7 +136,7 @@ export function readResult(body: unknown): QuizResult | null {
   const total = count(body.total);
   const correct = count(body.correct);
   if (total === null || correct === null) return null;
-  return { time: body.time, total, correct };
+  return { time: body.time, total, correct, partial: Array.isArray(body.questions) };
 }
 
 export function readResults(body: unknown): QuizResult[] | null {

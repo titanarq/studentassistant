@@ -260,3 +260,86 @@ def test_no_quiz(topic: ReviseTopic, sync: GitSync) -> None:
             sync=sync,
         )
     assert quiz_results(topic.vault, topic.subject, topic.topic) == []
+
+
+def test_partial_attempt_grades_only_the_questions_asked(
+    quiz_topic: ReviseTopic, sync: GitSync
+) -> None:
+    topic = quiz_topic
+    attempt = QuizAttempt(
+        built_at=_built_at(topic),
+        questions=["q3", "q2"],
+        answers=[QuizAnswer(question="q2", given="Verdadero")],
+    )
+    result = record_quiz_result(topic.vault, topic.subject, topic.topic, attempt, sync=sync)
+
+    assert (result.total, result.correct) == (2, 1)
+    assert result.questions == ["q2", "q3"]
+    assert [a.question for a in result.answers] == ["q2", "q3"]
+    assert quiz_results(topic.vault, topic.subject, topic.topic) == [result]
+    last = subprocess.run(
+        ["git", "-C", str(topic.vault.path), "log", "-1", "--format=%s"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert last.stdout.startswith("Resultado parcial del quiz de matematicas/derivadas: 1/2")
+
+
+def test_full_attempt_records_no_questions(quiz_topic: ReviseTopic, sync: GitSync) -> None:
+    topic = quiz_topic
+    attempt = QuizAttempt(built_at=_built_at(topic), answers=[])
+    result = record_quiz_result(topic.vault, topic.subject, topic.topic, attempt, sync=sync)
+    assert result.total == 3 and result.questions is None
+    line = json.loads(
+        study_log_path(topic.vault, topic.subject, topic.topic, "quiz-results")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert line["questions"] is None
+
+
+def test_partial_attempt_refusals(quiz_topic: ReviseTopic, sync: GitSync) -> None:
+    topic = quiz_topic
+    built_at = _built_at(topic)
+    cases = [
+        (["q1", "q9"], [], "q9"),
+        (["q1", "q1"], [], "dos veces"),
+        (["q1"], [QuizAnswer(question="q2", given="Falso")], "no está entre"),
+    ]
+    for questions, answers, message in cases:
+        with pytest.raises(InvalidAttemptError, match=message):
+            record_quiz_result(
+                topic.vault,
+                topic.subject,
+                topic.topic,
+                QuizAttempt(built_at=built_at, questions=questions, answers=answers),
+                sync=sync,
+            )
+    with pytest.raises(QuizChangedError):
+        record_quiz_result(
+            topic.vault,
+            topic.subject,
+            topic.topic,
+            QuizAttempt(built_at=NOW, questions=["q1"], answers=[]),
+            sync=sync,
+        )
+    with pytest.raises(ValueError):
+        QuizAttempt(built_at=built_at, questions=[], answers=[])
+    assert quiz_results(topic.vault, topic.subject, topic.topic) == []
+
+
+def test_results_recorded_before_partial_attempts_still_load(
+    quiz_topic: ReviseTopic, sync: GitSync
+) -> None:
+    topic = quiz_topic
+    attempt = QuizAttempt(built_at=_built_at(topic), answers=[])
+    record_quiz_result(topic.vault, topic.subject, topic.topic, attempt, sync=sync)
+    path = study_log_path(topic.vault, topic.subject, topic.topic, "quiz-results")
+    old = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+    del old["questions"]
+    path.write_text(json.dumps(old) + "\n", encoding="utf-8")
+
+    [loaded] = quiz_results(topic.vault, topic.subject, topic.topic)
+    assert loaded.total == 3 and loaded.questions is None

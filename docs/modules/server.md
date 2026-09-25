@@ -513,9 +513,11 @@ Routes registered today:
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/quiz` -> `StoredQuiz` (`quiz`, `built_at`,
     `notes_version`, `warnings`, `stale`, `stale_reason`); 404 when there is no quiz yet.
   - `POST .../quiz/results`, body `QuizAttempt` (`built_at`, `answers`: `question`, `given`,
-    `self_assessed`; `duration_seconds`) -> `QuizResult`, graded, appended to
+    `self_assessed`; `duration_seconds`; optional `questions`: the ids asked in a partial
+    attempt, #282) -> `QuizResult` (`questions` set when partial), graded, appended to
     `study/quiz-results.jsonl` and committed. 404 no quiz, 409 the quiz was generated again
-    (`built_at` differs), 422 an answer to an unknown question or one twice.
+    (`built_at` differs), 422 an answer or asked id unknown, one twice, or an answer to a
+    question not asked.
   - `GET .../quiz/results` -> `[QuizResult]`, oldest first.
 - **Practice** (`server/practice_routes.py`, #81): thin over `studentassistant.generators.practice`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/practice[?new_limit=n]` -> `PracticeQueue`
