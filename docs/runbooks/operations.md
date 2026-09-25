@@ -124,6 +124,8 @@ with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
 - agent-os#52 the guard's Qwen stall bookkeeping carries over between runs (workaround below).
 - agent-os#15 refiner-created tasks miss the `[task] ` title prefix (fix titles by hand with
   `issues.py update N --title`).
+- agent-os#71 `clean_stale_worker.sh`'s ancestry checks miss a squash merge (host workaround:
+  the squash-aware check under agent-os#18 below, #187).
 - agent-os#16 `worker_task.sh start` rejects hyphenated branch prefixes such as `agent-os/37-...`;
   the planner retries with `task/<issue>-<slug>`.
 - agent-os#75 a finished run's stray `scratchpad/` files (not just `progress.log`) still leave
@@ -154,24 +156,38 @@ with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
   (untracked in the worker worktree) as uncommitted work and refuses the next dispatch on that
   backend, so the first dispatch after every completed issue fails. Workaround (copied from
   teachermovies, where decision A on its #1 chose it, 2026-09-24): once the issue's PR is merged and the issue closed, run
-  `scripts/clean_stale_worker.sh <backend>`. It refuses if there is any other uncommitted file
-  or any commit on HEAD not on `origin/main`; otherwise it archives the diary to
-  `.cache/stale_diaries/`, detaches the worktree at `origin/main` (the idle shape `start`
-  expects; it re-branches with `checkout -B` from there) and deletes that issue's own merged
-  local branches. Remove the script and this note once agent-os#18 is fixed and the subtree is
-  pulled.
+  `scripts/clean_stale_worker.sh [--dry-run] <backend>`. It refuses if there is any uncommitted
+  file outside `scratchpad/` or HEAD is not proven merged into `origin/main`; otherwise it
+  archives the whole `scratchpad/` (diary and any stray scratch files, so it also covers
+  agent-os#75 for a finished issue) to `.cache/stale_diaries/`, detaches the worktree at
+  `origin/main` (the idle shape `start` expects; it re-branches with `checkout -B` from there)
+  and deletes that issue's own merged local branches. `--dry-run` runs every check and prints
+  what it would do. Remove the script and this note once agent-os#18 is fixed and the subtree is
+  pulled (upstream fixed it in agent-os#20; this subtree predates that).
+
+  Squash-aware since #187 (squash merges are the policy, so a worker's commits are never
+  ancestors of `origin/main`; tracked upstream as agent-os#71). HEAD counts as merged when, first
+  match: (1) it is an ancestor of `origin/main`; (2) its branch has a merged PR whose head
+  contains HEAD -- one REST call, `gh api repos/<repo>/pulls?head=<owner>:<branch>&state=closed`,
+  `merged_at` not null; a commit made after the merge is not contained and falls through; (3)
+  `git diff --quiet origin/main HEAD -- <paths the branch touched>`. Anything else is real
+  unmerged work and is refused. Before #187 every squash-merged issue was refused ("HEAD has
+  commits not on origin/main"), which failed `studentassistant-board-sync.service` on every tick
+  (first seen with the claude worktree left on `task/41-replay-record` after PR #159). Tests:
+  `scripts/agent_os_patches/test_clean_stale_worker.py`.
 
   Automated (2026-09-24) so nobody has to remember it after every merge:
   `scripts/clean_stale_workers_if_closed.sh` is the second `ExecStart=` of
   `scripts/systemd/studentassistant-board-sync.service`, so it runs on the same 5-minute timer as
   the board sync. For every backend `project.backends` declares, it runs
   `scripts/clean_stale_worker.sh <backend>` ONLY when `.cache/worker_<backend>.issue` names an
-  issue that is CLOSED on GitHub -- an open issue is a run still in flight and is never touched,
+  issue that is closed on GitHub (read over REST, `gh api repos/<repo>/issues/<n>`) -- an open issue is a run still in flight and is never touched,
   regardless of what the worktree looks like. `clean_stale_worker.sh`'s own guards (uncommitted
-  work, unpushed commits, merged-only branch deletion) still apply underneath; the wrapper only
+  work, unmerged commits, merged-only branch deletion) still apply underneath; the wrapper only
   adds the closed-issue gate and a cheap "already idle" skip so a normal tick with nothing to do
   is silent. Both the wrapper and `clean_stale_worker.sh` are host-owned, outside `agent_os/`.
-  Same removal note as above once agent-os#18 is fixed upstream.
+  Same removal note as above once agent-os#18 is fixed upstream. Check it by hand with
+  `scripts/clean_stale_workers_if_closed.sh --dry-run` (passed through to every backend).
 
 ## Refiner
 
