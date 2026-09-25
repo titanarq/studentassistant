@@ -14,6 +14,7 @@ Thin capture client (ADR-0001), Spanish UI:
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
+- Study desk (#83): a topic's notes and the editor chat, the backend's web UI in a WebView.
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
   disconnected, resent in order on reconnect; an end while offline is completed later (see
   "Offline spool (#53)").
@@ -127,6 +128,39 @@ Thin capture client (ADR-0001), Spanish UI:
   (Claude failed) and 503 (web tools off) have their own Spanish messages.
 - `OkHttpBackendClient.addWebPage` uses a client with a longer read timeout
   (`WEB_PAGE_READ_TIMEOUT_SECONDS`, 120 s): the backend answers after Claude fetched the page.
+
+## Study desk on the phone (#83)
+
+Package `desk`. The phone reads a topic's notes and talks to the editor through the backend's own
+web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes logic in the app
+(ADR-0001).
+
+- **«Apuntes»** on every topic card of the home screen opens `Route.DESK` for that
+  `DeskTopic(subjectId, topicId, topicName)` (kept by `MainActivity` across recreation).
+- **`StudyDesk.kt`** (pure, JVM-tested): `notesPageUrl(baseUrl, subjectId, topicId)` ->
+  `<base>/subjects/<s>/topics/<t>/notes` (each id percent-encoded as one segment, the base URL's
+  path/query dropped; null for a non-http(s) base), `backendOrigin(baseUrl)`,
+  `tokenCookie(token)` -> `sa_token=<token>; Path=/; HttpOnly; SameSite=Strict`,
+  `deskPage(baseUrl, token, topic)` -> `DeskPage(url, cookieUrl, cookie)` (its `toString()` hides
+  the cookie) and `isSameOrigin(url, baseUrl)` (scheme, host and port).
+- **Authentication**: a page cannot send `Authorization: Bearer` on its own loads and `fetch`
+  calls, so the backend also accepts the paired token from the `sa_token` cookie (server
+  `auth.TOKEN_COOKIE`, docs/modules/server.md). The screen sets it in the WebView `CookieManager`
+  for the backend's origin right before loading, and removes the WebView's cookies (then
+  flushes) when the screen is left, so the token does not stay in the WebView store. It is
+  never logged or put in a URL.
+- **`StudyDeskViewModel(store, topic)`** (`AppContainer.studyDeskViewModelFactory(topic)`, keyed
+  `desk-<subject>/<topic>`) reads the active backend once: `DeskUiState` `Loading`, `NoBackend`,
+  `InvalidBackend` or `Ready(backendName, baseUrl, page, reload, failure)`.
+  `onLoadFailed(status, detail)` records a main-frame failure (`401` ->
+  `DeskLoadFailure.Unauthorized`, «Vuelve a emparejarlo»; else `Failed("HTTP <n>" | detail)`);
+  `retry()` («Reintentar», «Recargar») clears it and bumps `reload`.
+- **`StudyDeskScreen`**: a bar with «Volver», «Apuntes de <tema>» and «Recargar» over the
+  WebView (JavaScript and DOM storage on, file/content access off). Links to another origin open
+  in the system browser; system back goes back in the WebView history, then home. A progress bar
+  shows while a page loads; a failure covers the page with its Spanish message.
+- Known gaps: the web layout is the desktop one (it wraps below 80rem, the chat under the notes);
+  no file chooser (PDF upload), downloads or microphone inside the WebView; nothing offline.
 
 ## Capture screen (#42)
 

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 import com.titanarq.studentassistant.backend.BackendResult
+import com.titanarq.studentassistant.desk.DeskTopic
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.ui.backendFailureMessage
 import java.text.DateFormat
@@ -46,6 +47,7 @@ fun HomeScreen(
     viewModel: HomeViewModel,
     onSessionOpened: () -> Unit,
     onBackends: () -> Unit,
+    onReadNotes: (DeskTopic) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -81,6 +83,7 @@ fun HomeScreen(
                         topics = state.topics ?: Loadable.Loading,
                         session = state.session,
                         onOpen = viewModel::startOrContinue,
+                        onReadNotes = { row -> onReadNotes(DeskTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
                         onRetry = viewModel::refreshTopics,
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -146,6 +149,7 @@ private fun TopicList(
     topics: Loadable<List<TopicRow>>,
     session: SessionAction,
     onOpen: (TopicRow) -> Unit,
+    onReadNotes: (TopicRow) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -163,6 +167,7 @@ private fun TopicList(
                             opening = (session as? SessionAction.Opening)?.topicId == row.topic.topicId,
                             busy = session is SessionAction.Opening,
                             onOpen = { onOpen(row) },
+                            onReadNotes = { onReadNotes(row) },
                         )
                     }
                 }
@@ -171,7 +176,7 @@ private fun TopicList(
 }
 
 @Composable
-private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: () -> Unit) {
+private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: () -> Unit, onReadNotes: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.topic.name, style = MaterialTheme.typography.titleMedium)
@@ -208,7 +213,10 @@ private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: ()
                 row.canContinue -> R.string.home_continue_session
                 else -> R.string.home_start_session
             }
-            Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
+                OutlinedButton(onClick = onReadNotes) { Text(stringResource(R.string.home_read_notes)) }
+            }
         }
     }
 }
