@@ -108,8 +108,8 @@ with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
   `status:blocked-on-human` on the next guard tick. Remove this note once agent-os#75 is fixed and
   the subtree is pulled.
 - agent-os#17 (fixed upstream, PR #34): its two `--deselect`s in `ci-agent-os.yml` are gone.
-- agent-os#82 `test_no_host_literals` requires `agent_os/.git`, absent in a subtree host: two
-  `--deselect`s in `ci-agent-os.yml` (re-apply after `agent-os-install --force`).
+- agent-os#82 (fixed upstream at 4319091): `test_no_host_literals` no longer needs a `.git` under
+  `agent_os/`; its two `--deselect`s in `ci-agent-os.yml` are gone.
 
 - agent-os#18 `worker_task.sh start` reads a finished run's leftover `scratchpad/progress.log`
   (untracked in the worker worktree) as uncommitted work and refuses the next dispatch on that
@@ -216,11 +216,11 @@ bash agent_os/bin/agent-os-install --dry-run    # review, then --force
 systemctl --user daemon-reload
 ```
 
-Also: `.github/workflows/ci-agent-os.yml` is the template (agent-os#17's `--deselect`s dropped,
-path filter per upstream PR #79) plus two `--deselect`s for agent-os#82 (`test_no_host_literals`
-needs a `.git` under `agent_os/`, which a subtree host never has). `agent-os-install --force`
-rewrites that file and drops them: re-apply them after a `--force` until #82 is fixed. The
-`scripts/tests` suite moved to `ci.yml`'s `host-scripts` job so `--force` cannot drop it.
+Also: `.github/workflows/ci-agent-os.yml` is the template as-is (agent-os#17's and agent-os#82's
+`--deselect`s dropped, both fixed upstream; path filter per upstream PR #79), so
+`agent-os-install --force` leaves it unchanged; after a `--force` check it still has no
+`--deselect`. The `scripts/tests` suite moved to `ci.yml`'s `host-scripts` job so `--force` cannot
+drop it.
 
 Still in place: the board sync (agent-os#14) and `clean_stale_worker*.sh` (agent-os#18/#71/#75);
 agent-os#14, #18 and #75 are fixed upstream too, so dropping them is a follow-up.
