@@ -1,0 +1,59 @@
+/* The pending-doubts panel: one card per doubt, a coloured edge per kind. */
+
+.pending-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  overflow-wrap: anywhere;
+}
+
+.pending-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.pending-filters button[aria-pressed="true"] {
+  font-weight: bold;
+}
+
+.pending-card {
+  border: 1px solid #ccc;
+  border-left: 0.35rem solid #888;
+  border-radius: 0.4rem;
+  padding: 0.5rem 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.pending-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.pending-card h3 {
+  margin: 0.25rem 0;
+  font-size: 1rem;
+}
+
+.pending-card-contradiction { border-left-color: #c01c28; }
+.pending-card-possible_error { border-left-color: #e66100; }
+.pending-card-illegible { border-left-color: #1a5fb4; }
+.pending-card-incomplete { border-left-color: #986a44; }
+.pending-card-unexplained_concept { border-left-color: #613583; }
+
+.pending-card-closed {
+  opacity: 0.75;
+}
+
+.pending-status,
+.pending-hint,
+.pending-refs,
+.pending-merged,
+.pending-stale,
+.pending-note {
+  color: #555;
+  font-size: 0.9em;
+}

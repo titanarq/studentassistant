@@ -93,5 +93,17 @@ it("links the notes version to the notes viewer", () => {
 it("has no notes link before the first notes version", () => {
   render(<TopicCard summary={summary({ notes_version: null })} />);
 
-  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /Apuntes/ })).not.toBeInTheDocument();
+});
+
+it.each([
+  [4, "4 dudas por revisar"],
+  [0, "Nada por revisar"],
+])("links the pending item (%i open) to the pending-doubts panel", (open, text) => {
+  render(<TopicCard summary={summary({ open_pending: open })} />);
+
+  expect(screen.getByRole("link", { name: text })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/pending",
+  );
 });

@@ -3,7 +3,8 @@ import { type TopicSummary, topicPath } from "../desk/api";
 /**
  * The topic card of docs/VISION.md §2: sources by kind, sessions and minutes of conversation,
  * doubts pending review, and the notes version and generated material (✓ present, ○ not yet).
- * The notes item, once a version exists, links to the notes viewer (`<topic path>/notes`).
+ * The notes item, once a version exists, links to the notes viewer (`<topic path>/notes`), and
+ * the pending item to the pending-doubts panel (`<topic path>/pending`).
  */
 
 /** Generated material in the card's order, recognised by the file name under `generated/`. */
@@ -57,9 +58,11 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
         </dd>
         <dt>Pendiente</dt>
         <dd>
-          {open_pending === 0
-            ? "Nada por revisar"
-            : plural(open_pending, "duda por revisar", "dudas por revisar")}
+          <a href={`${topicPath(summary.subject_id, summary.topic_id)}/pending`}>
+            {open_pending === 0
+              ? "Nada por revisar"
+              : plural(open_pending, "duda por revisar", "dudas por revisar")}
+          </a>
         </dd>
         <dt>Material</dt>
         <dd>
