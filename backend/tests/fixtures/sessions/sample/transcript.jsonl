@@ -1,0 +1,7 @@
+{"segment_id":"seg-1","client_start_ms":1760000000500,"client_end_ms":1760000001500,"text":"la célula","provider":"web-speech","language":"es-ES","type":"transcript.client.partial"}
+{"segment_id":"seg-1","client_start_ms":1760000000500,"client_end_ms":1760000002500,"text":"la célula es la unidad","provider":"web-speech","language":"es-ES","type":"transcript.client.partial"}
+{"segment_id":"seg-1","client_start_ms":1760000000500,"client_end_ms":1760000003500,"text":"La célula es la unidad básica de los seres vivos.","provider":"web-speech","language":"es-ES","type":"transcript.client.final"}
+{"segment_id":"seg-2","client_start_ms":1760000004000,"client_end_ms":1760000005500,"text":"tiene tres partes","provider":"web-speech","language":"es-ES","type":"transcript.client.partial"}
+{"segment_id":"seg-2","client_start_ms":1760000004000,"client_end_ms":1760000007000,"text":"Tiene tres partes: membrana, citoplasma y núcleo.","provider":"web-speech","language":"es-ES","type":"transcript.client.final"}
+{"segment_id":"seg-3","client_start_ms":1760000011000,"client_end_ms":1760000012750,"text":"en el libro","provider":"web-speech","language":"es-ES","type":"transcript.client.partial"}
+{"segment_id":"seg-3","client_start_ms":1760000011000,"client_end_ms":1760000014500,"text":"En el libro pone que el núcleo guarda el material genético.","provider":"web-speech","language":"es-ES","type":"transcript.client.final"}

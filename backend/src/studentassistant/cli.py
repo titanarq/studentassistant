@@ -1,21 +1,25 @@
 """The `studentassistant` command line.
 
-`serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
-running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
-`cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, `setup` gets a PC from clone to running (the
-vault, the Anthropic API key, the STT model, the systemd service), `doctor` checks that it is,
-and `index rebuild` recreates the derived search index from the vault.
+`serve` runs the backend (`serve --record` also records each session for `replay`), `version`
+prints the version, `pair` shows a pairing QR minted by the running backend, `devices` lists (or
+`devices revoke <id>` removes) the paired capture clients, `cost` prints what the Claude calls
+recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range of it) to a topic
+as a source, `replay` feeds a recorded session through the gateway as a capture client would,
+`setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
+systemd service), `doctor` checks that it is, and `index rebuild` recreates the derived search
+index from the vault.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
 where the server listens comes from `studentassistant.config` (the TOML file plus the `SA_*`
 environment variables), so there is one way to configure the backend and not two. `setup`'s
-options are the answers it writes into that configuration, not a second way to set it.
+options are the answers it writes into that configuration, not a second way to set it, and
+`serve --record` only switches recording on: where recordings go is `[server].recordings_dir`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -53,6 +57,15 @@ from studentassistant.install.doctor import DoctorProbes, run_doctor
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.recorder import SessionRecorder
+from studentassistant.server.recording import Recording, RecordingError, read_recording
+from studentassistant.server.replay import (
+    AsgiTransport,
+    HttpTransport,
+    ReplayError,
+    ReplayResult,
+    replay,
+)
 from studentassistant.sources import (
     PdfImportError,
     PdfTooLargeError,
@@ -83,15 +96,31 @@ cli = typer.Typer(
 
 
 @cli.command()
-def serve() -> None:
+def serve(
+    record: Annotated[
+        bool,
+        typer.Option(
+            "--record",
+            help="Record each session's raw inputs under [server].recordings_dir, for `replay`.",
+        ),
+    ] = False,
+) -> None:
     """Serve the FastAPI app on the configured host and port until interrupted."""
     settings = Settings()
     server = settings.server
     # The key `setup` stored on this PC, unless the environment already carries one.
     export_api_key(settings.llm.api_key_path())
+    recorder = SessionRecorder(server.recordings_dir) if record else None
+    try:
+        app = create_app(server=server, recorder=recorder)
+    except ValueError as error:
+        typer.echo(f"Cannot record: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    if recorder is not None:
+        typer.echo(f"Recording every session under {recorder.root}")
     # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
     # guard and the loopback trust see (uvicorn trusts it from loopback by default).
-    uvicorn.run(create_app(server=server), host=server.host, port=server.port, proxy_headers=False)
+    uvicorn.run(app, host=server.host, port=server.port, proxy_headers=False)
 
 
 @cli.command()
@@ -294,6 +323,70 @@ def import_pdf_command(
             + ", ".join(str(number) for number in empty)
             + "."
         )
+
+
+async def _replay_in_process(recording: Recording, **options: Any) -> ReplayResult:
+    """Replay into an app built from the configuration, its lifespan run as `serve` runs it."""
+    async with AsgiTransport(create_app()) as transport:
+        return await replay(recording, transport, **options)
+
+
+async def _replay_to(url: str, recording: Recording, **options: Any) -> ReplayResult:
+    async with HttpTransport(url) as transport:
+        return await replay(recording, transport, **options)
+
+
+@cli.command("replay")
+def replay_command(
+    directory: Annotated[Path, typer.Argument(help="La carpeta de la sesión grabada.")],
+    speed: Annotated[
+        float, typer.Option("--speed", help="Cuántas veces más rápido que la grabación.")
+    ] = 1.0,
+    topic: Annotated[
+        str | None,
+        typer.Option("--topic", help="Otro tema en vez del grabado, como <asignatura>/<tema>."),
+    ] = None,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help="Un backend en marcha, p. ej. http://localhost:8765."),
+    ] = None,
+) -> None:
+    """Replay a recorded session as a capture client: start, hello, the timed inputs, the end.
+
+    With `--url` it talks to that running backend; without it, it builds the app in-process
+    against the configured vault (and `[stt]`, which must match the recording's STT mode).
+    """
+    subject_id = topic_id = None
+    if topic is not None:
+        subject_id, _, topic_id = topic.partition("/")
+        if not subject_id or not topic_id or "/" in topic_id:
+            typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+            raise typer.Exit(code=2)
+    if speed <= 0:
+        typer.echo("--speed tiene que ser mayor que 0.")
+        raise typer.Exit(code=2)
+    try:
+        recording = read_recording(directory)
+    except RecordingError as error:
+        typer.echo(f"No se puede leer la grabación «{directory}»: {error}")
+        raise typer.Exit(code=1) from error
+    options: dict[str, Any] = {"speed": speed, "subject": subject_id, "topic": topic_id}
+    try:
+        if url is None:
+            result = asyncio.run(_replay_in_process(recording, **options))
+        else:
+            result = asyncio.run(_replay_to(url, recording, **options))
+    except ReplayError as error:
+        typer.echo(f"La reproducción ha fallado: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        f"Sesión {result.session_id} reproducida en {result.subject_id}/{result.topic_id}: "
+        f"{result.finals_sent} frases finales, {result.partials_sent} parciales, "
+        f"{result.events_sent} eventos, {result.audio_frames_sent} tramas de audio, "
+        f"{result.captures_stored} capturas guardadas"
+        + (f" ({result.captures_duplicate} repetidas)" if result.captures_duplicate else "")
+        + "."
+    )
 
 
 index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")

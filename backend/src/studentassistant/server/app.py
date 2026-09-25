@@ -15,6 +15,7 @@ redacted from every log record (`redaction.py`).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -45,6 +46,7 @@ from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMid
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
 from studentassistant.server.read_routes import read_router
+from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
@@ -78,6 +80,7 @@ def create_app(
     vault_settings: VaultSettings | None = None,
     stt: SttSettings | None = None,
     sources: SourcesSettings | None = None,
+    recorder: SessionRecorder | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app with every route this backend serves.
 
@@ -96,6 +99,11 @@ def create_app(
     The app's lifespan drives that sync: while the app serves, an open vault gets the background
     commit/push loop (`SessionService.startup`), and shutdown stops it and flushes what is pending
     (`SessionService.shutdown`).
+
+    `recorder` (`serve --record`) records every session's client inputs through the WebSocket
+    gateway and the capture upload; each recording is finished when its session ends (or the app
+    shuts down). Without one nothing is recorded. A recorder whose directory is inside the vault is
+    refused with `ValueError`: a recording is never vault content.
     """
     install_log_redaction()
     if (
@@ -109,6 +117,12 @@ def create_app(
         stt = settings.stt if stt is None else stt
         sources = settings.sources if sources is None else sources
         vault_settings = settings.vault if vault_settings is None else vault_settings
+    if recorder is not None:
+        vault_root = vault.path if vault is not None else vault_settings.path  # type: ignore[union-attr]
+        if _is_within(recorder.root, vault_root):
+            raise ValueError(
+                f"the recordings directory {recorder.root} is inside the vault {vault_root}"
+            )
     devices = DeviceStore(server.devices_path)
     app = FastAPI(title="Student Assistant", version=__version__, lifespan=_lifespan)
     app.state.server = server
@@ -120,13 +134,22 @@ def create_app(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )
     assert stt is not None
+    app.state.recorder = recorder
     app.state.gateway = SessionGateway(
-        app.state.bus, app.state.sessions, stt, provider_factory=buffered_provider_from_settings
+        app.state.bus,
+        app.state.sessions,
+        stt,
+        provider_factory=buffered_provider_from_settings,
+        recorder=recorder,
     )
     # Bus `transcript.final` events -> each session's `transcript.jsonl` (started by the lifespan).
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
+    if recorder is not None:
+        app.state.sessions.add_before_close(
+            lambda session_id: asyncio.to_thread(recorder.close, session_id)
+        )
 
     # Starlette runs the last one added first: the LAN guard, the Host allowlist (DNS rebinding),
     # then the bearer check.
@@ -177,6 +200,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await transcripts.stop()
         await sessions.shutdown()
+        recorder: SessionRecorder | None = app.state.recorder
+        if recorder is not None:
+            recorder.close_all()
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path.expanduser().resolve().is_relative_to(root.expanduser().resolve())
 
 
 def _add_web_routes(app: FastAPI, static_dir: Path) -> None:
