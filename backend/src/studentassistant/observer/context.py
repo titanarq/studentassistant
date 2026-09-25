@@ -23,7 +23,7 @@ from studentassistant.observer.fold import (
     SEGMENT_ID_KEY,
 )
 from studentassistant.observer.ops import STATE_OP_EVENT_KIND
-from studentassistant.observer.state import PendingRefs, TopicState
+from studentassistant.observer.state import EventRef, PendingRefs, TopicState
 
 # The event kinds the observer reads besides the two the fold registers. The page transcription
 # (#50) MUST publish `PAGE_TRANSCRIPTION_KIND` with `payload.capture_id` and `payload.text`.
@@ -57,13 +57,19 @@ class BatchItem:
 
     `segment` items count toward the batch's segment trigger and `speech_seconds` toward its speech
     trigger; an `immediate` item (a capture, a page transcription, a source switch) sends the batch
-    as soon as no call is in flight.
+    as soon as no call is in flight. `ref` is the stored event the item shows (`None` for a
+    transient one); an answered batch acknowledges the newest (`catchup.py`).
     """
 
     line: str
     segment: bool = False
     speech_seconds: float = 0.0
     immediate: bool = False
+    ref: EventRef | None = None
+
+    def at(self, ref: EventRef | None) -> BatchItem:
+        """This item, showing the stored event `ref`."""
+        return BatchItem(self.line, self.segment, self.speech_seconds, self.immediate, ref)
 
 
 def _seconds(ms: Any) -> float:

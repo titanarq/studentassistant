@@ -15,7 +15,7 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29, #51 and #55: the knowledge-state model, its ops, the pure
+What exists today, after issues #29, #51, #55 and #176: the knowledge-state model, its ops, the pure
 fold, the snapshot, the vault-backed loader, the live loop and the pending-review queue. The
 digest (#56) and the purge (#60) are not written yet. Everything below except the live loop is
 re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
@@ -170,6 +170,22 @@ topic digest (none until #56). The server builds one when `create_app` gets an `
   is still waiting, so its ops land before `session.ended` (bounded by the end hook timeout; a call
   is shielded, never cancelled). `wait_idle(session_id)` waits without sending; `session.ended`
   forgets the session.
+- **Catch-up, no batch is lost** (#176, `catchup.py`): every answered batch (valid ops or not,
+  after the re-ask) is acknowledged with a persisted `observer.ack` event (`ACK_EVENT_KIND`,
+  origin `observer`, after the batch's ops; `payload.through` = the `EventRef` of the newest
+  stored event the batch carried; the fold ignores it). When the loop opens a session (the first
+  event of a start or resume, or a restart), `unanswered(events, session_id, before)` returns the
+  topic's batch-kind events after the newest acknowledgement and before the opening event (which,
+  with what follows, comes on the bus; the observer's own ops are never returned). They are sent
+  first, as one batch headed `catch-up: N events of session ...`, at once, newest
+  `[observer] catch_up_max_items` kept (default 200; the rest are logged). So the last batch of a
+  session whose call outlives the end hook's timeout (its ops and ack are refused by the ended
+  session) is answered at the start of the topic's next session; the waiting items of a session
+  the backend stopped without ending, or of a resumed one, at its resume. The guarantee is at
+  least once: a crash between a batch's ops and its ack sends the batch again, and duplicate ids
+  are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
+  open writes a baseline ack (`through` = the newest event before it, `null` for none). The
+  `context` record carries the `catch_up` count.
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

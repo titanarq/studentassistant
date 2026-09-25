@@ -346,6 +346,7 @@ class SourcesSettings(BaseModel):
 # segments, or this many seconds of speech, are waiting (a capture or a source switch: at once).
 DEFAULT_OBSERVER_BATCH_SEGMENTS = 6
 DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS = 30.0
+DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS = 200
 
 
 class ObserverSettings(BaseModel):
@@ -355,6 +356,8 @@ class ObserverSettings(BaseModel):
     enabled: bool = True
     batch_segments: int = Field(default=DEFAULT_OBSERVER_BATCH_SEGMENTS, ge=1)
     batch_speech_seconds: float = Field(default=DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS, gt=0)
+    # The most unanswered events a catch-up sends when a session opens (the newest are kept).
+    catch_up_max_items: int = Field(default=DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS, ge=0)
 
 
 def config_toml_path() -> Path:
