@@ -20,7 +20,7 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None, recorder=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None, recorder=None, llm_transport=None, llm_settings=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
@@ -32,7 +32,12 @@ the first request that needs it, so building an app never touches a vault. `sync
 `[sources]` section (`SourcesSettings`, default: the configured one) the PDF upload follows.
 `recorder` is the `SessionRecorder` of `serve --record` (see "Recording and replay" below);
 without one nothing is recorded, and one whose directory is inside the vault is refused with
-`ValueError`.
+`ValueError`. `llm_transport` turns the live observer on (`observer.live.ObserverLoop`,
+`docs/modules/observer.md`): with one and `[observer] enabled` in `llm_settings` (a full
+`Settings`, default: the configured one; it also gives the observer role, caps and prices), the
+lifespan starts and stops the loop and its `flush` is an `add_before_ended` hook. `serve` passes
+the real Anthropic transport; without one (every other caller, tests included) no Claude call is
+made.
 
 The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
 the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
@@ -43,8 +48,8 @@ is no background loop.
 
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
-`gateway` (the `SessionGateway` of the session WebSocket) and `recorder` (`None` unless one was
-given).
+`gateway` (the `SessionGateway` of the session WebSocket), `recorder` (`None` unless one was
+given) and `observer` (the `ObserverLoop`, `None` without an `llm_transport`).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:

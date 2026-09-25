@@ -9,6 +9,14 @@ from studentassistant.vault.active import (
     read_active_host,
     release_active_host,
 )
+from studentassistant.vault.conversations import (
+    ConversationError,
+    ConversationRecord,
+    append_conversation_record,
+    conversation_path,
+    conversations_directory,
+    read_conversation,
+)
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.ledger import (
@@ -113,6 +121,12 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "ConversationError",
+    "ConversationRecord",
+    "append_conversation_record",
+    "conversation_path",
+    "conversations_directory",
+    "read_conversation",
     "EVENT_SCHEMA_VERSION",
     "SOURCE_KINDS",
     "ActiveHost",
