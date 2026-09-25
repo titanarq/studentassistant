@@ -231,8 +231,8 @@ key written even when its value is `None`, no `---` or `...` marker, and no wrap
 default 80 columns) and `read_yaml(path, model)`.
 
 ### Git sync -- `git.py`, `sync.py`
-Only these two modules, the setup and the index below run git on the vault (the index only
-read-only commands: `rev-parse`, `tag --list`).
+Only these two modules, the setup, the purge and the index below run git on the vault (the index
+only read-only commands: `rev-parse`, `tag --list`).
 `GitRunner(root, identity, timeout, environment=None)` runs `git` as a
 subprocess in the vault root with a `GitIdentity(name, email)` as author and committer (passed in
 the environment, so no git configuration decides it), never prompts (`GIT_TERMINAL_PROMPT=0`,
@@ -459,9 +459,80 @@ As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code read
 - Also unwritten: `state/digest.md`;
   and the retention `purge` described below. (`conversations/` is written since #51.)
 
-## Purge
-`studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);
-never removes what the current notes cite.
+## Purge -- `purge.py`
+`studentassistant purge [--topic <subject>/<topic>] [--dry-run] [--hard] [--yes]` applies a
+per-topic retention policy (ADR-0003, issue #31) so the vault does not grow forever. Names are
+imported from `studentassistant.vault.purge`.
+
+**Policy** -- `VaultPurgeSettings` (`studentassistant.config`, `[vault.purge]` /
+`SA_VAULT__PURGE__*`):
+
+| key | default | candidate |
+|---|---|---|
+| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<subject-slug>/<topic-slug>/apuntes-vN` |
+| `burst_originals` | `true` | `sources/<kind>/page-NNN.burst<K>.<ext>`, any kind: other stills |
+| `observer_conversations` | `true` | `conversations/observer-<session-id>.jsonl` of an ended session |
+| `folded_events` | `true` | the events the observer snapshot folded, replaced by that snapshot |
+| `generated_max_age_days` | unset (keep) | files under `generated/` last committed longer ago |
+
+Burst originals come from capture processing (`sources.process_burst`, #44): it stores the stills
+it did not keep as derived files `burst<K>.<ext>` of the page, in whichever `sources/<kind>/` the
+session was on, and the purge looks in every kind; the page itself (`page-NNN.<ext>`), its sidecar, its crop and its transcription are never candidates.
+
+**Never removed**: transcripts, `session.yaml`, `notes/` and its history (tags), sources other
+than burst originals, the editor conversation, and anything `notes/apuntes.md` names by a
+topic-relative path (`cited_paths`: any `sources/...`, `sessions/...`, `generated/...`,
+`conversations/...` it contains, footnote or not) -- a cited candidate is listed as protected.
+A topic is skipped (with the reason) while a session is open, when it has no notes, and, with
+`require_notes_tag`, before its notes are accepted.
+
+**Folded events**: `Compaction(session_id, seq, kind, payload, origin="observer")`, built by the
+caller from the observer's snapshot (the vault never imports the observer), replaces every event
+of the topic up to and including `(session_id, seq)`: sessions before it keep an empty
+`events.jsonl`, and the cursor's session starts with one `kind` event at that `seq` (its `t` the
+replaced event's), followed by its later events byte for byte. The fold of snapshot + remaining
+events equals the pre-purge state (`tests/observer/test_compaction.py`); purging again changes
+nothing. The CLI builds it from `observer.catchup.compactable_snapshot`, which stops at the
+observer's newest acknowledged event, so the events the observer still owes (#176 catch-up) and
+the newest `observer.ack` stay in the log. A compaction naming a session the topic does not list, or a `seq` its log lacks, is a
+`PurgeError`. The events replaced are then only in git history: a later observer version cannot
+refold them from the working tree.
+
+**API**: `plan_topic_purge(sync, subject_slug, topic_slug, policy=None, compaction=None,
+now=None) -> TopicPurgePlan` (`items`: `PurgeItem(path, reason, size_before, size_after)` --
+`size_after` `None` for a removal --, `protected`, `skipped`, `saved_bytes`) reads only.
+`apply_purge(sync, plans, hard=False, before_commit=None) -> PurgeResult` removes and rewrites
+the files (the secret guard runs on every rewrite before anything is touched), calls
+`before_commit(plan)` (the CLI refreshes the observer snapshot there) and commits everything as
+one commit `purga: N archivos borrados, M registros compactados (size)`
+(`PURGE_COMMIT_PREFIX`); no items, no commit. That is the soft purge: all of it is recoverable
+from git history.
+
+**`--hard`** (confirmed by typing `reescribir`, or `--yes`): after the soft commit,
+`rewrite_history(sync, paths)` drops from every commit of `main` and from every tag
+(`git filter-branch --index-filter ... --tag-name-filter cat`) every path a purge commit ever
+deleted in the planned topics (`purged_history_paths`, so earlier soft purges are reclaimed too),
+deletes `refs/original/`, force-pushes `main` with `--force-with-lease` against the
+remote-tracking branch and then every local tag with `--force-with-lease=refs/tags/<t>:<sha>`,
+`<sha>` being what `git ls-remote --tags` gave before the rewrite (empty: the tag must still be
+absent), so a tag another PC created or moved meanwhile makes the push fail instead of being
+overwritten; a tag only the remote has is left as it is. Then it expires the reflog and runs
+`gc --prune=now`; `HistoryRewrite` reports the object store size before and after. The CLI first
+commits pending changes and `sync()`s with the remote, refusing to rewrite when that fails; a
+remote that still moved on makes the lease refuse the push, which is a `PurgeError` (the local
+history is rewritten by then; the message says how to push it). Rewritten `events.jsonl` keep
+their older versions in history (only deleted files are rewritten out).
+
+Consequence for other PCs: their clones hold the old history. Each must be cloned again
+(`studentassistant setup --clone` into an empty directory) or, when it has nothing unpushed,
+reset with `git fetch origin && git reset --hard origin/main`; a pull or push from an old clone
+would bring the purged files back. GitHub may keep the old objects reachable by SHA until its own
+garbage collection. Stop the backend while purging: the purge runs its own `GitSync`.
+
+The CLI prints each topic's items (`se borra` / `se compacta`, reason, size), protected paths and
+skip reasons; `--dry-run` adds the total it would free (and, with `--hard`, how many paths it
+would drop from history) and changes nothing. A soft purge is pushed at once when the vault has
+its remote (a failed push is retried by the next sync).
 
 ## Boundaries
 - Pure storage: no LLM, no HTTP. Refuses files that look like secrets.

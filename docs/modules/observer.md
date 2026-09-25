@@ -15,9 +15,9 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29, #51, #55 and #176: the knowledge-state model, its ops, the pure
-fold, the snapshot, the vault-backed loader, the live loop and the pending-review queue. The
-digest (#56) and the purge (#60) are not written yet. Everything below except the live loop is
+What exists today, after issues #29, #31, #51, #55 and #176: the knowledge-state model, its ops,
+the pure fold, the snapshot, the vault-backed loader, the live loop, the pending-review queue and
+the compaction the vault purge (#31) writes. The digest (#56) and the context purge (#60) are not written yet. Everything below except the live loop is
 re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
 (its batch rendering `studentassistant.observer.context`), kept out of the package root so that
 importing the state model never imports the llm module.
@@ -34,6 +34,10 @@ importing the state model never imports the llm module.
   with `payload.segment_id` and the server capture ingestion MUST append `capture.stored` with
   `payload.capture_id`, using the protocol ids (`segment_id` of `transcript.final`, `capture_id`
   of the captures REST call), so ops can reference those segments and captures.
+- `COMPACTED_EVENT_KIND = "observer.compacted"`: written only by the vault purge (#31) in place
+  of every earlier event of the topic; its payload (`compaction_payload(snapshot)`:
+  `state_version`, `state`) becomes the fold's state at that event. A newer `state_version` or a
+  payload that is not a `TopicState` is an `InvalidEventError`; an older version is taken as it is.
 - Every other kind is ignored.
 
 ### State ops -- `ops.py`
@@ -83,6 +87,11 @@ order.
 `advance_snapshot(snapshot | None, tail) -> ObserverSnapshot` folds the tail on a copy (a tail
 event at or before the cursor is an `EventOrderError`); `fold_from(snapshot, tail) -> TopicState`
 equals `fold` over all the events for every split point; `snapshot_of(events)` folds from scratch.
+`compaction_payload(snapshot)` is the payload of the `observer.compacted` event that replaces the
+events `snapshot` folded (`studentassistant purge` builds a `vault.purge.Compaction` from it and
+the snapshot's cursor): the fold of the compacted log equals the fold of the original one.
+`STATE_VERSION` lives in `state.py` (the fold checks compaction payloads against it) and is still
+re-exported from here.
 
 ### Pending-review queue -- `pending.py`
 Doubts accumulate without interrupting the student; only a counter reaches the phone.
@@ -112,7 +121,8 @@ items changed too (from the stored snapshot's, none when it was not usable) it r
 discarded and the log folded from scratch when it is unreadable, of another `state_version`, or
 no longer matches the log (its `event_count`-th event is not its cursor: a session pulled from
 another PC with an earlier id, or events appended before the cursor). An op that cannot be
-folded raises and nothing is written. Nothing in `studentassistant.observer` opens a file, runs
+folded raises and nothing is written. The vault purge reads the snapshot it compacts to with
+`write_back=False`. Nothing in `studentassistant.observer` opens a file, runs
 git, imports `anthropic`, `studentassistant.server` or a vault submodule (only the
 `studentassistant.vault` root), and only `live.py` imports `studentassistant.llm` (checked by
 `tests/observer/test_boundaries.py`).
@@ -186,6 +196,13 @@ topic digest (none until #56). The server builds one when `create_app` gets an `
   are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
   open writes a baseline ack (`through` = the newest event before it, `null` for none). The
   `context` record carries the `catch_up` count.
+- **Purge** (#31): `compactable_snapshot(events)` (`catchup.py`) is the fold of the topic up to
+  the newest acknowledged `through` (`acknowledged_through`), and it is all the vault purge may
+  compact. The unanswered events and the newest `observer.ack` (always written after what it
+  answers) stay after the compaction's cursor as they were. So after a purge `unanswered` still
+  returns what is owed, on this PC or any other, and a purged topic is still acknowledged, so no
+  baseline ack is written that could skip it. A topic whose acks name no event (none yet, or only
+  a `through: null` baseline) is not compacted.
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

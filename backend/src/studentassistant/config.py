@@ -113,6 +113,27 @@ class VaultGitSettings(BaseModel):
     active_host_stale_seconds: float = Field(default=DEFAULT_ACTIVE_HOST_STALE_SECONDS, gt=0)
 
 
+class VaultPurgeSettings(BaseModel):
+    """What `studentassistant purge` may drop from a topic whose notes were accepted (ADR-0003).
+
+    Every kind can be switched off; nothing the current notes cite, no transcript and no notes
+    history is ever a candidate, whatever is set here.
+    """
+
+    # Only purge a topic once its notes carry a version tag
+    # `<subject-slug>/<topic-slug>/apuntes-vN`.
+    require_notes_tag: bool = True
+    # The stills of a burst other than the one kept as the page
+    # (`sources/<kind>/page-NNN.burstK.*`, any source kind).
+    burst_originals: bool = True
+    # `conversations/observer-<session-id>.jsonl` of ended sessions (already rolled over).
+    observer_conversations: bool = True
+    # Session events already folded into the observer snapshot, replaced by that snapshot.
+    folded_events: bool = True
+    # Files under `generated/` last committed more than this many days ago; unset keeps them all.
+    generated_max_age_days: int | None = Field(default=None, ge=1)
+
+
 class VaultSettings(BaseModel):
     """Where the private git repository holding every piece of content lives (ADR-0002)."""
 
@@ -124,6 +145,7 @@ class VaultSettings(BaseModel):
     # setup`, unset until then.
     repo: str | None = None
     git: VaultGitSettings = Field(default_factory=VaultGitSettings)
+    purge: VaultPurgeSettings = Field(default_factory=VaultPurgeSettings)
     # Where the derived search/listing index lives; never inside the vault.
     index_path: Path = DEFAULT_INDEX_PATH
 

@@ -14,6 +14,11 @@ backend stopped without ending, the waiting items of a resumed one. The loop sen
 Delivery is at least once: a crash between a batch's ops and its acknowledgement sends the batch
 again, and validation (duplicate ids) and the pending queue's merge absorb the repeat.
 
+The vault purge (#31) compacts a topic's log only up to the newest acknowledgement's `through`
+(`compactable_snapshot`): what comes after it, the newest `observer.ack` included (it is always
+written after the events it answers), stays in the log as it was, so a purge never hides a batch
+the observer still owes, on this PC or on any other that opens the topic later.
+
 Pure: no I/O. The fold ignores `observer.ack`.
 """
 
@@ -28,6 +33,7 @@ from pydantic import ValidationError
 from studentassistant.observer.context import BATCH_KINDS, OBSERVER_ORIGIN
 from studentassistant.observer.fold import TopicEvent
 from studentassistant.observer.ops import STATE_OP_EVENT_KIND
+from studentassistant.observer.snapshot import ObserverSnapshot, snapshot_of
 from studentassistant.observer.state import EventRef
 
 ACK_EVENT_KIND = "observer.ack"
@@ -106,4 +112,46 @@ def unanswered(
     return CatchUp(acknowledged=True, through=through, events=tail, last=last)
 
 
-__all__ = ["ACK_EVENT_KIND", "THROUGH_KEY", "CatchUp", "ack_payload", "unanswered"]
+def acknowledged_through(events: Iterable[TopicEvent]) -> EventRef | None:
+    """The newest `through` any `observer.ack` of the topic names; `None` when none names one."""
+    through: EventRef | None = None
+    for _, event in events:
+        if event.kind == ACK_EVENT_KIND:
+            acked = _through(event.payload)
+            if acked is not None and (through is None or acked.key() > through.key()):
+                through = acked
+    return through
+
+
+def compactable_snapshot(events: Iterable[TopicEvent]) -> ObserverSnapshot | None:
+    """The snapshot the vault purge may replace the start of the log with, or `None` for none.
+
+    It folds every event up to the newest acknowledged position (`acknowledged_through`), so the
+    events the observer has not answered yet -- and the acknowledgement that says so -- are left
+    after the compaction's cursor. A topic with no acknowledgement naming an event (no observer
+    yet, or only a `through: null` baseline) is not compacted at all.
+
+    Raises:
+        ObserverStateError: what `fold` raises for the folded prefix.
+    """
+    ordered = sorted(events, key=lambda pair: (pair[0], pair[1].seq))
+    through = acknowledged_through(ordered)
+    if through is None:
+        return None
+    prefix = [
+        pair
+        for pair in ordered
+        if EventRef(session_id=pair[0], seq=pair[1].seq).key() <= through.key()
+    ]
+    return snapshot_of(prefix) if prefix else None
+
+
+__all__ = [
+    "ACK_EVENT_KIND",
+    "THROUGH_KEY",
+    "CatchUp",
+    "ack_payload",
+    "acknowledged_through",
+    "compactable_snapshot",
+    "unanswered",
+]

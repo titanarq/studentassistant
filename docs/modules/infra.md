@@ -33,7 +33,12 @@ the `studentassistant` console script.
   that fails makes it exit 1 after the others ran.
 - `studentassistant doctor [--api-call]` -- one line per check, `[ok]`/`[aviso]`/`[FALLO]`,
   exit 1 on any `FALLO` (list below). `--api-call` is the opt-in free API call.
-- Not built yet: `replay` (server), `purge` (vault).
+- `studentassistant purge [--topic s/t] [--dry-run] [--hard] [--yes]` -- the vault's retention
+  policy (`[vault.purge]`) per accepted topic: `--dry-run` lists what would go and the space it
+  frees, a plain run commits the purge (recoverable from history), `--hard` also rewrites history
+  and force-pushes with leases after asking for `reescribir` (or `--yes`). Behaviour and the
+  consequence for other PCs: `docs/modules/vault.md`, "Purge".
+- Not built yet: `replay` (server).
 
 ### Install (`studentassistant/install/`)
 The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/runbooks/install.md`.

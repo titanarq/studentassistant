@@ -11,6 +11,10 @@ Three event kinds matter to the fold; every other kind is ignored:
   `payload["segment_id"]` becomes a segment id ops may reference.
 - `CAPTURE_EVENT_KIND` (`capture.stored`): a capture was stored; its `payload["capture_id"]`
   becomes a capture id ops may reference.
+- `COMPACTED_EVENT_KIND` (`observer.compacted`): the purge (`studentassistant purge`) replaced
+  every earlier event of the topic by this one; its payload (`snapshot.compaction_payload`) holds
+  the state they folded to, which becomes the state here. A payload of a newer `state_version`
+  is refused; an older one is taken as it is (the events it replaced are only in git history).
 
 An op is validated against the state before it is applied (`validate_op`); an op that references
 an unknown id is never skipped silently: `fold` raises the typed error.
@@ -44,6 +48,7 @@ from studentassistant.observer.ops import (
 )
 from studentassistant.observer.pending import find_duplicate
 from studentassistant.observer.state import (
+    STATE_VERSION,
     Concept,
     EventRef,
     ObserverNote,
@@ -59,6 +64,7 @@ SEGMENT_EVENT_KIND = "transcript.final"
 SEGMENT_ID_KEY = "segment_id"
 CAPTURE_EVENT_KIND = "capture.stored"
 CAPTURE_ID_KEY = "capture_id"
+COMPACTED_EVENT_KIND = "observer.compacted"
 
 TopicEvent = tuple[str, Event]
 
@@ -258,6 +264,19 @@ def _registered_id(event: Event, key: str, at: EventRef) -> str:
     return value
 
 
+def _reset(state: TopicState, event: Event, at: EventRef) -> None:
+    """Make `state` the one a compaction event carries (in place: it is the fold's own copy)."""
+    version = event.payload.get("state_version")
+    if not isinstance(version, int) or version > STATE_VERSION:
+        raise InvalidEventError(f"{event.kind} event of state_version {version!r}", at)
+    try:
+        carried = TopicState.model_validate(event.payload.get("state"))
+    except ValidationError as error:
+        raise InvalidEventError(f"{event.kind} event with an invalid state: {error}", at) from error
+    for name in TopicState.model_fields:
+        setattr(state, name, getattr(carried, name))
+
+
 def _step(state: TopicState, session_id: str, event: Event) -> None:
     """Fold one event into `state` in place (the fold's own copy)."""
     at = EventRef(session_id=session_id, seq=event.seq)
@@ -265,6 +284,8 @@ def _step(state: TopicState, session_id: str, event: Event) -> None:
         state.segments.setdefault(_registered_id(event, SEGMENT_ID_KEY, at), at)
     elif event.kind == CAPTURE_EVENT_KIND:
         state.captures.setdefault(_registered_id(event, CAPTURE_ID_KEY, at), at)
+    elif event.kind == COMPACTED_EVENT_KIND:
+        _reset(state, event, at)
     elif event.kind == STATE_OP_EVENT_KIND:
         try:
             op = parse_op(event.payload)
