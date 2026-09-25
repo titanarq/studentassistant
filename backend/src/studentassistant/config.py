@@ -316,6 +316,12 @@ DEFAULT_CAPTURE_LONG_EDGE = 2400
 DEFAULT_CAPTURE_JPEG_QUALITY = 85
 DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
 DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS = 10.0
+# Page transcription (`studentassistant.sources.transcriber`, role `transcriber`).
+DEFAULT_TRANSCRIPTION_CONCURRENCY = 2
+DEFAULT_TRANSCRIPTION_ATTEMPTS = 3
+DEFAULT_TRANSCRIPTION_RETRY_SECONDS = 5.0
+DEFAULT_TRANSCRIPTION_GRACE_SECONDS = 2.0
+DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE = 0.3
 
 
 class SourcesSettings(BaseModel):
@@ -340,6 +346,20 @@ class SourcesSettings(BaseModel):
         default=DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS, ge=0
     )
     capture_window_after_seconds: float = Field(default=DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS, ge=0)
+    # Page transcription: off, `serve` never transcribes a page. A page waits until its transcript
+    # window has passed (plus `transcription_grace_seconds`, for the last final to arrive); at
+    # most `transcription_concurrency` pages go to Claude at once; a failed one is tried up to
+    # `transcription_attempts` times, `transcription_retry_seconds` (doubling) apart.
+    transcription_enabled: bool = True
+    transcription_concurrency: int = Field(default=DEFAULT_TRANSCRIPTION_CONCURRENCY, ge=1)
+    transcription_attempts: int = Field(default=DEFAULT_TRANSCRIPTION_ATTEMPTS, ge=1)
+    transcription_retry_seconds: float = Field(default=DEFAULT_TRANSCRIPTION_RETRY_SECONDS, ge=0)
+    transcription_grace_seconds: float = Field(default=DEFAULT_TRANSCRIPTION_GRACE_SECONDS, ge=0)
+    # A detected page covering less of the still than this share may have been cropped wrong
+    # (a box on the page taken for the sheet): the original still goes to Claude too.
+    transcription_min_crop_share: float = Field(
+        default=DEFAULT_TRANSCRIPTION_MIN_CROP_SHARE, ge=0, le=1
+    )
 
 
 # The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final

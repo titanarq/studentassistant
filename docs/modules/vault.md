@@ -168,6 +168,11 @@ while the server runs, say): the active-host record below is about PCs, not proc
 cross-process safety on one PC is #165. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
+`put_page_transcription(vault, vault_relative_path, text) -> Path` writes a page's Markdown
+transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf`
+(`vault_relative_path` is the page or any file derived from it, checked like `read_source`'s),
+atomically, guarded, under the directory's lock, replacing an earlier one; `SourcePathError` for
+anything else, `SourceNotFoundError` when the page's sidecar is not there.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
 content's vault-relative POSIX path --, `meta` -- the parsed sidecar, or `None`) per stored source,
 ordered by kind (`SOURCE_KINDS` order) then number; sidecars, derived files (`page-NNN.md` beside
