@@ -505,14 +505,17 @@ Every request passes three ASGI middlewares, in this order:
 3. **Bearer check** (`server/auth.py`, `BearerAuthMiddleware`): every HTTP route except
    `EXEMPT_ROUTES` -- `GET /api/health`, `POST /api/pair`, `POST /api/pair/codes` -- needs
    `Authorization: Bearer <token>` of a paired device, else 401 with `WWW-Authenticate: Bearer`.
-   A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
+   Without that header the token is also taken from the `sa_token` cookie (`auth.TOKEN_COOKIE`,
+   #83): the Android app sets it in its WebView's cookie jar to show the web UI on the phone,
+   since a page cannot put a header on its own loads and `fetch` calls. A present bearer header
+   wins (a wrong one is 401 even with a valid cookie). A loopback client passes without a token while `server.trust_localhost` is true, so the web UI
    works on the PC itself. This includes the static web app: a browser on another machine gets
    401 for `/`. Whoever passed is in `request.state.principal` (`Principal(device_id, local, protocol_version)`: the version the device sent at pairing, this backend's own for the PC).
 
 **WebSocket routes** are not covered by the bearer middleware. Each one calls
 `await authenticate_websocket(websocket)` (`server/auth.py`) before `accept()`. It reads the token
-from `Authorization: Bearer <token>` or from the `?token=` query parameter (browsers cannot set
-WebSocket headers), applies the same loopback trust, and returns the `Principal`. If
+from `Authorization: Bearer <token>`, the `?token=` query parameter (browsers cannot set
+WebSocket headers) or the `sa_token` cookie, applies the same loopback trust, and returns the `Principal`. If
 authentication fails, it closes with 1008 and returns `None`, and the route must just return.
 
 **Paired devices** (`server/devices.py`, `DeviceStore`): `issue_token(name, protocol_version)`,

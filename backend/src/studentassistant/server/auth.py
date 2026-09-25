@@ -1,7 +1,9 @@
 """Bearer-token authentication for REST and WebSocket (ADR-0001).
 
 `BearerAuthMiddleware` guards every HTTP route except `EXEMPT_ROUTES`: it wants
-`Authorization: Bearer <token>` with a token of a paired device, and answers 401 otherwise. A
+`Authorization: Bearer <token>` with a token of a paired device, and answers 401 otherwise. The
+same token is also taken from the `sa_token` cookie (`TOKEN_COOKIE`), which is how the phone app's
+WebView carries it to the web UI (#83): a page cannot put a header on its own loads. A
 loopback client passes without a token while `server.trust_localhost` is true, so the web UI works
 on the PC itself. WebSocket routes call `authenticate_websocket` before accepting.
 
@@ -31,6 +33,9 @@ EXEMPT_ROUTES = frozenset(
 
 WS_POLICY_VIOLATION = 1008
 
+TOKEN_COOKIE = "sa_token"
+"""The cookie a paired device's token may come in when no bearer header does (#83)."""
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -52,6 +57,17 @@ def _bearer(authorization: str | None) -> str | None:
     if scheme.lower() != "bearer" or not token.strip():
         return None
     return token.strip()
+
+
+def _cookie(cookie_header: str | None, name: str = TOKEN_COOKIE) -> str | None:
+    """The value of cookie `name` in a `Cookie` header, or None when it is absent or empty."""
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and key == name and value.strip():
+            return value.strip()
+    return None
 
 
 def authenticate(
@@ -89,7 +105,7 @@ class BearerAuthMiddleware:
         if scope["type"] != "http" or (scope["method"], scope["path"]) in EXEMPT_ROUTES:
             await self.app(scope, receive, send)
             return
-        token = _bearer(_header(scope, b"authorization"))
+        token = _bearer(_header(scope, b"authorization")) or _cookie(_header(scope, b"cookie"))
         principal = authenticate(client_host(scope), token, self.server, self.devices)
         if principal is None:
             await send_json(
@@ -107,11 +123,15 @@ async def authenticate_websocket(websocket: WebSocket) -> Principal | None:
     """Check a WebSocket before it is accepted; on failure close it with 1008 and return None.
 
     The token comes from `Authorization: Bearer <token>` or, since browsers cannot set headers on
-    a WebSocket, from the `?token=` query parameter.
+    a WebSocket, from the `?token=` query parameter or the `sa_token` cookie.
     """
     server: ServerSettings = websocket.app.state.server
     devices: DeviceStore = websocket.app.state.devices
-    token = _bearer(websocket.headers.get("authorization")) or websocket.query_params.get("token")
+    token = (
+        _bearer(websocket.headers.get("authorization"))
+        or websocket.query_params.get("token")
+        or _cookie(websocket.headers.get("cookie"))
+    )
     principal = authenticate(client_host(websocket.scope), token, server, devices)
     if principal is None:
         await websocket.close(code=WS_POLICY_VIOLATION)
