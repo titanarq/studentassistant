@@ -122,7 +122,7 @@ submodules.
   Markdown is stored, the events are not) and returns every `add_pending` id already in the log.
 - When: at every `session.started` / `session.resumed` (every session of the topic, captures
   stored before the opening event), and once at server start (`catch_up_vault(vault)`, called when
-  the server first opens the vault: each topic's unended sessions and its newest one;
+  the server first opens the vault: each topic's unended study sessions and its newest one, review sessions left out;
   `wait_startup()` waits for it). Owed pages are transcribed at once (no window wait; hints from the capture's own session's
   `transcript.jsonl`), bound to the ledger of the session that queued them; the exchange goes to
   `conversations/transcriber-<capture session>.jsonl`. Stored ones have their events published

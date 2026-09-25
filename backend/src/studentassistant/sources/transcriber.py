@@ -704,11 +704,16 @@ async def _all_jobs(pages: _Pages) -> None:
 
 
 def _startup_plan(vault: Vault) -> list[tuple[str, str, list[str]]]:
-    """Per topic with sessions: its unended sessions and its newest one, in id order."""
+    """Per topic with study sessions: its unended ones and its newest one, in id order.
+
+    Review sessions (a doubt's resolution, #191) hold no captures, so they are left out.
+    """
     plan: list[tuple[str, str, list[str]]] = []
     for subject in list_subjects(vault):
         for topic in list_topics(vault, subject.slug):
-            metas = list_sessions(vault, subject.slug, topic.slug)
+            metas = [
+                meta for meta in list_sessions(vault, subject.slug, topic.slug) if meta.is_study
+            ]
             if not metas:
                 continue
             chosen = {meta.id for meta in metas if meta.ended_at is None} | {metas[-1].id}

@@ -140,6 +140,9 @@ def test_review_auto_resolves_with_evidence_and_asks_the_rest(
     # One review session, after the study sessions, holds the close and the questions.
     sessions = list_sessions(topic.vault, topic.subject, topic.topic)
     assert sessions[-1].id == result.session_id and sessions[-1].ended_at is not None
+    # It is marked as a review, not a study session (#191); the study sessions stay as they were.
+    assert sessions[-1].kind == "review"
+    assert all(meta.kind == "study" for meta in sessions[:-1])
     review = [
         (e.kind, e.origin)
         for sid, e in read_topic_events(topic.vault, topic.subject, topic.topic)

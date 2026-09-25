@@ -24,15 +24,29 @@ SESSION_ID_FORMAT = "%Y%m%d-%H%M%S"
 
 Origin = Literal["phone", "stt", "observer", "editor", "user"]
 
+# `study`: a session the student ran with a capture client. `review`: one the backend opens and
+# ends at once only to hold events written outside a study session (a doubt's resolution, #191).
+SessionKind = Literal["study", "review"]
+
 
 class SessionMeta(VaultFileModel):
-    """`sessions/<session-id>/session.yaml`: when the session ran, on which host, which protocol."""
+    """`sessions/<session-id>/session.yaml`: when the session ran, on which host, which protocol.
+
+    `kind` is `study` for a file written before it existed; a `review` session is not a study
+    session, so what counts the student's study time or last study leaves it out (`is_study`).
+    """
 
     id: str = Field(pattern=SESSION_ID_PATTERN)
     started_at: datetime
     ended_at: datetime | None = None
     host: str
     protocol_version: str
+    kind: SessionKind = "study"
+
+    @property
+    def is_study(self) -> bool:
+        """Whether the student ran this session, as opposed to a backend review session."""
+        return self.kind == "study"
 
 
 class Event(BaseModel):

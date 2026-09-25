@@ -367,3 +367,17 @@ async def test_pending_items_already_in_the_log_are_not_added_twice(
     [done] = events(new, PAGE_TRANSCRIBED_KIND)
     assert done.payload["pending_ids"] == [op.pending_id for op in ops]
     assert pending_of(tmp_vault, topic) == [op.pending_id for op in ops]  # the fold still loads
+
+
+async def test_the_startup_catch_up_skips_review_sessions(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    # A review session (a doubt's resolution, #191) holds no captures: the newest session whose
+    # pages are owed is still the study session before it.
+    from studentassistant.sources.transcriber import _startup_plan
+
+    study = start_session(tmp_vault, *topic, "pc", PROTOCOL_VERSION)
+    end_session(study)
+    end_session(start_session(tmp_vault, *topic, "pc", PROTOCOL_VERSION, kind="review"))
+
+    assert _startup_plan(tmp_vault) == [(*topic, [study.id])]

@@ -37,6 +37,7 @@ from studentassistant.server.sessions import SessionService, VaultUnavailableErr
 from studentassistant.vault import (
     SOURCE_KINDS,
     GitSync,
+    SessionKind,
     SessionMeta,
     SessionNotFoundError,
     SourceNotFoundError,
@@ -62,6 +63,11 @@ UNKNOWN_SESSION_DETAIL = "No existe esa sesión en ese tema."
 UNKNOWN_SOURCE_DETAIL = "No existe esa fuente en la bóveda."
 NO_NOTES_DETAIL = "Todavía no hay apuntes de este tema."
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
+SESSION_LABELS: dict[SessionKind, str] = {
+    "study": "Sesión de estudio",
+    "review": "Revisión de dudas",
+}
+"""The Spanish label of each session kind, as the topic's session list shows it (#191)."""
 BAD_SPAN_DETAIL = "El tramo debe tener la forma HH:MM:SS-HH:MM:SS, con el inicio antes del final."
 
 SPAN_PATTERN = re.compile(r"^(\d{2,}):([0-5]\d):([0-5]\d)-(\d{2,}):([0-5]\d):([0-5]\d)$")
@@ -107,7 +113,9 @@ class TopicSummary(BaseModel):
     subject_id: str
     topic_id: str
     sources: SourceCounts
-    sessions: int = Field(description="Sessions of the topic, open or ended.")
+    sessions: int = Field(
+        description="Study sessions of the topic, open or ended; review sessions are left out."
+    )
     session_minutes: float = Field(
         description="Their total length in minutes; an unended session counts up to now."
     )
@@ -178,6 +186,12 @@ class SessionSummary(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     minutes: float = Field(description="Its length in minutes; an unended one counts up to now.")
+    kind: SessionKind = Field(
+        description="`study`, or `review`: a session that only holds doubt resolutions."
+    )
+    label: str = Field(
+        description="What the web shows for it: «Sesión de estudio» or «Revisión de dudas»."
+    )
 
 
 class TopicSessions(BaseModel):
@@ -308,7 +322,9 @@ def read_router() -> APIRouter:
             counts = {kind: 0 for kind in SOURCE_KINDS}
             for source in sources:
                 counts[source.kind] = counts.get(source.kind, 0) + 1
-            sessions = list_sessions(vault, subject_id, topic_id)
+            sessions = [
+                meta for meta in list_sessions(vault, subject_id, topic_id) if meta.is_study
+            ]
             now = datetime.now(UTC)
             snapshot = load_observer_snapshot(vault, subject_id, topic_id)
             return TopicSummary(
@@ -397,6 +413,8 @@ def read_router() -> APIRouter:
                     started_at=meta.started_at,
                     ended_at=meta.ended_at,
                     minutes=_minutes(meta, now),
+                    kind=meta.kind,
+                    label=SESSION_LABELS[meta.kind],
                 )
                 for meta in metas
             ],

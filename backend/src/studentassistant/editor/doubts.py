@@ -25,8 +25,9 @@ through with the `editor` role (Opus) in two steps:
 `user`), which is what closes the item in the observer's fold, followed by a `pending.resolved`
 event with the details (`DoubtOutcome`); each question is a `pending.question` event
 (`DoubtQuestion`). They are written to a **review session** of the topic -- a session started and
-ended at once for them (`vault.start_session` / `end_session`), with no transcript -- so that they
-fold after every study session before it. While the topic has an unended session nothing is
+ended at once for them (`vault.start_session(..., kind="review")` / `end_session`), with no
+transcript -- so that they fold after every study session before it; its `kind` keeps it out of
+the student's study sessions (#191). While the topic has an unended session nothing is
 written (`OpenSessionError`): its later events would fold before the review's. Then
 `review/pending.yaml` is regenerated (`load_observer_snapshot`) and the notes (when edited) and the
 events are committed together with a Spanish summary. The calls are recorded in
@@ -398,7 +399,9 @@ def _write(
         write_notes(vault, subject_slug, topic_slug, notes)
     session_id = None
     if events:
-        session = start_session(vault, subject_slug, topic_slug, host, PROTOCOL_VERSION)
+        session = start_session(
+            vault, subject_slug, topic_slug, host, PROTOCOL_VERSION, kind="review"
+        )
         session_id = session.id
         try:
             for event in events:
