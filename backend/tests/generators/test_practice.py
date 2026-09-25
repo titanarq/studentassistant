@@ -12,6 +12,7 @@ import pytest
 
 from quiz_replies import MULTIPLE_CHOICE, SHORT_ANSWER, TRUE_FALSE, reply_quiz
 from revise_topic import ReviseTopic, make_revise_topic
+from studentassistant.config import VaultGitSettings
 from studentassistant.generators import GeneratorRegistry, run_generator
 from studentassistant.generators.flashcards import TOOL_NAME as FLASHCARDS_TOOL
 from studentassistant.generators.flashcards import FlashcardsGenerator
@@ -121,6 +122,26 @@ def sync(tmp_vault: Vault) -> GitSync:
     return GitSync(tmp_vault)
 
 
+class ManualClock:
+    """Monotonic seconds that only move when a test says so."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _git(topic: ReviseTopic, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(topic.vault.path), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+
+
 def _generate(topic: ReviseTopic, kind: str, fake: FakeClaude, **options: object) -> None:
     registry = GeneratorRegistry()
     registry.register(QuizGenerator)
@@ -201,9 +222,7 @@ def test_queue_offers_cards_then_questions_as_new_items(material: ReviseTopic) -
     assert len(_queue(material, new_limit=2).queue) == 2
 
 
-def test_flashcard_review_is_stored_committed_and_scheduled(
-    material: ReviseTopic, sync: GitSync
-) -> None:
+def test_flashcard_review_is_stored_and_scheduled(material: ReviseTopic, sync: GitSync) -> None:
     card = _queue(material).queue[0].item
     outcome = _review(material, sync, item=card.key, rating="good")
     assert outcome.review.rating == "good" and outcome.review.source == "flashcards"
@@ -211,14 +230,7 @@ def test_flashcard_review_is_stored_committed_and_scheduled(
     assert practice_history(material.vault, material.subject, material.topic) == [outcome.review]
     path = study_log_path(material.vault, material.subject, material.topic, "practice")
     assert path.name == "practice.jsonl" and path.parent.name == "study"
-    last = subprocess.run(
-        ["git", "-C", str(material.vault.path), "log", "-1", "--format=%s"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    assert last.stdout.strip() == f"Repaso de matematicas/derivadas: {card.key} (bien)"
+    assert sync.status().pending_changes  # committed with the sitting's batch, not alone
 
     later = _queue(material, NOW + timedelta(hours=1))
     assert card.key not in [queued.item.key for queued in later.queue]
@@ -227,6 +239,36 @@ def test_flashcard_review_is_stored_committed_and_scheduled(
     tomorrow = _queue(material, NOW + DAY)
     assert tomorrow.queue[0].item.key == card.key and tomorrow.counts.due == 1
     assert tomorrow.queue[0].state is not None and tomorrow.counts.new_today == 0
+
+
+def test_the_reviews_of_a_sitting_share_one_commit(material: ReviseTopic) -> None:
+    clock = ManualClock()
+    settings = VaultGitSettings(commit_quiet_seconds=5, commit_max_delay_seconds=60)
+    sync = GitSync(material.vault, settings, clock)
+    sync.checkpoint("Generación")  # the generator's last conversation record waits for a batch
+    head = _git(material, "rev-parse", "HEAD").strip()
+    keys = [queued.item.key for queued in _queue(material).queue[:2]]
+    for minutes, key in enumerate(keys):
+        _review(material, sync, NOW + timedelta(minutes=minutes), item=key, rating="good")
+        clock.now += 3
+    right = quiz_item_key(MULTIPLE_CHOICE["question"])
+    _review(material, sync, NOW + timedelta(minutes=2), item=right, given="Un límite")
+    path = study_log_path(material.vault, material.subject, material.topic, "practice")
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 3
+
+    clock.now += 4
+    sync.run_due()  # still inside the quiet window
+    assert _git(material, "rev-parse", "HEAD").strip() == head and sync.status().pending_changes
+
+    clock.now += 1
+    sync.run_due()
+    assert _git(material, "rev-list", "--count", f"{head}..HEAD").strip() == "1"
+    assert _git(material, "log", "-1", "--format=%s").strip() == "1 archivo cambiado"
+    relative = path.relative_to(material.vault.path).as_posix()
+    assert _git(material, "show", "--format=", "--name-only", "HEAD").split() == [relative]
+    committed = _git(material, "show", f"HEAD:{relative}")
+    assert len(committed.splitlines()) == 3 and all(key in committed for key in [*keys, right])
+    assert not sync.status().pending_changes and _git(material, "status", "--porcelain") == ""
 
 
 def test_daily_new_limit_counts_what_was_started_today(
