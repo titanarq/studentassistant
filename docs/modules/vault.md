@@ -492,7 +492,9 @@ of the topic up to and including `(session_id, seq)`: sessions before it keep an
 `events.jsonl`, and the cursor's session starts with one `kind` event at that `seq` (its `t` the
 replaced event's), followed by its later events byte for byte. The fold of snapshot + remaining
 events equals the pre-purge state (`tests/observer/test_compaction.py`); purging again changes
-nothing. A compaction naming a session the topic does not list, or a `seq` its log lacks, is a
+nothing. The CLI builds it from `observer.catchup.compactable_snapshot`, which stops at the
+observer's newest acknowledged event, so the events the observer still owes (#176 catch-up) and
+the newest `observer.ack` stay in the log. A compaction naming a session the topic does not list, or a `seq` its log lacks, is a
 `PurgeError`. The events replaced are then only in git history: a later observer version cannot
 refold them from the working tree.
 

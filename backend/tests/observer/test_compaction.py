@@ -19,6 +19,14 @@ from studentassistant.observer import (
     load_observer_snapshot,
     snapshot_of,
 )
+from studentassistant.observer.catchup import (
+    ACK_EVENT_KIND,
+    CatchUp,
+    ack_payload,
+    compactable_snapshot,
+    unanswered,
+)
+from studentassistant.observer.state import EventRef
 from studentassistant.vault import (
     Event,
     GitSync,
@@ -134,3 +142,82 @@ def test_a_compaction_of_a_newer_fold_or_a_bad_state_is_refused() -> None:
     with pytest.raises(InvalidEventError):
         fold([compacted(STATE_VERSION, {"sections": 3})])
     assert fold([compacted(STATE_VERSION, {})]) == fold([])
+
+
+def record_with_acks(vault: Vault, script: Script, *, ack_all: bool) -> tuple[str, str]:
+    """The scripted topic with the observer's acks: all of session 1 answered, session 2 answered
+    through its 5th event (then, with `ack_all`, through its last)."""
+    subject = create_subject(vault, "Matemáticas II").slug
+    slug = create_topic(vault, subject, "Derivadas").slug
+    (first_events, second_events) = (script[0][1], script[1][1])
+    for index, events in enumerate((first_events, second_events)):
+        session = start_session(vault, subject, slug, host="ubuntu-pc", protocol_version="1.0")
+        answered = len(events) if index == 0 else 5
+        for position, (origin, kind, payload) in enumerate(events, start=1):
+            written = session.append_event(kind, origin, payload)
+            if position == answered or (ack_all and position == len(events)):
+                session.append_event(
+                    ACK_EVENT_KIND,
+                    "observer",
+                    ack_payload(EventRef(session_id=session.id, seq=written.seq)),
+                )
+        end_session(session, ended_at=datetime(2026, 9, 26, tzinfo=UTC))
+    notes = topic_directory(vault, subject, slug) / "notes" / "apuntes.md"
+    notes.parent.mkdir()
+    notes.write_text("# Derivadas\n", encoding="utf-8")
+    return subject, slug
+
+
+def owed(vault: Vault, topic: tuple[str, str]) -> CatchUp:
+    # A later session (on this PC or a third one) opens the topic.
+    return unanswered(read_topic_events(vault, *topic), session_id="20990101-000000", before=None)
+
+
+def purge_to_the_acks(vault: Vault, topic: tuple[str, str]) -> None:
+    snapshot = compactable_snapshot(read_topic_events(vault, *topic))
+    assert snapshot is not None
+    purge(vault, topic, compaction_of(snapshot))
+
+
+def test_unanswered_events_survive_a_purge(tmp_vault: Vault, scripted_sessions: Script) -> None:
+    topic = record_with_acks(tmp_vault, scripted_sessions, ack_all=False)
+    expected = fold(read_topic_events(tmp_vault, *topic))
+    before = owed(tmp_vault, topic)
+    assert before.events
+
+    purge_to_the_acks(tmp_vault, topic)
+
+    after = owed(tmp_vault, topic)
+    assert after.acknowledged
+    assert after.through == before.through
+    assert after.events == before.events
+    assert fold(read_topic_events(tmp_vault, *topic)) == expected
+
+
+def test_a_fully_answered_topic_owes_nothing_after_a_purge(
+    tmp_vault: Vault, scripted_sessions: Script
+) -> None:
+    topic = record_with_acks(tmp_vault, scripted_sessions, ack_all=True)
+    expected = fold(read_topic_events(tmp_vault, *topic))
+
+    purge_to_the_acks(tmp_vault, topic)
+
+    after = owed(tmp_vault, topic)
+    # Still acknowledged: no baseline ack is written that could skip anything.
+    assert after.acknowledged
+    assert after.events == []
+    kinds = [event.kind for _, event in read_topic_events(tmp_vault, *topic)]
+    assert kinds[0] == COMPACTED_EVENT_KIND
+    assert ACK_EVENT_KIND in kinds
+    assert fold(read_topic_events(tmp_vault, *topic)) == expected
+
+
+def test_a_topic_without_acks_is_not_compacted(topic: tuple[str, str], tmp_vault: Vault) -> None:
+    assert compactable_snapshot(read_topic_events(tmp_vault, *topic)) is None
+    baseline = [
+        (
+            "20260924-180000",
+            Event(seq=1, t=0, origin="observer", kind=ACK_EVENT_KIND, payload=ack_payload(None)),
+        )
+    ]
+    assert compactable_snapshot(baseline) is None

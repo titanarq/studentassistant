@@ -19,6 +19,8 @@ from studentassistant.observer import (
     fold,
     load_observer_snapshot,
 )
+from studentassistant.observer.catchup import ACK_EVENT_KIND, ack_payload, unanswered
+from studentassistant.observer.state import EventRef
 from studentassistant.vault import (
     GitSync,
     Vault,
@@ -65,6 +67,11 @@ def vault(
         "observer",
         {"op": "assign_segments", "section_id": "a", "segment_ids": ["s1"]},
     )
+    # The observer answered everything up to seq 4; the segment after its ack is still owed.
+    session.append_event(
+        ACK_EVENT_KIND, "observer", ack_payload(EventRef(session_id=session.id, seq=4))
+    )
+    session.append_event(SEGMENT_EVENT_KIND, "stt", {"segment_id": "s2"})
     session.append_transcript(0, 900, "la derivada")
     end_session(session, ended_at=datetime(2026, 9, 26, tzinfo=UTC))
     put_source(
@@ -112,8 +119,15 @@ def test_soft_purge_commits_compacts_and_pushes(vault: Vault, git_origin: Path) 
     assert "Subida a GitHub." in result.output
     assert not (vault.path / BURST).exists()
     events = list(read_topic_events(vault, "matematicas", "derivadas"))
-    assert [event.kind for _, event in events] == [COMPACTED_EVENT_KIND]
+    assert [event.kind for _, event in events] == [
+        COMPACTED_EVENT_KIND,
+        ACK_EVENT_KIND,
+        SEGMENT_EVENT_KIND,
+    ]
     assert fold(events) == expected
+    # The batch the observer still owes survives the purge: catch-up sends it.
+    owed = unanswered(events, session_id="20990101-000000", before=None)
+    assert [event.payload["segment_id"] for _, event in owed.events] == ["s2"]
     assert load_observer_snapshot(vault, "matematicas", "derivadas").state == expected
     assert git(vault.path, "status", "--porcelain") == ""
     assert git(vault.path, "rev-parse", "HEAD") == git(git_origin, "rev-parse", "main")

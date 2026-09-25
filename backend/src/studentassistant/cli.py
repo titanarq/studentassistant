@@ -62,6 +62,7 @@ from studentassistant.observer import (
     compaction_payload,
     load_observer_snapshot,
 )
+from studentassistant.observer.catchup import compactable_snapshot
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.recorder import SessionRecorder
@@ -90,6 +91,7 @@ from studentassistant.vault import (
     list_subjects,
     list_topics,
     read_ledger,
+    read_topic_events,
     require_topic,
     topic_directory,
 )
@@ -744,13 +746,14 @@ def _purge_targets(vault: Vault, topic: str | None) -> list[tuple[str, str]]:
 
 
 def _compaction(vault: Vault, subject_slug: str, topic_slug: str) -> Compaction | None:
-    """Where the topic's folded events end, from the observer's current snapshot."""
+    """Where the topic's folded events end: the fold up to the observer's newest acknowledgement,
+    so a batch it still owes is never compacted away (`observer.catchup`)."""
     try:
-        snapshot = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False)
-    except ObserverStateError as error:
+        snapshot = compactable_snapshot(read_topic_events(vault, subject_slug, topic_slug))
+    except (ObserverStateError, VaultError) as error:
         typer.echo(f"{subject_slug}/{topic_slug}: sus eventos no se compactan ({error}).")
         return None
-    if snapshot.cursor is None:
+    if snapshot is None or snapshot.cursor is None:
         return None
     return Compaction(
         session_id=snapshot.cursor.session_id,

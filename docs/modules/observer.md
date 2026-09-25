@@ -196,6 +196,13 @@ topic digest (none until #56). The server builds one when `create_app` gets an `
   are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
   open writes a baseline ack (`through` = the newest event before it, `null` for none). The
   `context` record carries the `catch_up` count.
+- **Purge** (#31): `compactable_snapshot(events)` (`catchup.py`) is the fold of the topic up to
+  the newest acknowledged `through` (`acknowledged_through`), and it is all the vault purge may
+  compact. The unanswered events and the newest `observer.ack` (always written after what it
+  answers) stay after the compaction's cursor as they were. So after a purge `unanswered` still
+  returns what is owed, on this PC or any other, and a purged topic is still acknowledged, so no
+  baseline ack is written that could skip it. A topic whose acks name no event (none yet, or only
+  a `through: null` baseline) is not compacted.
 
 ## Boundaries
 - Never writes notes; that is the editor's job.
