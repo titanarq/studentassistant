@@ -13,6 +13,7 @@ Whoever passed is left in `scope["state"]["principal"]` (`request.state.principa
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
@@ -20,7 +21,14 @@ from starlette.websockets import WebSocket
 from studentassistant.config import ServerSettings
 from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.devices import DeviceStore
-from studentassistant.server.network import client_host, is_loopback, send_json
+from studentassistant.server.network import (
+    allowed_host_names,
+    client_host,
+    host_name,
+    is_allowed_host,
+    is_loopback,
+    send_json,
+)
 
 EXEMPT_ROUTES = frozenset(
     {
@@ -35,6 +43,9 @@ WS_POLICY_VIOLATION = 1008
 
 TOKEN_COOKIE = "sa_token"
 """The cookie a paired device's token may come in when no bearer header does (#83)."""
+
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+"""Methods that change nothing: a cookie-only request with another method must prove its origin."""
 
 
 @dataclass(frozen=True)
@@ -93,8 +104,39 @@ def _header(scope: Scope, name: bytes) -> str | None:
     return None
 
 
+def same_site_origin(
+    origin: str | None, referer: str | None, host_header: str | None, server: ServerSettings
+) -> bool:
+    """True when a cookie-authenticated request comes from this backend's own pages (#83).
+
+    The `Origin` header (or, without one, the `Referer`) must name a host this backend is known by
+    (`network.allowed_host_names` or a loopback/private literal) and the same host as the
+    request's `Host`. A missing, `null` or unparsable origin fails: the cookie is ambient, so a
+    page of another site could otherwise make the browser send it (CSRF / cross-site WebSocket).
+    """
+    source = origin if origin else referer
+    if not source or source.strip().lower() == "null":
+        return False
+    try:
+        name = urlsplit(source.strip()).hostname
+    except ValueError:
+        return False
+    if not name:
+        return False
+    target = host_name(host_header)
+    return (
+        target is not None
+        and host_name(name) == target
+        and is_allowed_host(name, allowed_host_names(server))
+    )
+
+
 class BearerAuthMiddleware:
-    """401 for every non-exempt HTTP request without a valid bearer token."""
+    """401 for every non-exempt HTTP request without a valid bearer token.
+
+    A request authenticated only by the `sa_token` cookie with a method other than GET/HEAD/OPTIONS
+    is 403 unless `same_site_origin` holds.
+    """
 
     def __init__(self, app: ASGIApp, server: ServerSettings, devices: DeviceStore) -> None:
         self.app = app
@@ -105,7 +147,10 @@ class BearerAuthMiddleware:
         if scope["type"] != "http" or (scope["method"], scope["path"]) in EXEMPT_ROUTES:
             await self.app(scope, receive, send)
             return
-        token = _bearer(_header(scope, b"authorization")) or _cookie(_header(scope, b"cookie"))
+        token = _bearer(_header(scope, b"authorization"))
+        by_cookie = token is None
+        if by_cookie:
+            token = _cookie(_header(scope, b"cookie"))
         principal = authenticate(client_host(scope), token, self.server, self.devices)
         if principal is None:
             await send_json(
@@ -113,6 +158,21 @@ class BearerAuthMiddleware:
                 401,
                 b'{"detail":"a valid bearer token is required"}',
                 [(b"www-authenticate", b"Bearer")],
+            )
+            return
+        if (
+            by_cookie
+            and principal.device_id is not None
+            and scope["method"] not in SAFE_METHODS
+            and not same_site_origin(
+                _header(scope, b"origin"),
+                _header(scope, b"referer"),
+                _header(scope, b"host"),
+                self.server,
+            )
+        ):
+            await send_json(
+                send, 403, b'{"detail":"a cross-site request cannot use the session cookie"}'
             )
             return
         scope.setdefault("state", {})["principal"] = principal
@@ -123,16 +183,26 @@ async def authenticate_websocket(websocket: WebSocket) -> Principal | None:
     """Check a WebSocket before it is accepted; on failure close it with 1008 and return None.
 
     The token comes from `Authorization: Bearer <token>` or, since browsers cannot set headers on
-    a WebSocket, from the `?token=` query parameter or the `sa_token` cookie.
+    a WebSocket, from the `?token=` query parameter or the `sa_token` cookie. A handshake
+    authenticated only by the cookie must also pass `same_site_origin`.
     """
     server: ServerSettings = websocket.app.state.server
     devices: DeviceStore = websocket.app.state.devices
-    token = (
-        _bearer(websocket.headers.get("authorization"))
-        or websocket.query_params.get("token")
-        or _cookie(websocket.headers.get("cookie"))
-    )
+    headers = websocket.headers
+    token = _bearer(headers.get("authorization")) or websocket.query_params.get("token")
+    by_cookie = not token
+    if by_cookie:
+        token = _cookie(headers.get("cookie"))
     principal = authenticate(client_host(websocket.scope), token, server, devices)
+    if (
+        principal is not None
+        and by_cookie
+        and principal.device_id is not None
+        and not same_site_origin(
+            headers.get("origin"), headers.get("referer"), headers.get("host"), server
+        )
+    ):
+        principal = None
     if principal is None:
         await websocket.close(code=WS_POLICY_VIOLATION)
         return None
