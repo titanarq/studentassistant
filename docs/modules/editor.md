@@ -16,14 +16,15 @@
 - Style guide learning per subject; notes versions (git tags) and diffs.
 
 ## Public surface
-What exists today, after issues #30, #61, #68, #63 and #64: the master notes format of ADR-0005, in
+What exists today, after issues #30, #61, #68, #63, #64 and #69: the master notes format of
+ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
 ops in `studentassistant.editor.edits`, the doubts resolution in
-`studentassistant.editor.doubts` and the conversational revision of the notes in
-`studentassistant.editor.revise`, and the notes versions in `studentassistant.editor.versions`.
-"¿Por qué?" is a later issue.
+`studentassistant.editor.doubts`, the conversational revision of the notes in
+`studentassistant.editor.revise`, the notes versions in `studentassistant.editor.versions` and
+"¿Por qué pusiste esto?" in `studentassistant.editor.explain`.
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -302,8 +303,9 @@ mode, and the student's message.
   Undoing again goes one turn further back. `UndoResult`: `undone_commit`, `summary`, `commit`,
   `notes_changed`, `diff`, `notes`, `paths`. No Claude call.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
-  (`ChatTurn`: `time`, `message`, `reply`, `applied`, `summary`, `changed_sections`, `commit`,
-  `undone`, `warning`) and `can_undo`.
+  (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `message`,
+  `reply`, `applied`, `summary`, `changed_sections`, `commit`, `undone`, `warning`, `refs`) and
+  `can_undo`. The explanations are also in the conversation the editor is given on a turn.
 - **Conversation** `conversations/editor.jsonl`: `context` (reason `revise`), `user`, `assistant`,
   `validation` per call, then one `revision` record per turn (the `RevisionResult`) and one
   `notes.undone` per undo (the `UndoResult`) -- what `chat_history` and the undo read.
@@ -348,3 +350,38 @@ read through `GitSync.list_notes_tags` and `GitSync.read_file_at`. No Claude cal
   `UndoConflictError`, like after a regeneration.
 - Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/notes/versions...`
   (`docs/modules/server.md`).
+
+### "¿Por qué pusiste esto?" -- `explain.py`
+The editor explains one block of the notes from the sources it cites, looked at again; role
+`editor`, prompt `editor_explain`, no tool, nothing of the notes changed.
+- `BlockAnchor` (`section`: anchor without `#`, `None` for the preamble; `block`: 1-based, as the
+  validator numbers blocks; `quote`: the text the student sees or its beginning, up to
+  `MAX_QUOTE_CHARS` (2000)). `find_block(document, anchor) -> (section, number, Block)`: the
+  numbered block when it exists and matches the quote (compared as letters and digits only,
+  casefolded, footnote references, `[[?...]]` marks and list markers dropped), else the first
+  block of the section, then of the notes, holding the quote. `BlockNotFoundError` (an
+  `InvalidMessageError`, Spanish) when nothing matches or the block is a title, rule or footnotes.
+- `await explain_block(vault, subject, topic, anchor, *, client, sync=None, on_reply=None,
+  confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB) ->
+  ExplanationResult`. The input (`assemble_explanation`, blocking; small, not the whole topic):
+  system = the prompt and the topic block of `assemble_input`; one user message with the block,
+  its footnote definitions (and the labels that cite nothing usable), its whole section as
+  context, then every cited source -- a notes/book page as its transcription **and always its
+  image** (the cropped page first), a PDF page as its extracted text `page-NNN.pKKK.txt` (the
+  stored PDF as a document when there is none), a web snapshot as its text (up to 30,000
+  characters), a transcript span as that session's segments within 30 s of it (the ones inside
+  marked `<- citado`), `[^ia]` said to be the AI's, a source no longer in the topic said so --,
+  the topic's pending items (their decisions explain choices) and the question. The answer streams
+  as `on_reply("reply.delta", {"text", "attempt": 1})`.
+- `ExplanationResult`: `subject`, `topic`, `section`, `block`, `block_text`, `question` (`¿Por qué
+  pusiste esto? (en la sección #<anchor>) «<excerpt>»`), `reply`, `refs` (`ChatRef`: `label`,
+  `kind`, `text`, `source_id`, `path`, one per footnote the block cites, in order), `images`,
+  `omitted`, `warning` (an empty or cut answer), `model`.
+- **Conversation** `conversations/editor.jsonl`: `context` (reason `explain`, section, block,
+  sources, images, documents, omitted), `user` (record form), `assistant`, then one
+  `explanation` record (the `ExplanationResult`) -- what `chat_history` reads as a `kind`
+  `explain` turn; `sync.note_change()` lets the sync loop commit it.
+- Errors: `NotesMissingError` (no notes), `BlockNotFoundError`; `RefusalError` (the records of
+  the call kept, no `explanation`), `CostConfirmationRequiredError` and the llm errors as in
+  `generate_notes`.
+- Entry point: the server's `POST .../notes/why` (SSE, `docs/modules/server.md`).

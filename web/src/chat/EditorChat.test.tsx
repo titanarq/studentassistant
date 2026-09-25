@@ -143,24 +143,87 @@ it("undoes the last turn and reads the notes and the conversation again", async 
   expect(fetchMock.mock.calls.filter((call) => call[0] === `${BASE}/notes`)).toHaveLength(2);
 });
 
-it("asks the editor why a block is there", async () => {
+it("asks the editor why a block is there and opens the sources it points to", async () => {
+  const question =
+    "¿Por qué pusiste esto? (en la sección #maquina-de-vapor) «Watt mejoró la máquina de Newcomen en 1769. Más detalles en la enciclopedia.»";
   const fetchMock = stubApi({
     "/api/subjects/historia/topics": TOPICS,
     [`${BASE}/notes`]: notesSequence(NOTES),
     [CHAT]: jsonResponse(history()),
-    [`POST ${CHAT}`]: () =>
+    [`POST ${BASE}/notes/why`]: () =>
       sseResponse([
-        ["result", revision({ reply: "Lo pusiste tú en la página 2.", applied: false, notes_changed: false, diff: "", commit: null, changed_sections: [] })],
+        ["reply.delta", { text: "Lo pusiste ", attempt: 1 }],
+        [
+          "result",
+          {
+            question,
+            reply: "Lo pusiste tú en la página 2.",
+            refs: [{ label: "p2", kind: "notes", text: "Apuntes, página 2", source_id: "sources/notes/page-002.jpg" }],
+            warning: null,
+          },
+        ],
       ]),
   });
   const chat = await renderPage();
   const paragraph = screen.getByText(/Watt mejoró/);
   fireEvent.click(within(paragraph.closest(".notes-block") as HTMLElement).getByRole("button", { name: "¿Por qué pusiste esto?" }));
   expect(await within(chat).findByText("Lo pusiste tú en la página 2.")).toBeInTheDocument();
-  const [post] = chatPosts(fetchMock);
-  expect(bodyOf(post).message).toBe(
-    "¿Por qué pusiste esto? (en la sección #maquina-de-vapor) «Watt mejoró la máquina de Newcomen en 1769. Más detalles en la enciclopedia.»",
-  );
+  expect(within(chat).getByText(question)).toBeInTheDocument();
+  expect(chatPosts(fetchMock)).toHaveLength(0);
+  const [post] = fetchMock.mock.calls.filter((call) => call[0] === `${BASE}/notes/why`);
+  const body = bodyOf(post);
+  expect(body.section).toBe("maquina-de-vapor");
+  expect(body.block).toBe(1);
+  expect(body.quote).toBe("Watt mejoró la máquina de Newcomen en 1769. Más detalles en la enciclopedia.");
+  expect(body.confirm_over_cap).toBe(false);
+
+  fireEvent.click(within(chat).getByRole("button", { name: "Ver la fuente: Apuntes, página 2" }));
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+it("numbers the blocks as the backend does", async () => {
+  const fetchMock = stubApi({
+    "/api/subjects/historia/topics": TOPICS,
+    [`${BASE}/notes`]: notesSequence(NOTES),
+    [CHAT]: jsonResponse(history()),
+    [`POST ${BASE}/notes/why`]: () => sseResponse([["result", { question: "¿Por qué?", reply: "Porque sí.", refs: [], warning: null }]]),
+  });
+  const chat = await renderPage();
+  const ask = async (element: HTMLElement) => {
+    fireEvent.click(within(element.closest(".notes-block") as HTMLElement).getByRole("button", { name: "¿Por qué pusiste esto?" }));
+    await within(chat).findAllByText("Porque sí.");
+    await waitFor(() => expect(within(chat).getByRole("button", { name: "Enviar" })).toBeInTheDocument());
+  };
+  await ask(screen.getByText(/Apuntes del tema a partir/));
+  await ask(screen.getByRole("table"));
+  const bodies = fetchMock.mock.calls.filter((call) => call[0] === `${BASE}/notes/why`).map(bodyOf);
+  expect(bodies.map((body) => [body.section, body.block])).toEqual([
+    [null, 2],
+    ["causas", 2],
+  ]);
+});
+
+it("shows the sources of an explanation read from the history", async () => {
+  stubApi({
+    "/api/subjects/historia/topics": TOPICS,
+    [`${BASE}/notes`]: notesSequence(NOTES),
+    [CHAT]: jsonResponse(
+      history([
+        turn({
+          kind: "explain",
+          message: "¿Por qué pusiste esto? «Watt»",
+          reply: "Sale de tu página 2.",
+          applied: false,
+          summary: null,
+          commit: null,
+          refs: [{ label: "p2", kind: "notes", text: "Apuntes, página 2" }],
+        }),
+      ]),
+    ),
+  });
+  const chat = await renderPage();
+  expect(await within(chat).findByText("Sale de tu página 2.")).toBeInTheDocument();
+  expect(within(chat).getByRole("button", { name: "Ver la fuente: Apuntes, página 2" })).toBeInTheDocument();
 });
 
 it("offers to continue past a reached cost cap", async () => {

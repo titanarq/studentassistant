@@ -1,7 +1,8 @@
 /**
- * Client of the editor chat API (`server/revise_routes.py`, #63): one chat turn as a
- * Server-Sent Events stream (`POST .../notes/chat`), the conversation so far (`GET .../notes/chat`)
- * and the undo of the latest applied turn (`POST .../notes/chat/undo`). Bodies are read leniently
+ * Client of the editor chat API (`server/revise_routes.py`, #63, #69): one chat turn as a
+ * Server-Sent Events stream (`POST .../notes/chat`), "¿Por qué pusiste esto?" on one block, streamed
+ * the same way (`POST .../notes/why`), the conversation so far (`GET .../notes/chat`) and the undo
+ * of the latest applied turn (`POST .../notes/chat/undo`). Bodies are read leniently
  * (unknown fields ignored, missing optional ones defaulted), like the doubts results.
  */
 
@@ -28,8 +29,34 @@ export interface RevisionResult {
   warning: string | null;
 }
 
+/** A source a "¿Por qué pusiste esto?" answer points to: one footnote of the block explained. */
+export interface ChatRef {
+  /** The footnote label in the notes, what the sources panel opens. */
+  label: string;
+  kind: string;
+  /** «Apuntes, página 1». */
+  text: string;
+}
+
+/** What the chat uses of the editor's `ExplanationResult`, the `result` event of a "¿Por qué?". */
+export interface ExplanationResult {
+  question: string;
+  reply: string;
+  refs: ChatRef[];
+  warning: string | null;
+}
+
+/** Which block to explain: its section's anchor, its number there and the text the student sees. */
+export interface WhyAnchor {
+  section: string | null;
+  block: number;
+  quote: string;
+}
+
 export interface ChatTurn {
   time: string;
+  /** `explain` for a "¿Por qué pusiste esto?" answer. */
+  kind: "revise" | "explain";
   message: string;
   reply: string;
   applied: boolean;
@@ -38,6 +65,7 @@ export interface ChatTurn {
   commit: string | null;
   undone: boolean;
   warning: string | null;
+  refs: ChatRef[];
 }
 
 export interface ChatHistory {
@@ -54,7 +82,9 @@ export interface UndoResult {
 }
 
 /** A turn's outcome; `interrupted` when the stream ended before its `result` or `error`. */
-export type ChatOutcome = ActionResult<RevisionResult> | { kind: "interrupted" };
+export type StreamOutcome<T> = ActionResult<T> | { kind: "interrupted" };
+export type ChatOutcome = StreamOutcome<RevisionResult>;
+export type WhyOutcome = StreamOutcome<ExplanationResult>;
 
 export interface StreamHandlers {
   /** A piece of the editor's reply, as it is written. */
@@ -89,10 +119,23 @@ export function readRevision(body: unknown): RevisionResult | null {
   };
 }
 
+function readRefs(value: unknown): ChatRef[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((ref) =>
+    isObject(ref) && typeof ref.label === "string" ? [{ label: ref.label, kind: text(ref.kind), text: text(ref.text, ref.label) }] : [],
+  );
+}
+
+export function readExplanation(body: unknown): ExplanationResult | null {
+  if (!isObject(body) || typeof body.reply !== "string" || typeof body.question !== "string") return null;
+  return { question: body.question, reply: body.reply, refs: readRefs(body.refs), warning: optionalText(body.warning) };
+}
+
 function readTurn(body: unknown): ChatTurn | null {
   if (!isObject(body) || typeof body.message !== "string" || typeof body.reply !== "string") return null;
   return {
     time: text(body.time),
+    kind: body.kind === "explain" ? "explain" : "revise",
     message: body.message,
     reply: body.reply,
     applied: flag(body.applied),
@@ -101,6 +144,7 @@ function readTurn(body: unknown): ChatTurn | null {
     commit: optionalText(body.commit),
     undone: flag(body.undone),
     warning: optionalText(body.warning),
+    refs: readRefs(body.refs),
   };
 }
 
@@ -162,54 +206,53 @@ function parseData(data: string): unknown {
 }
 
 /**
- * `POST .../notes/chat`: sends one message and reads the turn's stream. Errors before the stream
+ * POSTs `body` to a streamed editor route and reads the turn's stream. Errors before the stream
  * (404, 409 busy or no notes, 422, 503) come back as `refused` with the backend's Spanish `detail`;
  * an `error` event inside the stream as `refused` with its own status (a reached cost cap is
- * `overCap` by its `code` `cost_cap_reached`, so the caller can repeat the message with
- * `confirmOverCap`).
+ * `overCap` by its `code` `cost_cap_reached`, so the caller can repeat it with `confirm_over_cap`).
  */
-export async function sendChatMessage(
-  subjectId: string,
-  topicId: string,
-  message: string,
-  { confirmOverCap = false, ...handlers }: StreamHandlers & { confirmOverCap?: boolean } = {},
-): Promise<ChatOutcome> {
+async function streamTurn<T>(
+  path: string,
+  body: Json,
+  read: (body: unknown) => T | null,
+  handlers: StreamHandlers,
+): Promise<StreamOutcome<T>> {
   let response: Response;
   try {
-    response = await fetch(chatPath(subjectId, topicId), {
+    response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ message, confirm_over_cap: confirmOverCap }),
+      body: JSON.stringify(body),
     });
   } catch {
     return { kind: "unreachable" };
   }
   if (!response.ok || response.body === null) {
-    let body: unknown = null;
+    let error: unknown = null;
     try {
-      body = await response.json();
+      error = await response.json();
     } catch {
-      body = null;
+      error = null;
     }
-    const detail = isObject(body) ? optionalText(body.detail) : null;
+    const detail = isObject(error) ? optionalText(error.detail) : null;
     if (detail === null) return { kind: "error", status: response.status };
-    const code = errorCode(body);
+    const code = errorCode(error);
     return { kind: "refused", status: response.status, detail, code, overCap: isOverCap(code) };
   }
 
-  let outcome: ChatOutcome | null = null;
+  let outcome: StreamOutcome<T> | null = null;
   try {
     await readSse(response.body, ({ event, data }) => {
       if (outcome !== null) return;
-      const body = parseData(data);
-      const payload = isObject(body) ? body : {};
+      const parsed = parseData(data);
+      const payload = isObject(parsed) ? parsed : {};
       const attempt = typeof payload.attempt === "number" ? payload.attempt : 1;
       if (event === "reply.delta") {
         handlers.onDelta?.(text(payload.text), attempt);
       } else if (event === "reply.restart") {
         handlers.onRestart?.(attempt);
       } else if (event === "result") {
-        const value = readRevision(body);
+        const value = read(parsed);
         outcome = value === null ? { kind: "error", status: response.status } : { kind: "ok", value };
       } else if (event === "error") {
         const status = typeof payload.status === "number" ? payload.status : 500;
@@ -227,7 +270,35 @@ export async function sendChatMessage(
   return outcome ?? { kind: "interrupted" };
 }
 
-export function describeChatFailure(result: Exclude<ChatOutcome, { kind: "ok" }>): string {
+/** `POST .../notes/chat`: sends one message and reads the turn's stream (see `streamTurn`). */
+export function sendChatMessage(
+  subjectId: string,
+  topicId: string,
+  message: string,
+  { confirmOverCap = false, ...handlers }: StreamHandlers & { confirmOverCap?: boolean } = {},
+): Promise<ChatOutcome> {
+  return streamTurn(chatPath(subjectId, topicId), { message, confirm_over_cap: confirmOverCap }, readRevision, handlers);
+}
+
+/**
+ * `POST .../notes/why`: "¿Por qué pusiste esto?" on one block; the explanation streams like a chat
+ * turn and its `result` carries the block's cited sources (`refs`).
+ */
+export function askWhy(
+  subjectId: string,
+  topicId: string,
+  anchor: WhyAnchor,
+  { confirmOverCap = false, ...handlers }: StreamHandlers & { confirmOverCap?: boolean } = {},
+): Promise<WhyOutcome> {
+  return streamTurn(
+    `/api${topicPath(subjectId, topicId)}/notes/why`,
+    { section: anchor.section, block: anchor.block, quote: anchor.quote, confirm_over_cap: confirmOverCap },
+    readExplanation,
+    handlers,
+  );
+}
+
+export function describeChatFailure(result: Exclude<StreamOutcome<unknown>, { kind: "ok" }>): string {
   switch (result.kind) {
     case "refused":
       return result.detail;

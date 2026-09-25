@@ -329,9 +329,21 @@ Routes registered today:
       `cost_cap_error`, until the body says `confirm_over_cap`; a Claude refusal or failure 502);
       `code` is gated like a REST error body (`speaks_error_codes`); the stream then ends.
     The turn runs in its own task: a client that disconnects does not cut the change in half.
-  - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, message, reply, applied, summary,
-    changed_sections, commit, undone, warning}`, oldest first; `can_undo`). Reads only; works
-    without `llm_transport`.
+  - `POST .../notes/why` (#69), body `{"section": "causas", "block": 2, "quote": "Disponibilidad
+    de carbón…", "confirm_over_cap": false}` ("¿Por qué pusiste esto?" on one block: `section` the
+    anchor, `null` before the first section; `block` its number there, from 1, as the validator
+    counts; `quote` the text the student sees, up to 2000 characters, which finds the block when
+    the number does not match -- at least one of `block`/`quote`) -> the same stream as a chat
+    turn: `reply.delta`, then `result` -- the `ExplanationResult` of `editor.explain`: `question`,
+    `reply`, `refs` (`{label, kind, text, source_id, path}` per footnote the block cites, for the
+    sources panel), `section`, `block`, `block_text`, `images`, `omitted`, `warning`, `model` --
+    or `error` as above. Nothing of the notes changes; the answer is appended to the editor
+    conversation. Holds the notes lock like a turn. A block that is not in the notes, or a
+    title/rule, is 422 before the stream.
+  - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, message, reply, applied,
+    summary, changed_sections, commit, undone, warning, refs}`, oldest first -- `kind` `explain`
+    for a "¿Por qué?" answer, with its `refs`; `can_undo`). Reads only; works without
+    `llm_transport`.
   - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
     `notes_changed`, `diff`, `notes`, `paths`): reverts the latest applied turn not yet undone
     (again for the one before). No Claude call.
