@@ -105,3 +105,34 @@ sorted, then any other kind with a manifest). `read_artifact_meta(...)` reads on
   it. Values of `-o` are JSON when they parse (`size=10`, `split=true`), text otherwise.
 - REST (`server/generators_routes.py`, see `docs/modules/server.md`): `GET /api/generators`,
   `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`.
+
+## Outline -- kind `esquema` (#74)
+
+`generators/outline.py`; `OutlineGenerator` (title `Esquema`, version 1, no options) is registered
+on `default_registry`, so `studentassistant generate esquema --topic <s>/<t>` and
+`POST .../generated/esquema` run it. It writes one file, `generated/esquema.md`, plus the
+framework's `generated/esquema.meta.yaml` (notes version, provenance, stale marking).
+
+- Claude (role `generator`, prompt `prompts/generator_outline.v1.md`, tool `record_outline`)
+  answers an `OutlineDraft`: a **flat** list of `OutlineDraftNode` (`id`, `parent` -- an earlier
+  node's id or null --, `title`, `gloss` or null, `anchors`), because strict tools refuse
+  recursive schemas. The draft is checked (unique ids, parents before children, at most
+  `MAX_DEPTH` = 4 levels, no empty title); a draft that fails is re-asked once by
+  `llm.structured`. `OutlineDraft.to_outline(title)` builds the tree.
+- `Outline` (`title` -- the topic's, the mind map's root --, `nodes`) and `OutlineNode` (`title`,
+  `gloss`, `anchors` without `#`, `children`): titles and glosses are one line, an empty title or
+  more than `MAX_DEPTH` levels is a `ValidationError`. `walk()` yields `(number, level, node)` in
+  document order (`"1"`, `"1.2"`, `"1.2.1"`); `provenance()` is one `ItemProvenance` per node,
+  named by that number.
+- `render_outline(outline, *, known_anchors=None) -> str` (pure): `# Esquema: <tema>`, top-level
+  nodes as `## 1. Título` with their gloss and `Apuntes:` links (`../notes/apuntes.md#<anchor>`),
+  deeper nodes as nested bullets `- **1.2 Título**: glosa · [#ancla](...)`, then `## Mapa mental`
+  with `render_mindmap(outline)`: one fenced `mermaid` `mindmap` block (`root(("Tema"))`, level 1
+  `n1("...")`, deeper `n1_2["..."]`). `mermaid_label(text)` quotes each label and replaces what
+  mermaid would misread (`"` and backtick -> `'`, `<...>` -> `‹...›`, `#name;` entity codes,
+  `%%`); `<` in the Markdown body is written `&lt;`.
+- Provenance: a node with no anchor, or citing an anchor the notes lack, is kept, marked in the
+  Markdown (`*(sin sección de los apuntes)*`, `` `#x` *(no está en los apuntes)* ``) and reported
+  by the framework in `unresolved` and a warning.
+- Golden rendering: `backend/tests/fixtures/generators/esquema.md` (open it on GitHub to see the
+  mind map).
