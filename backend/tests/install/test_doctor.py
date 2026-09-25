@@ -88,6 +88,7 @@ def test_a_ready_pc_passes_every_check(vault_ready: Path, host: LocalHost) -> No
         "Vault",
         "Remoto del vault",
         "Subida al vault",
+        "Tamaño del vault",
         "Puerto",
         "Servicio",
         "Marp CLI (diapositivas)",
@@ -393,3 +394,30 @@ def test_the_configured_marp_command_is_the_one_checked(
 
     assert check.status == "aviso"
     assert "no se encuentra `npx`" in check.detail
+
+
+def test_a_vault_under_the_size_threshold_is_ok(vault_ready: Path, host: LocalHost) -> None:
+    check = by_name(run_doctor(Settings(), probes=probes(host)))["Tamaño del vault"]
+
+    assert check.status == "ok"
+    assert "por debajo del aviso de 1024 MB" in check.detail
+
+
+def test_a_vault_over_the_size_threshold_warns_naming_what_weighs_most(
+    vault_ready: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SA_VAULT__SIZE_WARNING_MB", "1")
+    pages = vault_ready / "subjects" / "mates" / "topics" / "derivadas" / "sources" / "notes"
+    pages.mkdir(parents=True)
+    (pages / "page-001.jpg").write_bytes(b"x" * (1536 * 1024))
+    (pages.parent / "pdf").mkdir()
+    (pages.parent / "pdf" / "page-001.pdf").write_bytes(b"x" * 2048)
+
+    checks = run_doctor(Settings(), probes=probes(host))
+    check = by_name(checks)["Tamaño del vault"]
+
+    assert check.status == "aviso" and not check.failed
+    assert "supera vault.size_warning_mb (1 MB)" in check.detail
+    assert "imágenes de fuentes 1.5 MB, PDF 2.0 KB" in check.detail
+    assert "studentassistant purge" in check.detail
+    assert "Git LFS" in check.detail

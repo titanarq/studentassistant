@@ -7,7 +7,8 @@ recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range o
 as a source, `replay` feeds a recorded session through the gateway as a capture client would,
 `setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
 systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
-index from the vault, `purge` applies the vault's retention policy, and `generate <kind> --topic`
+index from the vault, `vault stats` shows how big the vault is and what makes it big, `purge`
+applies the vault's retention policy, and `generate <kind> --topic`
 builds one kind of study material from a topic's notes (`studentassistant.generators`).
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
@@ -125,6 +126,7 @@ from studentassistant.vault.purge import (
     purged_history_paths,
 )
 from studentassistant.vault.setup import SetupError, SetupResult, clone_vault, create_vault
+from studentassistant.vault.stats import DEFAULT_TOP_FILES, VaultStats, vault_stats
 
 cli = typer.Typer(
     name="studentassistant",
@@ -461,6 +463,62 @@ def index_rebuild() -> None:
         typer.echo(f"No se puede abrir la bóveda: {error}")
         raise typer.Exit(code=1) from error
     typer.echo(_index_summary(report))
+
+
+vault_cli = typer.Typer(help="The vault itself: how big it is and what makes it big.")
+cli.add_typer(vault_cli, name="vault")
+
+
+def _print_vault_stats(stats: VaultStats) -> None:
+    git = stats.git
+    typer.echo(
+        f"Tamaño del vault: {format_size(stats.total_bytes)}"
+        f" (archivos {format_size(stats.working_tree_bytes)}, {stats.working_tree_files} ficheros;"
+        f" historial de git {format_size(stats.git_bytes)}"
+        + (
+            f": {format_size(git.pack_bytes)} en {git.packs} paquetes,"
+            f" {format_size(git.loose_bytes)} en {git.loose_objects} objetos sueltos)"
+            if git is not None
+            else ")"
+        )
+    )
+    typer.echo("\nPor categoría:")
+    width = max(len(category.label) for category in stats.categories)
+    for category in stats.categories:
+        typer.echo(
+            f"  {category.label:<{width}}  {format_size(category.bytes):>10}"
+            f"  {category.files:>6} ficheros"
+        )
+    if stats.subjects:
+        typer.echo("\nPor asignatura y tema:")
+        for subject in stats.subjects:
+            typer.echo(f"  {subject.slug}: {format_size(subject.bytes)}")
+            for topic in subject.topics:
+                typer.echo(f"    {topic.slug}: {format_size(topic.bytes)}")
+    if stats.largest_files:
+        typer.echo(f"\nLos {len(stats.largest_files)} ficheros más grandes:")
+        for file in stats.largest_files:
+            typer.echo(f"  {format_size(file.bytes):>10}  {file.path}")
+
+
+@vault_cli.command("stats")
+def vault_stats_command(
+    top: Annotated[
+        int, typer.Option("--top", min=0, help="Cuántos de los ficheros más grandes mostrar.")
+    ] = DEFAULT_TOP_FILES,
+    as_json: Annotated[bool, typer.Option("--json", help="Salida en JSON para scripts.")] = False,
+) -> None:
+    """Show the vault's size by category, subject and topic, its largest files and git's store."""
+    try:
+        vault = Vault.open(Settings().vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    stats = vault_stats(vault, top=top)
+    if as_json:
+        typer.echo(stats.model_dump_json(indent=2))
+    else:
+        _print_vault_stats(stats)
 
 
 stt_cli = typer.Typer(help="Speech-to-text on this PC (server mode, ADR-0008).")

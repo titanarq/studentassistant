@@ -3,7 +3,8 @@
 The checks, in order: the Python dependencies, the configured STT mode and provider (and, only
 when faster-whisper is selected, faster-whisper itself, CUDA and the downloaded model), the
 Anthropic API key (present; with `api_call` also accepted by the API, through one free call),
-the vault (opens, has an `origin`, may be pushed to), the server port, the systemd service, and
+the vault (opens, has an `origin`, may be pushed to, stays under `vault.size_warning_mb`), the
+server port, the systemd service, and
 Marp CLI (the slides generator's PDF/PPTX export; missing is only an `aviso`).
 A check is `ok`, `aviso` (works, but worse than it could) or `fallo`; any `fallo` makes the
 command exit 1. Everything the student reads is Spanish, and no check ever prints a secret.
@@ -32,7 +33,9 @@ from studentassistant.llm import LLMAPIError, LLMError, check_api_key, find_ant_
 from studentassistant.stt.registry import UnknownProviderError, provider_class
 from studentassistant.vault import Vault, VaultError
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.purge import format_size
 from studentassistant.vault.setup import SetupError, check_remote_access
+from studentassistant.vault.stats import vault_stats
 
 Status = Literal["ok", "aviso", "fallo"]
 _LABELS: dict[Status, str] = {"ok": "ok", "aviso": "aviso", "fallo": "FALLO"}
@@ -207,6 +210,37 @@ def check_vault(settings: Settings, probes: DoctorProbes) -> list[Check]:
     except VaultError as error:
         return [Check("Vault", "fallo", f"no se puede abrir {path}: {error}")]
     checks = [Check("Vault", "ok", f"{vault.path} (de {vault.meta.student})")]
+    checks.extend(_check_vault_remote(vault, settings, probes))
+    checks.append(check_vault_size(vault, settings.vault.size_warning_mb))
+    return checks
+
+
+def check_vault_size(vault: Vault, warning_mb: int) -> Check:
+    """`aviso` once the working tree plus git's object store passes `warning_mb` (#284)."""
+    name = "Tamaño del vault"
+    try:
+        stats = vault_stats(vault, top=0)
+    except OSError as error:
+        return Check(name, "aviso", f"no se pudo medir: {error}")
+    size = (
+        f"{format_size(stats.total_bytes)} (archivos {format_size(stats.working_tree_bytes)},"
+        f" historial de git {format_size(stats.git_bytes)})"
+    )
+    if stats.total_bytes <= warning_mb * 1024 * 1024:
+        return Check(name, "ok", f"{size}, por debajo del aviso de {warning_mb} MB")
+    largest = ", ".join(
+        f"{category.label} {format_size(category.bytes)}" for category in stats.largest_categories()
+    )
+    detail = (
+        f"{size} supera vault.size_warning_mb ({warning_mb} MB); lo que más ocupa: {largest}."
+        " Libera espacio con `studentassistant purge` (detalle con `studentassistant vault"
+        " stats`) o valora pasar las imágenes a Git LFS (pregunta abierta de docs/VISION.md §10)"
+    )
+    return Check(name, "aviso", detail)
+
+
+def _check_vault_remote(vault: Vault, settings: Settings, probes: DoctorProbes) -> list[Check]:
+    checks: list[Check] = []
     try:
         host: GitHubHost | None = probes.github_host()
     except GitHubHostError:
@@ -217,7 +251,7 @@ def check_vault(settings: Settings, probes: DoctorProbes) -> list[Check]:
             vault.path, host, settings.vault.repo, git.author_email, git.timeout_seconds
         )
     except SetupError as error:
-        return [*checks, Check("Remoto del vault", "fallo", str(error))]
+        return [Check("Remoto del vault", "fallo", str(error))]
     if access.repo_matches is False:
         checks.append(
             Check(

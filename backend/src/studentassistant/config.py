@@ -92,6 +92,8 @@ DEFAULT_VAULT_REMOTE = "origin"
 # The author email a vault commit carries when none is configured: a reserved `.invalid` domain,
 # so no real mailbox is ever claimed on the student's behalf.
 DEFAULT_VAULT_AUTHOR_EMAIL = "estudiante@studentassistant.invalid"
+# `studentassistant doctor` warns once the vault (working tree + git objects) passes this (#284).
+DEFAULT_VAULT_SIZE_WARNING_MB = 1024
 
 
 class VaultGitSettings(BaseModel):
@@ -152,6 +154,8 @@ class VaultSettings(BaseModel):
     purge: VaultPurgeSettings = Field(default_factory=VaultPurgeSettings)
     # Where the derived search/listing index lives; never inside the vault.
     index_path: Path = DEFAULT_INDEX_PATH
+    # `doctor` warns when the vault's working tree plus git object store passes this many MB.
+    size_warning_mb: int = Field(default=DEFAULT_VAULT_SIZE_WARNING_MB, ge=1)
 
     @field_validator("path", "index_path")
     @classmethod

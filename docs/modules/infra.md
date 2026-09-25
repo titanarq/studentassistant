@@ -38,6 +38,9 @@ the `studentassistant` console script.
   frees, a plain run commits the purge (recoverable from history), `--hard` also rewrites history
   and force-pushes with leases after asking for `reescribir` (or `--yes`). Behaviour and the
   consequence for other PCs: `docs/modules/vault.md`, "Purge".
+- `studentassistant vault stats [--top N] [--json]` -- the vault's size by category, per subject
+  and topic, the N largest files (default 10) and git's object store, as a Spanish table or JSON
+  (`vault.stats`, `docs/modules/vault.md`, "Size report").
 - Not built yet: `replay` (server).
 - `studentassistant eval run [--case NAME]... [--yes]` -- the eval set (below, "Evals"): prints
   the estimated cost per case and role, asks before any Claude call (`--yes` does not), runs
@@ -80,7 +83,9 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   `ant_profile` probe; the line names the source; with `api_call`, `llm.check_api_key` with the
   key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`
   and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
-  means git's own); the server port is free or answered by our `/api/health`; the service is
+  means git's own); the vault's size (`check_vault_size`: working tree plus git object store from
+  `vault.stats.vault_stats`; `aviso` over `vault.size_warning_mb`, naming the three largest
+  categories and pointing at `studentassistant purge` and the Git LFS question); the server port is free or answered by our `/api/health`; the service is
   `active`; Marp CLI (`check_marp`: `generators.marp_command[0]` found on the `environ` probe's
   `PATH`, `<command> --version` within 30 s gives the version; missing or failing is an `aviso`
   with the `npm install -g @marp-team/marp-cli` hint, since only the slides' PDF/PPTX export
@@ -108,6 +113,7 @@ The defaults live here and nowhere else:
 | `server.host` | `0.0.0.0`: binds the LAN interfaces so the phone and the web page can reach it (ADR-0001) |
 | `server.port` | `8765` |
 | `vault.path` | `~/StudentAssistant/vault`, `~` expanded (ADR-0002) |
+| `vault.size_warning_mb` | `1024`: `doctor` warns once the vault (files + git objects) is bigger |
 | `llm.roles.observer.model`, `llm.roles.transcriber.model` | `claude-sonnet-5` (ADR-0004) |
 | `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
 | `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |

@@ -549,6 +549,34 @@ As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code read
   `list_generated`).
 - Also unwritten: the retention `purge` described below. (`conversations/` is written since #51.)
 
+## Size report -- `stats.py`
+`vault_stats(vault, top=10) -> VaultStats` measures the vault with pure reads (no git command, no
+write; links are not followed), so the open question "images in plain git or Git LFS" (VISION §10)
+can be decided with real numbers (#284). Names are imported from `studentassistant.vault.stats`.
+- **Categories** (`categorize(parts)`, `CATEGORIES`, Spanish `CATEGORY_LABELS`): every regular file
+  of the working tree (the vault root minus `.git`) by where the layout puts it -- under a topic's
+  `sources/`: `source_images` (`.jpg .jpeg .png .webp .heic .heif .gif .bmp`, any case), `pdfs`,
+  `other_sources` (transcriptions, sidecars, web pages...); a topic's `sessions/`,
+  `conversations/`, `notes/`, `generated/`, `study/`; and `other` for everything else
+  (`vault.yaml`, `topic.yaml`, `state/`, `review/`, ledgers, `subject.yaml`...).
+  `VaultStats.categories` lists every category in that order (`CategorySize`: bytes, files);
+  `largest_categories(n)` ranks the non-empty ones.
+- **Subjects and topics**: `subjects` (`SubjectSize`, the whole `subjects/<slug>/` directory, each
+  with its `topics` as `TopicSize`), largest first.
+- **Largest files**: `largest_files`, the `top` biggest (`FileSize`: vault-relative path, bytes,
+  category), largest first.
+- **Git store**: `git` (`GitStoreSize`, from `git_store_size(vault)`), read from `.git/objects` on
+  the filesystem: `pack_bytes`/`packs` (`objects/pack/*`, counting `.pack` files) and
+  `loose_bytes`/`loose_objects` (`objects/xx/*`); `None` without a `.git` directory.
+- `working_tree_bytes`, `working_tree_files`, and the computed `git_bytes` and `total_bytes`
+  (working tree + git store; what `doctor` compares with `[vault] size_warning_mb`, default 1024).
+
+`studentassistant vault stats [--top N] [--json]` prints it as a Spanish table (total, per
+category, per subject and topic, the N largest files) or, with `--json`, as the model's JSON.
+`studentassistant doctor`'s `Tamaño del vault` line is `ok` under the threshold and `aviso` over it,
+naming the three categories that weigh most and pointing at `studentassistant purge` and the Git
+LFS question (`install.doctor.check_vault_size`).
+
 ## Purge -- `purge.py`
 `studentassistant purge [--topic <subject>/<topic>] [--dry-run] [--hard] [--yes]` applies a
 per-topic retention policy (ADR-0003, issue #31) so the vault does not grow forever. Names are
