@@ -8,6 +8,21 @@ that closed several small issues at once name them all. This file starts on 2026
 
 ## Unreleased
 
+- agent-os#82 (PR #83) — `tests/test_no_host_literals.py` no longer requires `AGENT_OS_DIR` to
+  hold its own `.git`. `_repository_files` demanded `root / ".git"` before ever asking git
+  anything, but a host consuming this mechanism as a subtree (ADOPTION.md step 7) has no such
+  file: `agent_os/` is a plain subdirectory of the host's own checkout, and only the host root
+  carries `.git`. `git ls-files` resolves the enclosing repository by walking up from `cwd`,
+  lists only what lies under `root` and names it relative to `root`, so the premise the test
+  needs is "`root` is inside a git work tree", not "`root` is one": a `root` outside any
+  repository still fails loudly, on git's own error. An empty listing now fails as well — a
+  `root` its repository ignores lists nothing with exit 0 and would have passed without reading
+  a file. Seen on titanarq/studentassistant#229 and in teachermovies:
+  `test_no_host_literal_anywhere_under_agent_os` and `test_every_exclusion_still_applies` raised
+  `RuntimeError: no .git under .../agent_os` on every subtree host. Both hosts deselected the two
+  tests in their `ci-agent-os.yml`, a patch `agent-os-install` overwrites on every reinstall.
+  Host follow-up: `git subtree pull`, then reinstall (or drop the `--deselect`s by hand).
+
 - agent-os#70 (PR #81) — a GitHub rate limit is diagnosed before it is retried, and `issues.py
   validate` reads over REST. The "API rate limit already exceeded for user ID ..." a host read as a false
   positive is GitHub's answer for an empty **GraphQL** bucket, a quota separate from the REST
