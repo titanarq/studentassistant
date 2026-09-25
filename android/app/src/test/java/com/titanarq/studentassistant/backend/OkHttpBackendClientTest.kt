@@ -5,6 +5,8 @@ import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadStatus
 import com.titanarq.studentassistant.protocol.ClientKind
+import com.titanarq.studentassistant.protocol.NotesGenerationStart
+import com.titanarq.studentassistant.protocol.NotesGenerationState
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.ProtocolJson
@@ -261,6 +263,36 @@ class OkHttpBackendClientTest {
         assertEquals("/api/subjects/historia/topics/la%20revoluci%C3%B3n/web-pages", request.path)
         assertEquals("Bearer $token", request.getHeader("Authorization"))
         assertEquals(json("""{"url":"https://example.org/b","via":"share"}"""), json(request.body.readUtf8()))
+    }
+
+    @Test
+    fun `the notes generation status is read from the topic's notes generation`() = runTest {
+        enqueue(
+            """{"subject_id":"historia","topic_id":"la revolución","status":"done","started_at_ms":1,""" +
+                """"finished_at_ms":2,"version":3,"draft":false}""",
+        )
+
+        val result = client.notesGeneration(backend, "historia", "la revolución")
+
+        assertEquals(NotesGenerationState.DONE, value(result).status)
+        assertEquals(3, value(result).version)
+        val request = taken()
+        assertEquals("GET", request.method)
+        assertEquals("/api/subjects/historia/topics/la%20revoluci%C3%B3n/notes/generation", request.path)
+        assertEquals("Bearer $token", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun `an end that prepares the notes says so in its body`() = runTest {
+        enqueue("""{"session_id":"s1","status":"ended","ended_at_ms":5,"notes_generation":"started"}""")
+
+        val result = client.endSession(backend, "s1", SessionEndRequest(4, SessionEndReason.BUTTON, prepareNotes = true))
+
+        assertEquals(NotesGenerationStart.STARTED, value(result).notesGeneration)
+        assertEquals(
+            json("""{"client_time_ms":4,"reason":"button","prepare_notes":true}"""),
+            json(taken().body.readUtf8()),
+        )
     }
 
     @Test

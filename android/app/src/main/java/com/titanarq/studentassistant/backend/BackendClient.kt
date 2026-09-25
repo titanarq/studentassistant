@@ -3,6 +3,7 @@ package com.titanarq.studentassistant.backend
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
 import com.titanarq.studentassistant.protocol.HealthResponse
+import com.titanarq.studentassistant.protocol.NotesGenerationStatus
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.PairResponse
 import com.titanarq.studentassistant.protocol.Session
@@ -128,4 +129,14 @@ interface BackendClient {
         topicId: String,
         request: WebPageAddRequest,
     ): BackendResult<WebPageAddResponse>
+
+    /**
+     * `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` (protocol 1.6): the
+     * topic's latest notes generation since the backend started, polled while it runs.
+     */
+    suspend fun notesGeneration(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<NotesGenerationStatus>
 }

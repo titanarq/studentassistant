@@ -187,6 +187,46 @@ class CaptureViewModelOfflineTest {
     }
 
     @Test
+    fun `Terminar y preparar apuntes while offline keeps the flag for the delivered end`() = runTest(main.dispatcher) {
+        val spools = Spools(root, SpoolBudget(10_000_000))
+        val (viewModel, finisher) = viewModel(spools)
+        viewModel.start()
+        runCurrent()
+        handshake()
+        sockets.last.drop()
+        runCurrent()
+
+        viewModel.end(prepareNotes = true)
+        runCurrent()
+        // A spooled end follows no progress: the screen ends as with a plain Terminar.
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(holder.current.value)
+        assertEquals(listOf(PendingEnd("s1", credentials.baseUrl, clock.now, prepareNotes = true)), spools.ends())
+
+        backend.resumeSessionResult = BackendResult.HttpError(409)
+        backend.endSessionResult = ended
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(listOf(true), backend.endSessionRequests.map { it.prepareNotes })
+        assertEquals(emptySet<String>(), finisher.pending.value)
+        assertTrue(backend.calls.none { it.startsWith("notesGeneration") })
+    }
+
+    @Test
+    fun `a transient failure of Terminar y preparar apuntes becomes a pending end with the flag`() = runTest(main.dispatcher) {
+        val spools = Spools(root, SpoolBudget(10_000_000))
+        val (viewModel, _) = viewModel(spools)
+        backend.endSessionResult = BackendResult.HttpError(503)
+        viewModel.start()
+        runCurrent()
+        handshake()
+        viewModel.end(prepareNotes = true)
+        runCurrent()
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertEquals(listOf(true), spools.ends().map { it.prepareNotes })
+    }
+
+    @Test
     fun `an online Terminar that succeeds deletes the session's spool`() = runTest(main.dispatcher) {
         val spools = Spools(root, SpoolBudget(10_000_000))
         val (viewModel, _) = viewModel(spools)

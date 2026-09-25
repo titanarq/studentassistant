@@ -119,6 +119,33 @@ class SessionFinisherTest {
     }
 
     @Test
+    fun `a pending end asks the backend to prepare the notes only when the student chose it`() = runTest {
+        val before = spools()
+        before.putEnd(end.copy(prepareNotes = true))
+        client.resumeSessionResult = BackendResult.HttpError(409) // ended already: straight to the end
+        client.endSessionResult = ended
+
+        // A new process reads the flag back from disk.
+        val spools = spools()
+        assertEquals(listOf(end.copy(prepareNotes = true)), spools.ends())
+        finisher(spools).restore()
+        runCurrent()
+        assertEquals(listOf(true), client.endSessionRequests.map { it.prepareNotes })
+
+        val plain = spools()
+        finisher(plain).finish(backend, end)
+        runCurrent()
+        assertEquals(listOf(true, null), client.endSessionRequests.map { it.prepareNotes })
+    }
+
+    @Test
+    fun `a pending end written by an older version reads as a plain end`() {
+        val root = File(folder.root, "spool").also { File(it, "ends").mkdirs() }
+        File(root, "ends/s1.json").writeText("""{"session_id":"s1","base_url":"http://pc:8000","client_time_ms":9000,"reason":"button"}""")
+        assertEquals(listOf(end), spools().ends())
+    }
+
+    @Test
     fun `a pending end left by a dead process is completed at the next start`() = runTest {
         val before = spools()
         before.putEnd(end)

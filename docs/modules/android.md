@@ -8,7 +8,7 @@ Thin capture client (ADR-0001), Spanish UI:
   DataStore; several backends allowed; connection test.
 - Home: subjects/topics from the backend, create topic, start or continue a session.
 - Capture screen: CameraX preview, transcription with SpeechRecognizer (Google) sent as
-  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar), live transcript,
+  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar, Terminar y preparar apuntes), live transcript,
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
@@ -258,12 +258,29 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   server STT mode the backend recognizer's warning while degraded (protocol 1.5 `stt.status`,
   #222: its Spanish `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), and the
   buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
-  **Terminar** (asks for confirmation). Back ("Salir") leaves the session open: the home screen
-  offers "Continuar".
+  **Terminar** (asks for confirmation), with **Terminar y preparar apuntes** right below it (its
+  own confirmation). Back ("Salir") leaves the session open: the home screen offers "Continuar".
+- **Terminar y preparar apuntes** (#272, protocol 1.6): `CaptureViewModel.end(prepareNotes = true)`
+  ends through the same path as Terminar with `SessionEndRequest.prepareNotes = true` (plain
+  Terminar sends no `prepare_notes`). When the backend takes the end at once, the screen stays in
+  phase `NOTES` (holder not yet cleared) and shows `CaptureUiState.notesProgress`, a
+  `NotesProgress`: from the end response's `notes_generation` (`started`/`running` -> `Running`;
+  `unavailable` or absent, an older backend -> `Unavailable`, no polling), then from
+  `NotesGenerationPoller` (`BackendClient.notesGeneration`, `GET .../topics/{t}/notes/generation`
+  every 3 s): `running` -> `Running` (a transient poll failure keeps polling, shown as
+  `Running(pollFailure)`), `done` -> `Done(version, draft, warning)`, `failed` -> `Failed(detail)`,
+  `needs_confirmation` -> `NeedsConfirmation(detail)` (confirm from the study desk), `idle` (the
+  backend restarted) -> `Lost`, a refusal (401, 404, ...) -> `Unknown`; every state but `Running`
+  stops polling. Polling pauses in the background (`onBackground`/`onForeground`) and stops when
+  the student leaves: **Abrir apuntes** (done) / **Ir al escritorio de estudio** (otherwise) open
+  `CaptureViewModel.deskTopic` in the study desk (`CaptureScreen(onOpenNotes)`), **Volver al
+  inicio** and back go home; each calls `closeNotes()` (clears the holder, phase `ENDED`). An end
+  answered 404/409 (already ended) follows no generation; an end that is spooled keeps the flag in
+  its `PendingEnd` (see "Offline spool") and the screen ends at once, as with Terminar.
 - **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
   transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
   (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
-  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
+  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/NOTES/ENDED, `notesProgress`, `connection`, `transcript` -- the last 50
   `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
   modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
   `endFailure`, `sttWarning`: the last degraded `SttStatus`, cleared by an `ok` one and by every
@@ -436,7 +453,10 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   ends at once. Online, "Terminar" first waits up to 10 s for `drained` and the session's uploads.
   The finisher, per pending end: `POST .../resume` (409: skip the flush; 404: drop), a
   `SessionConnection` over the spools until `drained` (at most 120 s), the session's captures
-  uploaded (at most 300 s), then `POST .../end` with the original "Terminar" time; success, 404 or
+  uploaded (at most 300 s), then `POST .../end` with the original "Terminar" time (and
+  `prepare_notes: true` when `PendingEnd.prepareNotes`, "Terminar y preparar apuntes", so the
+  backend prepares the notes when the end is finally delivered; a pending end written before #272
+  has no `prepare_notes` and reads as a plain end); success, 404 or
   409 deletes the session's spools and its pending end. Transient failures retry after
   2/5/10/30/60 s; a refusal (401, 403, 400, ...) leaves the pending end on disk.
   `AppContainer.recoverSpool()` (from `StudentAssistantApp.onCreate`) restores the captures and
