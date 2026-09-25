@@ -155,7 +155,10 @@ The mechanism reads a project's own knowledge layer at several points (the worke
     status check in branch protection: on a host-only PR it does not run, so it never reports. The
     rendered file is a starting point — add the setup your test command needs before its step.
     Never overwrites without `--force`, and never arms, restarts or reloads a unit — `--dry-run`
-    first shows every path it would touch and its diff against what is there.
+    first shows every path it would touch and its diff against what is there. The
+    `.claude/agents/*.md` it renders are generated: `--force` rewrites them whole, so do not edit
+    them in place — set the `config/agents.yaml` key instead (the control plane's merge method is
+    `project.merge_method`: `merge`, `squash` or `rebase`, default `merge`).
 21. **`agent-os-doctor`** — reads the whole checklist above back in one pass: `gh auth status`
     scopes, the labels that do not autocreate, the Project v2 `Status` field and its six options,
     each App's secrets, each `project.executables` entry, each worktree, the notify topic file, the

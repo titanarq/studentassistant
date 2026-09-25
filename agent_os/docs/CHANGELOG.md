@@ -8,6 +8,22 @@ that closed several small issues at once name them all. This file starts on 2026
 
 ## Unreleased
 
+- agent-os#88 — the control plane's merge method is a host config key. `agents/control-plane.md`
+  Duty 4 hardcoded `gh pr merge N --merge --delete-branch`, so a host that squashes had to
+  hand-edit its installed `.claude/agents/control-plane.md`, and `agent-os-install --force` then
+  overwrote the edit, leaving the host unable to take any upstream prompt change. New
+  `project.merge_method` (`merge` | `squash` | `rebase`, default `merge`), validated at config load
+  (any other value fails it) and rendered as `__MERGE_METHOD__`; `__REPO__` renders
+  `project.repo`. The merge step is now REST, pinned to the head the five conditions were checked
+  on: `gh api -X PUT repos/__REPO__/pulls/N/merge -f merge_method=__MERGE_METHOD__ -f sha=<head>`,
+  then `gh api -X DELETE repos/__REPO__/git/refs/heads/<branch>` once it merged. A `409` (head
+  moved) means verify again, never retry blindly; REST also stays off GraphQL's secondary rate
+  limit (#70), and deleting only the remote ref no longer takes a backend's worktree with it.
+  Not a goal: `install --force` keeping hand edits of the files it generates — a customization a
+  host needs becomes a config key. Host follow-up: set `project.merge_method` in
+  `config/agents.yaml` (a host that squashes: `squash`), run `agent-os-install --force`, and drop
+  the local edit of `.claude/agents/control-plane.md`.
+
 - agent-os#86 (PR #87) — a dirty worker worktree no longer deadlocks its backend unannounced.
   `worker_task.sh` writes `scratchpad/.gitignore` containing `*` in every worker worktree it
   touches (`hide_scratchpad_from_git`: before the dirty check in `start`, `resume` and `branch`,

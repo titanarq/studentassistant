@@ -62,6 +62,11 @@ project:
   # workflow of its own could never get a host-only PR merged. Set it to false only when the
   # host's own CI already reports a check on every pull request; `agent-os-doctor` checks either way.
   install_host_ci: true
+  # How the control plane merges a PR it verified: `merge` (a merge commit), `squash` or `rebase`
+  # -- the `merge_method` of GitHub's REST merge endpoint, rendered into the installed
+  # `.claude/agents/control-plane.md`. The mechanism needs none in particular (merge condition 4
+  # compares content, not ancestry). Any other value fails the load. Default `merge`.
+  merge_method: merge
   # How a fresh worktree -- a worker's on `init`, a validator's throwaway one -- is made runnable,
   # since it carries tracked files only. Each `worktree_links` path (relative to the repository
   # root) is symlinked from this checkout when it exists here; then `worktree_setup_command`, when
