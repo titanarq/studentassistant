@@ -15,7 +15,11 @@
   its `segment_id`) and the pending-doubts counter. It opens the session socket with `hello`
   first, keeps `hello.ack.clock_offset_ms`, and lets `hello.ack.stt_mode` choose the recognizer:
   the Web Speech API (`es-ES`) in `client` mode, microphone audio streamed as PCM16 frames in
-  `server` mode. A server `capture_now` command takes a burst with that `command_id` and is
+  `server` mode. In `client` mode it biases the recognizer towards the session's vocabulary
+  hints (protocol 1.4, #227): the list of `hello.ack.vocabulary_hints`, replaced by every
+  `notice` that carries one, becomes the `phrases` of each recognition it (re)starts where the
+  browser has contextual biasing (`SpeechRecognitionPhrase`); a browser without it, or whose
+  service answers `phrases-not-supported`, recognizes without them and shows nothing. A server `capture_now` command takes a burst with that `command_id` and is
   answered with an `ack`. Denied or missing camera/microphone, a browser without
   `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
   Spanish explanation. The page runs on the PC itself under loopback trust
@@ -96,7 +100,9 @@ token):
     `ack`, `closed`, `failed`, `rejected`). `CAPTURE_CAPABILITIES`, `CLIENT_AUDIO_FORMAT`
     (pcm16 / 16 kHz / mono) and `WEB_SPEECH_PROVIDER` are the `hello` defaults.
   - `transcriber.ts`: the seam a provider is swapped at (ADR-0008) --
-    `ClientTranscriber {readonly provider: string; start(): Promise<void>; stop(): void}`, given
+    `ClientTranscriber {readonly provider: string; start(): Promise<void>; stop(): void;
+    setVocabularyHints?(hints)}` (the latest hints replace the previous ones and apply from the
+    next recognition on; a transcriber that has nothing to bias leaves it out), given
     `TranscriberCallbacks {onSegment(segment, kind), onProblem?(problem)}` at construction. A
     failure is a `TranscriberProblem {code, detail, recoverable}` whose `code` is a
     `TranscriberProblemCode` (`unsupported`, `permission-denied`, `network`, `unavailable`);
@@ -104,7 +110,10 @@ token):
     `webSpeechTranscriber.ts` (`WebSpeechTranscriber`, `SpeechRecognition` /
     `webkitSpeechRecognition` at `WEB_SPEECH_LANGUAGE = "es-ES"`, continuous with interim
     results, restarting itself on `end` and on recoverable errors, `webSpeechSupported()` to ask
-    first) and `audioStreamTranscriber.ts` (`AudioStreamTranscriber`, `audioStreamSupported()`),
+    first; `vocabularyHints` option / `setVocabularyHints()` set each recognition's `phrases` at
+    `VOCABULARY_HINT_BOOST` (2.0) where `speechRecognitionPhraseConstructor()` finds the API, and
+    stop doing so for the session after `phrases-not-supported`; `SpeechGrammarList` is not used,
+    since the specification dropped grammars and no engine applies them) and `audioStreamTranscriber.ts` (`AudioStreamTranscriber`, `audioStreamSupported()`),
     which sends audio to an `AudioFrameSink` -- `SessionSocket.sendAudio` -- and calls
     `onSegment` never, because the transcript comes back as server `transcript.*` events.
   - `audioFrames.ts` + `pcmWorklet.ts`: the binary audio of protocol v1, and no browser API in
@@ -401,6 +410,9 @@ devices / stream / track, `ImageCapture`, `SpeechRecognition`, `WebSocket` and
 `AudioContext`/`AudioWorklet` fakes at once (`installMediaFakes()`,
 `installSpeechRecognitionFake()`, `installWebSocketFake()` and `installAudioFakes()` install one
 family each, `installCanvasFakes()` and `fakePreview()` cover the canvas fallback and the preview
-element), and every installer returns a `restore()`. Tests drive them -- a fake recognition emits
+element), and every installer returns a `restore()`. `installSpeechRecognitionFake(globals,
+{phrases: true})` (or `installCaptureFakes({speechPhrases: true})`) is a browser with contextual
+biasing: `FakeBiasingSpeechRecognition` records the `phrases` each `start()` found in
+`phrasesAtStart`, and `FakeSpeechRecognitionPhrase` sits on the `SpeechRecognitionPhrase` global. Tests drive them -- a fake recognition emits
 results, ends and errors, a fake socket records what was sent and lets a test push server events
 in -- so no test touches a real camera, microphone, network or backend.

@@ -336,6 +336,14 @@ export default function CaptureScreen({
    */
   const clock = useRef(now);
   clock.current = now;
+  /**
+   * The session's latest vocabulary hints (protocol 1.4, #227): `hello.ack`'s list, replaced by
+   * every `notice` that carries one. A ref, because a notice can arrive before the transcriber
+   * exists (the camera is still starting) and the transcriber must start with the latest list.
+   * Null until either of them set it, so a notice handled before the `hello.ack` continuation ran
+   * is not overwritten by the older list of the ack.
+   */
+  const vocabularyHints = useRef<readonly string[] | null>(null);
 
   const [blocking, setBlocking] = useState<Blocking | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
@@ -430,6 +438,11 @@ export default function CaptureScreen({
         break;
       case "notice":
         setPending(event.event.pending_count);
+        // A notice without the field leaves the list as it is; one with it replaces the whole list.
+        if (event.event.vocabulary_hints !== undefined) {
+          vocabularyHints.current = event.event.vocabulary_hints;
+          runtime.current.transcriber?.setVocabularyHints?.(event.event.vocabulary_hints);
+        }
         break;
       case "ack":
         setBursts((current) =>
@@ -477,6 +490,7 @@ export default function CaptureScreen({
       onEvent: onSocketEvent,
     });
     runtime.current = { socket, camera, transcriber: null };
+    vocabularyHints.current = null;
 
     let disposed = false;
     void (async () => {
@@ -493,6 +507,7 @@ export default function CaptureScreen({
       }
       setConnection("open");
       setSttMode(handshake.ack.stt_mode);
+      vocabularyHints.current ??= handshake.ack.vocabulary_hints ?? [];
       try {
         await camera.start(preview.current);
         if (!disposed) setCameraOn(true);
@@ -513,12 +528,15 @@ export default function CaptureScreen({
               },
               { sink: socket, audioFormat: handshake.ack.audio_format ?? undefined },
             )
-          : new WebSpeechTranscriber({
-              onSegment: (segment, kind) => socket.sendTranscript(segment, kind),
-              onProblem: (problem) => {
-                if (!disposed) setTrouble(transcriberMessage(problem));
+          : new WebSpeechTranscriber(
+              {
+                onSegment: (segment, kind) => socket.sendTranscript(segment, kind),
+                onProblem: (problem) => {
+                  if (!disposed) setTrouble(transcriberMessage(problem));
+                },
               },
-            });
+              { vocabularyHints: vocabularyHints.current ?? [] },
+            );
       runtime.current.transcriber = transcriber;
       try {
         await transcriber.start();

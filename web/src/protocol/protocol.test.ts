@@ -130,16 +130,16 @@ describe("vocabulary hints", () => {
 });
 
 describe("protocol_version", () => {
-  it("is 1.3", () => {
-    expect(PROTOCOL_VERSION).toBe("1.3");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 3]);
+  it("is 1.4", () => {
+    expect(PROTOCOL_VERSION).toBe("1.4");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 4]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.4; update the older side so both share MAJOR version 1",
     );
   });
 

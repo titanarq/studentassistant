@@ -96,6 +96,40 @@ export class FakeSpeechRecognition extends FakeEventTarget {
   }
 }
 
+/**
+ * A fake `SpeechRecognitionPhrase` (#227): the contextual-biasing term of the Web Speech API, one
+ * phrase and its boost. The real constructor throws `SyntaxError` for a boost outside [0, 10], and
+ * so does this one, so a transcriber that picked a bad boost fails a test instead of a browser.
+ */
+export class FakeSpeechRecognitionPhrase {
+  readonly phrase: string;
+  readonly boost: number;
+
+  constructor(phrase: string, boost = 1.0) {
+    if (!(boost >= 0 && boost <= 10)) {
+      throw new DOMException(`boost ${boost} is outside [0, 10]`, "SyntaxError");
+    }
+    this.phrase = phrase;
+    this.boost = boost;
+  }
+}
+
+/**
+ * A recognition of a browser with contextual biasing (#227): the `phrases` list a transcriber
+ * assigns before `start()`. Whether the browser's service then honours them is the test's to say,
+ * with `emitError("phrases-not-supported")`, which is what Chrome answers for a cloud recognition.
+ */
+export class FakeBiasingSpeechRecognition extends FakeSpeechRecognition {
+  phrases: FakeSpeechRecognitionPhrase[] = [];
+  /** The `phrases` each `start()` found, in order, for a test to assert what every restart used. */
+  readonly phrasesAtStart: string[][] = [];
+
+  override start(): void {
+    super.start();
+    this.phrasesAtStart.push(this.phrases.map((entry) => entry.phrase));
+  }
+}
+
 function buildResultList(utterances: FakeUtterance[]): FakeSpeechResultList {
   return asArrayLike(utterances.map(buildResult)) as FakeSpeechResultList;
 }
@@ -127,6 +161,14 @@ function asArrayLike<T>(items: T[]): ArrayLike<T> & { item(index: number): T } {
 /** The global slots a browser may offer the Web Speech API in. */
 export type SpeechGlobalName = "SpeechRecognition" | "webkitSpeechRecognition";
 
+export interface SpeechFakeOptions {
+  /**
+   * True for a browser with contextual biasing: the recognition has a `phrases` list and the
+   * `SpeechRecognitionPhrase` global exists. False by default, a browser without phrase hints.
+   */
+  phrases?: boolean;
+}
+
 export interface SpeechFakes {
   /** Every recognition the code under test constructed, in order. */
   readonly recognitions: FakeSpeechRecognition[];
@@ -139,9 +181,13 @@ export interface SpeechFakes {
  */
 export function installSpeechRecognitionFake(
   globals: SpeechGlobalName[] = ["SpeechRecognition", "webkitSpeechRecognition"],
+  options: SpeechFakeOptions = {},
 ): SpeechFakes {
   activeRecognitions = [];
-  const restores = globals.map((name) => swapGlobal(name, FakeSpeechRecognition));
+  const phrases = options.phrases ?? false;
+  const Recognition = phrases ? FakeBiasingSpeechRecognition : FakeSpeechRecognition;
+  const restores = globals.map((name) => swapGlobal(name, Recognition));
+  if (phrases) restores.push(swapGlobal("SpeechRecognitionPhrase", FakeSpeechRecognitionPhrase));
   return {
     recognitions: activeRecognitions,
     restore: () => {

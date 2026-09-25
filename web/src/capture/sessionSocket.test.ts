@@ -140,7 +140,11 @@ describe("hello", () => {
 
     fake.serverOpen();
 
-    expect(sentEvent(fake)).toEqual(example<ClientEvent>("client.hello"));
+    // The example is of an earlier minor; this client says its own version.
+    expect(sentEvent(fake)).toEqual({
+      ...example<ClientEvent>("client.hello"),
+      protocol_version: PROTOCOL_VERSION,
+    });
   });
 
   it("announces the capabilities the caller gives, without an audio format it did not claim", () => {
