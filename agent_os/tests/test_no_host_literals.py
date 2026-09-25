@@ -76,11 +76,17 @@ def _repository_files(root):
     is checked before it is ever `git add`-ed. What a host receives is what git tracks; a
     filesystem walk would also read ignored caches and nested agent worktrees (#53), whose own
     `docs/` and `tests/` escape every root-anchored exclusion. No fallback to a walk: without
-    git the premise of the test is gone and it says so."""
+    git the premise of the test is gone and it says so.
+
+    `root` need not hold its own `.git`: a host consumes this mechanism as a subtree, so
+    `AGENT_OS_DIR` is a plain subdirectory of the host's checkout, whose `.git` sits above it.
+    `git ls-files` still resolves the enclosing repository by walking up from `cwd` and returns
+    paths relative to `root` either way, so the premise is "`root` is inside a git work tree",
+    not "`root` is one". Letting the command itself fail is what tells the two cases apart.
+    An empty listing is a failure too: a `root` the enclosing repository ignores lists nothing
+    with exit 0, and a walk over nothing would pass without having checked a single file."""
     import subprocess
 
-    if not (root / ".git").exists():
-        raise RuntimeError(f"no .git under {root}: cannot ask git which files the mechanism ships")
     listing = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=root,
@@ -94,7 +100,10 @@ def _repository_files(root):
     # tracked file deleted from the working tree is listed but no longer exists. Neither is a
     # file to read.
     entries = listing.stdout.split("\0")
-    return sorted({entry for entry in entries if entry and not entry.endswith("/")})
+    files = sorted({entry for entry in entries if entry and not entry.endswith("/")})
+    if not files:
+        raise RuntimeError(f"git lists no file under {root}: is it ignored by its repository?")
+    return files
 
 
 def _files(root=AGENT_OS_DIR):
@@ -194,3 +203,33 @@ def test_a_root_without_git_fails_loudly(tmp_path):
 
     with pytest.raises(RuntimeError, match="git"):
         list(_files(tmp_path))
+
+
+def test_a_subtree_root_with_no_git_of_its_own_is_still_scanned(tmp_path):
+    # A host consumes this mechanism as a subtree: AGENT_OS_DIR is a plain subdirectory of the
+    # host's own checkout, and only the host root carries `.git` (#82). The walk resolves the
+    # enclosing repository, lists only the subtree, and names its files relative to it.
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "host.py").write_text(f"name = '{FORBIDDEN[0]}'\n")
+    subtree_root = tmp_path / "agent_os"
+    (subtree_root / "agent_os").mkdir(parents=True)
+    (subtree_root / "agent_os" / "tracked.py").write_text(f"name = '{FORBIDDEN[0]}'\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "init")
+    (subtree_root / "untracked.py").write_text("x = 1\n")
+    assert not (subtree_root / ".git").exists()
+    assert [relative for _path, relative in _files(subtree_root)] == [
+        "agent_os/tracked.py",
+        "untracked.py",
+    ]
+
+
+def test_a_subtree_its_repository_ignores_fails_loudly(tmp_path):
+    import pytest
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text("agent_os/\n")
+    (tmp_path / "agent_os").mkdir()
+    (tmp_path / "agent_os" / "leak.py").write_text(f"name = '{FORBIDDEN[0]}'\n")
+    with pytest.raises(RuntimeError, match="no file"):
+        list(_files(tmp_path / "agent_os"))
