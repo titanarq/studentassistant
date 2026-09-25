@@ -257,6 +257,37 @@ Routes registered today:
   reached cost cap 409 (`"Se ha alcanzado el límite de gasto ... Confirma ..."`) until the body
   says `confirm_over_cap`, a Claude refusal or failure 502, a vault that cannot be opened 503.
   Needs the bearer check like every non-exempt route.
+- **The doubts API** (`server/doubts_routes.py`, `doubts_router()`), web-only, not phone
+  protocol, for the pending panel (#80): thin over `editor.doubts` (`docs/modules/editor.md`),
+  over the vault and `GitSync` of the `SessionService`, host `SessionService.host` for the review
+  sessions. One doubts operation per topic at a time; reviewing and answering also hold the
+  topic's notes lock with "prepárame el tema" (`NotesGenerator.claim`) and call the `editor` role
+  through `llm_transport`, bound to the topic's ledger.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/doubts` -> `DoubtsQueue`: `subject`,
+    `topic`, `open_count`, `current` (the id of the open doubt to ask next, `null` when none) and
+    `items`, open first, each `{item, question, outcome}`: `item` is the observer's `PendingItem`
+    (as in `/pending`), `question` `null` or `{pending_id, question, suggestions, options:
+    [{source_id, says}], asked_at}`, `outcome` `null` or `{pending_id, status, resolution,
+    evidence: [{source_id, quote}], answer, suggestion, chosen_source, discarded, keep_discarded,
+    notes_changed, warning, resolved_at}`. Reads only.
+  - `POST .../doubts/review`, optional body `{"confirm_over_cap": false}` -> `ReviewResult`
+    (`auto_resolved`, `asked`, `notes_changed`, `session_id`, `commit`, `attempts`, `warning`,
+    `model`): the editor auto-resolves what the sources answer (cited) and writes a question for
+    every other open doubt. The web calls it after "prepárame el tema".
+  - `POST .../doubts/{pending_id}/answer`, body `{"suggestion": 1}` (1-based) or
+    `{"answer": "..."}` or, for a contradiction, `{"source_id": "sources/notes/page-001.jpg",
+    "keep_discarded": true}` (an `answer` may go with either), plus `confirm_over_cap` ->
+    `ResolutionResult` (`subject`, `topic`, `pending_id`, `status` `resolved`, `resolution`,
+    `notes_changed`, `session_id`, `commit`, `attempts`, `warning`, `model`).
+  - `POST .../doubts/{pending_id}/dismiss`, no body -> `ResolutionResult` with `status`
+    `dismissed`; never calls Claude, so it works without `llm_transport`.
+  - Errors, Spanish `detail`: an unknown topic or doubt 404 (`"No existe esa duda en este
+    tema."`); a doubt already closed (`"Esa duda ya está cerrada."`), a topic with an unended
+    session (`"Este tema tiene una sesión sin terminar: ..."`), a review before the notes exist,
+    another doubts or notes operation of the topic running, or a reached cost cap until the body
+    says `confirm_over_cap` 409; an answer that does not fit the question 422; no
+    `llm_transport` 503 for review and answer; a Claude refusal or failure 502; a vault that
+    cannot be opened 503. Needs the bearer check like every non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative

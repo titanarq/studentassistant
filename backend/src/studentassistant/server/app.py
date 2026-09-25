@@ -45,6 +45,7 @@ from studentassistant.server.bus import SessionBus
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
@@ -234,6 +235,7 @@ def create_app(
     app.include_router(search_router())
     app.include_router(vault_status_router())
     app.include_router(notes_router())
+    app.include_router(doubts_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
