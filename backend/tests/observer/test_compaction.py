@@ -84,6 +84,7 @@ def test_fold_after_compaction_equals_the_pre_purge_state(
 
     after = list(read_topic_events(tmp_vault, *topic))
     remaining = before[min(folded, len(before)) :]
+    assert snapshot.cursor is not None
     assert after[0][1].kind == COMPACTED_EVENT_KIND
     assert (after[0][0], after[0][1].seq) == (snapshot.cursor.session_id, snapshot.cursor.seq)
     assert after[1:] == remaining

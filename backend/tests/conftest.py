@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from studentassistant.install import service
 from studentassistant.vault import Vault
 
 # The name a test vault records in its `vault.yaml`; tests that assert on it import it from here.
@@ -46,3 +47,43 @@ def git_origin(tmp_path: Path, tmp_vault: Vault) -> Path:
         capture_output=True,
     )
     return origin
+
+
+class FakeSystemctl:
+    """Stands in for `systemctl --user`: records every call, answers from `answers`.
+
+    `answers` maps a subcommand (`is-active`, `enable`...) to the `SystemctlResult` it returns;
+    anything else succeeds with no output, and `is-active` answers `active` unless told otherwise.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.answers: dict[str, service.SystemctlResult] = {
+            "is-active": service.SystemctlResult(ok=True, output="active")
+        }
+
+    def __call__(self, *args: str, timeout: float = 0) -> service.SystemctlResult:
+        self.calls.append(args)
+        return self.answers.get(args[0], service.SystemctlResult(ok=True, output=""))
+
+
+@pytest.fixture(autouse=True)
+def systemctl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> FakeSystemctl:
+    """No test ever talks to this machine's systemd or writes into its unit directory.
+
+    Every test gets a `FakeSystemctl` in place of `install.service.run_systemctl`, and a unit
+    directory of its own under pytest's temporary root (created only when a test asks for it).
+    """
+    fake = FakeSystemctl()
+    monkeypatch.setattr(service, "run_systemctl", fake)
+    units: list[Path] = []
+
+    def unit_directory() -> Path:
+        if not units:
+            units.append(tmp_path_factory.mktemp("systemd-user"))
+        return units[0]
+
+    monkeypatch.setattr(service, "unit_directory", unit_directory)
+    return fake

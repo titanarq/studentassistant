@@ -39,10 +39,16 @@ token):
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
-  anything else -> `App`); the backend's SPA fallback serves the app for every non-API path, so
+  `/subjects/<subject>/topics/<topic>` -> `TopicPage`, anything else -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
+- `src/topic/`: `TopicPage` (heading "Tema <topic>") is the topic page; for now it only hosts
+  `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
+  as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
+  `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
+  status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
+  `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
 - `src/App.tsx` is the placeholder study desk: heading "Mesa de estudio", fetches
   `GET /api/health` on mount, decodes it strictly as `rest.health.response` and shows the
   backend `protocol_version` (Spanish loading/error states; any other shape is the error state).

@@ -20,7 +20,7 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
@@ -28,7 +28,8 @@ clock). `vault` is the open `Vault` the session routes work on (tests pass `tmp_
 one, the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on
 the first request that needs it, so building an app never touches a vault. `sync` is the vault's
 `GitSync` (default: one over that vault with `vault_settings.git`). `stt` is the `[stt]` section
-(`SttSettings`, default: the configured one) the session WebSocket follows.
+(`SttSettings`, default: the configured one) the session WebSocket follows; `sources` the
+`[sources]` section (`SourcesSettings`, default: the configured one) the PDF upload follows.
 
 The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
 the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
@@ -146,8 +147,8 @@ Routes registered today:
     `session_minutes` (ended sessions by `ended_at - started_at`, an unended one up to now; minutes
     rounded to 0.1), `open_pending` (`len(open_pending())` of the observer's
     `load_observer_snapshot`, which may write the refreshed snapshot back), `notes_version` (the
-    highest `version` of `GitSync.list_notes_tags(topic_id)`, `null` without tags) and `generated`
-    (`list_generated`: vault-relative paths; empty until a generator exists).
+    highest `version` of `GitSync.list_notes_tags(subject_id, topic_id)`, `null` without tags)
+    and `generated` (`list_generated`: vault-relative paths; empty until a generator exists).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
     (`"Todavía no hay apuntes de este tema."`).
@@ -173,6 +174,22 @@ Routes registered today:
     `sources/<kind>/<file>` (absolute, `..` or `%2e%2e`, backslash, NUL, a symlink out of its
     directory) or names no file is 404 (`"No existe esa fuente en la bóveda."`); nothing outside
     the vault's sources is ever served.
+- `POST /api/subjects/{subject_id}/topics/{topic_id}/sources/pdf` (`server/pdf_upload.py`,
+  `pdf_upload_router()`): the web's PDF import, what `studentassistant import-pdf` does from the
+  CLI. Body: `multipart/form-data` with one `file` part (the PDF; its `filename` names it,
+  `documento.pdf` without one) and an optional `pages` part, the range as typed (`82-94`,
+  `páginas 82 a 94`; empty or absent keeps every page, parsed by `sources.parse_page_range`).
+  Parsed as it streams in: a `file` over `[sources] max_pdf_bytes` (or a declared/received body
+  over it plus 64 KiB) stops the read with 413. Then `sources.import_pdf` runs in a worker thread,
+  one import per topic at a time (so two never race for the next `page-NNN`), and
+  `SessionService.note_change()` lets the sync loop commit and push it. Answer: 201
+  `PdfImportResponse` (`subject_id`, `topic_id`, `source_id`, `vault_id`, `original_name`,
+  `original_page_count`, `first_page`, `last_page`, `page_count`, `pages_without_text` in the
+  original's numbering). Refusals keep `import_pdf`'s Spanish message: `PdfTooLargeError` (file,
+  range page count, kept pages) 413; `PdfUnreadableError`, `PageRangeError`, a PDF that looks like
+  a key, a body that is not multipart, a missing/empty/repeated `file`, or any other part 422; an
+  unknown subject or topic 404 (checked before the body is read); a vault that cannot be opened
+  503. No active session is needed. Needs the bearer check like every non-exempt route.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
   described in its own section below.
 - **The built web app at `/`.** `static_dir` defaults to `STATIC_DIR`, the package-relative
@@ -366,8 +383,15 @@ replace all three.
   event loop; inbound messages are handled one at a time in order. Outbound traffic goes through
   the connection's bounded bus subscription, which drops the oldest notices (partials) when the
   client reads slowly and never a persisted event.
-- Not yet: flushing the provider (`finish()`) when a session ends, and the `capture_ids` side of
-  the `ack` (the capture upload task).
+- **Ending**: the gateway registers `end_session(session_id)` as a `SessionService`
+  `add_before_ended` hook, so it runs before `session.ended` is published (and so before the
+  pipeline drain and the vault end). Under the session's receive-state lock it flushes the
+  server-side provider (`finish()`), publishes the returned segments as `transcript.final` /
+  `transcript.partial` exactly like the ones audio produced (same `server-<n>` ids), and drops the
+  session's receive state, even when the flush fails or times out (the hook runner logs it). It
+  only publishes on the bus, never calls back into `SessionService` (the session lock is held).
+  A socket of the session still open then handles no further message (closed with 4404), and a
+  new socket of it is refused, although `end` still has it attached.
 
 ### Session event bus -- `server/bus.py`
 

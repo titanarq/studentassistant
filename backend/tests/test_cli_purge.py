@@ -82,7 +82,7 @@ def vault(
     notes.write_text("# Derivadas\n\nTexto.[^p1]\n\n[^p1]: [p1](../sources/notes/page-001.jpg)\n")
     sync = GitSync(tmp_vault, VaultGitSettings())
     sync.checkpoint("tema")
-    sync.create_notes_tag(slug)
+    sync.create_notes_tag(subject, slug)
     sync.push_now()
     return tmp_vault
 

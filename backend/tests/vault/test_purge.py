@@ -24,6 +24,8 @@ from studentassistant.vault import (
     start_session,
     topic_directory,
 )
+from studentassistant.vault import purge as purge_module
+from studentassistant.vault.git import GitRunner
 from studentassistant.vault.purge import (
     Compaction,
     PurgeError,
@@ -111,7 +113,7 @@ def topic(tmp_vault: Vault, git_origin: Path) -> Topic:
     stored.write("conversations/editor.jsonl", '{"role":"user"}\n')
     stored.write("notes/apuntes.md", NOTES)
     sync.checkpoint("tema grabado")
-    sync.create_notes_tag(slug)
+    sync.create_notes_tag(subject, slug)
     sync.push_now()
     return stored
 
@@ -201,8 +203,26 @@ def test_a_topic_without_accepted_notes_is_skipped(tmp_vault: Vault, git_origin:
     allowed = plan_topic_purge(sync, subject, slug, VaultPurgeSettings(require_notes_tag=False))
 
     assert no_notes.skipped == "aún no tiene apuntes"
-    assert untagged.skipped is not None and "apuntes-vN" in untagged.skipped
+    assert untagged.skipped is not None and f"{subject}/{slug}/apuntes-vN" in untagged.skipped
     assert allowed.skipped is None
+
+
+def test_a_tag_of_a_same_slug_topic_elsewhere_does_not_accept_this_one(
+    tmp_vault: Vault, git_origin: Path
+) -> None:
+    physics = create_subject(tmp_vault, "Física").slug
+    chemistry = create_subject(tmp_vault, "Química").slug
+    slug = create_topic(tmp_vault, physics, "Equilibrio").slug
+    assert create_topic(tmp_vault, chemistry, "Equilibrio").slug == slug
+    for subject in (physics, chemistry):
+        notes = topic_directory(tmp_vault, subject, slug) / "notes"
+        notes.mkdir()
+        (notes / "apuntes.md").write_text("# Equilibrio\n")
+    sync = GitSync(tmp_vault, VaultGitSettings(), clock=ManualClock())
+    sync.create_notes_tag(chemistry, slug)
+
+    assert plan_topic_purge(sync, physics, slug).skipped is not None
+    assert plan_topic_purge(sync, chemistry, slug).skipped is None
 
 
 def test_old_generated_material_is_aged_by_its_last_commit(topic: Topic) -> None:
@@ -327,7 +347,7 @@ def test_hard_purge_rewrites_history_and_force_pushes(
 ) -> None:
     burst = f"{topic.rel}/sources/notes/page-001.burst1.jpg"
     blob = blob_of(topic.vault.path, "HEAD", burst)
-    tag = f"{topic.topic}/apuntes-v1"
+    tag = topic.sync.list_notes_tags(topic.subject, topic.topic)[0].name
     tagged_notes = blob_of(topic.vault.path, tag, f"{topic.rel}/notes/apuntes.md")
     plan = plan_topic_purge(topic.sync, topic.subject, topic.topic)
 
@@ -388,3 +408,26 @@ def test_hard_purge_refuses_to_overwrite_a_remote_that_moved_on(
         )
 
     assert git(git_origin, "rev-parse", "main").strip() == remote_head
+
+
+def test_hard_purge_refuses_to_overwrite_a_tag_another_pc_moved(
+    topic: Topic, git_origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tag = topic.sync.list_notes_tags(topic.subject, topic.topic)[0].name
+    other = clone_vault(git_origin, tmp_path / "otro-pc")
+    listed = purge_module._remote_tags
+
+    def list_then_move(runner: GitRunner, remote: str) -> dict[str, str]:
+        # Another PC moves the tag after the purge read the remote's tags and before it pushes.
+        tags = listed(runner, remote)
+        git(other.path, "tag", "-f", "-a", tag, "-m", "movida en otro PC", "HEAD")
+        git(other.path, "push", "-q", "--force", "origin", f"refs/tags/{tag}")
+        return tags
+
+    monkeypatch.setattr(purge_module, "_remote_tags", list_then_move)
+    plan = plan_topic_purge(topic.sync, topic.subject, topic.topic)
+
+    with pytest.raises(PurgeError, match="no se ha podido subir"):
+        apply_purge(topic.sync, [plan], hard=True)
+
+    assert "movida en otro PC" in git(git_origin, "tag", "-l", "--format=%(contents)", tag)

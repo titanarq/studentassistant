@@ -19,15 +19,17 @@ Never a candidate: the transcripts, `session.yaml`, the notes and their history,
 than burst originals, and anything the current `notes/apuntes.md` names by path (a footnote link
 such as `../sources/notes/page-004.jpg`); such a candidate is listed as `protected` instead. A
 topic is only planned when every session has ended, it has notes and -- unless
-`require_notes_tag` is off -- a notes version tag `<topic-slug>/apuntes-vN` says they were
-accepted; otherwise the plan says why it was skipped.
+`require_notes_tag` is off -- a notes version tag `<subject-slug>/<topic-slug>/apuntes-vN` says
+they were accepted; otherwise the plan says why it was skipped.
 
 `plan_topic_purge` only reads (it is what `--dry-run` prints). `apply_purge` is the soft purge:
 the files are removed or rewritten in the working tree and committed (`purga: ...`), so all of it
 stays recoverable from git history. With `hard=True` it then rewrites the history of the branch
 and its tags (`git filter-branch`) so that every file a purge commit ever deleted in those topics
 disappears from every commit, drops the old objects (`reflog expire`, `gc --prune=now`) and
-force-pushes the branch and the tags. Every other clone of the vault then holds a history the
+force-pushes the branch and the tags, each with a lease on what the remote had, so a branch or a
+tag another PC pushed meanwhile is refused instead of overwritten. Every other clone of the vault
+then holds a history the
 remote no longer has: it must be cloned again (or reset to the remote once nothing of it is
 unpushed), because a pull or push from it would bring the purged files back.
 """
@@ -221,9 +223,10 @@ def plan_topic_purge(
     notes = read_notes(vault, subject_slug, topic_slug)
     if notes is None:
         return skipped("aún no tiene apuntes")
-    if policy.require_notes_tag and not sync.list_notes_tags(topic_slug):
+    if policy.require_notes_tag and not sync.list_notes_tags(subject_slug, topic_slug):
         return skipped(
-            f"sus apuntes aún no están aceptados (no hay etiqueta {topic_slug}/apuntes-vN)"
+            "sus apuntes aún no están aceptados"
+            f" (no hay etiqueta {subject_slug}/{topic_slug}/apuntes-vN)"
         )
     cited = cited_paths(topic_rel, notes)
 
@@ -455,6 +458,19 @@ def _pack_size(git: GitRunner) -> int:
     return (sizes.get("size", 0) + sizes.get("size-pack", 0)) * 1024
 
 
+def _remote_tags(git: GitRunner, remote: str) -> dict[str, str]:
+    """`refs/tags/<name>` -> the object the remote's tag points to (the tag object, not peeled)."""
+    result = git.run("ls-remote", "--tags", "--refs", remote)
+    if not result.ok:
+        raise PurgeError(f"no se pueden leer las etiquetas del remoto: {result.describe()}")
+    tags = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref:
+            tags[ref.strip()] = sha.strip()
+    return tags
+
+
 def _remote_exists(git: GitRunner, remote: str) -> bool:
     return git.run("remote", "get-url", remote).ok
 
@@ -464,7 +480,8 @@ def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
 
     The working tree must be clean (the purge commit just made it so). The branch is pushed with
     `--force-with-lease` against the remote-tracking `main`, so a remote that moved on since the
-    last fetch refuses it instead of losing another PC's commits.
+    last fetch refuses it instead of losing another PC's commits; every local tag is pushed with a
+    lease on the value `git ls-remote` gave before the rewrite (absent: it must still be absent).
 
     Raises:
         PurgeError: git refused a step; the message names it and what to do.
@@ -484,6 +501,11 @@ def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
         return result.stdout
 
     size_before = _pack_size(git)
+    remote = sync.settings.remote
+    has_remote = _remote_exists(git, remote)
+    # What the remote's tags point to before the rewrite: every tag is then pushed with a lease on
+    # that value, so a tag another PC created or moved meanwhile is refused, never overwritten.
+    remote_tags = _remote_tags(git, remote) if has_remote else {}
     git_dir = Path(must("rev-parse", "--absolute-git-dir").strip())
     paths_file = git_dir / _PATHS_FILE_NAME
     paths_file.write_bytes(b"\0".join(path.encode("utf-8") for path in paths) + b"\0")
@@ -512,9 +534,8 @@ def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
     for ref in must("for-each-ref", "--format=%(refname)", "refs/original/").split():
         must("update-ref", "-d", ref)
 
-    remote = sync.settings.remote
     pushed = False
-    if _remote_exists(git, remote):
+    if has_remote:
         tracking = git.run(
             "rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{MAIN_BRANCH}"
         )
@@ -523,17 +544,26 @@ def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
             if tracking.ok and tracking.stdout.strip()
             else "--force-with-lease"
         )
-        for arguments in (
-            ("push", "--porcelain", lease, remote, MAIN_BRANCH),
-            ("push", "--porcelain", "--force", remote, "--tags"),
-        ):
+        tags = must("for-each-ref", "--format=%(refname)", "refs/tags/").split()
+        pushes: list[tuple[str, ...]] = [("push", "--porcelain", lease, remote, MAIN_BRANCH)]
+        if tags:
+            pushes.append(
+                (
+                    "push",
+                    "--porcelain",
+                    *(f"--force-with-lease={tag}:{remote_tags.get(tag, '')}" for tag in tags),
+                    remote,
+                    *(f"{tag}:{tag}" for tag in tags),
+                )
+            )
+        for arguments in pushes:
             result = git.run(*arguments)
             if not result.ok:
                 raise PurgeError(
                     "el historial se ha reescrito aquí pero no se ha podido subir"
-                    f" ({result.describe()}); súbelo con `git push --force {remote}"
-                    f" {MAIN_BRANCH} --tags` cuando haya conexión, antes de usar la bóveda en"
-                    " otro PC"
+                    f" ({result.describe()}); comprueba que ningún otro PC ha subido cambios o"
+                    f" etiquetas y súbelo con `git push --force-with-lease {remote} {MAIN_BRANCH}"
+                    " --tags` antes de usar la bóveda en otro PC"
                 )
         pushed = True
     must("reflog", "expire", "--expire=now", "--all")

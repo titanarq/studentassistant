@@ -15,7 +15,8 @@ never raised, so the capture path never sees it, and a local commit is never und
 `sync()` is `git pull --rebase`: the JSONL logs merge by union (`.gitattributes`), and any other
 conflict aborts the rebase, so the local commits and the working tree stay exactly as they were
 and the conflicting paths are reported for the student to decide (ADR-0002: never auto-resolved
-by discarding). Notes versions are annotated tags `<topic-slug>/apuntes-vN`, pushed with the branch.
+by discarding). Notes versions are annotated tags `<subject-slug>/<topic-slug>/apuntes-vN`,
+pushed with the branch.
 
 Time is read from an injectable `Clock`, and nothing here sleeps or starts a thread: `run_due()`
 does whatever is due now, and `run()` is the asyncio loop that calls it in a worker thread, so git
@@ -104,15 +105,16 @@ class SyncStatus:
 
 @dataclass(frozen=True)
 class NotesTag:
-    """One notes version: `<topic-slug>/apuntes-v<version>` on `commit`."""
+    """One notes version: `<subject-slug>/<topic-slug>/apuntes-v<version>` on `commit`."""
 
     name: str
     version: int
     commit: str
 
 
-def notes_tag_name(topic_slug: str, version: int) -> str:
-    return f"{topic_slug}/{NOTES_TAG_SUFFIX}{version}"
+def notes_tag_name(subject_slug: str, topic_slug: str, version: int) -> str:
+    """A notes version's tag, keyed by subject and topic (topic slugs repeat across subjects)."""
+    return f"{subject_slug}/{topic_slug}/{NOTES_TAG_SUFFIX}{version}"
 
 
 def _plural(count: int, singular: str, plural: str) -> str:
@@ -441,20 +443,21 @@ class GitSync:
 
     # -- notes version tags --------------------------------------------------------------------
 
-    def list_notes_tags(self, topic_slug: str) -> list[NotesTag]:
-        """Every `<topic-slug>/apuntes-vN` tag, oldest version first."""
-        _check_slug(topic_slug)
+    def list_notes_tags(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
+        """Every `<subject-slug>/<topic-slug>/apuntes-vN` tag, oldest version first."""
+        _check_slugs(subject_slug, topic_slug)
         with self._git_lock:
-            return self._list_tags_locked(topic_slug)
+            return self._list_tags_locked(subject_slug, topic_slug)
 
-    def _list_tags_locked(self, topic_slug: str) -> list[NotesTag]:
+    def _list_tags_locked(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
+        prefix = f"{subject_slug}/{topic_slug}/{NOTES_TAG_SUFFIX}"
         result = self.git.run(
             "tag",
             "--list",
-            f"{topic_slug}/{NOTES_TAG_SUFFIX}*",
+            f"{prefix}*",
             "--format=%(refname:short)%09%(*objectname)%09%(objectname)",
         )
-        pattern = re.compile(rf"^{re.escape(topic_slug)}/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$")
+        pattern = re.compile(rf"^{re.escape(prefix)}([1-9][0-9]*)$")
         tags = []
         for line in result.stdout.splitlines() if result.ok else []:
             name, peeled, target = line.split("\t")
@@ -463,21 +466,23 @@ class GitSync:
                 tags.append(NotesTag(name=name, version=int(match[1]), commit=peeled or target))
         return sorted(tags, key=lambda tag: tag.version)
 
-    def create_notes_tag(self, topic_slug: str, message: str | None = None) -> NotesTag:
+    def create_notes_tag(
+        self, subject_slug: str, topic_slug: str, message: str | None = None
+    ) -> NotesTag:
         """Commit what is pending and tag HEAD as the topic's next notes version.
 
         The tag is annotated, so the next push carries it along with the branch.
 
         Raises:
-            ValueError: when `topic_slug` is not a slug.
+            ValueError: when `subject_slug` or `topic_slug` is not a slug.
             GitCommandError: when git refuses the tag (this is not the capture path).
         """
-        _check_slug(topic_slug)
+        _check_slugs(subject_slug, topic_slug)
         with self._git_lock:
             self._commit(None)
-            existing = self._list_tags_locked(topic_slug)
+            existing = self._list_tags_locked(subject_slug, topic_slug)
             version = (existing[-1].version if existing else 0) + 1
-            name = notes_tag_name(topic_slug, version)
+            name = notes_tag_name(subject_slug, topic_slug, version)
             self.git.check(
                 "tag", "--annotate", name, "--message", message or f"apuntes v{version}", "HEAD"
             )
@@ -505,9 +510,10 @@ def _sync_kind(result: GitResult) -> SyncOutcome:
     return "error" if kind == "rejected" else kind
 
 
-def _check_slug(topic_slug: str) -> None:
-    if not _SLUG.match(topic_slug):
-        raise ValueError(f"{topic_slug!r} is not a topic slug")
+def _check_slugs(subject_slug: str, topic_slug: str) -> None:
+    for kind, slug in (("subject", subject_slug), ("topic", topic_slug)):
+        if not _SLUG.match(slug):
+            raise ValueError(f"{slug!r} is not a {kind} slug")
 
 
 __all__ = [

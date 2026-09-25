@@ -232,10 +232,16 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
-- `create_notes_tag(topic_slug, message=None)` commits what is pending and puts the annotated tag
-  `<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing (`notes_tag_name`), pushed by
-  the next push; `list_notes_tags(topic_slug)` returns the `NotesTag`s (`name`, `version`,
-  `commit`) oldest first. A non-slug raises `ValueError`.
+- `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
+  annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
+  for that subject and topic (`notes_tag_name`), pushed by the next push;
+  `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
+  `commit`) oldest first. A non-slug subject or topic raises `ValueError`. Tags are keyed by
+  subject as well as topic because topic slugs are unique only within a subject (#143): two
+  subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
+  `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
+  before this format (the editor, which will, is not written yet), so no vault holds one. ADR-0002
+  still shows the topic-only form.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`.
@@ -293,6 +299,11 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
   create whose first push never happened is pushed); `post_clone` is not called.
 - `verify_push_access(runner)` -- `git push --dry-run origin main`; failing it is a `SetupError`.
+- `check_remote_access(path, host, repo=None, author_email=..., timeout=...) -> RemoteAccess`
+  -- for `studentassistant doctor`: the (redacted) `origin` URL, `repo_matches` (`None` without
+  `repo` or `host`) and `push_error` (`None` when the dry-run push succeeded, else the Spanish
+  reason). `host=None` runs git with no extra credentials. No repository or no `origin` is a
+  `SetupError`. Writes nothing.
 - Both return a `SetupResult` (`vault`, `repo`, `action`: `created`, `cloned` or
   `already-set-up`); every refusal is a `SetupError` (a `VaultError`) with a Spanish message, or
   the host's `GitHubHostError`.
@@ -332,7 +343,7 @@ imported from `studentassistant.vault.purge`.
 
 | key | default | candidate |
 |---|---|---|
-| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<topic-slug>/apuntes-vN` |
+| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<subject-slug>/<topic-slug>/apuntes-vN` |
 | `burst_originals` | `true` | `sources/notes/page-NNN.burst<K>.<ext>`: the other stills of a burst |
 | `observer_conversations` | `true` | `conversations/observer-<session-id>.jsonl` of an ended session |
 | `folded_events` | `true` | the events the observer snapshot folded, replaced by that snapshot |
@@ -374,7 +385,10 @@ from git history.
 (`git filter-branch --index-filter ... --tag-name-filter cat`) every path a purge commit ever
 deleted in the planned topics (`purged_history_paths`, so earlier soft purges are reclaimed too),
 deletes `refs/original/`, force-pushes `main` with `--force-with-lease` against the
-remote-tracking branch and then the tags with `--force`, expires the reflog and runs
+remote-tracking branch and then every local tag with `--force-with-lease=refs/tags/<t>:<sha>`,
+`<sha>` being what `git ls-remote --tags` gave before the rewrite (empty: the tag must still be
+absent), so a tag another PC created or moved meanwhile makes the push fail instead of being
+overwritten; a tag only the remote has is left as it is. Then it expires the reflog and runs
 `gc --prune=now`; `HistoryRewrite` reports the object store size before and after. The CLI first
 commits pending changes and `sync()`s with the remote, refusing to rewrite when that fails; a
 remote that still moved on makes the lease refuse the push, which is a `PurgeError` (the local
