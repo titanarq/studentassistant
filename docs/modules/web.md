@@ -39,7 +39,8 @@ token):
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
-  `/subjects/<subject>/topics/<topic>` -> `TopicPage`, anything else -> `App`); the backend's SPA fallback serves the app for every non-API path, so
+  `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
+  -> `NotesPage`, anything else -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
@@ -69,6 +70,34 @@ token):
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
+  The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists.
+- `src/notes/` (#52): the notes viewer. `NotesPage` (`← Tema <name>` link, "Apuntes de <name> ·
+  versión <N>") fetches `GET /api/subjects/{s}/topics/{t}/notes` and renders it with `NotesView`;
+  a 404 shows the backend's Spanish detail ("Todavía no hay apuntes de este tema.").
+  - `markdown.ts`: `parseNotes(text) -> {blocks, footnotes}` and `parseInline(text)`, a reader of
+    the notes format of docs/modules/editor.md (headings with `{#anchor}`, paragraphs, nested and
+    loose lists, pipe tables, rules, fenced code, quotes, footnote definitions; inline strong/em,
+    code, links, `[^label]`, `[[?word]]`). It builds a tree rendered as React elements, so the
+    notes' HTML is never markup; only `http(s):`, `mailto:` and `#` links become links.
+  - `provenance.ts`: `parseProvenance(label, definition)` -> `page` (notes/book), `pdf` (file,
+    `#page=K`), `web`, `transcript` (session id, span), `ia` or `unknown`; `sourceVaultId`,
+    `originalPage(meta, page)` (`first_page + page - 1`, the rule of `sources.pdf.original_page`).
+  - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
+    its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
+    sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
+    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word.
+  - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
+    flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
+    Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
+    `transcription`, else `page-NNN.md`); a PDF page shows `page-NNN.pKKK.jpg` and `.txt`,
+    "PDF «<original_name>», página <original page>" and an "Abrir el PDF" link; a web snapshot its
+    text and sidecar `url`; a transcript span its segments with `MM:SS` timestamps
+    (`GET /api/sessions/{id}/transcript`). Focus moves to the panel title; Escape or "Cerrar"
+    closes it and returns the focus to the reference. The panel is fixed to the viewport edge
+    (a bottom sheet under 40rem), so it never scrolls or rewraps the notes.
+  - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
+    `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
+    localhost trust as every other request of the web app.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
