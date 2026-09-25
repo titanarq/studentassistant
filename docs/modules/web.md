@@ -69,7 +69,9 @@ token):
   tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
-  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`),
+  and, when there are any, Descargas: a `download` link per generated `.apkg`/`.csv`/`.pdf`/`.pptx`
+  (`flashcards (Anki)`, `flashcards (CSV)`...) to `GET /api/.../generated/files/<name>`.
   `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
