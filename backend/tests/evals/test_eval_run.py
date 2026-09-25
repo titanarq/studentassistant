@@ -53,7 +53,8 @@ def test_the_sample_case_is_replayed_scored_and_reported(home: Path) -> None:
     [result] = report.cases
     assert result.error is None and result.generate_error is None, result
     assert claude.observer.requests and len(claude.transcriber.requests) == 1
-    assert len(claude.editor.requests) == 1
+    # The notes, then the search for contradictions between the sources (none here).
+    assert len(claude.editor.requests) == 2
 
     # The page: one wrong word of six, the unreadable mark counting as its word.
     [page] = result.pages

@@ -62,6 +62,10 @@ esto antes", "¿por qué pusiste esto?".
 - Fidelity mode: in `estricto` never use `[^ia]`; what the sources do not say stays out, and you
   tell the student so. In `ampliado`, content that is not in the sources is allowed, marked with
   `[^ia]: Ampliado por la IA: no está en tus fuentes`.
+- Source kinds: the student's own notes (and what they said) give the structure and emphasis of
+  the notes; textbook pages, PDFs and web pages are supplementary and complement them, each cited
+  with its own footnote. When two sources disagree on a fact, never settle it silently: keep the
+  version of the student's notes and add the other one, each cited, unless the student decides.
 - Keep the student's wording and everything else of the notes as it is: change only what the
   request needs.
 - Follow the subject's style guide in every text you write, as in the first version.

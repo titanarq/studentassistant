@@ -6,6 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
+from studentassistant.editor.contradictions import TOOL_NAME as CONTRADICTIONS_TOOL
 from studentassistant.editor.notes_format import page_provenance, transcript_provenance
 from studentassistant.llm import FakeClaude, LLMRequest, LLMResponse
 from studentassistant.observer.live import TOOL_NAME
@@ -94,6 +95,9 @@ class PipelineClaude:
         if request.role == "transcriber":
             self.transcriber.reply_text(PAGE_TRANSCRIPTION)
             return await self.transcriber.send(request, **options)  # type: ignore[arg-type]
+        if any(tool.get("name") == CONTRADICTIONS_TOOL for tool in request.tools):
+            self.editor.reply_tool(CONTRADICTIONS_TOOL, {"contradictions": []})
+            return await self.editor.send(request, **options)  # type: ignore[arg-type]
         sessions = sorted(self.runs.glob("**/sessions/*/events.jsonl"))
         self.editor.reply_text(generated_notes(sessions[-1].parent.name))
         return await self.editor.send(request, **options)  # type: ignore[arg-type]
