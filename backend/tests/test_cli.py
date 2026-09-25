@@ -205,6 +205,9 @@ def test_setup_clone_interactive_asks_in_spanish(
     assert "Repositorio de GitHub (propietario/nombre)" in result.output
     assert f"Carpeta local del vault [{tmp_path / 'pc2'}]" in result.output
     assert "Vault clonado de ana/vault" in result.output
+    # ADR-0002: a clone is followed by an index rebuild, into the cache under the (test) HOME.
+    assert "Índice reconstruido" in result.output
+    assert (tmp_path / ".cache" / "studentassistant" / "index.sqlite3").is_file()
     stored = tomllib.loads(config_toml.read_text(encoding="utf-8"))
     assert stored["server"] == {"port": 9100}
     assert stored["vault"] == {"path": str(tmp_path / "pc2"), "repo": "ana/vault"}

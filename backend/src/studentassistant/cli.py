@@ -4,7 +4,8 @@
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
 `cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
 (or a page range of it) to a topic as a source, `setup` gets a PC from clone to running (the
-vault, the Anthropic API key, the STT model, the systemd service) and `doctor` checks that it is.
+vault, the Anthropic API key, the STT model, the systemd service), `doctor` checks that it is,
+and `index rebuild` recreates the derived search index from the vault.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -71,6 +72,7 @@ from studentassistant.vault import (
     read_ledger,
 )
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.index import IndexReport, VaultIndexError, rebuild_index
 from studentassistant.vault.setup import SetupError, SetupResult, clone_vault, create_vault
 
 cli = typer.Typer(
@@ -294,6 +296,34 @@ def import_pdf_command(
         )
 
 
+index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")
+cli.add_typer(index_cli, name="index")
+
+
+def _index_summary(report: IndexReport) -> str:
+    line = f"Índice reconstruido: {report.documents} documentos buscables."
+    if report.skipped:
+        line += f" {len(report.skipped)} partes de la bóveda no se pudieron leer:"
+        line += "".join(f"\n  {unit}: {reason}" for unit, reason in report.skipped)
+    return line
+
+
+@index_cli.command("rebuild")
+def index_rebuild() -> None:
+    """Recreate the index from scratch, reading only the vault."""
+    settings = Settings().vault
+    try:
+        vault = Vault.open(settings.path)
+        report = rebuild_index(vault, settings.index_path)
+    except VaultIndexError as error:
+        typer.echo(f"No se pudo reconstruir el índice: {error}")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(_index_summary(report))
+
+
 class SetupMode(StrEnum):
     """What `setup` does with the GitHub repository (the values are the Spanish prompt answers)."""
 
@@ -413,8 +443,22 @@ def setup(
                 warn=typer.echo,
             )
         else:
+            index_path = settings.vault.index_path
+
+            def rebuild_after_clone(vault: Vault) -> None:
+                # ADR-0002: install -> setup -> clone -> index rebuild.
+                try:
+                    typer.echo(_index_summary(rebuild_index(vault, index_path)))
+                except VaultIndexError as error:
+                    typer.echo(f"Aviso: no se pudo reconstruir el índice: {error}")
+
             result = clone_vault(
-                path, vault_repo, host, author_email=git.author_email, timeout=git.timeout_seconds
+                path,
+                vault_repo,
+                host,
+                post_clone=rebuild_after_clone,
+                author_email=git.author_email,
+                timeout=git.timeout_seconds,
             )
     except (SetupError, GitHubHostError) as error:
         typer.echo(f"No se pudo preparar el vault: {error}")
