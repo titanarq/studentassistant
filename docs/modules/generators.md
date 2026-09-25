@@ -127,3 +127,27 @@ generations (`assign_ids`): the previous cards are shown to Claude, whose reused
 it is an earlier card's and not given twice; else a card whose normalized front equals an earlier
 card's takes its id; else a new id from the front's hash. Items are the card ids with their
 anchors. The web downloads the `.apkg` and `.csv` through `GET .../generated/files/{name}`.
+
+## Exercises and mock exam -- `exam.py` (kind `examen`, #77)
+
+Options `exercises` (0-30, default 6), `questions` (1-20, default 5), `total_points` (default 10)
+and `duration_minutes` (10-300, default 60). Claude (prompt `prompts/generator_exam.md`, tool
+`record_exam`) returns `DraftExam`: the exam's `instructions`, the practice `exercises` and the
+`exam` questions, each a `DraftQuestion` (`statement`, `difficulty` `baja|media|alta`, `points`
+(exam questions), worked `solution`, `rubric` of `RubricCriterion` (`criterion`, `points`),
+`anchors`). The prompt asks for Unicode mathematics rather than LaTeX, since the output is
+printed. Files under `generated/`, the statements apart from the solutions:
+
+- `examen.md` -- the statements: exercises (with their difficulty), then the exam with its
+  duration, total points, instructions and every question's points;
+- `examen-soluciones.md` -- solutions, rubrics as a `Criterio | Puntos` table, and the note
+  sections each item comes from;
+- `examen.pdf`, `examen-soluciones.pdf` -- the same as A4 PDFs (`render_pdf`: PyMuPDF `Story`
+  over HTML rendered from the same data; `**bold**`, `*italic*`, `- ` and `1. ` lists, any
+  `$..$` left as LaTeX source in monospace), the exam with a name/date line, a box to answer each
+  question sized by its points, and `<title> · Página i de n` at the foot of every page.
+
+Extra items beyond the options are cut, questions without points, questions not adding up to
+`total_points` and rubrics not adding up to their question's points are kept and reported as
+Spanish warnings. Items are `e<n>` (exercise) and `p<n>` (exam question) with their anchors. The
+web lists the two PDFs under "Descargas" through `GET .../generated/files/{name}` (#76).

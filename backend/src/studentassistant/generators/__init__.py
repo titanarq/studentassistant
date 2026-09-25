@@ -5,6 +5,7 @@
 # from and the provenance of every item, and tells when an artifact is stale. Each built-in
 # generator module registers itself on `default_registry` and is imported here.
 
+import studentassistant.generators.exam  # noqa: F401 (registers itself)
 from studentassistant.generators import flashcards  # noqa: F401 (registers itself)
 from studentassistant.generators.base import (
     CONVERSATION_NAME,
