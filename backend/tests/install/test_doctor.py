@@ -47,7 +47,7 @@ def vault_ready(env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch) -> 
 def probes(host: LocalHost, **overrides) -> DoctorProbes:
     calls: list[str] = []
 
-    def api_key_check(key: str) -> None:
+    def api_key_check(key: str | None) -> None:
         calls.append(key)
 
     base = DoctorProbes(
@@ -55,6 +55,7 @@ def probes(host: LocalHost, **overrides) -> DoctorProbes:
         api_key_check=api_key_check,
         port_free=lambda host_, port: True,
         backend_answers=lambda: False,
+        ant_profile=lambda: None,
         environ={},
     )
     for name, value in overrides.items():
@@ -139,6 +140,54 @@ def test_no_key_and_an_open_key_file_fail(vault_ready: Path, host: LocalHost) ->
     path.chmod(0o644)
     check = by_name(run_doctor(settings, probes=probes(host)))["Clave de la API de Anthropic"]
     assert check.failed and "chmod 600" in check.detail
+
+
+def test_an_ant_auth_profile_alone_is_a_key_source(vault_ready: Path, host: LocalHost) -> None:
+    seen: list[str | None] = []
+    only_profile = probes(host, api_key_check=seen.append, ant_profile=lambda: "default")
+
+    check = by_name(run_doctor(Settings(), probes=only_profile))["Clave de la API de Anthropic"]
+    assert check.status == "ok"
+    assert "perfil «default» de `ant auth`" in check.detail
+    assert seen == []
+
+    check = by_name(run_doctor(Settings(), api_call=True, probes=only_profile))[
+        "Clave de la API de Anthropic"
+    ]
+    assert check.status == "ok"
+    assert seen == [None]  # no key passed: the SDK resolves the profile itself
+
+
+def test_a_key_shadows_the_profile(vault_ready: Path, host: LocalHost) -> None:
+    seen: list[str | None] = []
+    check = by_name(
+        run_doctor(
+            Settings(),
+            api_call=True,
+            probes=probes(
+                host,
+                api_key_check=seen.append,
+                ant_profile=lambda: "default",
+                environ={API_KEY_ENV_VAR: KEY},
+            ),
+        )
+    )["Clave de la API de Anthropic"]
+    assert check.status == "ok" and API_KEY_ENV_VAR in check.detail
+    assert seen == [KEY]
+
+
+def test_a_refused_profile_fails(vault_ready: Path, host: LocalHost) -> None:
+    def refuse(key: str | None) -> None:
+        raise LLMAPIError("bad", status_code=401)
+
+    check = by_name(
+        run_doctor(
+            Settings(),
+            api_call=True,
+            probes=probes(host, api_key_check=refuse, ant_profile=lambda: "work"),
+        )
+    )["Clave de la API de Anthropic"]
+    assert check.failed and "perfil «work»" in check.detail
 
 
 def test_a_missing_vault_fails_and_skips_the_remote(env: Path, host: LocalHost) -> None:

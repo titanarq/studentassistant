@@ -26,6 +26,12 @@ sessions, and again before every session start; a `conflict` refuses the start
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
 flushes whatever is still pending.
 
+One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
+(`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
+`host_warning` the status route shows -- a warning, never a refusal. A session start then claims
+the record for this host, commits it and asks for an immediate push; its end releases it before
+the end's checkpoint and push.
+
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
 within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. Every vault call
 runs in a worker thread, and lifecycle changes are serialised by one lock.
@@ -58,6 +64,7 @@ from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import Principal
 from studentassistant.server.bus import SessionBus
 from studentassistant.vault import (
+    ActiveHostWarning,
     GitSync,
     NoOpenSessionError,
     Session,
@@ -65,12 +72,15 @@ from studentassistant.vault import (
     SyncResult,
     Vault,
     VaultError,
+    check_active_host,
+    claim_active_host,
     create_subject,
     create_topic,
     end_session,
     list_sessions,
     list_subjects,
     list_topics,
+    release_active_host,
     resume_session,
     start_session,
 )
@@ -185,6 +195,7 @@ class SessionService:
         self._end_hook_timeout = end_hook_timeout
         self._before_ended: list[EndHook] = []
         self._before_close: list[EndHook] = []
+        self._host_warning: ActiveHostWarning | None = None
         if bus.on_append is None:
             bus.on_append = self._note_change
 
@@ -211,6 +222,11 @@ class SessionService:
             VaultUnavailableError: the vault cannot be opened.
         """
         return await self._ready()
+
+    @property
+    def host_warning(self) -> ActiveHostWarning | None:
+        """Another PC's open claim on the vault, as of the last pull (vault open, session start)."""
+        return self._host_warning
 
     @property
     def sync_running(self) -> bool:
@@ -351,8 +367,12 @@ class SessionService:
                     " Resolve the conflict in the vault before starting a session",
                     result.conflicts,
                 )
+            await self._check_host(vault)
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
+            )
+            await asyncio.to_thread(
+                claim_active_host, vault, self.host, session.id, subject_id, topic_id
             )
             self._note_change()
             self._open[(subject_id, topic_id)] = session.id
@@ -368,6 +388,14 @@ class SessionService:
                     "device_id": _device(principal),
                 },
             )
+            sync = self._sync
+            if sync is not None:
+                # The claim is committed now and pushed by the background loop right away, so the
+                # other PCs see it without the start waiting for the network.
+                await asyncio.to_thread(
+                    sync.checkpoint, f"sesión {session.id} iniciada en {self.host}"
+                )
+                sync.request_push()
             return await _wire_session(session)
 
     async def resume(
@@ -434,6 +462,7 @@ class SessionService:
                 )
                 await self._run_end_hooks(self._before_close, session.id, "before close")
                 meta = await asyncio.to_thread(end_session, session)
+                await asyncio.to_thread(release_active_host, session.vault, self.host, session.id)
             except BaseException:
                 if attached_here:
                     self.bus.detach(session.id)
@@ -525,6 +554,7 @@ class SessionService:
                 # Pull before the scan, so sessions another PC left open are seen. A conflict is
                 # only logged here: the next session start pulls again and refuses on it.
                 await self._pull("vault open")
+                await self._check_host(vault)
                 self._open = await asyncio.to_thread(_scan_open_sessions, vault)
                 self._vault = vault
                 self._loaded = True
@@ -556,6 +586,16 @@ class SessionService:
             # offline, auth, error: work goes on locally and a later sync or push catches up.
             logger.warning("vault sync at %s: %s: %s", when, result.outcome, result.message)
         return result
+
+    async def _check_host(self, vault: Vault) -> None:
+        """Read the active-host record just pulled into `host_warning`; logs a warning it finds."""
+        stale_after = (
+            self._sync.settings if self._sync is not None else self._settings.git
+        ).active_host_stale_seconds
+        warning = await asyncio.to_thread(check_active_host, vault, self.host, stale_after)
+        if warning is not None:
+            logger.warning("vault active host: %s", warning.message)
+        self._host_warning = warning
 
     def _note_change(self) -> None:
         if self._sync is not None:

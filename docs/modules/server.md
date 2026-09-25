@@ -20,7 +20,7 @@
 
 ## Public surface
 
-### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None) -> FastAPI`
+### `create_app(static_dir=None, *, server=None, codes=None, vault=None, sync=None, vault_settings=None, stt=None, sources=None, recorder=None) -> FastAPI`
 `studentassistant.server.app.create_app` builds a fresh app (one per caller; nothing is registered
 at import time). `server` is the `[server]` config section (`ServerSettings`; default: read from
 `studentassistant.config`), `codes` the in-memory `PairingCodes` (tests inject one with a fake
@@ -30,6 +30,9 @@ the first request that needs it, so building an app never touches a vault. `sync
 `GitSync` (default: one over that vault with `vault_settings.git`). `stt` is the `[stt]` section
 (`SttSettings`, default: the configured one) the session WebSocket follows; `sources` the
 `[sources]` section (`SourcesSettings`, default: the configured one) the PDF upload follows.
+`recorder` is the `SessionRecorder` of `serve --record` (see "Recording and replay" below);
+without one nothing is recorded, and one whose directory is inside the vault is refused with
+`ValueError`.
 
 The app's lifespan drives that `GitSync`: on startup it calls `SessionService.startup()`, so once
 the vault is open (still lazily, on the first request that needs it) `GitSync.run()` runs as a
@@ -40,7 +43,8 @@ is no background loop.
 
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
-and `gateway` (the `SessionGateway` of the session WebSocket).
+`gateway` (the `SessionGateway` of the session WebSocket) and `recorder` (`None` unless one was
+given).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -127,6 +131,19 @@ Routes registered today:
     publishing nothing. The check and the store are serialised per session, so concurrent
     uploads of one new id store it once. A session that ends between the check and the event is
     409 (the source file may stay; the observer never sees it without its event).
+- `GET /api/vault/status` (`server/vault_status.py`, web-only, not phone protocol) -> the vault's
+  sync state without blocking anything: `host`, `pending_changes`, `pending_commits`,
+  `last_commit_at`, `last_push_at`, `last_push_failure` (`kind`, `message`, `at`), `last_sync`
+  (`outcome`, `message`, `conflicts`, `at`), `host_warning` (another PC's open claim on the vault
+  as of the last pull: `host`, `session_id`, `subject`, `topic`, `claimed_at`, Spanish
+  `message`) and `divergence` (`paths`, `local_commit`, `remote_commit`, `detected_at`, Spanish
+  `message`), null when absent. It opens the vault (pull + active-host check) if nothing had.
+  `GET /api/vault/divergence?path=` -> `{path, local, remote}`, both sides' text of one diverging
+  path; 404 for a path not diverging. A vault that cannot be opened is 503.
+- Session start/end and the active host (ADR-0002, `vault/active.py`): after the start's pull,
+  `SessionService` checks `.sa/active.yaml` into `host_warning` (logged, never refused), claims it
+  for its host once the session exists, checkpoints (`sesión <id> iniciada en <host>`) and calls
+  `GitSync.request_push()`; the end releases the claim before its checkpoint and push.
 - `GET /api/cost` (`server/cost.py`) -> the `CostStatus` of `studentassistant.llm.cost_status`
   as JSON: `session_usd`, `day_usd`, `max_usd_per_session`, `max_usd_per_day` (null = no cap),
   `observer_paused`, `editor_needs_confirmation`, plus `unpriced_session_calls`,
@@ -396,6 +413,93 @@ replace all three.
   A socket of the session still open then handles no further message (closed with 4404), and a
   new socket of it is refused, although `end` still has it attached.
 
+### Recording and replay -- `server/recording.py`, `server/recorder.py`, `server/replay.py`
+
+A **recording** is a directory holding what one capture client sent during one session, and
+nothing the backend derived from it (VISION §5 item 11, the session simulator). It is never vault
+content: `serve --record` writes it under `[server].recordings_dir`, and `replay` reads it from
+any path. It is read and written only through `server/recording.py`, whose lines and manifest are
+the protocol's own Pydantic models, so a recording holds exactly what the wire carries, with the
+client times the client gave it.
+
+| file | holds |
+|---|---|
+| `manifest.yaml` | `RecordingManifest`: `format_version` (`1`), `subject` and `topic` (REST ids), `language`, `stt_mode` (`client` or `server`), `stt_provider` (the client recognizer `hello` announces, default `replay`; client mode only), `started_client_time_ms` (client-clock epoch ms of the session start; every other client time is relative to it) |
+| `transcript.jsonl` | client mode: one `transcript.client.partial` / `transcript.client.final` message per line, with its client times |
+| `audio.wav` | server mode: PCM16, 16000 Hz, mono, sample 0 at the session start |
+| `events.jsonl` | one `button` or `marker` client message per line, with its `client_time_ms` |
+| `captures.jsonl` | one `rest.sessions.captures.request` metadata object per line (`capture_id`, `trigger`, `client_time_ms`, `images`, ...), in upload order |
+| `captures/` | the images of those bursts, `<capture_id>.<part>.<ext>` (`.jpg`, `.png` or `.webp` from the image's `content_type`) |
+
+Every file but the manifest is optional (absent = empty). A client-mode recording must not hold
+`audio.wav` and a server-mode one must not hold transcript lines.
+
+- `read_recording(directory) -> Recording` validates the whole directory up front (manifest,
+  every line, every capture image present, the WAV format) and raises `RecordingError` (a
+  `ValueError`) on anything it cannot read, so a replay never starts on a half-valid recording.
+  `read_manifest(directory)` reads the manifest alone. `Recording` holds `directory`,
+  `manifest`, `transcript`, `events`, `captures` (`RecordedCapture`: `metadata`, `image_paths`),
+  `audio_path` (`None` without audio) and `read_audio()`.
+- `RecordingWriter(directory, manifest)` writes the manifest on creation, then
+  `append_transcript`, `append_event`, `add_capture(metadata, images)` (images by `part`; the
+  parts must be exactly the ones the metadata names, else `RecordingError`), `append_audio(pcm)`
+  and `close()` (finishes the WAV header); also a context manager. Nothing is fsynced: a
+  recording is a development aid. `write_wav` / `read_wav` / `WavWriter` handle PCM16 16 kHz
+  mono WAV files, refusing any other format.
+- The test fixture `backend/tests/fixtures/sessions/sample/` is a tiny synthetic client-mode
+  recording (Spanish finals and partials, one `switch_source` button, one generated page image),
+  regenerated by `backend/tests/fixtures/sessions/make_sample.py`.
+
+**Recorder** (`SessionRecorder(root)`, on `app.state.recorder`): the WebSocket gateway and the
+capture endpoint call it with exactly what the client sent and the backend accepted -- the client
+transcript messages (a resent final is not recorded twice), the audio frames in `seq` order as
+they are fed to the provider (reassembled into `audio.wav`, preceded by silence back to the
+session start so a sample's position stays its session time), the `button`/`marker` messages, and
+each newly stored capture burst with its images (a duplicate upload records nothing). Each session
+gets `<recordings_dir>/<session_id>/`; the manifest is written at the session's first completed
+`hello`, when the client clock offset is known (a capture uploaded before any `hello` assumes the
+client clock is the backend's). A session resumed after a backend restart records into
+`<session_id>-2/` (and so on), so no recording is overwritten. The recording is closed when its
+session ends, and every open one when the app shuts down. All recorder I/O runs in a worker
+thread, and a recording that cannot be written is logged and never fails the socket or the
+upload.
+
+**Replay** (`await replay(recording, transport, *, speed=1.0, subject=None, topic=None,
+sleep=asyncio.sleep, clock=time.monotonic, confirm_timeout_s=5.0, ack_timeout_s=10.0) ->
+ReplayResult`) acts as a capture client over exactly the live path:
+
+1. ensures the subject and topic exist (`GET`/`POST /api/subjects...`, the id as the name when it
+   creates one), then `POST /api/sessions` with `client_time_ms = started_client_time_ms`;
+   `subject`/`topic` override the manifest's;
+2. connects `WS /ws/sessions/{id}`, sends `hello` and waits for `hello.ack`, refusing a backend
+   whose STT mode is not the recording's;
+3. sends, in client-time order and each at its offset from the session start divided by `speed`:
+   every transcript message (due at its `client_end_ms`), every `button`/`marker` (at its
+   `client_time_ms`) and every capture burst as a multipart `POST /api/sessions/{id}/captures`
+   (at its `client_time_ms`). A server-mode recording sends `audio.wav` instead, sliced into
+   `AUDIO_FRAME_MS` (100 ms) protocol binary frames (`encode_frame`, `seq` from 0, each due when
+   its last sample was captured);
+4. `POST /api/sessions/{id}/end` at the last recorded time, then closes the socket.
+
+Before each upload and before the end it settles: it waits until the backend has processed every
+WebSocket message sent so far (so a capture is stored under the source context of the
+`switch_source` buttons before it) and has echoed every final (up to `confirm_timeout_s`, since a
+final refused as a secret is never echoed); in server mode also for the `ack` of the last frame
+sent (up to `ack_timeout_s`). When a server-mode socket drops, it reconnects (up to
+`MAX_RECONNECTS`, 3), resends `hello` keeping the first connection's clock offset, and resends
+every frame after the highest acknowledged `audio_seq`. `speed <= 0` is a `ValueError`; a refused
+request, a closed socket, a mismatched STT mode or a socket that keeps dropping raise
+`ReplayError`. `ReplayResult` counts what was sent (`partials_sent`, `finals_sent`,
+`events_sent`, `captures_stored`, `captures_duplicate`, `audio_frames_sent`,
+`audio_frames_resent`, `reconnects`) plus `session_id`, `subject_id`, `topic_id`, `ended_at_ms`.
+
+Pacing reads the injectable `clock` and waits with the injectable `sleep`, so tests replay without
+real waiting. The backend is reached through a `ReplayTransport`: `AsgiTransport(app,
+lifespan=True)` drives an in-process `create_app` app through ASGI as a trusted loopback client
+(running its lifespan like `serve`), `HttpTransport(base_url, token=None)` talks to a running
+server over HTTP and `websockets` (a LAN address needs a device bearer `token`; a loopback URL is
+trusted without one).
+
 ### Session event bus -- `server/bus.py`
 
 `SessionBus(on_append=None, default_queue_size=256)` (on `app.state.bus`) is the in-process
@@ -430,8 +534,18 @@ WebSocket gateway publish and subscribe here.
 
 ### CLI
 
-- `studentassistant serve`: runs the app on `server.host`:`server.port` (uvicorn with
-  `proxy_headers=False`).
+- `studentassistant serve [--record]`: runs the app on `server.host`:`server.port` (uvicorn with
+  `proxy_headers=False`). `--record` gives the app a `SessionRecorder` over
+  `server.recordings_dir` and records every session there (see "Recording and replay"); it exits
+  with code 1 when that directory is inside the vault. Without `--record` nothing is recorded.
+- `studentassistant replay <dir> [--speed 1.0] [--topic <subject>/<topic>] [--url <base url>]`:
+  reads the recording in `<dir>` (exit 1 with the `RecordingError` when it cannot) and replays it
+  as a capture client. `--speed` divides every recorded offset (`4` replays twenty minutes in
+  five; must be > 0), `--topic` overrides the manifest's subject and topic. With `--url` it talks
+  to that running backend (no token option: use a loopback URL); without it, it builds the app
+  in-process from the configuration (the configured vault and `[stt]`, whose mode must match the
+  recording's) and runs its lifespan. Prints (in Spanish) the session id and what was sent; a
+  `ReplayError` exits 1, a malformed `--topic` or `--speed` exits 2.
 - `studentassistant pair`: asks the running backend for a code (`POST /api/pair/codes` on
   `127.0.0.1:<server.port>`, or on `server.host` when that names one address) and prints a QR of
   the JSON `{"url", "code"}` in the terminal (segno, compact), plus the URL, the code and its expiry.
@@ -451,3 +565,4 @@ WebSocket gateway publish and subscribe here.
 | `max_capture_image_bytes` | `15728640` (15 MiB) | largest image part a capture burst may carry (413 beyond) |
 | `max_capture_images` | `5` | most images one capture burst may hold (413 beyond) |
 | `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
+| `recordings_dir` | `~/.cache/studentassistant/recordings` | where `serve --record` writes one recording directory per session id (`~` expanded); must not be inside the vault |

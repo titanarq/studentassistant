@@ -106,7 +106,7 @@ class TopicSummary(BaseModel):
     )
     open_pending: int = Field(description="Open pending-review items of the observer's state.")
     notes_version: int | None = Field(
-        description="The highest `<topic>/apuntes-vN` tag, `null` when there is none."
+        description="The highest `<subject>/<topic>/apuntes-vN` tag, `null` when there is none."
     )
     generated: list[str] = Field(
         description="Vault-relative paths of the generated material under `generated/`."
