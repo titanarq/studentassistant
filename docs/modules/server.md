@@ -264,6 +264,18 @@ Routes registered today:
   a key, a body that is not multipart, a missing/empty/repeated `file`, or any other part 422; an
   unknown subject or topic 404 (checked before the body is read); a vault that cannot be opened
   503. No active session is needed. Needs the bearer check like every non-exempt route.
+- Web search (`server/web_search_routes.py`, `web_search_router()`, #59), through
+  `app.state.web_searcher` (`sources.web_searcher.WebSearcher`, built with an `llm_transport` and
+  `[sources] web_search_enabled`, started and stopped by the lifespan):
+  `GET /api/subjects/{s}/topics/{t}/web-searches` -> `{"searches": [WebSearchRecord...]}` newest
+  first (works without a transport); `POST` the same path with `{"query"}` (at most 500
+  characters) -> 202 `{"search_id", "status": "queued"}`, the search running in the background
+  (bound to the active session when it is of that topic); `POST
+  .../web-searches/{search_id}/results/{index}/keep` -> 201 `KeptResponse` (`source_id`,
+  `vault_id`, `title`, `url`) once the page is stored as `sources/web/NNN-<slug>.md`. Refusals in
+  Spanish: unknown topic, search or result 404; no results yet or a reached cost cap 409; empty
+  query, or a page that cannot be kept (a PDF, an error, a key) 422; Claude failure or refusal
+  502; no transport, web search disabled, or no vault 503. See `docs/modules/sources.md`.
 - `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
   `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
   `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a
