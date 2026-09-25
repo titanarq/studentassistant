@@ -6,17 +6,19 @@ pages captured, the source used, doubts raised and settled, the observer's last 
 open doubts. It is how a topic is resumed another day ("continúa el tema"): the live observer puts
 it in its cached prefix (`render_topic`) when it opens a session, and the editor reads it as input.
 
-`render_digest(subject_name, topic_title, events, state)` is pure and deterministic: it depends
-only on the topic's event log (and the fold of it), never on the clock or on Claude, so the digest
-of the same log is always the same text. `regenerate_topic_digest` renders it from the vault and
-writes it through `studentassistant.vault.write_topic_digest` only when it changed;
-`DigestOnEnd(lookup)` is the session-end hook (`SessionService.add_before_close`, after
-`session.ended` is in the log) that does it for the ending session's topic. `topic_digest` is the
-reader the observer loop and the editor are given: the stored digest, `None` before the first.
+`render_digest(subject_name, topic_title, events, state, timezone=...)` is pure and deterministic:
+it depends only on the topic's event log (and the fold of it) and the timezone, never on the clock
+or on Claude, so the digest of the same log in the same zone is always the same text.
+`regenerate_topic_digest` renders it from the vault and writes it through
+`studentassistant.vault.write_topic_digest` only when it changed; `DigestOnEnd(lookup)` is the
+session-end hook (`SessionService.add_before_close`, after `session.ended` is in the log) that
+does it for the ending session's topic. `topic_digest` is the reader the observer loop and the
+editor are given: the stored digest, `None` before the first.
 
-Dates come from the session ids (`YYYYMMDD-HHMMSS`, UTC), lengths from the events' `t`. A session
-whose events the vault purge folded into a compaction (#31) is still described from the state, but
-without its status, length or sources, which only its events held.
+Dates come from the session ids (`YYYYMMDD-HHMMSS`, UTC), shown in the given zone (the configured
+`observer.digest_timezone`, #202), lengths from the events' `t`. A session whose events the vault
+purge folded into a compaction (#31) is still described from the state, but without its status,
+length or sources, which only its events held.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, tzinfo
 
 from studentassistant.observer.fold import TopicEvent
 from studentassistant.observer.loader import load_observer_snapshot
@@ -43,6 +46,8 @@ from studentassistant.vault import (
 logger = logging.getLogger(__name__)
 
 SESSION_ENDED_KIND = "session.ended"
+SESSION_ID_FORMAT = "%Y%m%d-%H%M%S"
+"""A session id is its start in UTC (`vault.session_models.SESSION_ID_FORMAT`)."""
 NOTES_PER_SESSION = 5
 """The observer's remarks kept per session (the latest ones)."""
 NOTE_CHARS = 240
@@ -94,12 +99,17 @@ class _SessionDigest:
         )
 
 
-def session_date(session_id: str) -> str:
-    """`dd/mm/yyyy` of a `YYYYMMDD-HHMMSS` session id; the id itself if it is not one."""
-    day = session_id.split("-", 1)[0]
-    if len(day) != 8 or not day.isdigit():
+def session_date(session_id: str, timezone: tzinfo = UTC) -> str:
+    """`dd/mm/yyyy` in `timezone` of a `YYYYMMDD-HHMMSS` session id (its start, in UTC).
+
+    The id itself if it is not one.
+    """
+    try:
+        naive = datetime.strptime(session_id, SESSION_ID_FORMAT)
+    except ValueError:
         return session_id
-    return f"{day[6:8]}/{day[4:6]}/{day[0:4]}"
+    start = datetime.combine(naive.date(), naive.time(), UTC)
+    return start.astimezone(timezone).strftime("%d/%m/%Y")
 
 
 def _sessions(events: Sequence[TopicEvent], state: TopicState) -> list[_SessionDigest]:
@@ -178,7 +188,7 @@ def _segments_note(state: TopicState, section: Section) -> str:
     return f" ({_plural(count, 'fragmento', 'fragmentos')})" if count else ""
 
 
-def _summary(sessions: list[_SessionDigest], state: TopicState) -> str:
+def _summary(sessions: list[_SessionDigest], state: TopicState, timezone: tzinfo) -> str:
     worked = [s for s in sessions if not s.is_empty]
     open_count = len(state.open_pending())
     doubts = (
@@ -191,13 +201,13 @@ def _summary(sessions: list[_SessionDigest], state: TopicState) -> str:
     last = worked[-1]
     covered = ", ".join(last.sections or last.new_sections or last.concepts)
     text = f"{_plural(len(worked), 'sesión', 'sesiones')} con contenido"
-    text += f"; la última, el {session_date(last.session_id)}"
+    text += f"; la última, el {session_date(last.session_id, timezone)}"
     text += f": {covered}." if covered else "."
     return f"{text} {doubts}"
 
 
-def _session_block(number: int, session: _SessionDigest) -> list[str]:
-    heading = f"### Sesión {number} — {session_date(session.session_id)}"
+def _session_block(number: int, session: _SessionDigest, timezone: tzinfo) -> list[str]:
+    heading = f"### Sesión {number} — {session_date(session.session_id, timezone)}"
     if session.logged:
         status = "terminada" if session.ended else "sin terminar"
         heading += f" ({status}, {round(session.last_t / 60000)} min)"
@@ -239,15 +249,21 @@ def _pending_line(item: PendingItem, numbers: dict[str, int]) -> str:
 
 
 def render_digest(
-    subject_name: str, topic_title: str, events: Sequence[TopicEvent], state: TopicState
+    subject_name: str,
+    topic_title: str,
+    events: Sequence[TopicEvent],
+    state: TopicState,
+    *,
+    timezone: tzinfo = UTC,
 ) -> str:
     """The topic digest (Spanish Markdown) of `events`, whose fold is `state`.
 
-    Pure and deterministic: equal arguments give the same text, whatever the clock.
+    Session dates are shown in `timezone`. Pure and deterministic: equal arguments give the same
+    text, whatever the clock.
     """
     sessions = _sessions(events, state)
     numbers = {session.session_id: index for index, session in enumerate(sessions, start=1)}
-    lines = [f"# Resumen del tema: {topic_title}", "", _summary(sessions, state), ""]
+    lines = [f"# Resumen del tema: {topic_title}", "", _summary(sessions, state, timezone), ""]
     lines += [f"Asignatura: {subject_name}.", ""]
     lines += ["## Índice", ""]
     lines += _outline_lines(state, None, 0) or ["Sin apartados todavía."]
@@ -257,7 +273,7 @@ def render_digest(
     for number, session in enumerate(sessions, start=1):
         if number > 1:
             lines.append("")
-        lines += _session_block(number, session)
+        lines += _session_block(number, session, timezone)
     lines += ["", "## Dudas abiertas", ""]
     open_items = state.open_pending()
     lines += [_pending_line(item, numbers) for item in open_items] or ["Ninguna."]
@@ -278,8 +294,12 @@ def digest_excerpt(text: str | None, limit: int = EXCERPT_CHARS) -> str | None:
     return None
 
 
-def regenerate_topic_digest(vault: Vault, subject_slug: str, topic_slug: str) -> bool:
+def regenerate_topic_digest(
+    vault: Vault, subject_slug: str, topic_slug: str, *, timezone: tzinfo = UTC
+) -> bool:
     """Render the topic's digest from its log and write `state/digest.md` if it changed.
+
+    Session dates are shown in `timezone` (the app passes `observer.digest_timezone`).
 
     Returns whether it was written. Reads the stored snapshot without writing it back.
 
@@ -290,7 +310,7 @@ def regenerate_topic_digest(vault: Vault, subject_slug: str, topic_slug: str) ->
     events = list(read_topic_events(vault, subject_slug, topic_slug))
     subject_name = get_subject(vault, subject_slug).subject.name
     topic_title = get_topic(vault, subject_slug, topic_slug).topic.title
-    text = render_digest(subject_name, topic_title, events, snapshot.state)
+    text = render_digest(subject_name, topic_title, events, snapshot.state, timezone=timezone)
     if read_topic_digest(vault, subject_slug, topic_slug) == text:
         return False
     write_topic_digest(vault, subject_slug, topic_slug, text)
@@ -310,11 +330,12 @@ class DigestOnEnd:
 
     `lookup(session_id)` gives the attached session (`SessionBus.attached`); register it with
     `SessionService.add_before_close`, so `session.ended` is already in the log. A session the
-    lookup does not know is logged and skipped.
+    lookup does not know is logged and skipped. Session dates are shown in `timezone`.
     """
 
-    def __init__(self, lookup: Callable[[str], Session | None]) -> None:
+    def __init__(self, lookup: Callable[[str], Session | None], *, timezone: tzinfo = UTC) -> None:
         self.lookup = lookup
+        self.timezone = timezone
 
     async def __call__(self, session_id: str) -> None:
         session = self.lookup(session_id)
@@ -322,5 +343,9 @@ class DigestOnEnd:
             logger.warning("no open vault session %s; its digest is not regenerated", session_id)
             return
         await asyncio.to_thread(
-            regenerate_topic_digest, session.vault, session.subject_slug, session.topic_slug
+            regenerate_topic_digest,
+            session.vault,
+            session.subject_slug,
+            session.topic_slug,
+            timezone=self.timezone,
         )

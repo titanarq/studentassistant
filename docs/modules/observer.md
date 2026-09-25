@@ -228,18 +228,24 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
 and an input of the editor. It holds, in this order: the title, a one-paragraph summary (sessions
 with content, the last one's date and sections, the open doubt count -- the excerpt), the subject,
 `## Índice` (the outline, nested, with each section's segment count), `## Sesiones` (one block per
-session: date from the session id, `terminada`/`sin terminar`, minutes from the events' `t`; the
+session: date from the session id -- its UTC start shown in `[observer] digest_timezone` --, `terminada`/`sin terminar`, minutes from the events' `t`; the
 sources set, sections worked on -- by the session its segments came from --, new sections still
 empty, new concepts, segment and capture counts, doubts added and settled, the last
 `NOTES_PER_SESSION` (5) observer remarks, each cut at 240 characters) and `## Dudas abiertas`.
 A session the vault purge compacted (#31: its `events.jsonl` emptied) is still described from
 the folded state, without the status, length and sources only its events held.
-- `render_digest(subject_name, topic_title, events, state) -> str`: pure and deterministic (no
-  clock, no Claude): the same log always gives the same text.
-- `regenerate_topic_digest(vault, subject_slug, topic_slug) -> bool`: renders it from the vault
+- `render_digest(subject_name, topic_title, events, state, *, timezone=UTC) -> str`: pure and
+  deterministic (no clock, no Claude): the same log and zone always give the same text.
+  `session_date(session_id, timezone=UTC)` is the `dd/mm/yyyy` of the id's start in that zone (an
+  id not of the `YYYYMMDD-HHMMSS` form is shown as it is).
+- `observer.digest_timezone` (`SA_OBSERVER__DIGEST_TIMEZONE`, #202): the IANA zone the digest
+  dates sessions in (`Europe/Madrid`); unset, the PC's local zone (`TZ`, else `/etc/localtime`,
+  else UTC). An unknown name is refused when the settings load. `ObserverSettings.digest_zone()`
+  gives the `tzinfo`; the app passes it to `DigestOnEnd`.
+- `regenerate_topic_digest(vault, subject_slug, topic_slug, *, timezone=UTC) -> bool`: renders it from the vault
   (`read_topic_events`, `load_observer_snapshot(write_back=False)`) and writes it with
   `vault.write_topic_digest` only when the text changed; returns whether it wrote.
-- `DigestOnEnd(lookup)`: the async end hook the app registers with
+- `DigestOnEnd(lookup, *, timezone=UTC)`: the async end hook the app registers with
   `SessionService.add_before_close` (after the transcript drain, so `session.ended` is in the log
   and the file lands in the end's checkpoint). It runs whether or not the observer uses Claude.
 - `topic_digest(vault, subject_slug, topic_slug) -> str | None`: the stored digest, `None` before
