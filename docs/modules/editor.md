@@ -134,8 +134,9 @@ max_attachment_bytes=24 MiB) -> GenerationResult` writes the topic's notes with 
   `transcript.final` events grouped by the observer's outline (`load_observer_snapshot(...,
   write_back=False)`: sections in outline order with their linked pages and concepts, unassigned
   segments last, each line `[<session> t=HH:MM:SS-HH:MM:SS] text`), the observer's notes, the
-  **pending items** (open ones as doubts not to be resolved by guessing, resolved ones as the
-  student's decisions), the digest, the current `apuntes.md` (keep its anchors) and the
+  **pending items** (`kind`, `text`, refs; open ones as doubts not to be resolved by guessing,
+  closed ones labelled by `status` -- resolved by the student, auto-resolved by the observer or
+  dismissed, which is no decision -- with their `resolution` when there is one), the digest, the current `apuntes.md` (keep its anchors) and the
   instruction, ending in a second breakpoint so re-asks read it all from the cache. At most
   `max_page_images` images (the API refuses more than 20 of this size per request) and
   `max_attachment_bytes` of base64 attachments (requests are capped at 32 MB) are sent; a PDF past

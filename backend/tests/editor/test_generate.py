@@ -173,7 +173,19 @@ def test_the_input_puts_the_sources_first_and_the_transcript_by_section(
     assert "Conceptos: derivada" in transcript
     pending = next(t for t in texts if t.startswith("## Dudas pendientes"))
     assert "p-1 [unexplained_concept] Se menciona la regla de la cadena" in pending
-    assert "p-2 [illegible] Palabra ilegible en la página 1. -> Pone «incremental»." in pending
+    assert (
+        "p-1 [unexplained_concept] Se menciona la regla de la cadena sin explicarla."
+        f" ({topic.session} t=01:02:05-01:02:10)" in pending
+    )
+    assert (
+        "p-2 [illegible, resuelta por el estudiante] Palabra ilegible en la página 1."
+        " (sources/notes/page-001.jpg) -> Pone «incremental»." in pending
+    )
+    assert (
+        "p-3 [possible_error, descartada] ¿Falta el signo en la fórmula?"
+        " (sources/notes/page-002.jpg)" in pending
+    )
+    assert "p-3" in pending.split("Cerradas")[1]
     assert texts[-1].startswith("Escribe ahora `notes/apuntes.md` del tema «Derivadas»")
 
 

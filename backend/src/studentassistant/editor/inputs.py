@@ -41,6 +41,7 @@ from studentassistant.llm import Prompt
 from studentassistant.observer import (
     CAPTURE_EVENT_KIND,
     SEGMENT_EVENT_KIND,
+    PendingItem,
     TopicState,
     load_observer_snapshot,
 )
@@ -234,33 +235,42 @@ def _render_transcript(state: TopicState, log: _Log) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+_CLOSED_LABEL = {
+    "resolved": "resuelta por el estudiante",
+    "auto_resolved": "resuelta por el observador",
+    "dismissed": "descartada",
+}
+
+
 def _render_pending(state: TopicState, log: _Log) -> str:
     where: dict[str, _Segment] = {segment.segment_id: segment for segment in log.segments}
 
-    def refs(segment_ids: list[str], capture_ids: list[str]) -> str:
-        parts = [f"{where[s].session_id} t={where[s].span}" for s in segment_ids if s in where]
-        parts += [log.capture_pages[c] for c in capture_ids if c in log.capture_pages]
+    def refs(item: PendingItem) -> str:
+        parts = [
+            f"{where[s].session_id} t={where[s].span}" for s in item.refs.segments if s in where
+        ]
+        parts += [log.capture_pages[c] for c in item.refs.pages if c in log.capture_pages]
+        parts += list(item.refs.sources)
         return f" ({'; '.join(parts)})" if parts else ""
 
     lines = ["## Dudas pendientes", ""]
     open_items = state.open_pending()
-    resolved = state.resolved_pending()
-    if not open_items and not resolved:
+    closed = state.resolved_pending()
+    if not open_items and not closed:
         lines.append("(No hay dudas registradas.)")
     if open_items:
         lines.append("Abiertas (no las resuelvas tú; conserva lo que no esté claro marcado):")
-        lines.extend(
-            f"- {item.id} [{item.category}] {item.description}"
-            f"{refs(item.segment_ids, item.capture_ids)}"
-            for item in open_items
-        )
+        lines.extend(f"- {item.id} [{item.kind}] {item.text}{refs(item)}" for item in open_items)
         lines.append("")
-    if resolved:
-        lines.append("Resueltas por el estudiante (síguelas):")
-        lines.extend(
-            f"- {item.id} [{item.category}] {item.description} -> {item.resolution}"
-            for item in resolved
+    if closed:
+        lines.append(
+            "Cerradas (sigue lo que decidió el estudiante; una duda descartada no es una"
+            " decisión sobre el contenido):"
         )
+        for item in closed:
+            label = _CLOSED_LABEL.get(item.status, item.status)
+            outcome = f" -> {item.resolution}" if item.resolution else ""
+            lines.append(f"- {item.id} [{item.kind}, {label}] {item.text}{refs(item)}{outcome}")
     return "\n".join(lines).rstrip() + "\n"
 
 

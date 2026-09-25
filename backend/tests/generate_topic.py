@@ -110,20 +110,27 @@ def make_topic(vault: Vault) -> GenerateTopic:
     op(
         "add_pending",
         pending_id="p-1",
-        category="unexplained_concept",
-        description="Se menciona la regla de la cadena sin explicarla.",
+        kind="unexplained_concept",
+        text="Se menciona la regla de la cadena sin explicarla.",
         segment_ids=["s-3"],
-        capture_ids=[],
     )
+    # One op in the pre-#178 shape (`category`/`description`), which the fold still reads.
     op(
         "add_pending",
         pending_id="p-2",
         category="illegible",
         description="Palabra ilegible en la página 1.",
-        segment_ids=[],
         capture_ids=[CAPTURE_ID],
     )
     op("resolve_pending", origin="user", pending_id="p-2", resolution="Pone «incremental».")
+    op(
+        "add_pending",
+        pending_id="p-3",
+        kind="possible_error",
+        text="¿Falta el signo en la fórmula?",
+        source_refs=["sources/notes/page-002.jpg"],
+    )
+    op("resolve_pending", origin="user", pending_id="p-3", status="dismissed")
     session.append_event("session.ended", "user", {})
     end_session(session)
     return GenerateTopic(vault=vault, subject=subject, topic=topic, session=session.id)
