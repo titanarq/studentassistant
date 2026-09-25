@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 from studentassistant.config import DEFAULT_STT_LANGUAGE
@@ -16,6 +16,12 @@ class SpeechToTextProvider(ABC):
     Lifecycle: construct (from the provider's options table), `feed` every chunk in order, then
     `finish` once to flush what is still buffered; the provider is not fed after `finish`.
     Heavy work (model inference) must run off the event loop, e.g. `asyncio.to_thread`.
+
+    Vocabulary hints (#54): `set_vocabulary` may be called at any time, before the first chunk and
+    between chunks, with the session's domain terms (`stt.vocabulary.vocabulary_hints`); the
+    latest list replaces the previous one and is in `vocabulary`. A provider that can bias its
+    recognition (a Whisper prompt, cloud phrase hints) applies them from its next inference on;
+    one that cannot simply ignores them (the default).
     """
 
     # The name `stt.provider` selects it by, and the one its segments carry.
@@ -26,6 +32,11 @@ class SpeechToTextProvider(ABC):
     ) -> None:
         self.options: dict[str, Any] = dict(options or {})
         self.language = language
+        self.vocabulary: tuple[str, ...] = ()
+
+    def set_vocabulary(self, hints: Sequence[str]) -> None:
+        """Replace the session's vocabulary hints (most important first); never blocks."""
+        self.vocabulary = tuple(hints)
 
     @abstractmethod
     async def feed(self, chunk: AudioChunk) -> list[NormalisedSegment]:

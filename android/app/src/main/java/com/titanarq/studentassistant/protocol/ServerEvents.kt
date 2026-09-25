@@ -27,6 +27,8 @@ data class HelloAck(
     /** Backend clock minus the client clock read in `hello`; may be negative. */
     @SerialName("clock_offset_ms") val clockOffsetMs: Long,
     @SerialName("server_time_ms") val serverTimeMs: Long,
+    /** Since 1.4: domain terms (subject, topic, concepts) a recognizer may be biased towards. */
+    @SerialName("vocabulary_hints") val vocabularyHints: List<String>? = null,
 ) : ServerEvent
 
 /** Interim normalised text of an utterance still being spoken. */
@@ -75,6 +77,8 @@ data class Command(
 data class Notice(
     @SerialName("pending_count") val pendingCount: Int,
     @SerialName("server_time_ms") val serverTimeMs: Long,
+    /** Since 1.4: the session's new vocabulary hints, replacing the previous list. */
+    @SerialName("vocabulary_hints") val vocabularyHints: List<String>? = null,
 ) : ServerEvent
 
 /** The backend stored audio up to a frame `seq` and/or the listed captures (at least one). */

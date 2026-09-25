@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from collections.abc import Sequence
 from typing import ClassVar
 
 from studentassistant.config import DEFAULT_STT_MAX_BACKLOG_SECONDS, SttSettings
@@ -55,6 +56,11 @@ class BufferedProvider(SpeechToTextProvider):
         self._idle.set()
         self._worker: asyncio.Task[None] | None = None
         self._finished = False
+
+    def set_vocabulary(self, hints: Sequence[str]) -> None:
+        """Pass the hints straight to the wrapped provider (they apply to its next inference)."""
+        super().set_vocabulary(hints)
+        self.inner.set_vocabulary(hints)
 
     @property
     def backlog_seconds(self) -> float:

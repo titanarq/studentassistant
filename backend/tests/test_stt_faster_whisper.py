@@ -87,6 +87,7 @@ class ScriptedBackend:
         self.merge = round(merge * RATE)
         self.vad_calls = 0
         self.transcribed: list[float] = []  # seconds of audio per transcribe call
+        self.hotwords: list[str | None] = []  # the hotwords of each transcribe call
         self.threads: set[int] = set()
 
     def speech_spans(self, audio: np.ndarray) -> list[tuple[int, int]]:
@@ -100,9 +101,10 @@ class ScriptedBackend:
                 spans.append((start, end))
         return spans
 
-    def transcribe(self, audio: np.ndarray) -> list[Recognised]:
+    def transcribe(self, audio: np.ndarray, *, hotwords: str | None = None) -> list[Recognised]:
         self.threads.add(threading.get_ident())
         self.transcribed.append(len(audio) / RATE)
+        self.hotwords.append(hotwords)
         return [
             Recognised(start=s / RATE, end=e / RATE, text=WORDS[level], confidence=0.9)
             for s, e, level in _runs(audio)
@@ -337,6 +339,40 @@ def test_the_backend_loads_lazily_on_cuda_with_int8_float16(fake_whisper: Any) -
     # Blank and hallucinated (no speech + low log-probability) segments are dropped.
     assert [r.text for r in recognised] == ["Hola."]
     assert recognised[0].confidence == pytest.approx(0.905, abs=1e-3)
+
+
+def test_the_backend_passes_hotwords_to_the_model(fake_whisper: Any) -> None:
+    backend = FasterWhisperBackend(initial_prompt="Clase de historia.")
+
+    backend.transcribe(np.zeros(1000, dtype=np.float32))
+    backend.transcribe(np.zeros(1000, dtype=np.float32), hotwords="sufragio censitario")
+
+    (model,) = FakeWhisperModel.instances
+    assert [c["hotwords"] for c in model.calls] == [None, "sufragio censitario"]
+    assert all(c["initial_prompt"] == "Clase de historia." for c in model.calls)
+
+
+async def test_vocabulary_hints_reach_the_next_transcription_as_hotwords() -> None:
+    backend = ScriptedBackend()
+    p = provider(backend, partial_interval_seconds=0.5, min_silence_ms=300)
+
+    await feed_all(p, chunks(pcm((1, 0.5), (0, 0.5))))
+    p.set_vocabulary(["Historia", "sufragio censitario"])
+    await feed_all(p, chunks(pcm((2, 0.5), (0, 0.5)), start=1.0))
+    await p.finish()
+
+    assert backend.hotwords[0] is None
+    assert backend.hotwords[-1] == "Historia, sufragio censitario"
+    assert p.vocabulary == ("Historia", "sufragio censitario")
+
+
+def test_configured_hotwords_come_before_the_session_hints() -> None:
+    p = provider(ScriptedBackend(), hotwords=" derivadas ")
+    assert p.hotwords == "derivadas"
+    p.set_vocabulary(["Cálculo", "integral"])
+    assert p.hotwords == "derivadas, Cálculo, integral"
+    p.set_vocabulary([])
+    assert p.hotwords == "derivadas"
 
 
 def test_auto_falls_back_to_the_cpu_when_a_cuda_library_is_missing(fake_whisper: Any) -> None:

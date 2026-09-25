@@ -588,12 +588,15 @@ another PC left open is seen.
 ### Session WebSocket -- `server/ws.py`
 
 `WS /ws/sessions/{session_id}`, protocol v1 (`protocol/README.md`), served by the
-`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...)` on
+`SessionGateway(bus, sessions, stt, *, sink_factory=..., provider_factory=..., clock=...,
+terms_loader=...)` on
 `app.state.gateway` (`ws_router()` mounts it). `sink_factory(stt, clock_offset_s)` builds each
 connection's `TranscriptSink` (default `InMemoryTranscriptSink`, whose `clock_offset` is the
 client-clock reading at session start in seconds); `provider_factory(stt)` builds a session's
-server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms. Tests
-replace all three.
+server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms;
+`terms_loader(open_session)` reads the topic's terms for the vocabulary hints (default: the vault
+through `sessions.open_vault()` and `server.vocabulary.load_topic_terms`, never raising). Tests
+replace them.
 
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
   `authenticate_websocket` (1008 without a valid token or loopback trust).
@@ -611,6 +614,20 @@ replace all three.
   (re)connection takes a new offset from its own `hello`. In `server` mode, a session that
   already received audio also gets an `ack` with its highest contiguous `audio_seq` right after
   `hello.ack`, so a reconnecting client knows where to resume.
+- **Vocabulary hints** (#54, `server/vocabulary.py`): before `hello.ack` the connection reads the
+  topic's terms (`load_topic_terms`: the subject's name, the topic's title, the observer's
+  concepts from `load_observer_snapshot(write_back=False)` and the open pending count; a part that
+  cannot be read is logged and left empty) and builds the hints with
+  `stt.vocabulary_hints_from_settings` (`[stt] vocabulary_max_terms` / `vocabulary_max_chars`).
+  In server mode the session's provider gets them (`set_vocabulary`) at every handshake, whatever
+  the client's version; a client that negotiated 1.4+ gets them in `hello.ack.vocabulary_hints`
+  (left out when empty). The connection also subscribes to `observer.state_op` (`SUBSCRIBED_KINDS`
+  = `FORWARDED_KINDS` + it, never forwarded as such): an `add_concept` whose name changes the
+  hints (`SessionVocabulary.apply_state_op`) hands the new list to the provider and, to a 1.4+
+  client, sends a `notice` with `vocabulary_hints` and the last `pending_count` the connection
+  knows (from the terms or the last forwarded notice). While that count is unknown, the new hints
+  ride on the next forwarded observer `notice`; a forwarded notice carries hints only when they
+  changed since the last ones sent.
 - **Validation**: every text message is parsed with `parse_client_event`. Non-JSON, an unknown or
   missing `type`, an invalid message, a second `hello`, `transcript.client.*` in server mode or a
   binary frame in client mode closes the socket with `CLOSE_PROTOCOL_VIOLATION` (1008) and a

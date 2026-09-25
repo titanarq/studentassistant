@@ -19,6 +19,18 @@ SessionMs = Annotated[int, Field(ge=0)]
 # Sequence number of a binary audio frame (u32).
 AudioSeq = Annotated[int, Field(ge=0, le=2**32 - 1)]
 
+# Since 1.4: the most terms `vocabulary_hints` carries, and the longest term.
+VOCABULARY_HINTS_MAX_ITEMS = 50
+VOCABULARY_HINT_MAX_CHARS = 100
+VOCABULARY_HINTS_SINCE = (1, 4)
+"""The protocol version that added `vocabulary_hints` to `hello.ack` and `notice`."""
+# Domain terms (subject, topic, concepts) a client-side recognizer may bias towards; the whole
+# list, most important first. Spanish text, no duplicates enforced by the sender.
+VocabularyHints = Annotated[
+    list[Annotated[str, Field(min_length=1, max_length=VOCABULARY_HINT_MAX_CHARS)]],
+    Field(min_length=1, max_length=VOCABULARY_HINTS_MAX_ITEMS),
+]
+
 
 class HelloAck(ProtocolModel):
     """Reply to the client `hello`: negotiated version, chosen STT mode and clock offset."""
@@ -35,6 +47,8 @@ class HelloAck(ProtocolModel):
     # backend time. May be negative.
     clock_offset_ms: int
     server_time_ms: EpochMs
+    # Since 1.4: the session's vocabulary hints, left out when there are none.
+    vocabulary_hints: VocabularyHints | None = None
 
     @model_validator(mode="after")
     def _audio_format_only_in_server_mode(self) -> Self:
@@ -84,11 +98,16 @@ class Command(ProtocolModel):
 
 
 class Notice(ProtocolModel):
-    """Status the client shows the student, such as how many doubts await review."""
+    """Status the client shows the student, such as how many doubts await review.
+
+    Since 1.4 it may also carry the session's new `vocabulary_hints`.
+    """
 
     type: Literal["notice"]
     pending_count: Annotated[int, Field(ge=0)]
     server_time_ms: EpochMs
+    # Since 1.4: present when the session's vocabulary hints changed; replaces the whole list.
+    vocabulary_hints: VocabularyHints | None = None
 
 
 class ServerAck(ProtocolModel):

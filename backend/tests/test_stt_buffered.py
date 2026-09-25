@@ -216,3 +216,14 @@ def test_the_backlog_bound_is_configurable(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setenv("SA_STT__MAX_BACKLOG_SECONDS", "4.5")
     assert Settings().stt.max_backlog_seconds == 4.5
+
+
+def test_vocabulary_hints_pass_through_to_the_wrapped_provider() -> None:
+    inner = FakeProvider()
+    buffered = BufferedProvider(inner)
+    assert buffered.vocabulary == inner.vocabulary == ()
+
+    buffered.set_vocabulary(["Historia", "caciquismo"])
+
+    assert inner.vocabulary == ("Historia", "caciquismo")
+    assert buffered.vocabulary == ("Historia", "caciquismo")

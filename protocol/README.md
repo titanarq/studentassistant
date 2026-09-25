@@ -5,7 +5,7 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.3**.
+Current version: **`protocol_version` 1.4**.
 
 | version | change |
 |---|---|
@@ -13,6 +13,7 @@ Current version: **`protocol_version` 1.3**.
 | 1.1 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `last_session_at_ms` and `pending_count` |
 | 1.2 | REST error bodies gain the optional machine-readable `code` (see "REST errors") |
 | 1.3 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `digest_excerpt` |
+| 1.4 | `hello.ack` and `notice` gain the optional `vocabulary_hints` (see "Vocabulary hints") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -51,7 +52,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.4; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -237,11 +238,11 @@ time. `hello.ack.server_time_ms` is the backend clock when it answered.
 
 | name | `type` | fields |
 |---|---|---|
-| `server.hello.ack` | `hello.ack` | `protocol_version`, `stt_mode`, `audio_format?`, `clock_offset_ms`, `server_time_ms` |
+| `server.hello.ack` | `hello.ack` | `protocol_version`, `stt_mode`, `audio_format?`, `clock_offset_ms`, `server_time_ms`, `vocabulary_hints?` |
 | `server.transcript.partial` | `transcript.partial` | normalised segment fields below |
 | `server.transcript.final` | `transcript.final` | normalised segment fields below |
 | `server.command` | `command` | `command_id`, `command`, `server_time_ms` |
-| `server.notice` | `notice` | `pending_count`, `server_time_ms` |
+| `server.notice` | `notice` | `pending_count`, `server_time_ms`, `vocabulary_hints?` |
 | `server.ack` | `ack` | `audio_seq?`, `capture_ids?`, `server_time_ms` |
 
 - `hello.ack`: `protocol_version` is the negotiated one; `stt_mode` is `client` or `server`;
@@ -252,9 +253,28 @@ time. `hello.ack.server_time_ms` is the backend clock when it answered.
   `capture_now`: take a burst of stills and upload them with `trigger: command` and this
   `command_id`. The client answers with `ack`.
 - `notice`: status the client shows the student; `pending_count` is how many doubts await review.
+  Since 1.4 a notice may also carry new `vocabulary_hints` (below); it then repeats the current
+  `pending_count`.
 - `ack`: `audio_seq` is the highest audio frame `seq` received so far (server STT mode only);
   `capture_ids` lists stored captures (at least one when present). At least one of the two is
   present.
+
+### Vocabulary hints
+
+Since 1.4. `vocabulary_hints` is a list of 1 to 50 Spanish terms (each 1 to 100 characters), most
+important first, that a client-side recognizer may be biased towards when it accepts phrase hints
+(a grammar, a contextual-biasing list): the subject's name, the topic's name, then the concepts the
+observer has extracted for the topic, newest first. The backend caps the list further with
+`[stt] vocabulary_max_terms` / `vocabulary_max_chars` and leaves it out when it is empty.
+
+- `hello.ack.vocabulary_hints`: the session's hints when the socket opens (subject, topic and the
+  concepts folded so far, also those of earlier sessions of the topic).
+- `notice.vocabulary_hints`: the whole new list whenever it changes during the session (the
+  observer extracted a new concept); it replaces the previous one.
+
+A client that cannot use hints ignores them. They are sent only to a client whose negotiated
+version is 1.4 or higher; the backend applies the same hints to its own server-side provider (e.g.
+Whisper `hotwords`) whatever the client's version.
 
 ## Binary audio frames
 

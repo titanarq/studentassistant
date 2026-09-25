@@ -19,6 +19,8 @@ import {
   PROTOCOL_VERSION,
   ProtocolDecodeError,
   type ServerEvent,
+  VOCABULARY_HINT_MAX_CHARS,
+  VOCABULARY_HINTS_MAX_ITEMS,
 } from "./index";
 
 const examples = sharedExamples();
@@ -108,6 +110,22 @@ describe("topic digest excerpt", () => {
     expect(() => parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: "" })).toThrow(
       /digest_excerpt/,
     );
+  });
+});
+
+describe("vocabulary hints", () => {
+  const notice = { type: "notice", pending_count: 0, server_time_ms: 1 };
+
+  it("are optional and bounded in count and length", () => {
+    expect(parseMessage("server.notice", notice)).toStrictEqual(notice);
+    const hints = Array.from({ length: VOCABULARY_HINTS_MAX_ITEMS }, (_, i) => `t${i}`);
+    expect(parseMessage("server.notice", { ...notice, vocabulary_hints: hints })).toStrictEqual({
+      ...notice,
+      vocabulary_hints: hints,
+    });
+    for (const bad of [[], [...hints, "x"], [""], ["x".repeat(VOCABULARY_HINT_MAX_CHARS + 1)]]) {
+      expect(() => parseMessage("server.notice", { ...notice, vocabulary_hints: bad })).toThrow(/vocabulary_hints/);
+    }
   });
 });
 

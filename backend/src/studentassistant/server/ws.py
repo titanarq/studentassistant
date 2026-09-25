@@ -38,6 +38,15 @@ bus). Outbound messages go through the connection's bounded bus subscription, wh
 oldest notices (partials) first and never a persisted event; out-of-order audio is buffered up to
 `MAX_PENDING_FRAMES` frames, past which the socket is closed so the client resends from its ack.
 
+Vocabulary hints (#54): at the handshake the gateway reads the topic's terms (subject and topic
+names, the concepts the observer has extracted, `server.vocabulary`) and builds the session's hints
+(`stt.vocabulary_hints_from_settings`, capped by `[stt]`). A server-mode provider gets them through
+`set_vocabulary`; a client that negotiated 1.4 or higher gets them in `hello.ack.vocabulary_hints`.
+The socket also follows the session's `observer.state_op` events: an `add_concept` that changes the
+hints hands the new list to the provider and, to a 1.4+ client, sends a `notice` with it (and the
+last known `pending_count`, which the notice repeats); while that count is unknown, the new hints
+ride on the next forwarded observer `notice` instead. Terms that cannot be read cost only the hints.
+
 Recording (`serve --record`): with a `SessionRecorder`, the handshake opens the session's
 recording, and each accepted client transcript message, `button`/`marker` and fed audio frame is
 appended to it (in a worker thread) as it is received; a recording that cannot be written is logged
@@ -51,7 +60,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -60,8 +69,9 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from studentassistant.config import SttSettings
-from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
+from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY, STATE_OP_EVENT_KIND
 from studentassistant.protocol import (
+    VOCABULARY_HINTS_SINCE,
     AudioFormat,
     AudioFrameError,
     Button,
@@ -80,12 +90,14 @@ from studentassistant.protocol import (
     decode_frame,
     negotiate,
     parse_client_event,
+    parse_version,
 )
 from studentassistant.protocol.base import ProtocolModel
 from studentassistant.server.auth import WS_POLICY_VIOLATION, authenticate_websocket
 from studentassistant.server.bus import SessionBus, SessionNotAttachedError, Subscription
 from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.sessions import OpenSession, SessionService
+from studentassistant.server.vocabulary import SessionVocabulary, TopicTerms, load_topic_terms
 from studentassistant.stt import (
     AudioChunk,
     ClientSegment,
@@ -110,6 +122,8 @@ COMMAND = "command"
 NOTICE = "notice"
 CAPTURE_STORED = CAPTURE_EVENT_KIND
 FORWARDED_KINDS = frozenset({TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, COMMAND, NOTICE, CAPTURE_STORED})
+# Bus event kinds a socket follows without forwarding them: the observer's ops (vocabulary hints).
+SUBSCRIBED_KINDS = FORWARDED_KINDS | {STATE_OP_EVENT_KIND}
 
 CLOSE_UNKNOWN_SESSION = 4404
 """Close code for a `session_id` that is not the active session (unknown, ended, not resumed)."""
@@ -129,6 +143,8 @@ SinkFactory = Callable[[SttSettings, float], TranscriptSink]
 """Builds a connection's sink from the `[stt]` settings and the clock offset in seconds (the
 client-clock reading at session start, as `InMemoryTranscriptSink` takes it)."""
 ProviderFactory = Callable[[SttSettings], SpeechToTextProvider]
+TermsLoader = Callable[[OpenSession], Awaitable[TopicTerms]]
+"""Reads the terms of a session's topic for its vocabulary hints (never raises)."""
 
 
 def _default_sink(settings: SttSettings, clock_offset: float) -> TranscriptSink:
@@ -190,6 +206,8 @@ class SessionGateway:
     (default: `InMemoryTranscriptSink`), `provider_factory` a session's server-side provider
     (default: `provider_from_settings`), `clock` gives backend epoch ms. Tests replace them.
     `recorder`, when given, records every session's client inputs (`serve --record`).
+    `terms_loader` reads a session's topic terms for its vocabulary hints (default: the vault
+    through `sessions`).
 
     It registers `end_session` on `sessions` as a before-`session.ended` hook.
     """
@@ -204,6 +222,7 @@ class SessionGateway:
         provider_factory: ProviderFactory = provider_from_settings,
         clock: Callable[[], int] = _now_ms,
         recorder: SessionRecorder | None = None,
+        terms_loader: TermsLoader | None = None,
     ) -> None:
         self.bus = bus
         self.sessions = sessions
@@ -212,6 +231,7 @@ class SessionGateway:
         self.provider_factory = provider_factory
         self.clock = clock
         self.recorder = recorder
+        self.terms_loader: TermsLoader = terms_loader or self._load_terms
         self._states: dict[str, ReceiveState] = {}
         # The session `end_session` last ran for: it is never served again (ended sessions are
         # never resumed), even while `SessionService.end` still has it attached.
@@ -236,6 +256,16 @@ class SessionGateway:
         no socket of the session has said hello (the capture upload then trusts client time)."""
         state = self._states.get(session_id)
         return None if state is None else state.clock_offset_ms
+
+    async def _load_terms(self, session: OpenSession) -> TopicTerms:
+        try:
+            vault = await self.sessions.open_vault()
+            return await asyncio.to_thread(
+                load_topic_terms, vault, session.subject_id, session.topic_id
+            )
+        except Exception:
+            logger.exception("vocabulary hints of session %s: terms unreadable", session.session_id)
+            return TopicTerms()
 
     async def end_session(self, session_id: str) -> None:
         """Flush the session's server-side provider onto the bus and drop its receive state.
@@ -349,6 +379,12 @@ class _Connection:
         self.clock_offset_ms = 0
         self.sink: TranscriptSink | None = None
         self.language = gateway.stt.language
+        self.vocabulary: SessionVocabulary | None = None
+        # Whether the negotiated version carries `vocabulary_hints`, the hints the client has, and
+        # the last `pending_count` it was sent (a hints `notice` repeats it).
+        self.sends_hints = False
+        self.sent_hints: list[str] = []
+        self.pending_count: int | None = None
 
     # -- time ----------------------------------------------------------------------------------
 
@@ -397,7 +433,7 @@ class _Connection:
         self.state = self.gateway.state_for(self.session_id)
         hello = await self._receive_hello()
         subscription = self.bus.subscribe(
-            name=f"ws:{self.session_id}", session_id=self.session_id, kinds=FORWARDED_KINDS
+            name=f"ws:{self.session_id}", session_id=self.session_id, kinds=SUBSCRIBED_KINDS
         )
         forwarder: asyncio.Task[None] | None = None
         try:
@@ -433,6 +469,10 @@ class _Connection:
         self.clock_offset_ms = now - hello.client_time_ms
         assert self.session is not None and self.state is not None
         self.state.clock_offset_ms = self.clock_offset_ms
+        terms = await self.gateway.terms_loader(self.session)
+        self.vocabulary = SessionVocabulary(settings, terms)
+        self.pending_count = terms.pending_count
+        self.sends_hints = parse_version(version) >= VOCABULARY_HINTS_SINCE
         if self.mode == "server":
             if self.state.provider is None:
                 try:
@@ -444,6 +484,7 @@ class _Connection:
                         CLOSE_INTERNAL_ERROR,
                     ) from None
             self.language = self.state.provider.language
+            self.state.provider.set_vocabulary(self.vocabulary.hints)
         else:
             client_start_s = (self.session.started_at_ms - self.clock_offset_ms) / 1000
             self.sink = self.gateway.sink_factory(settings, client_start_s)
@@ -457,6 +498,7 @@ class _Connection:
                 stt_provider=hello.capabilities.stt_provider,
                 clock_offset_ms=self.clock_offset_ms,
             )
+        hints = self.vocabulary.hints if self.sends_hints and self.vocabulary.hints else None
         await self.send(
             HelloAck(
                 type="hello.ack",
@@ -465,8 +507,10 @@ class _Connection:
                 audio_format=SERVER_AUDIO_FORMAT if self.mode == "server" else None,
                 clock_offset_ms=self.clock_offset_ms,
                 server_time_ms=now,
+                vocabulary_hints=hints,
             )
         )
+        self.sent_hints = list(hints or [])
         acked = self.state.last_contiguous_seq
         if self.mode == "server" and acked is not None:
             # A reconnecting client learns where to resume its audio.
@@ -636,15 +680,56 @@ class _Connection:
 
     async def _forward(self, subscription: Subscription) -> None:
         async for event in subscription:
-            if event.kind == CAPTURE_STORED and not event.persisted:
+            if event.kind == STATE_OP_EVENT_KIND:
+                message: ProtocolModel | None = self._on_state_op(event.payload)
+            elif event.kind == CAPTURE_STORED and not event.persisted:
                 continue  # only a stored (persisted) capture is acknowledged
-            message = _server_message(event.kind, event.payload, self.gateway.clock)
+            else:
+                message = _server_message(event.kind, event.payload, self.gateway.clock)
+                if isinstance(message, Notice):
+                    message = self._with_hints(message)
             if message is None:
                 continue
             try:
                 await self.send(message)
             except Exception:
                 return  # the socket is gone; the receive loop ends the connection
+
+    # -- vocabulary hints ----------------------------------------------------------------------
+
+    def _unsent_hints(self) -> list[str] | None:
+        """The hints the client should get now: changed since the last ones sent, and non-empty."""
+        if not self.sends_hints or self.vocabulary is None:
+            return None
+        hints = self.vocabulary.hints
+        return hints if hints and hints != self.sent_hints else None
+
+    def _with_hints(self, notice: Notice) -> Notice:
+        """A forwarded `notice`, carrying the hints the client has not got yet."""
+        self.pending_count = notice.pending_count
+        hints = self._unsent_hints()
+        if hints is None:
+            return notice
+        self.sent_hints = list(hints)
+        return notice.model_copy(update={"vocabulary_hints": hints})
+
+    def _on_state_op(self, payload: Mapping[str, Any]) -> Notice | None:
+        """Follow an observer op: new hints go to the provider and, as a `notice`, to the client."""
+        if self.vocabulary is None or not self.vocabulary.apply_state_op(payload):
+            return None
+        hints = self.vocabulary.hints
+        provider = self.state.provider if self.state is not None else None
+        if provider is not None:
+            provider.set_vocabulary(hints)
+        if self.pending_count is None or self._unsent_hints() is None:
+            return None  # sent with the next observer `notice`, once the count is known
+        self.sent_hints = list(hints)
+        return Notice(
+            type="notice",
+            pending_count=self.pending_count,
+            server_time_ms=self.gateway.clock(),
+            vocabulary_hints=hints,
+        )
 
 
 def _server_message(
@@ -704,6 +789,7 @@ __all__ = [
     "MARKER",
     "MAX_PENDING_FRAMES",
     "NOTICE",
+    "SUBSCRIBED_KINDS",
     "TRANSCRIPT_FINAL",
     "TRANSCRIPT_PARTIAL",
     "ReceiveState",
