@@ -3,17 +3,19 @@
 The master notes are written by the editor through `write_notes` (and a generation that did not
 pass the provenance validator through `write_notes_draft`, to `notes/borrador.md`, so the last
 valid `apuntes.md` is never overwritten by an invalid one); the files under `generated/` by the
-generators, through writers of their own tasks. The readers answer "nothing yet" (`None`, an
-empty list) for a topic that has neither. Nothing here runs git: committing and tagging a notes
+generators, through `write_generated` / `remove_generated` (names checked by
+`check_generated_name`). The readers answer "nothing yet" (`None`, an empty list) for a topic that
+has neither. Nothing here runs git: committing and tagging a notes
 version is `GitSync`'s job.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.files import write_text_atomic
+from studentassistant.vault.files import write_bytes_atomic, write_text_atomic
 from studentassistant.vault.topics import require_topic, topic_directory
 from studentassistant.vault.vault import Vault
 
@@ -21,6 +23,9 @@ NOTES_DIRNAME = "notes"
 NOTES_FILE_NAME = "apuntes.md"
 DRAFT_FILE_NAME = "borrador.md"
 GENERATED_DIRNAME = "generated"
+
+# One segment of a name under `generated/`: no leading dot (so no `..`, no hidden file).
+_GENERATED_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
 class NotesError(VaultError):
@@ -143,3 +148,81 @@ def list_generated(vault: Vault, subject_slug: str, topic_slug: str) -> list[str
             if not path.is_symlink() and path.is_file():
                 found.append(path.relative_to(vault.path).as_posix())
     return sorted(found)
+
+
+def check_generated_name(name: str) -> None:
+    """Refuse a name under `generated/` that is not relative segments of `[A-Za-z0-9._-]`.
+
+    Raises:
+        NotesError: `name` is empty, absolute, has an empty, dotted or unusual segment.
+    """
+    segments = name.split("/")
+    if not name or not all(_GENERATED_SEGMENT.fullmatch(segment) for segment in segments):
+        raise NotesError(f"{name!r} is not a file name under generated/")
+
+
+def _generated_file(vault: Vault, subject_slug: str, topic_slug: str, name: str) -> Path:
+    check_generated_name(name)
+    require_topic(vault, subject_slug, topic_slug)
+    root = generated_directory(vault, subject_slug, topic_slug)
+    path = root.joinpath(*name.split("/"))
+    current = path
+    while True:
+        if current.is_symlink():
+            raise NotesError(f"{current} is a symlink; generated material is a file of the vault")
+        if current == root:
+            return path
+        current = current.parent
+
+
+def write_generated(
+    vault: Vault, subject_slug: str, topic_slug: str, name: str, content: str | bytes
+) -> Path:
+    """Write `content` as `generated/<name>` of the topic (atomically, creating directories).
+
+    `name` is relative to `generated/` and may hold subdirectories (`a/b.md`). Text is written as
+    UTF-8. Returns the path written.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read; nothing is written.
+        NotesError: `name` is not a generated file name, or a directory on the way is a symlink.
+        SecretRefused: when the content looks like it carries a key; nothing is written.
+    """
+    path = _generated_file(vault, subject_slug, topic_slug, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = content.encode("utf-8") if isinstance(content, str) else content
+    write_bytes_atomic(path, data)
+    return path
+
+
+def read_generated(vault: Vault, subject_slug: str, topic_slug: str, name: str) -> bytes | None:
+    """The bytes of `generated/<name>`, or `None` when there is no such file.
+
+    Raises the same errors as `write_generated` (but `SecretRefused`).
+    """
+    path = _generated_file(vault, subject_slug, topic_slug, name)
+    try:
+        return path.read_bytes()
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+    except OSError as error:
+        raise NotesError(f"{path} cannot be read: {error}") from error
+
+
+def remove_generated(vault: Vault, subject_slug: str, topic_slug: str, name: str) -> bool:
+    """Remove `generated/<name>`; `False` when there was no such file. Empty directories left
+    behind under `generated/` are removed too.
+
+    Raises the same errors as `read_generated`.
+    """
+    path = _generated_file(vault, subject_slug, topic_slug, name)
+    if not path.is_file():
+        return False
+    path.unlink()
+    root = generated_directory(vault, subject_slug, topic_slug)
+    parent = path.parent
+    while parent != root and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+    return True

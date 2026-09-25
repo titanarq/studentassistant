@@ -36,6 +36,7 @@ from studentassistant.config import (
     SttSettings,
     VaultSettings,
 )
+from studentassistant.generators import default_registry
 from studentassistant.llm import Transport
 from studentassistant.observer import DigestOnEnd, topic_digest
 from studentassistant.observer.live import ObserverLoop, default_client_factory
@@ -49,6 +50,7 @@ from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.errors import install_error_handler
+from studentassistant.server.generators_routes import MaterialGenerators, generators_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
@@ -129,7 +131,8 @@ def create_app(
     role's model, the cost caps and the prices), every session is observed through that transport
     -- `serve` passes the real Anthropic one, tests a `FakeClaude`. Without one no Claude call is
     ever made, so an app built by a test never reaches the network. The same transport gives
-    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client, and
+    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client, the
+    study materials (`POST .../generated/{kind}`, `generators_routes.py`) their `generator` one, and
     drives the page transcriber (`sources/transcriber.py`, `[sources] transcription_enabled`),
     which transcribes every stored capture.
     """
@@ -181,10 +184,14 @@ def create_app(
     app.state.observer = None
     app.state.transcriber = None
     app.state.notes = None
+    app.state.generators = default_registry
+    app.state.materials = None
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
         app.state.notes = NotesGenerator(llm_settings, llm_transport)
+        # Study materials: the generator role (`generators_routes.py`).
+        app.state.materials = MaterialGenerators(llm_settings, llm_transport)
         if sources.transcription_enabled:
             app.state.transcriber = PageTranscriber(
                 app.state.bus,
@@ -255,6 +262,7 @@ def create_app(
     app.include_router(revise_router())
     app.include_router(versions_router())
     app.include_router(style_guide_router())
+    app.include_router(generators_router())
 
     # The web routes go last so every API/WebSocket route registered above keeps priority.
     _add_web_routes(app, STATIC_DIR if static_dir is None else static_dir)
