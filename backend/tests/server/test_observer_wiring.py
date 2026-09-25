@@ -13,7 +13,13 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from studentassistant.config import ObserverSettings, ServerSettings, Settings, SttSettings
+from studentassistant.config import (
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+    SourcesSettings,
+    SttSettings,
+)
 from studentassistant.llm import FakeClaude
 from studentassistant.observer import STATE_OP_EVENT_KIND
 from studentassistant.observer.live import TOOL_NAME
@@ -95,6 +101,8 @@ def test_the_replayed_sample_yields_observer_ops_in_the_vault(
         tmp_vault,
         llm_transport=fake,
         llm_settings=Settings(observer=ObserverSettings()),
+        # The page transcriber would share the fake's script; `test_transcriber_wiring.py` has it.
+        sources=SourcesSettings(transcription_enabled=False),
     )
 
     result = _replay(app)

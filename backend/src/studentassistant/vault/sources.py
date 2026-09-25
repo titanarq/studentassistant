@@ -248,6 +248,45 @@ def _next_number(directory: Path, pattern: re.Pattern[str]) -> int:
     return max(numbers, default=0) + 1
 
 
+TRANSCRIPTION_SUFFIX = ".md"
+
+
+def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) -> Path:
+    """Write the Markdown transcription of a stored page as `page-NNN.md` next to it.
+
+    `vault_relative_path` names the page as `list_sources` does (or any file derived from it,
+    such as its `page-NNN.page.jpg`): a file under a topic's `sources/notes|book|pdf/` whose name
+    starts with `page-NNN.`. The text passes the secret guard and is written atomically as UTF-8;
+    a transcription already there is replaced (the page was transcribed again). Returns the path
+    written.
+
+    Raises:
+        SourcePathError: when the path is not a page of a paged kind (see `read_source`).
+        SourceNotFoundError: when the page's sidecar (`page-NNN.yaml`) is not there.
+        SecretRefused: when the text looks like it carries a key; nothing is written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    if parts[5] not in PAGED_KINDS:
+        raise SourcePathError(f"{vault_relative_path!r} is not a page of a paged source kind")
+    match = _PAGE_NUMBER.match(parts[-1])
+    if match is None:
+        raise SourcePathError(f"{vault_relative_path!r} does not name a page-NNN file")
+    directory = vault.path.joinpath(*parts[:-1])
+    stem = parts[-1].split(".", 1)[0]
+    sidecar = directory / f"{stem}{SIDECAR_SUFFIX}"
+    if directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourcePathError(
+            f"{vault_relative_path!r} goes through a symlink out of its sources directory"
+        )
+    if not sidecar.is_file() or sidecar.is_symlink():
+        raise SourceNotFoundError(f"there is no stored page {stem} at {vault_relative_path!r}")
+    guard(text)
+    target = directory / f"{stem}{TRANSCRIPTION_SUFFIX}"
+    with _directory_lock(directory):
+        write_text_atomic(target, text)
+    return target
+
+
 # -- reading ---------------------------------------------------------------------------------------
 
 _PAGE_SOURCE = re.compile(r"^page-(\d{3,})\.([A-Za-z0-9]+)$")

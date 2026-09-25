@@ -57,6 +57,10 @@ from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.ws import SessionGateway, ws_router
+from studentassistant.sources.transcriber import PageTranscriber
+from studentassistant.sources.transcriber import (
+    default_client_factory as transcriber_client_factory,
+)
 from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
 from studentassistant.vault import GitSync, Vault
 
@@ -118,7 +122,9 @@ def create_app(
     role's model, the cost caps and the prices), every session is observed through that transport
     -- `serve` passes the real Anthropic one, tests a `FakeClaude`. Without one no Claude call is
     ever made, so an app built by a test never reaches the network. The same transport gives
-    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client.
+    "prepárame el tema" (`POST .../notes/generate`, `notes_routes.py`) its `editor` client, and
+    drives the page transcriber (`sources/transcriber.py`, `[sources] transcription_enabled`),
+    which transcribes every stored capture.
     """
     install_log_redaction()
     if (
@@ -162,11 +168,22 @@ def create_app(
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
     app.state.observer = None
+    app.state.transcriber = None
     app.state.notes = None
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
         app.state.notes = NotesGenerator(llm_settings, llm_transport)
+        if sources.transcription_enabled:
+            app.state.transcriber = PageTranscriber(
+                app.state.bus,
+                app.state.bus.attached,
+                settings=sources,
+                client_factory=transcriber_client_factory(llm_settings, llm_transport),
+                on_write=app.state.sessions.note_change,
+            )
+            # Before the observer's flush, so the observer sees the last pages' transcriptions.
+            app.state.sessions.add_before_ended(app.state.transcriber.flush)
         observer_settings: ObserverSettings = llm_settings.observer
         if observer_settings.enabled:
             app.state.observer = ObserverLoop(
@@ -228,14 +245,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessions: SessionService = app.state.sessions
     transcripts: TranscriptPipeline = app.state.transcripts
     observer: ObserverLoop | None = app.state.observer
+    transcriber: PageTranscriber | None = app.state.transcriber
     transcripts.start()
     if observer is not None:
         observer.start()
+    if transcriber is not None:
+        transcriber.start()
     await sessions.startup()
     try:
         yield
     finally:
         await transcripts.stop()
+        if transcriber is not None:
+            await transcriber.stop()
         if observer is not None:
             await observer.stop()
         await sessions.shutdown()
