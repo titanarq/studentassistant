@@ -378,6 +378,9 @@ another PC left open is seen.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
 - `await open_vault()` -> the `Vault`, opened (pulled and scanned) on first use like every other
   call, or `VaultUnavailableError`: what the read routes read through.
+- `add_on_open(hook)`: `hook(vault)` is called (synchronously, on the event loop; it must only
+  schedule work) once the vault is first opened, pulled and scanned. The app registers the page
+  transcriber's `catch_up_vault` there (server-start catch-up, #181, `docs/modules/sources.md`).
 - For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
   (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
   `get_active(session_id)`, the active session only when it is that one.

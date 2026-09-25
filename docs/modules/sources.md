@@ -108,9 +108,35 @@ submodules.
 - Server: `create_app` builds one when it gets an `llm_transport` (only `serve` passes the real
   one) and `[sources] transcription_enabled`, and registers `flush` with
   `SessionService.add_before_ended` before the observer's, so the observer sees the
-  transcriptions before `session.ended`. A page still in flight when the end hook times out is
-  written but its events are lost; pages of a session resumed after a backend restart are not
-  transcribed again.
+  transcriptions before `session.ended`. `catch_up_vault` is registered with
+  `SessionService.add_on_open` for the server-start catch-up below.
+
+### Catch-up of owed pages -- `catchup.py` (#181)
+- A page is *owed* when a session of the topic stored it (`capture.stored`) and no
+  `page.transcribed` names it -- by `capture_session_id` (the session that stored the capture;
+  the event's own session when absent) and `capture_id` -- nor a `page.transcription_failed`
+  with reason `refused`. `owed_pages(events, *, before=None, sessions=None) -> (pages,
+  pending_ids)` is pure (`PageRef`: `session_id`, `capture_id`, `source_path`, `page_path`, `t`,
+  `source_kind`); `read_owed(vault, subject, topic, *, before, sessions) -> Owed` splits them into
+  `to_transcribe` (no `page-NNN.md`, `transcription_path(source_path)`) and `to_record` (the
+  Markdown is stored, the events are not) and returns every `add_pending` id already in the log.
+- When: at every `session.started` / `session.resumed` (every session of the topic, captures
+  stored before the opening event), and once at server start (`catch_up_vault(vault)`, called when
+  the server first opens the vault: each topic's unended sessions and its newest one;
+  `wait_startup()` waits for it). Owed pages are transcribed at once (no window wait; hints from the capture's own session's
+  `transcript.jsonl`), bound to the ledger of the session that queued them; the exchange goes to
+  `conversations/transcriber-<capture session>.jsonl`. Stored ones have their events published
+  from the Markdown with `recovered: true`. A page a job is already working on is skipped.
+- Where events go (the convention for a page transcribed after its session ended): to the page's
+  own session while it is live, else to the live session of the same topic, else they wait -- the
+  next start or resume of the topic finds the page owed and records it. So a late page's
+  `add_pending` ops and `page.transcribed` land in a later `events.jsonl` of the same topic, which
+  the observer folds (and catches up, #176) and the editor reads through the fold; the Markdown is
+  in `sources/` from the start. Unlike `notes.generated` (#61), which is only kept in
+  `conversations/editor.jsonl` when no session is active, these events are state the fold needs
+  (pending items), so they are deferred rather than dropped. `page.transcribed` and
+  `page.transcription_failed` always carry `capture_session_id`; an `add_pending` id already in the
+  topic's log is never published again (the fold refuses a duplicate id).
 
 ### PDF import -- `pdf.py`
 - `import_pdf(vault, subject_slug, topic_slug, name, content, *, pages=None, settings=None,
