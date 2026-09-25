@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type HelloAck, parseServerEvent } from "../protocol";
+import { type HelloAck, parseServerEvent, PROTOCOL_VERSION } from "../protocol";
 import { sharedExamples } from "../test/protocolExamples";
 import { AUDIO_HEADER_SIZE, PCM_SAMPLE_RATE_HZ, PCM_SAMPLE_WIDTH_BYTES } from "./audioFrames";
 import {
@@ -300,7 +300,7 @@ describe("the frames it sends", () => {
     const frame = frameOf(harness.fake);
 
     expect(frame.magic).toBe("SAAF");
-    expect(frame.version).toBe("1.1");
+    expect(frame.version).toBe(PROTOCOL_VERSION);
     expect(frame.clientTimeMs).toBe(NOW_MS + 500);
     expect(frame.samples.length).toBe(1600);
     expect(frame.bytes.byteLength).toBe(AUDIO_HEADER_SIZE + 1600 * PCM_SAMPLE_WIDTH_BYTES);

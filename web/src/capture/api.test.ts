@@ -3,7 +3,12 @@
 // them needs `import.meta.url` to stay a file URL, as in `protocol.test.ts`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CaptureUploadRequest, CaptureUploadResponse, Session } from "../protocol";
+import type {
+  CaptureUploadRequest,
+  CaptureUploadResponse,
+  Session,
+  TopicsListResponse,
+} from "../protocol";
 import { sharedExamples } from "../test/protocolExamples";
 import {
   type CapturedImage,
@@ -130,7 +135,7 @@ describe("subjects", () => {
 });
 
 describe("topics", () => {
-  it("lists a subject's topics, keeping the 1.1 fields and the ones a topic does not have", async () => {
+  it("lists a subject's topics, keeping the 1.1 and 1.3 fields and the ones a topic does not have", async () => {
     stubFetch(jsonResponse(example("rest.topics.list.response")));
 
     const result = await listTopics(SUBJECT_ID);
@@ -144,6 +149,7 @@ describe("topics", () => {
       open_session_id: "s-20260924-1805",
       last_session_at_ms: 1790273100000,
       pending_count: 2,
+      digest_excerpt: example<TopicsListResponse>("rest.topics.list.response").topics[0].digest_excerpt,
     });
     expect(result.value.topics[1]).not.toHaveProperty("open_session_id");
   });

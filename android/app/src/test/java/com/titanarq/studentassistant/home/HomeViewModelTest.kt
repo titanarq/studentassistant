@@ -12,10 +12,13 @@ import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.session.PendingEnds
 import com.titanarq.studentassistant.session.SessionHolder
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -36,11 +39,28 @@ class HomeViewModelTest {
     @get:Rule
     val folder = TemporaryFolder()
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // The store runs on the test thread: store work on Dispatchers.IO could outlive the test and
+    // resume a view model on Dispatchers.Main after the rule reset it, failing a later test.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())
     private val client = FakeBackendClient()
     private val sessions = SessionHolder()
     private val store by lazy { BackendStore.create(File(folder.root, BackendStore.FILE_NAME), scope) }
-    private val viewModel by lazy { HomeViewModel(client, store, sessions, Clock { NOW }) }
+    private val pendingEnds = FakePendingEnds()
+    private val viewModel by lazy { HomeViewModel(client, store, sessions, Clock { NOW }, pendingEnds) }
+
+    /** Pending ends the test sets; [continueInstead] records its calls and runs the resume. */
+    private class FakePendingEnds : PendingEnds {
+        override val pending = MutableStateFlow<Set<String>>(emptySet())
+        val continued = mutableListOf<Pair<String, Boolean>>()
+
+        override suspend fun continueInstead(sessionId: String, resume: suspend () -> Boolean): Boolean {
+            val resumed = resume()
+            continued += sessionId to resumed
+            if (resumed) pending.value = pending.value - sessionId
+            return resumed
+        }
+    }
 
     private val home = PairedBackend("http://192.168.1.20:8000", "d1", "sa_tok", "192.168.1.20:8000")
     private val historia = Subject("historia", "Historia")
@@ -53,6 +73,7 @@ class HomeViewModelTest {
         openSessionId = "20260924-101500",
         lastSessionAtMs = 1_790_244_900_000,
         pendingCount = 2,
+        digestExcerpt = "1 sesión con contenido; la última, el 24/09/2026: Covadonga. 2 dudas abiertas.",
     )
 
     @After
@@ -126,9 +147,10 @@ class HomeViewModelTest {
         val rows = (state.topics as Loadable.Loaded).value
         assertEquals(listOf(feudalismo, reconquista), rows.map { it.topic })
         assertEquals(listOf(false, true), rows.map { it.canContinue })
-        // The last session date and pending count are mapped when sent and null when left out.
+        // The last session date, pending count and digest excerpt are mapped when sent, else null.
         assertEquals(listOf(null, 1_790_244_900_000), rows.map { it.lastSessionAtMs })
         assertEquals(listOf(null, 2), rows.map { it.pendingCount })
+        assertEquals(listOf(null, reconquista.digestExcerpt), rows.map { it.digestExcerpt })
         assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
     }
 
@@ -294,6 +316,42 @@ class HomeViewModelTest {
 
         assertEquals(callsBefore, client.calls)
         assertEquals(CreateTopicDialog(), viewModel.state.value.createTopic)
+    }
+
+    @Test
+    fun `a topic whose session end is pending is marked, and the mark follows the finisher`() {
+        pendingEnds.pending.value = setOf("20260924-101500")
+        val rows = (showHistoria().topics as Loadable.Loaded).value
+        assertEquals(listOf(false, true), rows.map { it.ending })
+
+        // The end completes: the mark goes and the topics are fetched again.
+        val listed = client.calls.count { it.startsWith("listTopics") }
+        client.listTopicsResult = BackendResult.Success(
+            TopicsListResponse("historia", listOf(feudalismo, reconquista.copy(openSessionId = null))),
+        )
+        pendingEnds.pending.value = emptySet()
+        val state = until { state -> (state.topics as? Loadable.Loaded)?.value?.none { it.canContinue } == true }
+        assertEquals(listOf(false, false), (state.topics as Loadable.Loaded).value.map { it.ending })
+        assertEquals(listed + 1, client.calls.count { it.startsWith("listTopics") })
+    }
+
+    @Test
+    fun `Continuar goes through the pending ends, so a pending end never races the resume`() {
+        pendingEnds.pending.value = setOf("20260924-101500")
+        showHistoria()
+        val resumed = session("20260924-101500", reconquista)
+        client.resumeSessionResult = BackendResult.Success(resumed)
+
+        viewModel.startOrContinue(TopicRow(reconquista, ending = true))
+
+        assertEquals(resumed, until { it.openedSession != null }.openedSession)
+        assertEquals(listOf("20260924-101500" to true), pendingEnds.continued)
+
+        client.resumeSessionResult = BackendResult.HttpError(409)
+        viewModel.onSessionShown()
+        viewModel.startOrContinue(TopicRow(reconquista))
+        until { it.session is SessionAction.Failed }
+        assertEquals("20260924-101500" to false, pendingEnds.continued.last())
     }
 
     private companion object {

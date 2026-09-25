@@ -127,9 +127,14 @@ def test_the_sample_replays_into_the_vault(
     assert stored.payload["capture_id"] == capture.metadata.capture_id
     assert stored.payload["source_context"] == "book"
     book = sources_directory(tmp_vault, "biologia", "la-celula", "book")
-    assert (book / "page-001.jpg").read_bytes() == capture.image_paths[0].read_bytes()
+    assert (book / "page-001.jpg").is_file()
+    assert (book / "page-001.page.jpg").is_file()
     sidecar = yaml.safe_load((book / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["capture_id"] == capture.metadata.capture_id
+    # The capture's session time, through the replayed hello's clock offset, and its window.
+    capture_t = sidecar["session_t_ms"]
+    assert abs(capture_t - shift - 9500) <= 5
+    assert sidecar["transcript_window"] == {"t_start": 0, "t_end": capture_t + 10_000}
     assert not sources_directory(tmp_vault, "biologia", "la-celula", "notes").exists()
 
     [meta] = list_sessions(tmp_vault, "biologia", "la-celula")

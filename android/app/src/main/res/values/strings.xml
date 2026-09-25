@@ -70,6 +70,7 @@
     <string name="home_continue_session">Continuar</string>
     <string name="home_opening_session">Abriendo la sesión…</string>
     <string name="home_session_open">Sesión abierta</string>
+    <string name="home_session_ending">Terminando sesión… Pulsa «Continuar» si quieres seguir con ella.</string>
     <string name="home_last_session">Última sesión: %1$s</string>
     <plurals name="home_pending_doubts">
         <item quantity="one">%1$d duda pendiente</item>
@@ -85,8 +86,47 @@
     <string name="create_topic_save">Crear</string>
     <string name="create_topic_saving">Creando…</string>
 
-    <!-- Capture (placeholder until the capture screen exists) -->
+    <!-- Capture screen -->
+    <string name="retry">Reintentar</string>
     <string name="capture_title">%1$s · %2$s</string>
-    <string name="capture_placeholder">Sesión %1$s abierta. La pantalla de captura llegará pronto.</string>
-    <string name="capture_back_home">Volver al inicio</string>
+    <string name="capture_leave">Salir</string>
+    <string name="capture_connecting">Conectando…</string>
+    <string name="capture_connected">Conectado</string>
+    <string name="capture_reconnecting">Sin conexión; reintentando (intento %1$d)…</string>
+    <string name="capture_failed_unauthorized">El ordenador ha rechazado este teléfono. Vuelve a emparejarlo.</string>
+    <string name="capture_failed_not_active">La sesión ya no está abierta en el ordenador.</string>
+    <string name="capture_failed_refused">El ordenador ha cerrado la conexión: %1$s</string>
+    <string name="capture_stopped">Desconectado</string>
+    <plurals name="capture_pending">
+        <item quantity="one">%d duda pendiente</item>
+        <item quantity="other">%d dudas pendientes</item>
+    </plurals>
+    <string name="capture_mic_rationale">Para transcribir lo que explicas, la aplicación necesita el micrófono. Solo se usa mientras la sesión está abierta en esta pantalla.</string>
+    <string name="capture_mic_permission_denied">Sin permiso de micrófono la sesión no puede transcribir. Permítelo para continuar.</string>
+    <string name="capture_camera_rationale">Para ver y fotografiar tus apuntes, la aplicación necesita la cámara. Solo se usa mientras esta pantalla está abierta.</string>
+    <string name="capture_camera_denied">Sin permiso de cámara no se pueden ver ni fotografiar los apuntes.</string>
+    <string name="capture_permission_button">Dar permisos</string>
+    <string name="capture_no_camera">Cámara sin permiso</string>
+    <string name="camera_unavailable_capture">No se pudo abrir la cámara.</string>
+    <string name="capture_mic_denied">El micrófono no tiene permiso: no se está transcribiendo.</string>
+    <string name="capture_mic_paused">Micrófono en pausa</string>
+    <string name="capture_spool_near_cap">Queda poco espacio para guardar sin conexión: si no vuelve la conexión se perderá el audio más antiguo</string>
+    <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
+    <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
+    <string name="capture_button_capture">Capturar</string>
+    <string name="capture_shot_capturing">Haciendo fotos…</string>
+    <string name="capture_shot_pending">Foto pendiente de enviar</string>
+    <string name="capture_shot_uploading">Enviando foto…</string>
+    <string name="capture_shot_uploaded">Foto enviada</string>
+    <string name="capture_shot_failed">El ordenador no aceptó la foto. Toca para reintentar.</string>
+    <string name="capture_shot_camera_failed">No se pudo hacer la foto</string>
+    <string name="capture_button_important">Importante</string>
+    <string name="capture_source_notes">Mirando: Apuntes</string>
+    <string name="capture_source_book">Mirando: Libro</string>
+    <string name="capture_button_end">Terminar</string>
+    <string name="capture_ending">Terminando…</string>
+    <string name="capture_end_title">¿Terminar la sesión?</string>
+    <string name="capture_end_text">Se cerrará la sesión de este tema. Podrás revisar los apuntes en el ordenador.</string>
+    <string name="capture_end_confirm">Terminar</string>
+    <string name="capture_end_failed">No se pudo terminar la sesión: %1$s</string>
 </resources>

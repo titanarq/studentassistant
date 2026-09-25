@@ -6,8 +6,9 @@ prints the version, `pair` shows a pairing QR minted by the running backend, `de
 recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range of it) to a topic
 as a source, `replay` feeds a recorded session through the gateway as a capture client would,
 `setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
-systemd service), `doctor` checks that it is, and `index rebuild` recreates the derived search
-index from the vault.
+systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
+index from the vault, `purge` applies the vault's retention policy, and `generate <kind> --topic`
+builds one kind of study material from a topic's notes (`studentassistant.generators`).
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -45,6 +46,13 @@ from studentassistant.config import (
     config_toml_path,
     write_vault_config,
 )
+from studentassistant.evals.cli import eval_cli
+from studentassistant.generators import (
+    GenerationError,
+    UnknownGeneratorError,
+    default_registry,
+    run_generator,
+)
 from studentassistant.install import service as install_service
 from studentassistant.install import whisper
 from studentassistant.install.apikey import (
@@ -54,7 +62,23 @@ from studentassistant.install.apikey import (
     store_api_key,
 )
 from studentassistant.install.doctor import DoctorProbes, run_doctor
+from studentassistant.llm import (
+    AnthropicTransport,
+    CostConfirmationRequiredError,
+    LedgerBinding,
+    LLMError,
+    RefusalError,
+    Transport,
+    get_client,
+)
 from studentassistant.llm.cost import day_usd, utc_now
+from studentassistant.observer import (
+    COMPACTED_EVENT_KIND,
+    ObserverStateError,
+    compaction_payload,
+    load_observer_snapshot,
+)
+from studentassistant.observer.catchup import compactable_snapshot
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.recorder import SessionRecorder
@@ -83,9 +107,23 @@ from studentassistant.vault import (
     list_subjects,
     list_topics,
     read_ledger,
+    read_topic_events,
+    require_topic,
+    topic_directory,
 )
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
 from studentassistant.vault.index import IndexReport, VaultIndexError, rebuild_index
+from studentassistant.vault.purge import (
+    REASON_TEXT,
+    Compaction,
+    PurgeError,
+    PurgeItem,
+    TopicPurgePlan,
+    apply_purge,
+    format_size,
+    plan_topic_purge,
+    purged_history_paths,
+)
 from studentassistant.vault.setup import SetupError, SetupResult, clone_vault, create_vault
 
 cli = typer.Typer(
@@ -112,7 +150,14 @@ def serve(
     export_api_key(settings.llm.api_key_path())
     recorder = SessionRecorder(server.recordings_dir) if record else None
     try:
-        app = create_app(server=server, recorder=recorder)
+        # The live observer calls Claude through the real transport ([observer] enabled = false
+        # turns it off).
+        app = create_app(
+            server=server,
+            recorder=recorder,
+            llm_transport=AnthropicTransport(),
+            llm_settings=settings,
+        )
     except ValueError as error:
         typer.echo(f"Cannot record: {error}", err=True)
         raise typer.Exit(code=1) from error
@@ -391,6 +436,7 @@ def replay_command(
 
 index_cli = typer.Typer(help="The derived search index of the vault (a rebuildable cache).")
 cli.add_typer(index_cli, name="index")
+cli.add_typer(eval_cli, name="eval")
 
 
 def _index_summary(report: IndexReport) -> str:
@@ -415,6 +461,29 @@ def index_rebuild() -> None:
         typer.echo(f"No se puede abrir la bóveda: {error}")
         raise typer.Exit(code=1) from error
     typer.echo(_index_summary(report))
+
+
+stt_cli = typer.Typer(help="Speech-to-text on this PC (server mode, ADR-0008).")
+cli.add_typer(stt_cli, name="stt")
+
+
+@stt_cli.command("download")
+def stt_download() -> None:
+    """Download the faster-whisper model of `[stt.options.faster-whisper]` into its cache."""
+    stt = Settings().stt
+    if not whisper.uses_whisper(stt):
+        typer.echo(
+            f"Aviso: la voz usa ahora el modo {stt.mode} con {stt.provider}; el modelo solo se usa"
+            " con stt.mode = server y stt.provider = faster-whisper."
+        )
+    options = whisper.whisper_options(stt)
+    typer.echo(f"Descargando el modelo de Whisper {options.model} (puede tardar un rato)...")
+    try:
+        path = whisper.download(options)
+    except whisper.WhisperError as error:
+        typer.echo(f"No se pudo descargar el modelo: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(f"Modelo de Whisper {options.model} listo en {path}.")
 
 
 class SetupMode(StrEnum):
@@ -685,3 +754,296 @@ def doctor(
         typer.echo(check.line())
     if any(check.failed for check in checks):
         raise typer.Exit(code=1)
+
+
+HARD_PURGE_WARNING = (
+    "--hard reescribe el historial de la bóveda: lo purgado desaparece de todas sus versiones y"
+    " la rama y las etiquetas se suben a GitHub a la fuerza. Después, cualquier otro PC que tenga"
+    " la bóveda debe clonarla de nuevo (studentassistant setup --clone en una carpeta vacía) o, si"
+    " no tiene nada sin subir, ejecutar `git fetch origin && git reset --hard origin/main` en"
+    " ella; si no, volvería a subir lo purgado. Detén el servidor antes de continuar."
+)
+HARD_PURGE_WORD = "reescribir"
+
+
+def _purge_targets(vault: Vault, topic: str | None) -> list[tuple[str, str]]:
+    if topic is None:
+        return [
+            (subject.slug, stored.slug)
+            for subject in list_subjects(vault)
+            for stored in list_topics(vault, subject.slug)
+        ]
+    subject_slug, _, topic_slug = topic.partition("/")
+    if not subject_slug or not topic_slug or "/" in topic_slug:
+        typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+        raise typer.Exit(code=2)
+    try:
+        require_topic(vault, subject_slug, topic_slug)
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    return [(subject_slug, topic_slug)]
+
+
+def _compaction(vault: Vault, subject_slug: str, topic_slug: str) -> Compaction | None:
+    """Where the topic's folded events end: the fold up to the observer's newest acknowledgement,
+    so a batch it still owes is never compacted away (`observer.catchup`)."""
+    try:
+        snapshot = compactable_snapshot(read_topic_events(vault, subject_slug, topic_slug))
+    except (ObserverStateError, VaultError) as error:
+        typer.echo(f"{subject_slug}/{topic_slug}: sus eventos no se compactan ({error}).")
+        return None
+    if snapshot is None or snapshot.cursor is None:
+        return None
+    return Compaction(
+        session_id=snapshot.cursor.session_id,
+        seq=snapshot.cursor.seq,
+        kind=COMPACTED_EVENT_KIND,
+        payload=compaction_payload(snapshot),
+    )
+
+
+def _item_line(item: PurgeItem) -> str:
+    size = (
+        format_size(item.size_before)
+        if item.removed
+        else f"{format_size(item.size_before)} -> {format_size(item.size_after or 0)}"
+    )
+    verb = "se borra" if item.removed else "se compacta"
+    return f"  - {item.path}: {verb} ({REASON_TEXT[item.reason]}, {size})"
+
+
+def _print_plan(plan: TopicPurgePlan) -> None:
+    name = f"{plan.subject_slug}/{plan.topic_slug}"
+    if plan.skipped is not None:
+        typer.echo(f"{name}: se omite, {plan.skipped}.")
+        return
+    typer.echo(f"{name}:" if plan.items else f"{name}: nada que purgar.")
+    for item in plan.items:
+        typer.echo(_item_line(item))
+    for path in plan.protected:
+        typer.echo(f"  = {path}: se conserva (lo citan los apuntes)")
+
+
+@cli.command()
+def purge(
+    topic: Annotated[
+        str | None, typer.Option("--topic", help="Solo este tema, como <asignatura>/<tema>.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo mostrar lo que se purgaría y cuánto ocupa.")
+    ] = False,
+    hard: Annotated[
+        bool,
+        typer.Option("--hard", help="Además, reescribir el historial de git para liberar espacio."),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="No pedir confirmación para --hard.")] = False,
+) -> None:
+    """Apply the retention policy ([vault.purge]) to every topic, or to one, and commit it.
+
+    Never removes a transcript, the notes or what they cite. The purge is a normal commit, so it
+    can be undone from git history; `--hard` rewrites that history (asking first) and force-pushes.
+    """
+    settings = Settings()
+    try:
+        vault = Vault.open(settings.vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    targets = _purge_targets(vault, topic)
+    sync = GitSync(vault, settings.vault.git)
+    has_remote = sync.git.run("remote", "get-url", settings.vault.git.remote).ok
+    if not dry_run:
+        sync.checkpoint("cambios pendientes antes de la purga")
+        if hard and has_remote:
+            pulled = sync.sync()
+            if not pulled.ok:
+                typer.echo(
+                    f"No se puede purgar con --hard sin estar al día con GitHub: {pulled.message}"
+                )
+                raise typer.Exit(code=1)
+    try:
+        plans = [
+            plan_topic_purge(
+                sync,
+                subject_slug,
+                topic_slug,
+                settings.vault.purge,
+                _compaction(vault, subject_slug, topic_slug),
+            )
+            for subject_slug, topic_slug in targets
+        ]
+    except (PurgeError, VaultError) as error:
+        typer.echo(f"No se puede preparar la purga: {error}")
+        raise typer.Exit(code=1) from error
+    for plan in plans:
+        _print_plan(plan)
+    items = [item for plan in plans for item in plan.items]
+    saved = format_size(sum(item.saved_bytes for item in items))
+
+    if dry_run:
+        typer.echo(
+            f"Simulación: se liberarían {saved} en {len(items)} archivos; no se ha cambiado nada."
+        )
+        if hard:
+            roots = [
+                topic_directory(vault, plan.subject_slug, plan.topic_slug)
+                for plan in plans
+                if plan.skipped is None
+            ]
+            earlier = purged_history_paths(sync, roots)
+            removed = {item.path for item in items if item.removed}
+            typer.echo(
+                f"Con --hard se borrarían del historial {len(removed | set(earlier))} archivos."
+            )
+        return
+    if hard and not yes:
+        typer.echo(HARD_PURGE_WARNING)
+        answer = typer.prompt(f"Escribe «{HARD_PURGE_WORD}» para continuar", default="")
+        if answer.strip() != HARD_PURGE_WORD:
+            typer.echo("Cancelado: no se ha cambiado nada.")
+            raise typer.Exit(code=1)
+
+    def refresh_snapshot(plan: TopicPurgePlan) -> None:
+        if plan.compacts_events:
+            load_observer_snapshot(vault, plan.subject_slug, plan.topic_slug)
+
+    try:
+        result = apply_purge(sync, plans, hard=hard, before_commit=refresh_snapshot)
+    except (PurgeError, VaultError) as error:
+        typer.echo(f"La purga no se ha completado: {error}")
+        raise typer.Exit(code=1) from error
+    if result.commit is None:
+        typer.echo("Nada que purgar.")
+    else:
+        typer.echo(
+            f"Purga guardada en {result.commit[:10]}: {saved} menos en la bóveda; sigue"
+            " recuperable en el historial de git."
+        )
+        if not hard and has_remote:
+            if sync.push_now():
+                typer.echo("Subida a GitHub.")
+            else:
+                typer.echo("No se ha podido subir ahora; se subirá en la próxima sincronización.")
+    if result.history is not None:
+        history = result.history
+        typer.echo(
+            f"Historial reescrito: {len(history.paths)} archivos fuera de todas las versiones;"
+            f" el repositorio ocupa {format_size(history.size_after)}"
+            f" (antes {format_size(history.size_before)})."
+        )
+        if history.pushed:
+            typer.echo(
+                "Subido a GitHub a la fuerza: clona de nuevo la bóveda en los demás PCs antes de"
+                " usarlos."
+            )
+    elif hard:
+        typer.echo("No había nada purgado en el historial que reescribir.")
+
+
+def _option_value(text: str) -> Any:
+    """A `--option` value: JSON when it parses as JSON (`10`, `true`, `["a"]`), else the text."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _generator_transport() -> Transport:
+    """The transport `generate` calls Claude through; tests replace this function."""
+    return AnthropicTransport()
+
+
+@cli.command("generate")
+def generate_command(
+    kind: Annotated[
+        str, typer.Argument(help="Qué material: el tipo de generador (p. ej. esquema).")
+    ],
+    topic: Annotated[str, typer.Option("--topic", help="El tema, como <asignatura>/<tema>.")],
+    option: Annotated[
+        list[str] | None,
+        typer.Option("--option", "-o", help="Una opción del generador, como clave=valor."),
+    ] = None,
+    confirm_over_cap: Annotated[
+        bool,
+        typer.Option("--confirm-over-cap", help="Generar aunque se haya alcanzado el límite."),
+    ] = False,
+) -> None:
+    """Generate one kind of study material from a topic's notes into its `generated/` and commit.
+
+    The artifact records the notes version it was built from, and is reported stale once the notes
+    change. The commit is local; the server's sync pushes it.
+    """
+    settings = Settings()
+    subject_slug, _, topic_slug = topic.partition("/")
+    if not subject_slug or not topic_slug or "/" in topic_slug:
+        typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+        raise typer.Exit(code=2)
+    if kind not in default_registry:
+        typer.echo(str(UnknownGeneratorError(kind, default_registry.kinds())))
+        raise typer.Exit(code=2)
+    options: dict[str, Any] = {}
+    for item in option or []:
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip():
+            typer.echo(f"«{item}» no es una opción: escríbela como clave=valor.")
+            raise typer.Exit(code=2)
+        options[key.strip()] = _option_value(value)
+    try:
+        vault = Vault.open(settings.vault.path)
+        require_topic(vault, subject_slug, topic_slug)
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    sync = GitSync(vault, settings.vault.git)
+    client = get_client(
+        "generator",
+        settings=settings,
+        transport=_generator_transport(),
+        ledger=LedgerBinding(vault, subject_slug, topic_slug),
+    )
+    try:
+        result = asyncio.run(
+            run_generator(
+                vault,
+                subject_slug,
+                topic_slug,
+                kind,
+                client=client,
+                sync=sync,
+                options=options,
+                confirm_over_cap=confirm_over_cap,
+            )
+        )
+    except GenerationError as error:
+        typer.echo(f"No se ha generado: {error}")
+        raise typer.Exit(code=1) from error
+    except CostConfirmationRequiredError as error:
+        scope = "de la sesión" if error.cap == "session" else "del día"
+        typer.echo(
+            f"Se ha alcanzado el límite de gasto {scope} ({error.total_usd:.2f} de"
+            f" {error.limit_usd:.2f} USD). Repite con --confirm-over-cap para generar igualmente."
+        )
+        raise typer.Exit(code=1) from error
+    except RefusalError as error:
+        typer.echo("Claude se ha negado a generar este material.")
+        raise typer.Exit(code=1) from error
+    except LLMError as error:
+        typer.echo(f"No se ha podido generar: Claude no ha respondido ({error}).")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se ha podido guardar en la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    version = f"apuntes v{result.notes.version}" if result.notes.version else "apuntes sin versión"
+    if result.notes.version and result.notes.changed_since_version:
+        version += " con cambios"
+    typer.echo(f"Generado «{kind}» de {topic} a partir de {version}:")
+    for path in result.files:
+        typer.echo(f"  {path}")
+    for path in result.removed:
+        typer.echo(f"  (borrado) {path}")
+    for warning in result.warnings:
+        typer.echo(f"Aviso: {warning}")

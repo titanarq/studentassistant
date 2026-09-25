@@ -13,7 +13,9 @@ import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.SubjectCreateRequest
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
+import com.titanarq.studentassistant.session.NoPendingEnds
 import com.titanarq.studentassistant.session.OpenSession
+import com.titanarq.studentassistant.session.PendingEnds
 import com.titanarq.studentassistant.session.SessionHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,13 +34,17 @@ sealed interface Loadable<out T> {
 }
 
 /**
- * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1)
- * and are shown only when the backend reports them; a 1.0 backend sends neither.
+ * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1),
+ * [digestExcerpt] (where the topic was left, protocol 1.3) too; each is shown only when the
+ * backend reports it, and an older backend leaves the newer ones out. [ending] is true
+ * while the phone is still completing the end of the topic's open session («Terminando sesión…»).
  */
 data class TopicRow(
     val topic: Topic,
     val lastSessionAtMs: Long? = null,
     val pendingCount: Int? = null,
+    val digestExcerpt: String? = null,
+    val ending: Boolean = false,
 ) {
     /** True when the topic has an unended session: the row offers "Continuar", not "Empezar". */
     val canContinue: Boolean get() = topic.openSessionId != null
@@ -87,13 +93,15 @@ data class HomeUiState(
 /**
  * The home screen: the active backend's subjects and their topics, creating a topic (and its
  * subject when it is new), and starting ("Empezar sesión") or resuming ("Continuar") a session,
- * which is handed to the capture screen through [SessionHolder].
+ * which is handed to the capture screen through [SessionHolder]. A topic whose session end is still
+ * pending is marked [TopicRow.ending]; "Continuar" on it stops that end first ([PendingEnds]).
  */
 class HomeViewModel(
     private val client: BackendClient,
     private val store: BackendStore,
     private val sessions: SessionHolder,
     private val clock: Clock,
+    private val pendingEnds: PendingEnds = NoPendingEnds,
 ) : ViewModel() {
     private val _state = MutableStateFlow(HomeUiState())
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -103,6 +111,25 @@ class HomeViewModel(
     private var topicsJob: Job? = null
     private var createJob: Job? = null
     private var sessionJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            var before = emptySet<String>()
+            pendingEnds.pending.collect { pending ->
+                val finished = before - pending
+                before = pending
+                val rows = (_state.value.topics as? Loadable.Loaded)?.value
+                _state.update { state ->
+                    val loaded = state.topics as? Loadable.Loaded ?: return@update state
+                    state.copy(topics = Loadable.Loaded(loaded.value.map { it.copy(ending = it.topic.openSessionId in pending) }))
+                }
+                // An end completed: the topic's session is no longer open on the backend.
+                val stale = rows.orEmpty().any { it.topic.openSessionId in finished }
+                val subject = _state.value.selectedSubject
+                if (stale && subject != null && sessionJob?.isActive != true) loadTopics(subject, keepSession = true)
+            }
+        }
+    }
 
     /**
      * (Re)loads the active backend's subjects and, when a subject is selected and still exists,
@@ -201,7 +228,12 @@ class HomeViewModel(
         sessionJob = viewModelScope.launch {
             val openId = topic.openSessionId
             val result = if (openId != null) {
-                client.resumeSession(credentials, openId)
+                var resumed: BackendResult<Session> = BackendResult.Unreachable("not resumed")
+                pendingEnds.continueInstead(openId) {
+                    resumed = client.resumeSession(credentials, openId)
+                    resumed is BackendResult.Success
+                }
+                resumed
             } else {
                 client.startSession(
                     credentials,
@@ -243,7 +275,16 @@ class HomeViewModel(
         topicsJob?.cancel()
         topicsJob = viewModelScope.launch {
             val topics = client.listTopics(credentials, subject.subjectId).toLoadable { response ->
-                response.topics.map { TopicRow(it, it.lastSessionAtMs, it.pendingCount) }
+                val pending = pendingEnds.pending.value
+                response.topics.map {
+                    TopicRow(
+                        it,
+                        it.lastSessionAtMs,
+                        it.pendingCount,
+                        it.digestExcerpt,
+                        ending = it.openSessionId in pending,
+                    )
+                }
             }
             _state.update {
                 if (it.selectedSubject?.subjectId != subject.subjectId) {

@@ -23,6 +23,9 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # Server-side tool uses (`usage.server_tool_use`): web searches are priced per use.
+    web_search_requests: int = 0
+    web_fetch_requests: int = 0
 
 
 class ToolCall(BaseModel):

@@ -66,6 +66,7 @@ val MESSAGE_CODECS: Map<String, MessageCodec> = mapOf(
     "rest.sessions.end.response" to rest<SessionEndResponse>(),
     "rest.sessions.captures.request" to rest<CaptureUploadRequest>(),
     "rest.sessions.captures.response" to rest<CaptureUploadResponse>(),
+    "rest.search.response" to rest<SearchResponse>(),
 )
 
 /** The codec for a message name such as `client.hello`; [NoSuchElementException] if none. */

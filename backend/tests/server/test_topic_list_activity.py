@@ -1,7 +1,9 @@
-"""`GET /api/subjects/{subject_id}/topics` fills `last_session_at_ms` and `pending_count` (1.1).
+"""`GET /api/subjects/{subject_id}/topics` fills `last_session_at_ms` and `pending_count` (1.1)
+and `digest_excerpt` (1.3).
 
-Peers speak the lower MINOR and a client refuses unknown fields, so a device that paired as a 1.0
-client never gets them; the PC itself (loopback, the `reader`) speaks this backend's version.
+Peers speak the lower MINOR and a client refuses unknown fields, so a device that paired as an
+older client never gets the newer fields; the PC itself (loopback, the `reader`) speaks this
+backend's version.
 """
 
 from __future__ import annotations
@@ -10,13 +12,19 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from read_api_fixtures import ReadVault
 
 from studentassistant.observer import STATE_OP_EVENT_KIND
-from studentassistant.protocol import TopicsListResponse
-from studentassistant.vault import list_sessions, resume_session
+from studentassistant.protocol import DIGEST_EXCERPT_MAX, TopicsListResponse
+from studentassistant.vault import (
+    list_sessions,
+    resume_session,
+    topic_digest_path,
+    write_topic_digest,
+)
 
 SCHEMA = Path(__file__).resolve().parents[3] / "protocol" / "rest.topics.list.response.schema.json"
 
@@ -112,9 +120,85 @@ def test_a_1_1_client_gets_both_fields(
     assert topics[read_vault.empty_topic]["pending_count"] == 0
 
 
-def test_a_newer_minor_client_is_answered_in_1_1(
+DIGEST = (
+    "# Resumen del tema: Cinemática\n\n"
+    "1 sesión con contenido; la última, el 24/09/2026: MRU. Sin dudas abiertas.\n\n"
+    "Asignatura: Física.\n"
+)
+EXCERPT = "1 sesión con contenido; la última, el 24/09/2026: MRU. Sin dudas abiertas."
+
+
+def test_a_topic_with_a_digest_carries_its_summary_paragraph(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, DIGEST)
+
+    topics = listed(reader, read_vault.subject)
+
+    assert topics[read_vault.topic]["digest_excerpt"] == EXCERPT
+    # No session has ended on it yet, so no digest: the excerpt is left out.
+    assert "digest_excerpt" not in topics[read_vault.empty_topic]
+
+
+def test_a_long_summary_is_cut_to_the_protocol_limit(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    summary = "Movimiento rectilíneo uniforme y acelerado. " * 40
+    text = f"# R\n\n{summary}\n"
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, text)
+
+    excerpt = listed(reader, read_vault.subject)[read_vault.topic]["digest_excerpt"]
+
+    assert len(excerpt) == DIGEST_EXCERPT_MAX
+    assert excerpt.endswith("…")
+
+
+def test_an_unreadable_digest_leaves_only_the_excerpt_out(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, DIGEST)
+    # Damage the file the way a bad sync could: not UTF-8 any more.
+    path = topic_digest_path(read_vault.vault, read_vault.subject, read_vault.topic)
+    path.write_bytes(b"\xff\xfe")
+
+    topic = listed(reader, read_vault.subject)[read_vault.topic]
+
+    assert "digest_excerpt" not in topic
+    assert topic["pending_count"] == 1
+
+
+@pytest.mark.parametrize("version", ["1.0", "1.1", "1.2"])
+def test_a_pre_1_3_client_never_gets_the_excerpt(
+    read_vault: ReadVault, reader: TestClient, lan_reader: TestClient, version: str
+) -> None:
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, DIGEST)
+    headers = paired_as(reader, lan_reader, version)
+
+    topic = listed(lan_reader, read_vault.subject, headers)[read_vault.topic]
+
+    assert "digest_excerpt" not in topic
+    assert ("pending_count" in topic) is (version != "1.0")
+
+
+def test_a_1_3_client_gets_the_excerpt(
     read_vault: ReadVault, reader: TestClient, lan_reader: TestClient
 ) -> None:
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, DIGEST)
+    headers = paired_as(reader, lan_reader, "1.3")
+
+    topic = listed(lan_reader, read_vault.subject, headers)[read_vault.topic]
+
+    assert topic["digest_excerpt"] == EXCERPT
+    assert topic["pending_count"] == 1
+
+
+def test_a_newer_minor_client_is_answered_in_our_version(
+    read_vault: ReadVault, reader: TestClient, lan_reader: TestClient
+) -> None:
+    write_topic_digest(read_vault.vault, read_vault.subject, read_vault.topic, DIGEST)
     headers = paired_as(reader, lan_reader, "1.7")
 
-    assert "pending_count" in listed(lan_reader, read_vault.subject, headers)[read_vault.topic]
+    topic = listed(lan_reader, read_vault.subject, headers)[read_vault.topic]
+
+    assert "pending_count" in topic
+    assert topic["digest_excerpt"] == EXCERPT

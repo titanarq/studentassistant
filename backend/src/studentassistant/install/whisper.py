@@ -17,6 +17,7 @@ from types import ModuleType
 from typing import Any
 
 from studentassistant.config import DEFAULT_WHISPER_DEVICE, DEFAULT_WHISPER_MODEL, SttSettings
+from studentassistant.stt import cuda
 
 PROVIDER_NAME = "faster-whisper"
 NOT_INSTALLED_MESSAGE = (
@@ -98,3 +99,15 @@ def cuda_devices() -> int | None:
         return int(module.get_cuda_device_count())
     except Exception:
         return 0
+
+
+CUDA_LIBRARIES_HINT = (
+    "reinstala el extra en backend/ con `uv sync --extra whisper`"
+    " (trae nvidia-cublas-cu12 y nvidia-cudnn-cu12)"
+)
+
+
+def cuda_libraries_error() -> str | None:
+    """`None` when cuBLAS and cuDNN work on the GPU (after loading the `whisper` extra's CUDA
+    wheels), else what failed, in Spanish; see `studentassistant.stt.cuda.check`."""
+    return cuda.check()

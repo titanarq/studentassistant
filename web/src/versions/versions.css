@@ -1,0 +1,125 @@
+/* The notes versions page: the history list, the comparison form and the diff by section. */
+
+.versions-page {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.versions-list li {
+  margin-bottom: 0.75rem;
+}
+
+.versions-date,
+.versions-current,
+.versions-message {
+  color: #555;
+}
+
+.versions-message {
+  margin: 0.25rem 0;
+}
+
+.versions-warning {
+  color: #8a4b00;
+}
+
+.versions-compare fieldset {
+  border: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.version-section {
+  border-left: 4px solid #ccc;
+  padding-left: 0.75rem;
+  margin: 1rem 0;
+}
+
+.version-added {
+  border-left-color: #2ec27e;
+}
+
+.version-removed {
+  border-left-color: #e01b24;
+}
+
+.version-changed {
+  border-left-color: #1a5fb4;
+}
+
+.version-section h3 {
+  margin: 0.25rem 0;
+  font-size: 1.05rem;
+}
+
+.version-status {
+  font-size: 0.8rem;
+  font-weight: normal;
+  color: #555;
+}
+
+.version-section-notes,
+.version-section-stats {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.version-diff-inline,
+.version-diff-side {
+  font-size: 0.85rem;
+  background: #f6f6f6;
+  padding: 0.5rem;
+  overflow-x: auto;
+}
+
+.version-diff-inline {
+  white-space: pre-wrap;
+}
+
+.version-diff-inline > * {
+  display: block;
+  text-decoration: none;
+}
+
+.version-diff-side table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: monospace;
+}
+
+.version-diff-side th {
+  text-align: left;
+  font-family: sans-serif;
+}
+
+.version-diff-side td {
+  vertical-align: top;
+  white-space: pre-wrap;
+  padding: 0 0.25rem;
+}
+
+.version-diff-side ins,
+.version-diff-side del {
+  text-decoration: none;
+}
+
+.version-diff .diff-add {
+  background: #d7f5d9;
+}
+
+.version-diff .diff-del {
+  background: #fbdada;
+}
+
+.version-diff-inline .diff-del {
+  text-decoration: line-through;
+}
+
+.version-diff .diff-hunk {
+  color: #777;
+}

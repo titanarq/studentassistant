@@ -53,7 +53,11 @@ token):
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
-  `/capture` -> `CapturePage`, `/subjects/<subject>/topics/<topic>` -> `TopicPage`, anything else
+  `/capture` -> `CapturePage`, `/live` -> `LivePage`,
+  `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
+  -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
+  `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`,
+  `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except
@@ -123,15 +127,251 @@ token):
     owns the Spanish, one message per code.
 - `src/pairing/api.ts`: `requestPairingCode()` -> `{kind: "ok", pairing} | {kind: "refused"} |
   {kind: "error", status} | {kind: "unreachable"}`, and `qrPayload(pairing)`.
-- `src/topic/`: `TopicPage` (heading "Tema <topic>") is the topic page; for now it only hosts
+- `src/desk/api.ts`: the study desk's read client. `fetchSubjects()`, `fetchTopics(subjectId)`
+  (decoded strictly as protocol `rest.subjects.list.response` / `rest.topics.list.response`) and
+  `fetchTopicSummary(subjectId, topicId)` (`GET /api/subjects/{s}/topics/{t}/summary`, #38,
+  decoded as `TopicSummary`) -> `{kind: "ok", value} | {kind: "not-found", detail} | {kind:
+  "error", status} | {kind: "unreachable"}` (`describeFailure()` puts a failure in one Spanish
+  sentence); `topicPath(s, t)` builds the topic page path. The web app declares no protocol
+  version on REST: served by the backend's own build, it is answered as that backend's version
+  (>= 1.1), so topics may carry `last_session_at_ms`, `pending_count` and (1.3)
+  `digest_excerpt`; all stay optional, the desk does not show the excerpt (its topic summary
+  does), and a topic without them shows only its name.
+- `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
+  after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
+  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them ("Sesión abierta" is a
+  link to the live session view, `/live`); under each subject's name a "Guía de estilo" link to
+  its style guide page. Empty states: no
+  subjects, a subject without topics; a failing topic list is reported inside its subject only.
+- `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
+  <subject name>", the ids until the lists answer) shows `TopicCard`, `PdfUploadForm` and
+  `WebSearchPanel`; an unknown topic (404) shows the backend's Spanish detail and neither form,
+  and a successful upload (`onImported`) or a kept web page (`onKept`) reloads the card. `TopicCard` is the card of VISION §2 ("Resumen del
+  tema"): Fuentes (✓/○ handwritten pages, book pages, PDF, webs), Sesiones (count and minutes of
+  conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
+  Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
+  is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`),
+  and, when there are any, Descargas: a `download` link per generated `.apkg`/`.csv`/`.pdf`/`.pptx`
+  (`flashcards (Anki)`, `flashcards (CSV)`...) to `GET /api/.../generated/files/<name>`.
+  `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
   status, detail} | {kind: "error", status} | {kind: "unreachable"}`; a refusal's Spanish
   `detail` (413 too large, 422 unreadable or bad range) is shown as it comes.
-- `src/App.tsx` is the placeholder study desk: heading "Mesa de estudio", fetches
-  `GET /api/health` on mount, decodes it strictly as `rest.health.response` and shows the
-  backend `protocol_version` (Spanish loading/error states; any other shape is the error state).
+  `WebSearchPanel` (#59, section "Buscar en Internet"): a "Qué buscar" search box and "Buscar"
+  button (an empty query says "Escribe qué quieres buscar." without calling), then the topic's
+  searches ("Búsquedas del tema", newest first, the ones asked by voice too): "«<query>» (pedida
+  en voz | pedida aquí | pedida por el editor) — Buscando… | <n> páginas | No se encontró nada
+  útil. | No se pudo buscar: <message>", each offered page a link (new tab) with its host, "·
+  recomendada" (`relevant`), "· sin confirmar en la búsqueda" (`found_in_search` false), its
+  summary and "Guardar como fuente" -- once kept, "Guardada como fuente externa (<source_id>)";
+  a refused keep shows "No se ha guardado: <detail>" under the page. While a search is `queued`
+  the list is read again every `pollMs` (2 s). A list that cannot be read is reported as plain
+  text (no `alert`). `webSearchApi.ts`: `fetchWebSearches(s, t)` (`GET .../web-searches` ->
+  `WebSearch[]`: `search_id`, `query`, `requested_by`, `session_id`, `queued_at`, `status`,
+  `results` of `WebResult` `url`/`title`/`summary`/`relevant`/`found_in_search`, `reason`,
+  `message`, `kept` of `KeptResult` `index`/`url`/`source_id`/`kept_by`), `queueWebSearch(s, t,
+  query)` (`POST`, the new `search_id`), `keepWebResult(s, t, searchId, index)` (`POST
+  .../{search_id}/results/{index}/keep` -> `KeptSource` `source_id`/`vault_id`/`title`/`url`), all
+  `ApiResult` (`ok` | `refused` with the Spanish `detail` | `error` | `unreachable`), and
+  `describeApiFailure(result)`.
+  The card's "Apuntes v<N>" is a link to the notes viewer once a notes version exists, followed by
+  "(versiones)", a link to the notes version history, and its
+  Pendiente item always links to the pending-doubts panel.
+- `src/notes/` (#52): the notes viewer. `NotesPage` (`← Tema <name>` link, "Apuntes de <name> ·
+  versión <N>") fetches `GET /api/subjects/{s}/topics/{t}/notes` and renders it with `NotesView`;
+  a 404 shows the backend's Spanish detail ("Todavía no hay apuntes de este tema.").
+  - `markdown.ts`: `parseNotes(text) -> {blocks, footnotes}` and `parseInline(text)`, a reader of
+    the notes format of docs/modules/editor.md (headings with `{#anchor}`, paragraphs, nested and
+    loose lists, pipe tables, rules, fenced code, quotes, footnote definitions; inline strong/em,
+    code, links, `[^label]`, `[[?word]]`). It builds a tree rendered as React elements, so the
+    notes' HTML is never markup; only `http(s):`, `mailto:` and `#` links become links.
+  - `provenance.ts`: `parseProvenance(label, definition)` -> `page` (notes/book), `pdf` (file,
+    `#page=K`), `web`, `transcript` (session id, span), `ia` or `unknown`; `sourceVaultId`,
+    `originalPage(meta, page)` (`first_page + page - 1`, the rule of `sources.pdf.original_page`).
+  - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
+    its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
+    sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
+    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word. Web
+    snapshots are external sources (#59): their references get `notes-ref-web` (green, dotted)
+    and the aria label "Fuente externa (web): <text>" (other sources "Fuente: <text>"), and their
+    definition under "Fuentes" gets `notes-footnote-external` and "· fuente externa".
+  - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
+    flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
+    Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
+    `transcription`, else `page-NNN.md`); a PDF page shows `page-NNN.pKKK.jpg` and `.txt`,
+    "PDF «<original_name>», página <original page>" and an "Abrir el PDF" link; a web snapshot its
+    text and "Fuente externa: copia de <url> (<fetched_at>)" from its sidecar; a transcript span its segments with `MM:SS` timestamps
+    (`GET /api/sessions/{id}/transcript`). Focus moves to the panel title; Escape or "Cerrar"
+    closes it and returns the focus to the reference. The panel is fixed to the viewport edge
+    (a bottom sheet under 40rem), so it never scrolls or rewraps the notes.
+  - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
+    `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
+    localhost trust as every other request of the web app.
+  - Beside the notes (a sticky column from 80rem, below them otherwise) `NotesPage` shows the
+    editor chat (`src/chat/`, #71). After a turn or an undo that changed the notes it reads them
+    again (only the latest read is shown) and `NotesView` highlights (`notes-changed`) every
+    top-level block inside a section the turn touched (`changedSections`, the turn's
+    `changed_sections` anchors, subsections included); an undo clears the highlight. `NotesView`'s
+    `onAskWhy` puts a "¿Por qué?" button (named "¿Por qué pusiste esto?") on every top-level block
+    with text, disabled while the editor is busy (`askDisabled`), and hands the block, its
+    section's anchor and its number as the backend counts blocks (from 1 after a heading of level
+    2 or deeper; before the first section from the start, the `# title` included); the page asks
+    `chat.ask({section, block, quote: blockExcerpt(block)}, whyQuestion(block, section))`
+    (`POST .../notes/why`, #69), and the answer's sources open in the `SourcePanel`. A topic without notes (404) shows `PrepareTopic` under the
+    backend's detail and reads the notes again when it is done; the chat appears once notes exist.
+- `src/chat/` (#71): the chat with the editor over the editor chat API (docs/modules/server.md).
+  - `sse.ts`: `readSse(body, onEvent)`, a reader of a `text/event-stream` body from a `fetch` POST
+    (events split at blank lines, `event:` + joined `data:` lines, comments ignored; rejects when
+    the stream breaks).
+  - `api.ts`: `askWhy(s, t, {section, block, quote}, {confirmOverCap, onDelta, onRestart})` posts
+    `POST .../notes/why` and reads the same kind of stream -> `WhyOutcome` =
+    `StreamOutcome<ExplanationResult>` (`question`, `reply`, `refs`: `{label, kind, text}`,
+    `warning`; `readExplanation`); history turns carry `kind` (`revise`/`explain`) and `refs`.
+    `sendChatMessage(s, t, message, {confirmOverCap, onDelta, onRestart})` posts `POST
+    .../notes/chat` and reads its stream (`reply.delta` -> `onDelta(text, attempt)`,
+    `reply.restart` -> `onRestart(attempt)`) -> `ChatOutcome` = `ActionResult<RevisionResult>`
+    (an error before the stream or an `error` event is `refused` with its status and Spanish
+    `detail` and `code`, `overCap` when the code is `cost_cap_reached`, never read from the
+    wording) `| {kind: "interrupted"}` when the stream ends or
+    breaks before `result`/`error`; `fetchChatHistory -> ReadResult<ChatHistory>` (`GET
+    .../notes/chat`), `undoLastTurn -> ActionResult<UndoResult>` (`POST .../notes/chat/undo`),
+    `describeChatFailure`. Bodies are read leniently (`readRevision`, `readHistory`, `readUndo`).
+  - `diff.ts`: `parseDiff(unified)` -> hunk/add/del/context lines (file header dropped),
+    `diffStats`. `DiffView` shows a turn's diff in an open `details` "Cambios en los apuntes
+    (<n> líneas añadidas, <m> quitadas)", added lines in `<ins>`, removed ones in `<del>`.
+  - `why.ts`: `blockExcerpt(block)` (the block's text without footnote references nor `[[?..]]`
+    marks, cut at `EXCERPT_CHARS` = 280) and `whyQuestion(block, section)` -> `"¿Por qué pusiste
+    esto? (en la sección #<anchor>) «<excerpt>»"` (`null` for a rule), the entry shown while the
+    answer streams (then the backend's `question`, the same form).
+  - `useEditorChat(s, t, onNotesChanged)`: reads the conversation once, then runs one turn or undo
+    at a time (`busy`); the running turn's reply grows with each delta and restarts on
+    `reply.restart`; the `result`'s `reply` replaces it. `canUndo` starts from the history's
+    `can_undo` and turns on after an applied turn with a commit. A cut stream reads the history
+    and the notes again (the turn goes on in the backend). A reached cost cap sets `overCap`, and
+    `retry` repeats the message (or the "¿Por qué?") with `confirm_over_cap` in place of the
+    failed entry. `ask(anchor, message)` runs a "¿Por qué?" the same way; its entry gets the
+    answer's `refs`. An undo
+    says "Se ha deshecho el cambio «<summary>».", marks the turn undone and reads the history
+    again (diffs of this page's turns are kept by commit).
+  - `EditorChat` ("Hablar con el editor"): a `log` of the turns ("Tú:" / "Editor:", "El editor
+    está pensando…" until the first delta, "Cambio aplicado: <summary>" or "Cambio deshecho:
+    ...", the turn's warning, a failure as an alert, the `DiffView` of a live applied turn), a
+    hint while empty, "Mensaje para el editor" (Enter sends, Shift+Enter is a new line; up to
+    4000 characters), "Enviar" and "Deshacer el último cambio" (enabled when `canUndo` and idle),
+    and "Continuar igualmente" after a reached cost cap. An entry with `refs` lists "Fuentes:",
+    each a button ("Ver la fuente: <text>") that opens it in the sources panel (`onOpenSource`).
+  - Proposed style rules (#216): a turn's `proposed_style_rules` (the `result` event and the
+    history turns, which carry only those the subject's guide does not have yet) become the
+    entry's `proposedRules`, shown in a group "Propuesta para la guía de estilo", each «rule»
+    with "Guardar para toda la asignatura" (named "Guardar para toda la asignatura: <rule>").
+    `useEditorChat`'s `confirmRule(rule)` posts it alone to `POST
+    /api/subjects/{s}/style-guide/rules` (one at a time, `confirming`); once saved, that rule and
+    any other already in the answered guide (`sameRule`) leave every entry, and `ruleNotice`
+    says "Guardado en la guía de estilo de la asignatura: «rule»." (or that the guide already
+    had it, or why it failed) with a "Ver la guía de estilo" link (`styleGuidePath`).
+- `src/styleGuide/` (#216): the subject's style guide over the API of #70
+  (docs/modules/server.md). `StyleGuidePage` (`/subjects/<s>/style-guide`: `← Mesa de estudio`,
+  "Guía de estilo de <subject name>") lists the rules ("Reglas de la guía de estilo"), each with
+  "Editar" (a "Regla <n>" text box, "Guardar"/"Cancelar") and "Borrar", and a "Nueva regla" box
+  with "Añadir" (disabled at `MAX_RULES`, 50; up to `MAX_RULE_CHARS`, 300, characters). Every
+  change writes the whole list (`PUT .../style-guide`) and shows the list the backend answers;
+  a rule already in the guide (`sameRule`: list marker dropped, spaces collapsed, case ignored)
+  is refused on the page; a refusal (422 invalid rule, 404 unknown subject, 503) shows its
+  Spanish `detail`. An unknown subject shows the backend's detail and no form.
+  - `api.ts`: `fetchStyleGuide(s) -> ReadResult<StyleGuide>` (`subject`, `rules`, `added`,
+    `commit`; `readStyleGuide`, lenient), `confirmStyleRules(s, rules)` (POST `.../rules`) and
+    `saveStyleGuide(s, rules)` (PUT) -> `ActionResult<StyleGuide>` (a FastAPI validation list as
+    `detail` is a plain `error`), `sameRule`, `styleGuidePagePath(s)`.
+- `src/pending/` (#80): the pending-doubts panel and the doubts-resolution flow. `PendingPage`
+  (`← Tema <name>` link, "Dudas pendientes", "<N> dudas por revisar" in a polite live region, a
+  "Por revisar / Cerradas / Todas" filter applied on the page, `applyFilter`) reads the editor's
+  doubts queue `GET /api/subjects/{s}/topics/{t}/doubts` (#68) and reads it again every `POLL_MS`
+  (5 s, `pollMs` prop) while the page is visible, so the count and cards follow a live session; a
+  failed re-read keeps the last queue and says so, and an older read never overwrites a newer one.
+  Cards are grouped by kind (`byKind`: contradiction, possible_error, illegible, incomplete,
+  unexplained_concept, then unknown kinds), one region per kind. The topic's notes are shown under
+  the cards ("Apuntes · versión <N>", `NotesView` with the `SourcePanel`).
+  - One doubt at a time: the open doubt being resolved (the queue's `current`, unless the student
+    pressed "Resolver esta duda" on another) carries `DoubtResolver`, a form "Resolver la duda":
+    the editor's question (or a note that there is none yet), one button per suggested answer
+    (`{"suggestion": n}`, 1-based), for a contradiction the options as radios "<source>: «says»"
+    (`sourceLabel`: "Tus apuntes, página 3", "El libro, página 12", "El PDF, página 82"...) with
+    "Guardar también una nota con lo que dicen las otras" (`keep_discarded`), free text (alone, or
+    as the comment of a source), "Responder" and "Descartar". After an answer or a dismissal the
+    page says what happened ("Duda resuelta: <resolution>", "Los apuntes se han actualizado.", the
+    warning), reads the queue again and, when `notes_changed`, the notes. Only one doubts operation
+    of the page runs at a time.
+  - "Preparar las preguntas" (shown while an open doubt has no question) calls `POST
+    .../doubts/review` and says what it did (`describeReview`: "El editor ha resuelto 2 dudas con
+    tus fuentes y tiene 1 pregunta para ti.").
+  - Refusals show the backend's Spanish `detail` (409 closed doubt, unended session, another
+    operation running, no notes yet; 422; 502; 503). The page branches on the error body's `code`
+    (protocol 1.2, never on the wording of `detail`): an unknown doubt (404) or a closed one
+    (`doubt_closed`) makes the page read the queue again; a reached cost cap (`cost_cap_reached`)
+    offers "Continuar igualmente", which repeats the same request with `confirm_over_cap: true`.
+  - `PendingCard`: an `article` "<kind label>: <text>" with the status, a per-kind hint while
+    open, what it refers to (`describeRefs`: pages, conversation fragments, sources), merged
+    duplicates, the resolution once closed, and its `children` (the form or the pick button).
+  - `api.ts`: the observer's queue `fetchPending(subject, topic, filter) -> ReadResult<TopicPending>`
+    (`GET .../pending`, strict `decodeTopicPending`), `kindLabel`, `statusLabel`.
+  - `doubts.ts`: `fetchDoubts -> ReadResult<DoubtsQueue>` (strict `decodeDoubtsQueue`: items
+    `{item, question, outcome}`), `reviewDoubts(s, t, confirmOverCap)`, `answerDoubt(s, t, id,
+    answer, confirmOverCap)`, `dismissDoubt(s, t, id)` -> `ActionResult<T>` = `{kind: "ok", value}
+    | {kind: "refused", status, detail, code, overCap} | {kind: "error", status} | {kind:
+    "unreachable"}` (results read leniently: `ReviewResult` {`auto_resolved`, `asked`,
+    `notes_changed`, `warning`}, `ResolutionResult` {`pending_id`, `status`, `resolution`,
+    `notes_changed`, `warning`}), `describeActionFailure`, `describeReview`, `isOverCap(code)`, and the
+    generic `postAction(path, body, read)`.
+- `src/versions/` (#72): the notes version history over the versions API of #64
+  (docs/modules/server.md). `VersionsPage` (`← Tema <name>` link, "Versiones de los apuntes de
+  <name>") lists every version newest first ("Versión <N>", "la de los apuntes actuales" on the
+  one `apuntes.md` is, the tag date in `es-ES`, the commit message) and says when the notes
+  changed after the latest version. "Comparar": "Desde"/"Hasta" selects ("Hasta" also offers
+  "Apuntes actuales", `to` `null`), starting at `defaultComparison` (the latest version against
+  the current notes when they changed after it, else the latest two; none with a single unchanged
+  version); only the latest comparison read is shown. "Ver los cambios": "En línea" or "Lado a
+  lado". "Restaurar la versión <N>" (every version but the current one) asks for a confirmation
+  (a group with "Sí, restaurar" / "Cancelar"), then says "Se ha restaurado la versión <K> como
+  versión <N>." and the backend's warning, and reads the history (and so the comparison) again;
+  a refusal (409 another notes operation, already that version) shows its Spanish `detail`.
+  - `VersionDiffView`: one `article` "<title>: <Nueva|Quitada|Modificada>" per section that
+    changed or moved (`sectionTitle`: the newer title, "Inicio de los apuntes" for the preamble),
+    with "Sección renombrada, antes «<old>», cambiada de sitio.", the line counts and the section's
+    diff, inline (`<ins>`/`<del>`) or as a two-column table (`sideBySide(lines)`, removed runs
+    paired with the added runs next to them); the unchanged sections in a closed `details`; the
+    footnote labels under "Fuentes citadas"; identical versions say so.
+  - `api.ts`: `fetchVersions`, `fetchVersionDiff(s, t, from, to | null)`, `restoreVersion(s, t,
+    n)` -> `ActionResult` (bodies read leniently: `readVersions`, `readDiff`, `readRestore`).
+- `src/live/` (#57): the live session view, `/live` (`← Mesa de estudio`, "Sesión en directo"),
+  read-only, over the backend's `GET /api/live` stream (docs/modules/server.md).
+  - `live.ts`: `subscribeLive(onEvent, onConnection, factory = defaultSource)` opens an
+    `EventSource` on `LIVE_URL` (tests hand a `LiveSourceFactory`, `src/live/testLive.ts`'s
+    `fakeSources()`), reads each event leniently (`parseLiveEvent(name, data)`: an unusable one is
+    dropped) and returns the close function; `onConnection(false)` on an error (the source
+    reconnects by itself), `true` when it opens again. `reduceLive(state, event)` folds the events
+    into a `LiveState` (`phase` `connecting`/`idle`/`live`/`ended`, `session`, `segments`,
+    `partial`, `captures`, `outline`, `openPending`): a snapshot replaces everything, except that a
+    snapshot without a session keeps the last session shown and marks it ended; a final replaces
+    the partial of its segment and a late partial is ignored; captures are updated by id.
+    `outlineTree(sections)` nests the outline (an orphan stays at the top), `contextLabel`,
+    `statusLabel`.
+  - `LivePage`: a `status` region (connecting, "No hay ninguna sesión en marcha...", "La sesión ha
+    terminado.", a lost connection), then "Tema <name>" (a link to the topic page; the name from
+    `fetchTopics`, the id until it answers) with "en marcha" while live; "Transcripción" (a
+    polite `log` of the finals with `MM:SS`, the current partial in italics below), "Esquema"
+    ("<n> dudas por revisar" and the nested sections with "<n> fragmentos"), "Páginas capturadas"
+    (one `article` per capture, "Apuntes, página 3" or "<Apuntes|Libro|PDF|Web|Página> <n>", its
+    time, the `page_path` image through `sourceUrl`, "Transcribiendo…"/"Transcrita"/"No se pudo
+    transcribir: <message>" and the transcription in a `details`). The stream is closed when the
+    page goes away.
+- `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
+  confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
+  then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
+  listos.", what the review did and a "Ver las dudas" link to the panel. A draft is reported and
+  not reviewed. Refusals are shown in Spanish; a reached cost cap offers "Continuar igualmente",
+  which repeats the step that stopped with `confirm_over_cap`. The topic card reloads afterwards.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
@@ -145,7 +385,10 @@ token):
   bindings carry no binary layout -- module:protocol owns that definition (`protocol/README.md`).
 
 ## Tests
-vitest + Testing Library with a mocked API. `src/capture/testing/` holds the fakes the capture
+vitest + Testing Library with a mocked API (`src/test/mockApi.ts`: `stubApi({path: response})`
+stubs `fetch` by method and path; `sseResponse(events)` is a complete event stream and
+`streamResponse()` one the test feeds event by event with `push`, `close` and `fail`).
+`src/capture/testing/` holds the fakes the capture
 tests run on, because jsdom has none of these APIs: `installCaptureFakes()` installs the media
 devices / stream / track, `ImageCapture`, `SpeechRecognition`, `WebSocket` and
 `AudioContext`/`AudioWorklet` fakes at once (`installMediaFakes()`,

@@ -186,9 +186,12 @@ async def test_resuming_another_session_while_one_is_active_is_rejected(
     # Two sessions left unended by another backend, say.
     first = start_session(tmp_vault, subject.slug, one.slug, "pc", PROTOCOL_VERSION)
     # Session ids are unique per topic only; start the second one a minute later.
+    real_datetime = vault_sessions.datetime
     monkeypatch.setattr(vault_sessions, "datetime", _Later)
     second = start_session(tmp_vault, subject.slug, two.slug, "pc", PROTOCOL_VERSION)
-    monkeypatch.undo()
+    # Not `monkeypatch.undo()`: that would also give `HOME` back, and the service's index would
+    # land in the real `~/.cache`.
+    monkeypatch.setattr(vault_sessions, "datetime", real_datetime)
     assert first.id != second.id
     service = SessionService(SessionBus(), vault=tmp_vault)
 

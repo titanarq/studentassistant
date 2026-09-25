@@ -1,10 +1,16 @@
-"""Topic state: the derived files under a topic's `state/` directory.
+"""Topic state: the derived files under a topic's `state/` directory, and `review/pending.yaml`.
 
 What lives there is an optimisation, never the source of truth: `state/observer-snapshot.json` is
 the observer's fold of the topic's event logs (ADR-0003), which can always be rebuilt by replaying
 them. The vault stores it so the observer never touches a vault file itself (ADR-0002), but the
 vault does not know what it holds: the caller passes the Pydantic model in, and this module only
 writes it atomically, through the secret guard, and reads it back into the model it is given.
+
+`review/pending.yaml` is derived the same way: the observer regenerates it from its fold after
+every change of the pending-review queue, and the vault only writes the model it is handed as YAML.
+
+`state/digest.md` is the observer's topic digest (Spanish Markdown), regenerated at every session
+end; the vault writes and reads the text it is given without interpreting it.
 """
 
 from __future__ import annotations
@@ -15,12 +21,15 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.files import write_json_atomic
+from studentassistant.vault.files import dump_yaml, write_json_atomic, write_text_atomic
 from studentassistant.vault.topics import get_topic, topic_directory
 from studentassistant.vault.vault import Vault
 
 STATE_DIRNAME = "state"
 OBSERVER_SNAPSHOT_FILE_NAME = "observer-snapshot.json"
+TOPIC_DIGEST_FILE_NAME = "digest.md"
+REVIEW_DIRNAME = "review"
+PENDING_REVIEW_FILE_NAME = "pending.yaml"
 
 
 class StateError(VaultError):
@@ -29,6 +38,10 @@ class StateError(VaultError):
 
 class SnapshotFileError(StateError):
     """`state/observer-snapshot.json` exists but is not readable as the snapshot model asked for."""
+
+
+class DigestFileError(StateError):
+    """`state/digest.md` exists but cannot be read as UTF-8 text."""
 
 
 def state_directory(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
@@ -61,6 +74,35 @@ def write_observer_snapshot(
     return path
 
 
+def pending_review_path(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
+    """The path of a topic's `review/pending.yaml`, whether or not one was written."""
+    return (
+        topic_directory(vault, subject_slug, topic_slug) / REVIEW_DIRNAME / PENDING_REVIEW_FILE_NAME
+    )
+
+
+def write_pending_review(
+    vault: Vault, subject_slug: str, topic_slug: str, review: BaseModel
+) -> Path:
+    """Write `review` as YAML to the topic's `review/pending.yaml`; return its path.
+
+    The dump is `model_dump(mode="json")` in the model's key order (deterministic, so a diff shows
+    only what changed), written atomically through the secret guard. The model belongs to the
+    observer; the vault does not interpret it.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read; nothing is written.
+        SecretRefused: when the dump looks like it carries a key; the previous file stays.
+        OSError: when the directory or the file cannot be written.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = pending_review_path(vault, subject_slug, topic_slug)
+    path.parent.mkdir(exist_ok=True)
+    write_text_atomic(path, dump_yaml(review.model_dump(mode="json")))
+    return path
+
+
 def read_observer_snapshot[M: BaseModel](
     vault: Vault, subject_slug: str, topic_slug: str, model: type[M]
 ) -> M | None:
@@ -85,3 +127,45 @@ def read_observer_snapshot[M: BaseModel](
         raise SnapshotFileError(f"{path} is not JSON: {error}") from error
     except ValidationError as error:
         raise SnapshotFileError(f"{path} does not hold a {model.__name__}: {error}") from error
+
+
+def topic_digest_path(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
+    """The path of a topic's `state/digest.md`, whether or not one was written."""
+    return state_directory(vault, subject_slug, topic_slug) / TOPIC_DIGEST_FILE_NAME
+
+
+def write_topic_digest(vault: Vault, subject_slug: str, topic_slug: str, text: str) -> Path:
+    """Write `text` (Markdown) to the topic's `state/digest.md`, creating `state/`; return its path.
+
+    The write is atomic and goes through the secret guard. The text belongs to the observer; the
+    vault does not interpret it.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read; nothing is written.
+        SecretRefused: when the text looks like it carries a key; the previous digest stays.
+        OSError: when the directory or the file cannot be written.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = topic_digest_path(vault, subject_slug, topic_slug)
+    path.parent.mkdir(exist_ok=True)
+    write_text_atomic(path, text)
+    return path
+
+
+def read_topic_digest(vault: Vault, subject_slug: str, topic_slug: str) -> str | None:
+    """The topic's `state/digest.md` as text, or `None` when none was written.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
+            is not one this backend can read.
+        DigestFileError: when the file cannot be read or is not UTF-8.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = topic_digest_path(vault, subject_slug, topic_slug)
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as error:
+        raise DigestFileError(f"{path} cannot be read: {error}") from error

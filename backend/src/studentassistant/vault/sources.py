@@ -7,9 +7,10 @@ the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the 
 The next number is found by scanning the directory, so numbering resumes after whatever is there
 already, including the derived files the `sources` module adds next to a page (`page-NNN.md`,
 `page-NNN.page.jpg`). Allocating a number and writing the files under it happen under one lock per
-`sources/<kind>/` directory, shared by every thread of the process, so two writers storing into
-the same topic at once (a capture and a PDF upload, say) get distinct numbers and never overwrite
-each other.
+`sources/<kind>/` directory (`locking.py`), shared by every thread of the process and by every
+other process on the vault (an `flock` under `.git/`), so two writers storing into the same topic
+at once (a capture and a PDF upload, or the server and the CLI's `import-pdf`) get distinct
+numbers and never overwrite each other.
 
 Nothing here processes what it stores: the transcription of a page and the cropped page image are
 derived by `sources`, which hands them back for storage. Both the content and the sidecar pass the
@@ -25,7 +26,6 @@ from __future__ import annotations
 
 import mimetypes
 import re
-import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -35,7 +35,15 @@ from pydantic import TypeAdapter
 from yaml import YAMLError, safe_load
 
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.files import dump_yaml, write_bytes_atomic, write_text_atomic
+from studentassistant.vault.files import (
+    dump_yaml,
+    read_yaml,
+    write_bytes_atomic,
+    write_text_atomic,
+    write_yaml_atomic,
+)
+from studentassistant.vault.locking import directory_lock
+from studentassistant.vault.models import VaultFileModel
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.slugs import is_slug, slugify
 from studentassistant.vault.subjects import SUBJECTS_DIRNAME
@@ -56,10 +64,9 @@ _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
 _DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
-# One lock per resolved `sources/<kind>/` directory, held from choosing a number until the files
-# under it are on disk. The registry lock only guards the dictionary itself.
-_DIRECTORY_LOCKS: dict[Path, threading.Lock] = {}
-_DIRECTORY_LOCKS_GUARD = threading.Lock()
+# How long a writer waits for another process (or thread) to finish storing into the same
+# `sources/<kind>/` directory before giving up with `VaultBusyError`.
+SOURCE_LOCK_TIMEOUT_SECONDS = 120.0
 
 
 class SourceError(VaultError):
@@ -144,6 +151,8 @@ def put_source(
             is written.
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
             is not one this backend can read.
+        VaultBusyError: when another process kept the directory locked for longer than
+            `SOURCE_LOCK_TIMEOUT_SECONDS`; nothing is written.
     """
     if kind not in SOURCE_KINDS:
         raise UnknownSourceKindError(
@@ -174,9 +183,9 @@ def put_source(
             WEB_SUFFIX,
         )
 
-    with _directory_lock(directory):
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         # Scanning for the next number and writing under it is one step for every writer of the
-        # process; outside the lock, two writers could both see the same highest number.
+        # vault; outside the lock, two writers could both see the same highest number.
         stem = stem_template.format(_next_number(directory, pattern))
         return _store(directory, stem, content_suffix, content, sidecar_text, derived_files)
 
@@ -209,16 +218,6 @@ def _store(
     return content_path
 
 
-def _directory_lock(directory: Path) -> threading.Lock:
-    """The process-wide lock of one `sources/<kind>/` directory, made on first use."""
-    key = directory.resolve()
-    with _DIRECTORY_LOCKS_GUARD:
-        lock = _DIRECTORY_LOCKS.get(key)
-        if lock is None:
-            lock = _DIRECTORY_LOCKS[key] = threading.Lock()
-        return lock
-
-
 def _write(path: Path, data: bytes | str) -> None:
     if isinstance(data, bytes):
         write_bytes_atomic(path, data)
@@ -246,6 +245,142 @@ def _next_number(directory: Path, pattern: re.Pattern[str]) -> int:
         if (match := pattern.match(entry.name)) is not None
     ]
     return max(numbers, default=0) + 1
+
+
+TRANSCRIPTION_SUFFIX = ".md"
+
+
+def put_page_transcription(vault: Vault, vault_relative_path: str, text: str) -> Path:
+    """Write the Markdown transcription of a stored page as `page-NNN.md` next to it.
+
+    `vault_relative_path` names the page as `list_sources` does (or any file derived from it,
+    such as its `page-NNN.page.jpg`): a file under a topic's `sources/notes|book|pdf/` whose name
+    starts with `page-NNN.`. The text passes the secret guard and is written atomically as UTF-8;
+    a transcription already there is replaced (the page was transcribed again). Returns the path
+    written.
+
+    Raises:
+        SourcePathError: when the path is not a page of a paged kind (see `read_source`).
+        SourceNotFoundError: when the page's sidecar (`page-NNN.yaml`) is not there.
+        SecretRefused: when the text looks like it carries a key; nothing is written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    if parts[5] not in PAGED_KINDS:
+        raise SourcePathError(f"{vault_relative_path!r} is not a page of a paged source kind")
+    match = _PAGE_NUMBER.match(parts[-1])
+    if match is None:
+        raise SourcePathError(f"{vault_relative_path!r} does not name a page-NNN file")
+    directory = vault.path.joinpath(*parts[:-1])
+    stem = parts[-1].split(".", 1)[0]
+    sidecar = directory / f"{stem}{SIDECAR_SUFFIX}"
+    if directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourcePathError(
+            f"{vault_relative_path!r} goes through a symlink out of its sources directory"
+        )
+    if not sidecar.is_file() or sidecar.is_symlink():
+        raise SourceNotFoundError(f"there is no stored page {stem} at {vault_relative_path!r}")
+    guard(text)
+    target = directory / f"{stem}{TRANSCRIPTION_SUFFIX}"
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        write_text_atomic(target, text)
+    return target
+
+
+def update_page_meta(vault: Vault, vault_relative_path: str, updates: Mapping[str, Any]) -> Path:
+    """Merge `updates` into the sidecar (`page-NNN.yaml`) of a stored page and return its path.
+
+    For what `sources` learns about a page after it was stored (a textbook page's printed page
+    number, found by its transcription). `vault_relative_path` names the page or a file derived
+    from it, as for `put_page_transcription`. The keys of `updates` replace the sidecar's own of
+    the same name (a key set to `None` is written as `null`); every other key is kept, in its
+    order. The result passes the secret guard and is written atomically under the directory's
+    lock, so it never interleaves with a store into the same directory.
+
+    Raises:
+        SourcePathError: when the path is not a page of a paged kind.
+        SourceNotFoundError: when the page's sidecar is not there.
+        SourceFileError: when the sidecar is not a readable YAML mapping.
+        SecretRefused: when the merged metadata looks like it carries a key; nothing is written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    if parts[5] not in PAGED_KINDS or _PAGE_NUMBER.match(parts[-1]) is None:
+        raise SourcePathError(f"{vault_relative_path!r} is not a page of a paged source kind")
+    directory = vault.path.joinpath(*parts[:-1])
+    if directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourcePathError(
+            f"{vault_relative_path!r} goes through a symlink out of its sources directory"
+        )
+    sidecar = directory / f"{parts[-1].split('.', 1)[0]}{SIDECAR_SUFFIX}"
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        if not sidecar.is_file() or sidecar.is_symlink():
+            raise SourceNotFoundError(f"there is no stored page at {vault_relative_path!r}")
+        meta = _read_sidecar(sidecar) or {}
+        meta.update(updates)
+        text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
+        guard(text)
+        write_text_atomic(sidecar, text)
+    return sidecar
+
+
+# -- the textbook of a topic -----------------------------------------------------------------------
+
+BOOK_FILE_NAME = "book.yaml"
+"""`sources/book/book.yaml`: which textbook the topic's `book` pages come from."""
+
+
+class Book(VaultFileModel):
+    """`sources/book/book.yaml`: the textbook a topic's book pages are photographed from."""
+
+    title: str
+
+
+def book_path(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
+    return sources_directory(vault, subject_slug, topic_slug, "book") / BOOK_FILE_NAME
+
+
+def get_book(vault: Vault, subject_slug: str, topic_slug: str) -> Book | None:
+    """The topic's textbook, `None` when none was set. Nothing is written.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: as
+            `require_topic`.
+        SourceFileError: when `book.yaml` is there but is not a `Book`.
+    """
+    require_topic(vault, subject_slug, topic_slug)
+    path = book_path(vault, subject_slug, topic_slug)
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return read_yaml(path, Book)
+    except (OSError, UnicodeDecodeError, YAMLError, ValueError) as error:
+        raise SourceFileError(f"{path} is not a book this backend can read: {error}") from error
+
+
+def set_book(vault: Vault, subject_slug: str, topic_slug: str, title: str) -> Book:
+    """Record the topic's textbook (`title`, stripped) in `sources/book/book.yaml`.
+
+    `book.yaml` is never listed as a source nor numbered as a page. Returns the book as written
+    (the file is not rewritten when it already holds that title).
+
+    Raises:
+        ValueError: `title` is empty once stripped; nothing is written.
+        SecretRefused: the title looks like a key; nothing is written.
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: as
+            `require_topic`.
+    """
+    cleaned = " ".join(title.split())
+    if not cleaned:
+        raise ValueError("a book needs a title")
+    book = Book(title=cleaned)
+    current = get_book(vault, subject_slug, topic_slug)
+    if current == book:
+        return book
+    directory = sources_directory(vault, subject_slug, topic_slug, "book")
+    guard(cleaned)
+    directory.mkdir(parents=True, exist_ok=True)
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        write_yaml_atomic(directory / BOOK_FILE_NAME, book)
+    return book
 
 
 # -- reading ---------------------------------------------------------------------------------------

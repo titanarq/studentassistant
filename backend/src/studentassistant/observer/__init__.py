@@ -1,8 +1,16 @@
 """Sonnet observer: event-sourced session state, pending-review queue, topic digest."""
 
+from studentassistant.observer.digest import (
+    DigestOnEnd,
+    digest_excerpt,
+    regenerate_topic_digest,
+    render_digest,
+    topic_digest,
+)
 from studentassistant.observer.fold import (
     CAPTURE_EVENT_KIND,
     CAPTURE_ID_KEY,
+    COMPACTED_EVENT_KIND,
     SEGMENT_EVENT_KIND,
     SEGMENT_ID_KEY,
     DuplicateIdError,
@@ -19,6 +27,7 @@ from studentassistant.observer.fold import (
 from studentassistant.observer.loader import load_observer_snapshot
 from studentassistant.observer.ops import (
     OP_NAMES,
+    PENDING_KINDS,
     STATE_OP_EVENT_KIND,
     AddConcept,
     AddPending,
@@ -26,7 +35,8 @@ from studentassistant.observer.ops import (
     AssignSegments,
     LinkCapture,
     Note,
-    PendingCategory,
+    PendingKind,
+    PendingResolution,
     RenameSection,
     ResolvePending,
     SetSourceContext,
@@ -34,10 +44,17 @@ from studentassistant.observer.ops import (
     op_payload,
     parse_op,
 )
+from studentassistant.observer.pending import (
+    PendingReview,
+    find_duplicate,
+    pending_review,
+    text_similarity,
+)
 from studentassistant.observer.snapshot import (
     STATE_VERSION,
     ObserverSnapshot,
     advance_snapshot,
+    compaction_payload,
     fold_from,
     snapshot_of,
 )
@@ -46,6 +63,8 @@ from studentassistant.observer.state import (
     EventRef,
     ObserverNote,
     PendingItem,
+    PendingRefs,
+    PendingStatus,
     Section,
     SourceContext,
     TopicState,
@@ -54,7 +73,9 @@ from studentassistant.observer.state import (
 __all__ = [
     "CAPTURE_EVENT_KIND",
     "CAPTURE_ID_KEY",
+    "COMPACTED_EVENT_KIND",
     "OP_NAMES",
+    "PENDING_KINDS",
     "SEGMENT_EVENT_KIND",
     "SEGMENT_ID_KEY",
     "STATE_OP_EVENT_KIND",
@@ -64,6 +85,7 @@ __all__ = [
     "AddSection",
     "AssignSegments",
     "Concept",
+    "DigestOnEnd",
     "DuplicateIdError",
     "EventOrderError",
     "EventRef",
@@ -74,8 +96,12 @@ __all__ = [
     "ObserverSnapshot",
     "ObserverStateError",
     "PendingAlreadyResolvedError",
-    "PendingCategory",
     "PendingItem",
+    "PendingKind",
+    "PendingRefs",
+    "PendingResolution",
+    "PendingReview",
+    "PendingStatus",
     "RenameSection",
     "ResolvePending",
     "Section",
@@ -87,11 +113,19 @@ __all__ = [
     "UnknownIdError",
     "advance_snapshot",
     "apply_op",
+    "digest_excerpt",
+    "compaction_payload",
+    "find_duplicate",
     "fold",
     "fold_from",
     "load_observer_snapshot",
     "op_payload",
     "parse_op",
+    "pending_review",
+    "regenerate_topic_digest",
+    "render_digest",
     "snapshot_of",
+    "text_similarity",
+    "topic_digest",
     "validate_op",
 ]

@@ -165,6 +165,8 @@ class ReceiveState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Set (under `lock`) once the session is ending: nothing more is fed or published.
     ended: bool = False
+    # Backend clock minus client clock (ms), from the latest `hello` of the session.
+    clock_offset_ms: int | None = None
 
     @property
     def last_contiguous_seq(self) -> int | None:
@@ -228,6 +230,12 @@ class SessionGateway:
             self._states = {}
             state = self._states[session_id] = ReceiveState(session_id)
         return state
+
+    def clock_offset_ms(self, session_id: str) -> int | None:
+        """Backend clock minus client clock (ms) from the session's latest `hello`, `None` while
+        no socket of the session has said hello (the capture upload then trusts client time)."""
+        state = self._states.get(session_id)
+        return None if state is None else state.clock_offset_ms
 
     async def end_session(self, session_id: str) -> None:
         """Flush the session's server-side provider onto the bus and drop its receive state.
@@ -424,6 +432,7 @@ class _Connection:
         now = self.gateway.clock()
         self.clock_offset_ms = now - hello.client_time_ms
         assert self.session is not None and self.state is not None
+        self.state.clock_offset_ms = self.clock_offset_ms
         if self.mode == "server":
             if self.state.provider is None:
                 try:

@@ -24,14 +24,18 @@ from studentassistant.protocol.client import (
     TranscriptClientPartial,
     parse_client_event,
 )
+from studentassistant.protocol.errors import ERROR_CODE_SINCE, ErrorCode
 from studentassistant.protocol.registry import MODELS, model_for
 from studentassistant.protocol.rest import (
+    DIGEST_EXCERPT_MAX,
     CaptureImage,
     CaptureUploadRequest,
     CaptureUploadResponse,
     HealthResponse,
     PairRequest,
     PairResponse,
+    SearchHit,
+    SearchResponse,
     Session,
     SessionEndRequest,
     SessionEndResponse,
@@ -64,6 +68,8 @@ from studentassistant.protocol.version import (
 
 __all__ = [
     "CLIENT_EVENT_ADAPTER",
+    "DIGEST_EXCERPT_MAX",
+    "ERROR_CODE_SINCE",
     "HEADER_SIZE",
     "MAGIC",
     "MODELS",
@@ -81,6 +87,7 @@ __all__ = [
     "ClientEvent",
     "ClientHello",
     "Command",
+    "ErrorCode",
     "HealthResponse",
     "HelloAck",
     "IncompatibleAudioFrameVersionError",
@@ -89,6 +96,8 @@ __all__ = [
     "Notice",
     "PairRequest",
     "PairResponse",
+    "SearchHit",
+    "SearchResponse",
     "ProtocolModel",
     "ServerAck",
     "ServerEvent",

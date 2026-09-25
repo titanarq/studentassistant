@@ -7,6 +7,8 @@ import {
   checkCompatible,
   type ClientEvent,
   DECODERS,
+  DIGEST_EXCERPT_MAX,
+  errorCode,
   IncompatibleProtocolVersionError,
   isMessageName,
   negotiate,
@@ -90,17 +92,36 @@ describe("decoders", () => {
   });
 });
 
+describe("topic digest excerpt", () => {
+  const topic = { topic_id: "t1", subject_id: "s1", name: "Tema 1" };
+
+  it("is optional and bounded to DIGEST_EXCERPT_MAX", () => {
+    expect(parseMessage("rest.topics.create.response", topic)).toStrictEqual(topic);
+    const excerpt = "x".repeat(DIGEST_EXCERPT_MAX);
+    expect(parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: excerpt })).toStrictEqual({
+      ...topic,
+      digest_excerpt: excerpt,
+    });
+    expect(() => parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: `${excerpt}x` })).toThrow(
+      /digest_excerpt/,
+    );
+    expect(() => parseMessage("rest.topics.create.response", { ...topic, digest_excerpt: "" })).toThrow(
+      /digest_excerpt/,
+    );
+  });
+});
+
 describe("protocol_version", () => {
-  it("is 1.1", () => {
-    expect(PROTOCOL_VERSION).toBe("1.1");
-    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 1]);
+  it("is 1.3", () => {
+    expect(PROTOCOL_VERSION).toBe("1.3");
+    expect(parseVersion(PROTOCOL_VERSION)).toEqual([1, 3]);
   });
 
   it("accepts the same MAJOR and refuses another one naming both versions", () => {
     expect(() => checkCompatible("1.7")).not.toThrow();
     expect(() => checkCompatible("2.0")).toThrow(IncompatibleProtocolVersionError);
     expect(() => checkCompatible("2.0")).toThrow(
-      "incompatible protocol_version 2.0: this side speaks 1.1; update the older side so both share MAJOR version 1",
+      "incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1",
     );
   });
 
@@ -160,5 +181,18 @@ describe("narrowing", () => {
       if (name.startsWith("server.")) expect(typeof describeServerEvent(parseServerEvent(json))).toBe("string");
       if (name.startsWith("client.")) expect(typeof describeClientEvent(parseClientEvent(json))).toBe("string");
     }
+  });
+});
+
+describe("REST error codes", () => {
+  it("reads a known code and treats a missing or unknown one as none", () => {
+    expect(errorCode({ detail: "Esa duda ya está cerrada.", code: "doubt_closed" })).toBe("doubt_closed");
+    expect(errorCode({ detail: "x", code: "cost_cap_reached" })).toBe("cost_cap_reached");
+    expect(errorCode({ detail: "x", code: "session_open" })).toBe("session_open");
+    expect(errorCode({ detail: "x" })).toBeNull();
+    expect(errorCode({ detail: "x", code: "added_in_1_9" })).toBeNull();
+    expect(errorCode({ detail: "x", code: 409 })).toBeNull();
+    expect(errorCode(undefined)).toBeNull();
+    expect(errorCode("not an object")).toBeNull();
   });
 });

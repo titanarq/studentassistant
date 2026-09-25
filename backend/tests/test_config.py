@@ -209,3 +209,22 @@ def test_write_vault_config_creates_a_new_file_owner_only(
         os.umask(old_umask)
 
     assert config_toml.stat().st_mode & 0o777 == 0o600
+
+
+def test_the_digest_timezone_defaults_to_the_local_zone_and_refuses_an_unknown_name(
+    config_toml: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("TZ", "America/Bogota")
+    assert Settings().observer.digest_timezone is None
+    assert Settings().observer.digest_zone() == ZoneInfo("America/Bogota")
+
+    write_toml(config_toml, '[observer]\ndigest_timezone = "Europe/Madrid"\n')
+    assert Settings().observer.digest_zone() == ZoneInfo("Europe/Madrid")
+
+    monkeypatch.setenv("SA_OBSERVER__DIGEST_TIMEZONE", "Europe/Atlantida")
+    with pytest.raises(ValidationError, match="unknown timezone 'Europe/Atlantida'"):
+        Settings()

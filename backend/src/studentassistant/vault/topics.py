@@ -153,6 +153,31 @@ def require_topic(vault: Vault, subject_slug: str, topic_slug: str) -> StoredTop
     return get_topic(vault, subject_slug, topic_slug)
 
 
+FIDELITY_MODES = ("estricto", "ampliado")
+
+
+def set_fidelity_mode(vault: Vault, subject_slug: str, topic_slug: str, mode: str) -> StoredTopic:
+    """Record the topic's fidelity mode (`estricto` or `ampliado`) in its `topic.yaml`.
+
+    Every other field is kept as read. Returns the topic as written (unchanged, and not rewritten,
+    when it already had that mode).
+
+    Raises:
+        ValueError: `mode` is not a fidelity mode; nothing is written.
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: as
+            `require_topic`.
+        OSError: the file cannot be written.
+    """
+    if mode not in FIDELITY_MODES:
+        raise ValueError(f"{mode!r} is not a fidelity mode ({', '.join(FIDELITY_MODES)})")
+    stored = require_topic(vault, subject_slug, topic_slug)
+    if stored.topic.fidelity_mode == mode:
+        return stored
+    topic = stored.topic.model_copy(update={"fidelity_mode": mode})
+    write_yaml_atomic(topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME, topic)
+    return StoredTopic(slug=topic_slug, topic=topic)
+
+
 def _require_subject(vault: Vault, subject_slug: str) -> None:
     """Refuse a topic of a directory that is not a subject this backend can read.
 

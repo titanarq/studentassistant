@@ -15,7 +15,7 @@ from studentassistant.llm.errors import (
     LLMTransientError,
     UnknownRoleError,
 )
-from studentassistant.llm.transport import AnthropicTransport, Transport
+from studentassistant.llm.transport import AnthropicTransport, TextSink, Transport
 from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -106,11 +106,17 @@ class LLMClient:
             prompt_hash=prompt_hash,
         )
 
-    async def send(self, request: LLMRequest) -> LLMResponse:
-        """Send a built request, retrying 429/5xx/connection errors up to `max_attempts` times."""
+    async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
+        """Send a built request, retrying 429/5xx/connection errors up to `max_attempts` times.
+
+        With `on_text`, the answer's text deltas are passed to it as they stream in; after a retry
+        the deltas start again from the beginning of the new answer.
+        """
         for attempt in range(1, self.max_attempts + 1):
             try:
-                return await self.transport.send(request)
+                if on_text is None:
+                    return await self.transport.send(request)
+                return await self.transport.send(request, on_text=on_text)  # type: ignore[call-arg]
             except LLMTransientError as error:
                 if attempt == self.max_attempts:
                     raise LLMRetriesExhaustedError(attempt, error) from error
@@ -128,8 +134,12 @@ class LLMClient:
         cache: bool = True,
         prompt_hash: str | None = None,
         confirm_over_cap: bool = False,
+        on_text: TextSink | None = None,
     ) -> LLMResponse:
         """One Claude call: build the request for this role and send it.
+
+        `on_text` receives the text deltas of the answer as they stream in (for a live reply); the
+        returned `LLMResponse` is still the whole final message.
 
         With a ledger binding: raises `CostCapReachedError` (observer, transcriber) or
         `CostConfirmationRequiredError` (editor, generator, unless `confirm_over_cap`) when a cost
@@ -152,7 +162,7 @@ class LLMClient:
             cache=cache,
             prompt_hash=prompt_hash,
         )
-        response = await self.send(request)
+        response = await self.send(request, on_text)
         if self.ledger is not None:
             self._record(request, response)
         return response
@@ -161,7 +171,14 @@ class LLMClient:
         # The call is done and paid for: a ledger that cannot be written must not lose the answer.
         assert self.ledger is not None
         try:
-            record_call(self.ledger, request, response, self.llm_settings.prices, now=self._clock())
+            record_call(
+                self.ledger,
+                request,
+                response,
+                self.llm_settings.prices,
+                now=self._clock(),
+                web_search_usd_per_thousand=self.llm_settings.web_search_usd_per_thousand,
+            )
         except Exception:
             logger.exception(
                 "could not record a %s call in the ledger of %s/%s",

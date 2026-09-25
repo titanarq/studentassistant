@@ -5,12 +5,14 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.1**.
+Current version: **`protocol_version` 1.3**.
 
 | version | change |
 |---|---|
 | 1.0 | first version |
 | 1.1 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `last_session_at_ms` and `pending_count` |
+| 1.2 | REST error bodies gain the optional machine-readable `code` (see "REST errors") |
+| 1.3 | topics (`rest.topics.list.response`, `rest.topics.create.response`) gain the optional `digest_excerpt` |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -49,7 +51,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.1; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.3; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -83,6 +85,33 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/resume` | -- | `rest.sessions.resume.response` |
 | `POST /api/sessions/{id}/end` | `rest.sessions.end.request` | `rest.sessions.end.response` |
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
+| `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
+
+### REST errors
+
+A non-2xx REST answer has the body `{"detail": "<Spanish sentence for the student>"}` (a 422 from
+request validation carries a list of the offending fields as `detail` instead). Since 1.2 the
+refusals a client branches on also carry `code`, so no client matches the Spanish wording:
+
+| `code` | status | meaning |
+|---|---|---|
+| `cost_cap_reached` | 409 | the session's or the day's cost cap is reached; the same request with `confirm_over_cap: true` goes past it |
+| `doubt_closed` | 409 | the doubt was already answered, auto-resolved or dismissed |
+| `session_open` | 409 | an unended session is in the way: another session when starting or resuming one (its id also in the `X-Open-Session-Id` header), or the topic's own session when resolving its doubts |
+
+`code` is optional: other errors have none, a client must treat a missing or unknown code as "no
+code" (and fall back on the status), and new codes may be added in later MINOR versions. Like
+every field newer than 1.0 it is sent only to a client whose negotiated version has it: a device
+paired as a 1.0 or 1.1 client gets the plain `{"detail": ...}` body. Error bodies have no schema
+under `protocol/`: every client reads them leniently -- the Android app decodes no error
+body at all and goes by the HTTP status only; the web reads `detail` and `code` and ignores
+anything else. In Python: `ErrorCode`, `ERROR_CODE_SINCE`; in TypeScript: `ErrorCode`,
+`ERROR_CODES`, `errorCode(body)`.
+
+The web-only editor chat stream (`POST .../notes/chat`, Server-Sent Events,
+`docs/modules/server.md`) reports a failure after the stream started as an `error` event
+`{"status", "detail", "code"?}` that carries the same `code` (e.g. `cost_cap_reached`), sent under
+the same version rule.
 
 ### Pairing and health
 
@@ -98,12 +127,17 @@ the token returned by pairing (never logged by either side).
 - `rest.subjects.list.response`: `subjects`, a list of `{subject_id, name}`.
 - `rest.subjects.create.request`: `{name}`; `rest.subjects.create.response`: the created subject.
 - `rest.topics.list.response`: `subject_id` and its `topics`, each `{topic_id, subject_id, name,
-  open_session_id?, last_session_at_ms?, pending_count?}`. `open_session_id` names the session
+  open_session_id?, last_session_at_ms?, pending_count?, digest_excerpt?}`. `open_session_id` names the session
   still open on that topic: the client resumes it instead of starting a new one.
   `last_session_at_ms` (since 1.1) is the start of the topic's latest session, open or ended, on
   the backend's clock; `pending_count` (since 1.1) counts the topic's open pending-review items
   (doubts awaiting the student). Both are left out when unknown (no session yet, or state the
   backend could not read) and always for a device that paired as a 1.0 client.
+  `digest_excerpt` (since 1.3) is the summary paragraph of the topic digest (`state/digest.md`,
+  rewritten at every session end), at most 400 characters of Spanish text, so the student sees
+  where the topic was left before continuing it; left out before the topic's first ended
+  session, when the digest cannot be read, and for a device that paired as a 1.0-1.2 client.
+  A just-created topic (`rest.topics.create.response`) never has one.
 - `rest.topics.create.request`: `{name}`; `rest.topics.create.response`: the created topic.
 
 ### Session lifecycle
@@ -133,6 +167,20 @@ A session is about exactly one topic of one subject, fixed when it starts.
 
 Re-sending a `capture_id` the backend already stored is answered with `status: "duplicate"` and
 stores nothing, so a client may retry an upload or replay its offline spool freely.
+
+### Search
+
+`GET /api/search` searches the vault's notes, page transcriptions, PDF page text, web pages and
+final transcript segments (the web's search box). Query: `q` (plain text, every word must appear
+as a prefix, accents and case ignored), optional `subject` and `topic` ids (`topic` needs
+`subject`), `kinds` (comma-separated subset of the hit kinds below, default all) and `limit`
+(1-100, default 20).
+
+- `rest.search.response`: the `query` and its `hits`, best first, each `{kind (notes | page | pdf
+  | web | transcript), path, source?, subject, topic, session?, seq?, t_start?, snippet}`. `path`
+  is the vault-relative file the text is in, `source` the vault-relative source it belongs to
+  (absent for notes and transcripts); a transcript hit carries its `session`, the segment's `seq`
+  and `t_start` (session time, ms). `snippet` marks each matched term between U+0002 and U+0003.
 
 ## WebSocket `/ws/sessions/{id}`
 

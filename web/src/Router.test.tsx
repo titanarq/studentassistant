@@ -51,3 +51,63 @@ it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/
     expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
   },
 );
+
+it("renders the notes viewer at the topic's /notes path", async () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/notes" />);
+
+  expect(screen.getByRole("link", { name: "← Tema revolucion-industrial" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-industrial",
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar los apuntes");
+});
+
+it("renders the pending-doubts panel at the topic's /pending path", async () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/pending" />);
+
+  expect(screen.getByRole("heading", { name: "Dudas pendientes" })).toBeInTheDocument();
+  expect(await screen.findByText(/No se pudieron cargar las dudas/)).toBeInTheDocument();
+});
+
+it("renders the notes versions page at the topic's /versions path", () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/versions" />);
+
+  expect(screen.getByRole("heading", { name: "Versiones de los apuntes de revolucion-industrial" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/topics/revolucion-industrial/notes/versions");
+});
+
+it("renders the live session view at /live, subscribed to the live stream", () => {
+  stubFetch();
+  const opened: string[] = [];
+  class FakeEventSource {
+    onopen = null;
+    onerror = null;
+    constructor(url: string) {
+      opened.push(url);
+    }
+    addEventListener() {}
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+
+  render(<Router pathname="/live" />);
+
+  expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
+  expect(opened).toEqual(["/api/live"]);
+});
+
+it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
+  const fetchMock = stubFetch();
+
+  render(<Router pathname="/subjects/historia/style-guide" />);
+
+  expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar la guía de estilo");
+});

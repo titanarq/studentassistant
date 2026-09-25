@@ -14,7 +14,7 @@ from studentassistant.protocol import (
 
 
 def test_own_version_is_major_minor() -> None:
-    assert parse_version(PROTOCOL_VERSION) == (1, 1)
+    assert parse_version(PROTOCOL_VERSION) == (1, 3)
 
 
 @pytest.mark.parametrize("bad", ["1", "1.0.0", "v1.0", "01.0", "1.x", ""])

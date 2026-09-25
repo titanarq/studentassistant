@@ -309,6 +309,26 @@ def test_faster_whisper_without_gpu_or_model(
     assert "CUDA" not in by_name(run_doctor(Settings(), probes=probes(host)))
 
 
+def test_faster_whisper_gpu_without_cuda_libraries(
+    whisper_selected: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch, env: Path
+) -> None:
+    install_fakes(
+        monkeypatch, env / "hf", cuda_devices=1, cuda_error="no se encuentra libcublas.so.12"
+    )
+
+    cuda_check = by_name(run_doctor(Settings(), probes=probes(host)))["CUDA"]
+
+    assert cuda_check.status == "aviso"
+    assert "libcublas.so.12" in cuda_check.detail
+    assert "se usará la CPU" in cuda_check.detail
+    assert "uv sync --extra whisper" in cuda_check.detail
+
+    monkeypatch.setenv("SA_STT__OPTIONS", '{"faster-whisper": {"device": "cuda"}}')
+    cuda_check = by_name(run_doctor(Settings(), probes=probes(host)))["CUDA"]
+    assert cuda_check.failed
+    assert "libcublas.so.12" in cuda_check.detail
+
+
 def test_faster_whisper_not_installed(
     whisper_selected: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:

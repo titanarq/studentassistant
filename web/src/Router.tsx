@@ -1,9 +1,15 @@
 import App from "./App";
 import CapturePage from "./capture/CapturePage";
+import LivePage from "./live/LivePage";
 import PairPage from "./pairing/PairPage";
+import NotesPage from "./notes/NotesPage";
+import PendingPage from "./pending/PendingPage";
+import StyleGuidePage from "./styleGuide/StyleGuidePage";
 import TopicPage from "./topic/TopicPage";
+import VersionsPage from "./versions/VersionsPage";
 
-const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)$/;
+const STYLE_GUIDE_PATH = /^\/subjects\/([^/]+)\/style-guide$/;
+const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions)?$/;
 
 function decode(segment: string): string | null {
   try {
@@ -23,11 +29,20 @@ export default function Router({ pathname = window.location.pathname }: { pathna
   // The capture client (#40): the student picks the subject and topic, opens the session and the
   // page gives way to the capture screen that runs it.
   if (path === "/capture") return <CapturePage />;
+  if (path === "/live") return <LivePage />;
+  const guide = STYLE_GUIDE_PATH.exec(path);
+  if (guide) {
+    const subjectId = decode(guide[1]);
+    if (subjectId !== null) return <StyleGuidePage subjectId={subjectId} />;
+  }
   const topic = TOPIC_PATH.exec(path);
   if (topic) {
     const subjectId = decode(topic[1]);
     const topicId = decode(topic[2]);
     if (subjectId !== null && topicId !== null) {
+      if (topic[3] === "/notes") return <NotesPage subjectId={subjectId} topicId={topicId} />;
+      if (topic[3] === "/versions") return <VersionsPage subjectId={subjectId} topicId={topicId} />;
+      if (topic[3] === "/pending") return <PendingPage subjectId={subjectId} topicId={topicId} />;
       return <TopicPage subjectId={subjectId} topicId={topicId} />;
     }
   }

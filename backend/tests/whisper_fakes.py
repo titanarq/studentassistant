@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from studentassistant.stt import cuda
+
 
 class FakeFasterWhisper(types.ModuleType):
     """`download_model` over a directory: "downloading" creates `<root>/<model>`."""
@@ -34,9 +36,16 @@ class FakeFasterWhisper(types.ModuleType):
 
 
 def install_fakes(
-    monkeypatch: pytest.MonkeyPatch, root: Path, cuda_devices: int | None = 1
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    cuda_devices: int | None = 1,
+    cuda_error: str | None = None,
 ) -> FakeFasterWhisper:
+    """Fake faster-whisper and CTranslate2; the CUDA libraries neither preload nor get checked
+    for real (`cuda_error` is what the check reports)."""
     fake = FakeFasterWhisper(root)
+    monkeypatch.setattr(cuda, "preload", lambda: [])
+    monkeypatch.setattr(cuda, "check", lambda: cuda_error)
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     if cuda_devices is None:
         monkeypatch.setitem(sys.modules, "ctranslate2", None)  # import raises ImportError

@@ -4,8 +4,9 @@ import com.titanarq.studentassistant.MainDispatcherRule
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.startRoute
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -23,7 +24,10 @@ class PairedBackendsViewModelTest {
     @get:Rule
     val folder = TemporaryFolder()
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // The store runs on the test thread: store work on Dispatchers.IO could outlive the test and
+    // resume a view model on Dispatchers.Main after the rule reset it, failing a later test.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())
     private val store by lazy { BackendStore.create(File(folder.root, BackendStore.FILE_NAME), scope) }
 
     private val home = PairedBackend("http://192.168.1.20:8000", "d1", "sa_1", "192.168.1.20:8000")

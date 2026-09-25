@@ -21,8 +21,10 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/pdf/page-NNN.pdf                   imported PDF (only the kept page range)
   sources/pdf/page-NNN.pKKK.txt|.jpg         page K's extracted text and thumbnail (derived)
   sources/pdf/page-NNN.yaml                  original_name, original_sha256, original_page_count, first_page, last_page, page_count
-  sources/book/…  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
-  sessions/<session-id>/session.yaml         started/ended, host, duration, protocol version
+  sources/book/page-NNN.*                    textbook pages, as notes pages; the sidecar adds book_page (+ _from, _printed, _spoken)
+  sources/book/book.yaml                     the topic's textbook: title (never listed as a source)
+  sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
+  sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
   state/observer-snapshot.json               fold snapshot (optimisation)
@@ -30,7 +32,9 @@ subjects/<subject-slug>/topics/<topic-slug>/
   review/pending.yaml                        pending-review items and their resolution
   conversations/observer-<session-id>.jsonl  observer role conversation
   conversations/editor.jsonl                 editor role conversation
+  conversations/web-search.jsonl             web searches: queued, results, failed, kept (sources, #59)
   notes/apuntes.md                           master notes (ADR-0005)
+  notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
   ledger.jsonl                               LLM usage and cost per call
 ```
@@ -63,6 +67,9 @@ is where a subject lives whether or not it exists yet. The three first ones retu
 a frozen dataclass of `slug` and `subject`. Refusals are a `SubjectError`: `SubjectNotFoundError`
 (no such subject directory) and `SubjectFileError` (its `subject.yaml` missing or not readable as a
 `Subject`).
+`set_style_guide(vault, slug, style_guide)` replaces the subject's `style_guide` (blank or `None`
+clears it), keeping the other fields; the editor's revision loop appends the student's general
+preferences with it.
 
 ### Topics -- `topics.py`
 `create_topic(vault, subject_slug, title)` writes
@@ -70,14 +77,19 @@ a frozen dataclass of `slug` and `subject`. Refusals are a `SubjectError`: `Subj
 `fidelity_mode` at its default; `list_topics(vault, subject_slug)` sorts by slug;
 `get_topic(vault, subject_slug, topic_slug)` reads one; `topics_directory(vault, subject_slug)` and
 `topic_directory(vault, subject_slug, topic_slug)` give the paths. The three first ones return a
-`StoredTopic`, a frozen dataclass of `slug` and `topic`. Refusals are a `TopicError`
+`StoredTopic`, a frozen dataclass of `slug` and `topic`.
+`set_fidelity_mode(vault, subject_slug, topic_slug, mode)` records `estricto` or `ampliado`
+(anything else `ValueError`) in `topic.yaml`, keeping the other fields. Refusals are a `TopicError`
 (`TopicNotFoundError`, `TopicFileError`), or the subject errors above when the subject the topic is
 asked for under is not there or not readable.
 
 ### Sessions -- `session_models.py`, `sessions.py`
 `start_session(vault, subject_slug, topic_slug, host, protocol_version)` creates
 `sessions/<session-id>/` with `session.yaml` (`SessionMeta`: `id` `YYYYMMDD-HHMMSS` in UTC,
-`started_at`, `ended_at`, `host`, `protocol_version`), an empty `transcript.jsonl` and an empty
+`started_at`, `ended_at`, `host`, `protocol_version`, `kind`: `study`, the default and what a file
+without the key reads as, or `review` for a session the backend opens and ends at once only to hold
+events written outside a study session, such as a doubt's resolution; `SessionMeta.is_study`;
+`start_session(..., kind="review")` writes it), an empty `transcript.jsonl` and an empty
 `events.jsonl`, and appends the id to the topic's `sessions` list; a second session started in the
 same second takes the next free second. `resume_session(vault, subject_slug, topic_slug)` reopens
 the latest listed session whose `ended_at` is unset (`NoOpenSessionError` when there is none);
@@ -114,6 +126,14 @@ returns `None` when none was written. The vault never imports the observer: the 
 the model. An unreadable snapshot (not UTF-8, not JSON, not the model) is a `SnapshotFileError`
 (a `StateError`); a missing topic is a `TopicNotFoundError`. `observer_snapshot_path(...)` and
 `state_directory(...)` (imported from `state.py`) give the paths.
+`write_pending_review(vault, subject_slug, topic_slug, review)` writes the observer's pending
+queue model as deterministic YAML (`dump_yaml` of `model_dump(mode="json")`, atomic, secret guard)
+to `review/pending.yaml`, creating `review/`, and returns the path; `pending_review_path(...)`
+gives it. The observer regenerates it from its fold after every change (#55); the index reads it.
+`write_topic_digest(vault, subject_slug, topic_slug, text)` writes the observer's topic digest
+(Markdown text, atomic, secret guard) to `state/digest.md`, creating `state/`, and returns the
+path; `read_topic_digest(...)` returns it, or `None` when none was written (an unreadable file is
+a `DigestFileError`, a `StateError`); `topic_digest_path(...)` gives it (#56).
 
 ### JSONL logs -- `jsonl.py`
 `append_jsonl(path, obj)` writes one compact JSON object per line with a single write, flush and
@@ -136,6 +156,20 @@ returns the entries in file order (empty without a file, a torn last line ignore
 `ledger_path(...)` gives the path. Pricing and caps are the llm module's; this module never
 imports it and runs no git.
 
+### Conversations -- `conversations.py`
+An LLM role's conversation (ADR-0003) is `conversations/<name>.jsonl` under its topic, `name` being
+lowercase letters, digits and hyphens (`observer-<session-id>`, `editor`, `web-search`: the
+topic's web search log, `search.*` records with a `detail`, written by `sources.web`); anything else is a
+`ConversationError`. `ConversationRecord` is one line: `time` (timezone-aware, kept in UTC), `kind`
+(the role's choice; the observer writes `context`, `user`, `assistant`, `status`), `message?` (the
+API message it carries), `model?`, `prompt_hash?`, `usage?` (token counts) and `detail?`.
+`append_conversation_record(vault, subject_slug, topic_slug, name, record)` appends it through
+`append_jsonl` (secret guard included), creating `conversations/` on first use;
+`read_conversation(...)` returns the records in file order (empty without a file);
+`conversation_path(...)` and `conversations_directory(...)` give the paths. An unknown subject or
+topic is the usual `SubjectNotFoundError`/`TopicNotFoundError`. The vault knows nothing about
+Claude: it stores what the role hands it.
+
 ### Sources -- `sources.py`
 `put_source(vault, subject_slug, topic_slug, kind, name, content, meta, derived=None)` stores
 bytes or text under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the
@@ -146,15 +180,26 @@ taken from `name`) and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug f
 dot, e.g. `p003.txt`, `p003.jpg` for a PDF's page 3 -- all guarded before anything is written and
 removed again if any write fails; they are never listed as sources. The number is one past
 the highest already in the directory, derived files included. Numbering is atomic per
-`sources/<kind>/` directory across every thread of the process: choosing the number and writing
-the content, derived files and sidecar under it happen under one process-wide lock of that
-directory, so concurrent writers into one topic (a capture stored while a PDF upload runs, say)
-always get distinct numbers and never overwrite each other.
-Two separate processes writing the same topic at once are not covered (the CLI's `import-pdf`
-while the server runs, say): the active-host record below is about PCs, not processes, and
-cross-process safety on one PC is #165. `sources_directory(...)` gives the
+`sources/<kind>/` directory across every thread and every process on the vault: choosing the
+number and writing the content, derived files and sidecar under it happen under that directory's
+vault lock (see "Cross-process locks" below), so concurrent writers into one topic (a capture
+stored while a PDF upload runs, or the CLI's `import-pdf` while the server runs) always get
+distinct numbers and never overwrite each other. A writer waits at most
+`SOURCE_LOCK_TIMEOUT_SECONDS` (120) and then raises `VaultBusyError` with nothing written.
+`sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
+`put_page_transcription(vault, vault_relative_path, text) -> Path` writes a page's Markdown
+transcription as `page-NNN.md` beside a stored page of `notes`, `book` or `pdf`
+(`vault_relative_path` is the page or any file derived from it, checked like `read_source`'s),
+atomically, guarded, under the directory's lock, replacing an earlier one; `SourcePathError` for
+anything else, `SourceNotFoundError` when the page's sidecar is not there.
+`update_page_meta(vault, vault_relative_path, updates) -> Path` merges `updates` into a stored
+page's sidecar (same path rules and errors; other keys kept in order; guarded, atomic, under the
+directory's lock): what `sources` learns after storing, such as a textbook page's `book_page`.
+`set_book(vault, subject_slug, topic_slug, title) -> Book` / `get_book(...) -> Book | None` keep
+the topic's textbook (`Book(title)`, spaces collapsed; `ValueError` for an empty title) in
+`sources/book/book.yaml`, which is not a source, not numbered and not indexed as one.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
 content's vault-relative POSIX path --, `meta` -- the parsed sidecar, or `None`) per stored source,
 ordered by kind (`SOURCE_KINDS` order) then number; sidecars, derived files (`page-NNN.md` beside
@@ -174,14 +219,51 @@ when it has not been written yet (a symlink or non-UTF-8 file is a `NotesError`,
 `list_generated(vault, subject_slug, topic_slug)` returns the sorted vault-relative POSIX paths of
 every file under `generated/`, subdirectories included and symlinks skipped; an empty list when
 the directory does not exist. `notes_path(...)` and `generated_directory(...)` give the paths.
-Nothing here writes or runs git; writing notes and generated material belongs to the editor and
-generators tasks.
+`write_notes(vault, subject_slug, topic_slug, text)` writes `notes/apuntes.md` atomically
+(creating `notes/`, secret guard included) and removes a leftover draft;
+`write_notes_draft(...)` writes `notes/borrador.md` (a generation the editor's validator
+rejected), leaving `apuntes.md` untouched; `read_notes_draft(...)` and `notes_draft_path(...)`
+mirror the notes ones. Both writers return the path, refuse an unknown topic like the readers and
+a symlinked `notes/` or file with `NotesError`. Nothing here runs git (the editor commits and
+tags through `GitSync`, the generators commit through it).
+`write_generated(vault, subject_slug, topic_slug, name, content)` writes `generated/<name>`
+(text as UTF-8 or bytes, atomically, secret guard included, creating subdirectories);
+`read_generated(...)` returns its bytes or `None`; `remove_generated(...)` removes it (and the
+directories it leaves empty), `False` when it was not there. `name` is relative to `generated/`,
+`/`-separated segments of `[A-Za-z0-9._-]` not starting with a dot (`check_generated_name`); a bad
+name or a symlink on the way is a `NotesError`.
 
 ### Reading with ids from outside
 Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `list_generated`)
 goes through `require_topic(vault, subject_slug, topic_slug)` (`topics.py`): a value that is not a
 slug (`slugs.is_slug`: `[a-z0-9]` runs joined by single hyphens) is a `SubjectNotFoundError` or a
 `TopicNotFoundError` without touching the disk, so an id from a URL cannot walk out of its topic.
+
+### Cross-process locks -- `locking.py`
+Decision (#165): two processes on one PC (the server and a CLI command, or two CLI commands) are
+kept apart by locks, not by the CLI refusing while a server runs. Each lock is an advisory
+`fcntl.flock` on `.git/studentassistant-locks/<name>.lock` (`LOCKS_DIRNAME`): inside git's private
+directory, so never committed, pushed or indexed; the OS drops it when its process dies, so a
+crash never leaves the vault locked. `vault_lock(root, name)` returns the process-wide
+`VaultLock` of that name (one object per lock file, shared by the threads of the process;
+re-entrant per thread, only the outermost hold touches the file); `lock.hold(timeout)` is the
+context manager, and a lock not obtained in time raises `VaultBusyError` (a `VaultError`, Spanish
+message naming the lock) -- no wait is unbounded. Two locks exist:
+- `directory_lock(root, directory)` -- one per `sources/<kind>/` (named by a hash of its
+  vault-relative path), around number allocation and the writes under it (`sources.py`).
+- `git_lock(root)` -- around every git command `GitSync` runs, held for a whole operation (the
+  `add`/`diff`/`commit` of a batch, a push, a `pull --rebase` with its abort and refs, a tag, a
+  revert) and by `rewrite_history` for the whole purge rewrite (`GitSync.locked()`). The wait is
+  the `timeout_seconds` of `[vault.git]`; a busy lock counts as a failed git command: `checkpoint`
+  returns `None` with `last_error` set and the batch still pending, `push_now` schedules a retry,
+  `sync` is an `error` result, `list_notes_tags`/`create_notes_tag`/`revert_paths` raise
+  `GitCommandError`, `rewrite_history` a `PurgeError`.
+A vault without a `.git/` directory only gets the in-process part. The batch commit stages
+`git add --all -- . ':(exclude,glob)**/.*.tmp'`: a writer's temporary file (`files.py`) is never
+staged, so a commit while another thread or process is mid-write neither fails on the file
+vanishing nor commits half of it. Not locked: the other writers (sessions, JSONL, notes, state)
+of two processes writing the same file at once, `setup` (a fresh vault), and the index's
+read-only git commands.
 
 ### Secret guard -- `secrets.py`
 `looks_like_secret(content)` returns the name of the first pattern the text or bytes match
@@ -203,8 +285,8 @@ key written even when its value is `None`, no `---` or `...` marker, and no wrap
 default 80 columns) and `read_yaml(path, model)`.
 
 ### Git sync -- `git.py`, `sync.py`
-Only these two modules, the setup and the index below run git on the vault (the index only
-read-only commands: `rev-parse`, `tag --list`).
+Only these two modules, the setup, the purge and the index below run git on the vault (the index
+only read-only commands: `rev-parse`, `tag --list`).
 `GitRunner(root, identity, timeout, environment=None)` runs `git` as a
 subprocess in the vault root with a `GitIdentity(name, email)` as author and committer (passed in
 the environment, so no git configuration decides it), never prompts (`GIT_TERMINAL_PROMPT=0`,
@@ -241,11 +323,22 @@ thread:
   auto-resolved). Other outcomes: `ok`, `offline`, `auth`, `error`. After a successful sync with
   local commits ahead, a push is scheduled at once. Never raises. Meant for backend start and
   session start (wiring owned by `server`), before capture writes start.
+- `read_file_at(revision, path) -> str | None`: a vault-relative file as committed at a commit
+  or tag (`git cat-file blob`, bytes as stored -- not redacted, it is the vault's own content --
+  decoded as UTF-8), `None` when that revision has no such file or is unknown; `ValueError` for a
+  path outside the vault. The editor's notes versions read old `apuntes.md` with it.
+- `revert_paths(commit, paths, message) -> str | None`: a `git revert` of `commit` restricted to
+  the vault-relative `paths` -- each goes back to its content in `commit^` (removed if `commit`
+  created it), the other files of `commit` are kept -- committed under `message` after committing
+  what is pending; `None` when nothing differs. `RevertConflictError` (`path`) when a path is not,
+  at HEAD, what `commit` left (a later change would be lost), `ValueError` for an unknown commit
+  or a path outside the vault. The editor's undo of a revision turn.
 - `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
   annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
   for that subject and topic (`notes_tag_name`), pushed by the next push;
   `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
-  `commit`) oldest first. A non-slug subject or topic raises `ValueError`. Tags are keyed by
+  `commit`, `tagged_at`, `message` -- the first line of the tag's message) oldest first;
+  `create_notes_tag` returns the new tag as listed. A non-slug subject or topic raises `ValueError`. Tags are keyed by
   subject as well as topic because topic slugs are unique only within a subject (#143): two
   subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
   `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
@@ -425,17 +518,85 @@ from their own module (`studentassistant.vault.github`, `studentassistant.vault.
 `studentassistant.vault.index`).
 
 ### Not written yet
-As of issues #21, #117, #119 and #135 no code reads or writes these parts of the layout:
-- **notes** -- writing `notes/apuntes.md`, and with it the provenance footnotes of ADR-0005
-  (reading exists: `read_notes`; its version tags exist: `create_notes_tag`).
+As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
 - **generated** -- writing `generated/` and everything the generators put in it (listing exists:
   `list_generated`).
-- Also unwritten: `state/digest.md`, `review/pending.yaml` (the index reads it when present) and
-  `conversations/`; and the retention `purge` described below.
+- Also unwritten: the retention `purge` described below. (`conversations/` is written since #51.)
 
-## Purge
-`studentassistant purge [--topic] [--dry-run] [--hard]`: retention policy per topic (ADR-0003);
-never removes what the current notes cite.
+## Purge -- `purge.py`
+`studentassistant purge [--topic <subject>/<topic>] [--dry-run] [--hard] [--yes]` applies a
+per-topic retention policy (ADR-0003, issue #31) so the vault does not grow forever. Names are
+imported from `studentassistant.vault.purge`.
+
+**Policy** -- `VaultPurgeSettings` (`studentassistant.config`, `[vault.purge]` /
+`SA_VAULT__PURGE__*`):
+
+| key | default | candidate |
+|---|---|---|
+| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<subject-slug>/<topic-slug>/apuntes-vN` |
+| `burst_originals` | `true` | `sources/<kind>/page-NNN.burst<K>.<ext>`, any kind: other stills |
+| `observer_conversations` | `true` | `conversations/observer-<session-id>.jsonl` of an ended session |
+| `folded_events` | `true` | the events the observer snapshot folded, replaced by that snapshot |
+| `generated_max_age_days` | unset (keep) | files under `generated/` last committed longer ago |
+
+Burst originals come from capture processing (`sources.process_burst`, #44): it stores the stills
+it did not keep as derived files `burst<K>.<ext>` of the page, in whichever `sources/<kind>/` the
+session was on, and the purge looks in every kind; the page itself (`page-NNN.<ext>`), its sidecar, its crop and its transcription are never candidates.
+
+**Never removed**: transcripts, `session.yaml`, `notes/` and its history (tags), sources other
+than burst originals, the editor conversation, and anything `notes/apuntes.md` names by a
+topic-relative path (`cited_paths`: any `sources/...`, `sessions/...`, `generated/...`,
+`conversations/...` it contains, footnote or not) -- a cited candidate is listed as protected.
+A topic is skipped (with the reason) while a session is open, when it has no notes, and, with
+`require_notes_tag`, before its notes are accepted.
+
+**Folded events**: `Compaction(session_id, seq, kind, payload, origin="observer")`, built by the
+caller from the observer's snapshot (the vault never imports the observer), replaces every event
+of the topic up to and including `(session_id, seq)`: sessions before it keep an empty
+`events.jsonl`, and the cursor's session starts with one `kind` event at that `seq` (its `t` the
+replaced event's), followed by its later events byte for byte. The fold of snapshot + remaining
+events equals the pre-purge state (`tests/observer/test_compaction.py`); purging again changes
+nothing. The CLI builds it from `observer.catchup.compactable_snapshot`, which stops at the
+observer's newest acknowledged event, so the events the observer still owes (#176 catch-up) and
+the newest `observer.ack` stay in the log. A compaction naming a session the topic does not list, or a `seq` its log lacks, is a
+`PurgeError`. The events replaced are then only in git history: a later observer version cannot
+refold them from the working tree.
+
+**API**: `plan_topic_purge(sync, subject_slug, topic_slug, policy=None, compaction=None,
+now=None) -> TopicPurgePlan` (`items`: `PurgeItem(path, reason, size_before, size_after)` --
+`size_after` `None` for a removal --, `protected`, `skipped`, `saved_bytes`) reads only.
+`apply_purge(sync, plans, hard=False, before_commit=None) -> PurgeResult` removes and rewrites
+the files (the secret guard runs on every rewrite before anything is touched), calls
+`before_commit(plan)` (the CLI refreshes the observer snapshot there) and commits everything as
+one commit `purga: N archivos borrados, M registros compactados (size)`
+(`PURGE_COMMIT_PREFIX`); no items, no commit. That is the soft purge: all of it is recoverable
+from git history.
+
+**`--hard`** (confirmed by typing `reescribir`, or `--yes`): after the soft commit,
+`rewrite_history(sync, paths)` drops from every commit of `main` and from every tag
+(`git filter-branch --index-filter ... --tag-name-filter cat`) every path a purge commit ever
+deleted in the planned topics (`purged_history_paths`, so earlier soft purges are reclaimed too),
+deletes `refs/original/`, force-pushes `main` with `--force-with-lease` against the
+remote-tracking branch and then every local tag with `--force-with-lease=refs/tags/<t>:<sha>`,
+`<sha>` being what `git ls-remote --tags` gave before the rewrite (empty: the tag must still be
+absent), so a tag another PC created or moved meanwhile makes the push fail instead of being
+overwritten; a tag only the remote has is left as it is. Then it expires the reflog and runs
+`gc --prune=now`; `HistoryRewrite` reports the object store size before and after. The CLI first
+commits pending changes and `sync()`s with the remote, refusing to rewrite when that fails; a
+remote that still moved on makes the lease refuse the push, which is a `PurgeError` (the local
+history is rewritten by then; the message says how to push it). Rewritten `events.jsonl` keep
+their older versions in history (only deleted files are rewritten out).
+
+Consequence for other PCs: their clones hold the old history. Each must be cloned again
+(`studentassistant setup --clone` into an empty directory) or, when it has nothing unpushed,
+reset with `git fetch origin && git reset --hard origin/main`; a pull or push from an old clone
+would bring the purged files back. GitHub may keep the old objects reachable by SHA until its own
+garbage collection. Stop the backend while purging: the purge runs its own `GitSync`.
+
+The CLI prints each topic's items (`se borra` / `se compacta`, reason, size), protected paths and
+skip reasons; `--dry-run` adds the total it would free (and, with `--hard`, how many paths it
+would drop from history) and changes nothing. A soft purge is pushed at once when the vault has
+its remote (a failed push is retried by the next sync).
 
 ## Boundaries
 - Pure storage: no LLM, no HTTP. Refuses files that look like secrets.

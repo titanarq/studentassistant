@@ -36,6 +36,7 @@ from studentassistant.vault.session_models import (
     SESSION_ID_PATTERN,
     Event,
     Origin,
+    SessionKind,
     SessionMeta,
     TranscriptSegment,
     TranscriptWord,
@@ -200,9 +201,17 @@ def sessions_directory(vault: Vault, subject_slug: str, topic_slug: str) -> Path
 
 
 def start_session(
-    vault: Vault, subject_slug: str, topic_slug: str, host: str, protocol_version: str
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    host: str,
+    protocol_version: str,
+    kind: SessionKind = "study",
 ) -> Session:
     """Start a new session of a topic and record it in the topic's `sessions` list.
+
+    `kind` is written to `session.yaml`: `review` marks a session the backend opens only to hold
+    events written outside a study session (see `SessionMeta`).
 
     Raises:
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
@@ -224,7 +233,11 @@ def start_session(
             continue
         break
     meta = SessionMeta(
-        id=session_id, started_at=started_at, host=host, protocol_version=protocol_version
+        id=session_id,
+        started_at=started_at,
+        host=host,
+        protocol_version=protocol_version,
+        kind=kind,
     )
     write_yaml_atomic(directory / SESSION_FILE_NAME, meta)
     write_text_atomic(directory / TRANSCRIPT_FILE_NAME, "")

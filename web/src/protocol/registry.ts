@@ -35,6 +35,7 @@ export interface MessageTypes {
   "rest.sessions.end.response": rest.SessionEndResponse;
   "rest.sessions.captures.request": rest.CaptureUploadRequest;
   "rest.sessions.captures.response": rest.CaptureUploadResponse;
+  "rest.search.response": rest.SearchResponse;
 }
 
 export type MessageName = keyof MessageTypes;
@@ -68,6 +69,7 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "rest.sessions.end.response": rest.decodeSessionEndResponse,
   "rest.sessions.captures.request": rest.decodeCaptureUploadRequest,
   "rest.sessions.captures.response": rest.decodeCaptureUploadResponse,
+  "rest.search.response": rest.decodeSearchResponse,
 };
 
 export function isMessageName(name: string): name is MessageName {

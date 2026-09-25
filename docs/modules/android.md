@@ -11,8 +11,10 @@ Thin capture client (ADR-0001), Spanish UI:
   segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar), live transcript,
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
-  sound; upload with retries; thumbnail strip.
-- Offline resilience: local spool of audio and photos while disconnected, resumed by `seq`.
+  sound; upload with retries; thumbnail strip (see "Still capture (#46)").
+- Offline resilience: disk spool of audio, transcript lines, session events and photos while
+  disconnected, resent in order on reconnect; an end while offline is completed later (see
+  "Offline spool (#53)").
 
 ## Boundaries
 - No study logic, no LLM calls, no vault access. Talks only the `protocol` contract.
@@ -70,10 +72,12 @@ Thin capture client (ADR-0001), Spanish UI:
   (`Idle`/`Opening(topicId)`/`Failed(topicId, SessionFailure)`) and `openedSession`, a one-shot
   the screen consumes with `onSessionShown()` to navigate. `load()` runs every time the home is
   shown (a switched backend resets the state; the selected subject is kept while it exists).
-- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?)`; `canContinue` is
-  `topic.open_session_id != null`. `lastSessionAtMs` / `pendingCount` are the topic's
-  `last_session_at_ms` / `pending_count` (protocol 1.1), and the date and doubts count are shown
-  only when present (a 1.0 backend sends neither).
+- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?, digestExcerpt?)`;
+  `canContinue` is `topic.open_session_id != null`. `lastSessionAtMs` / `pendingCount` are the
+  topic's `last_session_at_ms` / `pending_count` (protocol 1.1) and `digestExcerpt` its
+  `digest_excerpt` (1.3, the topic digest's summary: where the topic was left). The excerpt is
+  shown under the topic name (at most three lines), the date and doubts count below; each only
+  when present (an older backend leaves the newer ones out).
 - **Create topic** (`createTopic(subjectName, title)`): the dialog takes a subject name (typed, or
   one tap on an existing one) and a title. A name matching an existing subject (trimmed, ignoring
   case) reuses it; otherwise `POST /api/subjects` runs first. Then `POST .../topics`, the dialog
@@ -84,12 +88,217 @@ Thin capture client (ADR-0001), Spanish UI:
   **`session.SessionHolder`** (in memory, `AppContainer.sessionHolder`) and the app opens
   `Route.CAPTURE`. A 409 (another session open) is `SessionFailure.Conflict`; a 409 or 404 also
   refreshes the topic list so the session that is really open shows "Continuar".
+- **Pending ends** (#198): `HomeViewModel(..., pendingEnds)` takes a `session.PendingEnds` (the
+  `SessionFinisher` in the app, `NoPendingEnds` by default). A row whose `open_session_id` is in
+  `pending` has `TopicRow.ending` and shows «Terminando sesión…» instead of «Sesión abierta»; when a
+  session leaves `pending` the topics are fetched again. "Continuar" always resumes through
+  `PendingEnds.continueInstead(sessionId) { resume }`: the finisher's attempt in flight is cancelled
+  and joined first (its flush socket is let go), so no end races the resume; a successful resume
+  drops the pending end for good (also one refused earlier, so a later start never ends a session
+  in use), a failed one lets a running end go on. An end the backend already took shows up as a 409
+  on the resume (the conflict message, the list refreshed).
 - Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
-  paired backends); `Route.CAPTURE` shows `CapturePlaceholderScreen` (subject, topic, session id)
-  until the capture screen replaces it, reading the session from `SessionHolder`.
+  paired backends); `Route.CAPTURE` shows the capture screen (below) for the session in
+  `SessionHolder`, and goes back home when there is none.
+
+## Capture screen (#42)
+
+Package `capture`. The screen for one open session: CameraX preview, microphone in the STT mode
+the backend picks (ADR-0008), live transcript, pending-doubts counter and the session buttons.
+
+- **`CaptureScreen(viewModel, onLeave, onEnded)`**: asks for `CAMERA` and `RECORD_AUDIO` at runtime
+  (Spanish rationale; the session starts once the microphone is granted, the preview once the
+  camera is), keeps the screen on (`View.keepScreenOn`) while shown, shows the back camera's
+  CameraX `Preview`, the transcript (partials grey, finals black, auto-scrolled), the connection
+  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, and the
+  buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
+  **Terminar** (asks for confirmation). Back ("Salir") leaves the session open: the home screen
+  offers "Continuar".
+- **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
+  transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
+  (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
+  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
+  `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
+  modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
+  `endFailure`). `start()` opens the socket; when `hello.ack` names the mode it starts the
+  `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
+  `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
+  `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops
+  socket and mic. Buttons: `important()` -> `button important`; `toggleSource()` -> `button
+  switch_source` with `book`/`notes` (starts on `notes`); `capture()` calls `StillCapture` with
+  `trigger: button`; a server `command capture_now` calls it with `trigger: command` and its
+  `command_id`, then answers `ack`. `end()` sends `button end_session`, then `POST
+  /api/sessions/{id}/end` (`reason: button`); success, 404 or 409 clear the `SessionHolder` and end
+  the screen, any other failure keeps the session running with `endFailure` shown.
+- **`StillCapture`** (`shots: Flow<List<CaptureShot>>`, `capture(trigger, commandId)`,
+  `retry(captureId)`) is what the view model calls; it exposes the strip as
+  `CaptureViewModel.shots` and `retryShot(captureId)`. See "Still capture" below.
+- **`SessionConnection(scope, socketFactory, url, token, clock, capabilities, resume)`**: the
+  protocol v1 socket client. Sends `hello` (`stt: client`, `stt_provider: android-speech`,
+  `audio_format` pcm16/16 kHz/mono, since the app can stream), waits for `hello.ack` and exposes
+  `state: StateFlow<ConnectionState>` (`Connecting`, `Connected(sttMode, clockOffsetMs)`,
+  `Reconnecting(attempt, reason)`, `Failed(ConnectionFailure)`, `Stopped`), `events:
+  SharedFlow<ServerEvent>` and `drained: StateFlow<Boolean>`. Reconnects on a drop with back-off
+  0.5/1/2/5/10 s, resending from its two backlogs (in memory by default, the disk spool in the
+  app; see "Offline spool (#53)"): finals until the backend echoes their `transcript.final`,
+  buttons / markers / acks queued while offline, audio frames until the server `ack`'s
+  `audio_seq` covers them (renumbered after it when the backend acknowledges more than this
+  connection produced). Partials are dropped while offline. A close with 4404 (session not
+  active, e.g. the backend restarted) runs `resume` (`POST .../resume`) and reconnects; a refused
+  handshake (`HTTP 40x`) is `Failed(Unauthorized)`, a 1008 close or an invalid server message
+  `Failed(Refused(reason))`; `retry()` tries again. All state lives on one coroutine fed by a
+  channel, so socket callbacks and callers never race.
+- **`SessionSocket` / `SessionSocketFactory`**: the socket seam. `OkHttpSessionSocketFactory` opens
+  `baseUrl + ws_path` with `Authorization: Bearer <token>` on its own OkHttp client (no read
+  timeout, 10 s pings); tests use a scripted fake.
+- **`ClientTranscriber`** (ADR-0008's client-side interface: `providerId`, `language`,
+  `start(onTranscript, onError)`, `stop()`) and **`SpeechRecognizerTranscriber(engine, clock,
+  scope)`**, the default: continuous recognition by chaining one-utterance rounds of a
+  `RecognizerEngine`, restarted at once after a result or silence and after 0.25/0.5/1/2/5 s when
+  the recognizer fails; `Partial`s and one `Final` per utterance with client timestamps (start at
+  the first sign of speech, end at the latest hypothesis); a round that ends without a result
+  settles its last partial as the final (also on `stop()`); segment ids `and-<random 8>-<n>`, so
+  they stay unique within a session across app restarts; a missing permission or recognizer stops
+  it with `TranscriberError`. **`AndroidSpeechRecognizerEngine`** is the `SpeechRecognizer` side:
+  `es-ES`, free-form, partial results, `EXTRA_PREFER_OFFLINE`, main thread only. The manifest
+  declares `RECORD_AUDIO` and a `<queries>` entry for `android.speech.RecognitionService`
+  (package visibility on Android 11+).
+- **`AudioStreamer(source, clock, dispatcher)`** (server STT mode): reads an `AudioSource` in 100
+  ms frames (1600 samples) off the main thread and hands each to `SessionConnection.sendAudio`
+  with the client time of its first sample (the wall clock at the first frame plus the samples
+  read since). **`AudioRecordSource`** is the microphone: `AudioRecord`, `VOICE_RECOGNITION`, 16
+  kHz mono PCM16. Frames are encoded by `protocol.AudioFrame`.
+- **Background pause** (#184): the screen observes its lifecycle; `ON_STOP` calls
+  `CaptureViewModel.onBackground()` (skipped on a configuration change, which the view model
+  outlives) and `ON_START` `onForeground()`. In the background the transcriber or audio streamer
+  stops (an utterance in progress is settled and sent as its final first) while the socket stays
+  open with its buffers, so no line is lost or sent twice; a reconnect meanwhile does not restart
+  the microphone. Back in the foreground the microphone restarts in the connection's STT mode (a
+  new transcriber, so new segment ids; audio `seq` continues on the same connection) and
+  `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). The camera preview is
+  bound to the same lifecycle through CameraX, which closes the camera on `ON_STOP`.
+
+## Still capture (#46)
+
+- **`BurstStillCapture(backend, sessionId, camera, feedback, uploads, clock, scope)`**, built per
+  session by `AppContainer.captureViewModelFactory`: on "Capturar" or `capture_now` it calls
+  `CaptureFeedback.shutter()` and adds a `CaptureShot` (fresh lowercase UUID `capture_id`, the
+  phone time of the trigger, status `CAPTURING`) to the strip at once, then takes a burst of
+  `BURST_SIZE` (3) stills with the `StillCamera` and hands it to the `CaptureUploadQueue`. A
+  camera that takes nothing marks the shot `CAMERA_FAILED`.
+- **`StillCamera`** (`suspend takeBurst(count): Burst`; `Burst(stills, thumbnail)`, `Still(bytes,
+  contentType, widthPx, heightPx, clientTimeMs)`, `StillCameraException`) and **`CaptureFeedback`**
+  are the seams; `NoStillCamera` / `NoCaptureFeedback` are the container defaults.
+  **`CameraXStillCamera(clock)`** (owned by `StudentAssistantApp`, `AppContainer.stillCamera`)
+  holds a CameraX `ImageCapture` (`CAPTURE_MODE_MAXIMIZE_QUALITY`, `HIGHEST_AVAILABLE_STRATEGY`,
+  flash off) that `CaptureScreen(imageCapture = ...)` binds next to its preview; each still is a
+  CameraX-written JPEG with its EXIF orientation, reported with its displayed size; bursts never
+  interleave; the thumbnail is the first still at ~256 px. A burst keeps the stills it got when a
+  later one fails. **`AndroidCaptureFeedback`**: a 40 ms vibration (`VIBRATE` permission) and
+  `MediaActionSound.SHUTTER_CLICK`.
+- **`CaptureUploadQueue(scope, client, retryDelaysMs, maxConflictAttempts)`**
+  (`AppContainer.captureUploads`, on the container's app-wide `uploadScope`, so uploads go on when
+  the capture screen is left): `begin` / `submit` / `cameraFailed` / `retry`, `all` and
+  `shots(sessionId)`. Each burst is one `uploadCapture` (parts `image_0..`, the request's
+  `client_time_ms` the trigger time, each image its own); uploads run one at a time; the
+  `capture_id` never changes, so retries are idempotent (`duplicate` counts as uploaded). Transient
+  failures (unreachable, 408/425/429/5xx, an unreadable 2xx, and 409 at most 10 times, since the
+  session may be resuming) are retried after 1/2/5/10/30 s (30 s repeats); any other refusal is
+  `FAILED`, and a tap on its thumbnail retries it. Statuses: `CAPTURING`, `PENDING`, `UPLOADING`,
+  `UPLOADED`, `FAILED`, `CAMERA_FAILED`; full-size stills are dropped once uploaded.
+- **Thumbnail strip** (`CaptureScreen`): a row above the transcript, one 64 dp tile per capture
+  with a badge (spinner while capturing/uploading, «↑» pending, «✓» sent, «!» failed) and a Spanish
+  content description.
+- In the app the queue spools every burst to disk before its first upload (see "Offline spool
+  (#53)"); a WebSocket `ack`'s `capture_ids` and a resume's `received_capture_ids` mark captures
+  uploaded without sending them again.
+
+## Offline spool (#53)
+
+Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`, created by
+`AppContainer.spools`):
+
+| what | class | where |
+|---|---|---|
+| audio frames (server STT mode) not acknowledged | `AudioSpool` (`AudioBacklog`) | `sessions/<session_id>/audio/seg-*.pcm` |
+| transcript finals not confirmed, events queued offline | `EventSpool` (`EventBacklog`) | `sessions/<session_id>/events.json` |
+| capture bursts not confirmed | `CaptureSpool` | `captures/<capture_id>/{meta.json,image_N,thumbnail}` |
+| sessions ended but not yet told to the backend | `PendingEnd` | `ends/<session_id>.json` |
+| the backend a session's spool belongs to | `Spools.bind` | `sessions/<session_id>/session.json` |
+
+- **`AudioSpool(dir, budget, segmentFrames = 50)`**: each frame (`SpooledFrame(seq, clientTimeMs,
+  samples)`) is written through as it is produced into 5 s segment files (`seg-<first>.open`, renamed
+  `seg-<first>-<last>.pcm` when full; a record cut short by a crash is truncated away on reopen).
+  `after(seq, limit)` reads in `seq` order, `acknowledge(seq)` deletes fully acknowledged segments,
+  `rebaseAfter(seq)` renumbers the held frames right after `seq`; a `floor` file keeps numbering
+  going after a restart with an empty spool. `MemoryAudioBacklog(600)` is the in-memory default.
+- **`EventSpool(file)`**: the finals (at most 200) and queued events (at most 100) as one JSON file,
+  rewritten atomically on each change and deleted when empty. `MemoryEventBacklog` is the default.
+- **`CaptureSpool(dir, budget)`**: `put(SpooledCaptureMeta(session_id, base_url, request), images,
+  thumbnail)` writes `meta.json` last, so an interrupted burst is discarded; `list()`, `images(id)`,
+  `thumbnail(id)`, `remove(id)`. The backend is stored by base URL only; its token is looked up in
+  the paired backends when the upload resumes. `CaptureUploadQueue(..., spool)` writes each burst
+  before its first upload, reads the stills back from disk for each attempt and deletes them once
+  uploaded (`stored` or `duplicate`); `restore(credentials)` queues the spooled ones again at app
+  start (oldest first; a backend no longer paired leaves them on disk), `confirmReceived(sessionId,
+  ids)` marks captures the backend already holds as uploaded without sending them.
+- **Cap** (`SpoolBudget(maxBytes)`, `AppContainer(spoolMaxBytes = 512 MiB)`): one byte budget for
+  all of the above. From 80 % `nearCap` is true and the capture screen shows «Queda poco espacio
+  para guardar sin conexión…» (`capture_spool_near_cap`). Past the cap (#198) `Spools`, the
+  budget's evictor, drops whole audio segments (acknowledged or not) of any session, the oldest
+  first by the client time of their first frame (`AudioSpool.oldestDroppableTimeMs` /
+  `dropOldest`), never a segment being written and never a capture. It runs after every audio
+  append and capture write (`SpoolBudget.enforce`, outside the spool's own lock) and once at start,
+  so audio left over a lowered cap is trimmed. An `AudioSpool` on a budget with no evictor still
+  trims only itself.
+- **Stale sessions** (#198, `spool.StaleSpoolSweeper`, `AppContainer(spoolGraceMs = 24 h)`): at app
+  start (`recoverSpool`, before captures are queued again) the audio/events of a session and the
+  captures untouched for the grace period are deleted when the backend reports the session ended
+  or unknown: no topic of `GET /api/subjects` + `GET .../topics` lists it as `open_session_id` (read
+  only; a resume would reopen it). The backend asked is the one `Spools.bind` recorded when the
+  capture screen opened the session (a capture's own `base_url`); a session with none must be
+  absent from every paired backend. Any failed list call, a backend no longer paired, a pending
+  end, the session in `SessionHolder` or one bound in this process keeps the data.
+- **Reconnect order** (`SessionConnection` over the session's spools, on `Dispatchers.IO`): after
+  `hello.ack`, queued events go out first; in client mode every unconfirmed final is resent (the
+  backend drops a final it already has without echoing it, so a resent final not echoed within 25 s
+  -- more than two 10 s ping intervals, so the socket is proven alive -- counts as held); in server mode, with frames held, the connection waits up to
+  1 s for the backend's `ack` (sent right after `hello.ack`), then resends every frame after the
+  acknowledged `seq` in order, 20 at a time while OkHttp's send queue is under 1 MiB, and only then
+  sends live frames (a live frame produced meanwhile joins the backlog). Frames are renumbered only
+  on a real `ack`: when the held frames do not follow its `seq` (older audio dropped at the cap)
+  and none past it was sent on this socket, they are renumbered after it, since the backend places
+  audio by client time and never skips a missing `seq`. Without an `ack` in time they go out as
+  numbered, renumbered from 0 only when the backlog never saw any `ack` (its last acknowledged
+  `seq` is kept in the `floor` file) and its first frame is not 0. After an app restart,
+  "Continuar" opens the same spools, so everything left is resent the same way.
+- **Captures on resume**: the session start/resume's `received_capture_ids` (the capture screen's
+  start and every 4404 resume) are confirmed and failed captures of the session retried.
+- **Ending** (`CaptureViewModel` with `CaptureSpooling`): "Terminar" while not connected, or
+  answered with a transient failure (unreachable, 408/425/429/5xx), writes a `PendingEnd` and hands
+  it to **`SessionFinisher`** (`AppContainer.sessionFinisher`, on the app-wide scope); the screen
+  ends at once. Online, "Terminar" first waits up to 10 s for `drained` and the session's uploads.
+  The finisher, per pending end: `POST .../resume` (409: skip the flush; 404: drop), a
+  `SessionConnection` over the spools until `drained` (at most 120 s), the session's captures
+  uploaded (at most 300 s), then `POST .../end` with the original "Terminar" time; success, 404 or
+  409 deletes the session's spools and its pending end. Transient failures retry after
+  2/5/10/30/60 s; a refusal (401, 403, 400, ...) leaves the pending end on disk.
+  `AppContainer.recoverSpool()` (from `StudentAssistantApp.onCreate`) restores the captures and
+  resumes the pending ends of an earlier process.
+- Known gaps: spools are opened lazily, possibly on the main thread the first time the home or
+  capture screen is built; the stale sweep runs only at app start, and data of a backend that is no
+  longer paired is never swept.
 
 ## Tests
-JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes.
+JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
+spool tests (`spool/AudioSpoolTest`, `spool/CaptureSpoolTest`, `capture/SpooledUploadQueueTest`,
+`capture/SessionFinisherTest`, `capture/CaptureViewModelOfflineTest`) use a JUnit
+`TemporaryFolder`, never `filesDir`. The
+capture tests use `capture/Fakes.kt` (test sources): `FakeSessionSocketFactory` (the test plays the
+backend: open, receive, drop, close), `FakeRecognizerEngine`, `FakeTranscriber`, `FakeAudioSource`
+and `FakeClock`. View-model tests give their `BackendStore` a scope on an
+`UnconfinedTestDispatcher`, never `Dispatchers.IO`: store work left on IO outlives the test and
+resumes on `Dispatchers.Main` after `MainDispatcherRule` reset it, failing a later `runTest`.
 
 ## Build and test
 - `bash scripts/test.sh android` runs the JVM unit tests (`./gradlew test` in `android/`);

@@ -18,6 +18,9 @@ import { VERSION_PATTERN } from "./version";
 
 export const protocolVersion = str({ pattern: VERSION_PATTERN });
 
+/** The longest `Topic.digest_excerpt` (since 1.3). */
+export const DIGEST_EXCERPT_MAX = 400;
+
 // POST /api/pair
 
 /** Exchanges the one-time code shown in the pairing QR for a long-lived bearer token. */
@@ -70,6 +73,8 @@ export interface Topic {
   last_session_at_ms?: number;
   /** Since 1.1: open pending-review items (doubts awaiting the student); absent when unknown. */
   pending_count?: number;
+  /** Since 1.3: the topic digest's summary paragraph (where the topic was left); absent when unknown. */
+  digest_excerpt?: string;
 }
 
 export interface TopicsListResponse {
@@ -143,6 +148,32 @@ export interface CaptureUploadResponse {
   received_at_ms: number;
 }
 
+// GET /api/search
+
+/**
+ * One match of a search over the vault. `path` is the vault-relative file the text is in;
+ * `source` the source it belongs to (absent for notes and transcripts). A transcript hit carries
+ * its `session`, the segment's `seq` and its `t_start` in session ms. `snippet` marks each
+ * matched term between U+0002 and U+0003.
+ */
+export interface SearchHit {
+  kind: "notes" | "page" | "pdf" | "web" | "transcript";
+  path: string;
+  source?: string;
+  subject: string;
+  topic: string;
+  session?: string;
+  seq?: number;
+  t_start?: number;
+  snippet: string;
+}
+
+/** The best matches of `query`, best first. */
+export interface SearchResponse {
+  query: string;
+  hits: SearchHit[];
+}
+
 // Decoders
 
 export const decodePairRequest: Decoder<PairRequest> = object({
@@ -174,7 +205,12 @@ export const decodeSubjectCreateRequest: Decoder<SubjectCreateRequest> = object(
 
 export const decodeTopic: Decoder<Topic> = object(
   { topic_id: id, subject_id: id, name },
-  { open_session_id: id, last_session_at_ms: epochMs, pending_count: int({ min: 0 }) },
+  {
+    open_session_id: id,
+    last_session_at_ms: epochMs,
+    pending_count: int({ min: 0 }),
+    digest_excerpt: str({ minLength: 1, maxLength: DIGEST_EXCERPT_MAX }),
+  },
 );
 
 export const decodeTopicsListResponse: Decoder<TopicsListResponse> = object({
@@ -238,4 +274,20 @@ export const decodeCaptureUploadResponse: Decoder<CaptureUploadResponse> = objec
   status: literal("stored", "duplicate"),
   image_count: int({ min: 1 }),
   received_at_ms: epochMs,
+});
+
+export const decodeSearchHit: Decoder<SearchHit> = object(
+  {
+    kind: literal("notes", "page", "pdf", "web", "transcript"),
+    path: str({ minLength: 1 }),
+    subject: id,
+    topic: id,
+    snippet: str(),
+  },
+  { source: str({ minLength: 1 }), session: id, seq: int({ min: 0 }), t_start: int({ min: 0 }) },
+);
+
+export const decodeSearchResponse: Decoder<SearchResponse> = object({
+  query: str(),
+  hits: array(decodeSearchHit),
 });

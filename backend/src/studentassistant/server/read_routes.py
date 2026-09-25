@@ -1,4 +1,5 @@
-"""The web UI's read API under `/api`: study-desk summary, notes, sources, sessions, transcripts.
+"""The web UI's read API under `/api`: study-desk summary, notes, pending review, topic digest,
+sources, sessions, transcripts.
 
 Read-only and thin: every route opens the vault through the `SessionService` on
 `app.state.sessions` (so the lazily opened, pulled vault is the one the lifecycle routes use) and
@@ -19,17 +20,24 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from studentassistant.observer import load_observer_snapshot
+from studentassistant.observer import (
+    PendingItem,
+    digest_excerpt,
+    load_observer_snapshot,
+    pending_review,
+    topic_digest,
+)
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
     SOURCE_KINDS,
     GitSync,
+    SessionKind,
     SessionMeta,
     SessionNotFoundError,
     SourceNotFoundError,
@@ -55,6 +63,11 @@ UNKNOWN_SESSION_DETAIL = "No existe esa sesión en ese tema."
 UNKNOWN_SOURCE_DETAIL = "No existe esa fuente en la bóveda."
 NO_NOTES_DETAIL = "Todavía no hay apuntes de este tema."
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
+SESSION_LABELS: dict[SessionKind, str] = {
+    "study": "Sesión de estudio",
+    "review": "Revisión de dudas",
+}
+"""The Spanish label of each session kind, as the topic's session list shows it (#191)."""
 BAD_SPAN_DETAIL = "El tramo debe tener la forma HH:MM:SS-HH:MM:SS, con el inicio antes del final."
 
 SPAN_PATTERN = re.compile(r"^(\d{2,}):([0-5]\d):([0-5]\d)-(\d{2,}):([0-5]\d):([0-5]\d)$")
@@ -100,7 +113,9 @@ class TopicSummary(BaseModel):
     subject_id: str
     topic_id: str
     sources: SourceCounts
-    sessions: int = Field(description="Sessions of the topic, open or ended.")
+    sessions: int = Field(
+        description="Study sessions of the topic, open or ended; review sessions are left out."
+    )
     session_minutes: float = Field(
         description="Their total length in minutes; an unended session counts up to now."
     )
@@ -111,6 +126,10 @@ class TopicSummary(BaseModel):
     generated: list[str] = Field(
         description="Vault-relative paths of the generated material under `generated/`."
     )
+    digest_excerpt: str | None = Field(
+        default=None,
+        description="The topic digest's summary paragraph, `null` before the first session end.",
+    )
 
 
 class TopicNotes(BaseModel):
@@ -120,6 +139,31 @@ class TopicNotes(BaseModel):
     topic_id: str
     text: str = Field(description="`notes/apuntes.md` as Markdown.")
     version: int | None = Field(description="The notes version, `null` when none is tagged.")
+
+
+class TopicPending(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/pending`: the pending-review queue."""
+
+    subject_id: str
+    topic_id: str
+    open_count: int = Field(description="Open items of the whole queue, whatever the filter.")
+    items: list[PendingItem] = Field(
+        description="The items the filter keeps: open ones first, each group in the order added."
+    )
+
+
+PendingFilter = Literal["all", "open", "closed"]
+
+
+class TopicDigest(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/digest`: the observer's topic digest."""
+
+    subject_id: str
+    topic_id: str
+    text: str | None = Field(
+        description="`state/digest.md` as Markdown, `null` before the topic's first session end."
+    )
+    excerpt: str | None = Field(description="Its summary paragraph, `null` when there is none.")
 
 
 class SourceMeta(BaseModel):
@@ -142,6 +186,12 @@ class SessionSummary(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     minutes: float = Field(description="Its length in minutes; an unended one counts up to now.")
+    kind: SessionKind = Field(
+        description="`study`, or `review`: a session that only holds doubt resolutions."
+    )
+    label: str = Field(
+        description="What the web shows for it: «Sesión de estudio» or «Revisión de dudas»."
+    )
 
 
 class TopicSessions(BaseModel):
@@ -272,7 +322,9 @@ def read_router() -> APIRouter:
             counts = {kind: 0 for kind in SOURCE_KINDS}
             for source in sources:
                 counts[source.kind] = counts.get(source.kind, 0) + 1
-            sessions = list_sessions(vault, subject_id, topic_id)
+            sessions = [
+                meta for meta in list_sessions(vault, subject_id, topic_id) if meta.is_study
+            ]
             now = datetime.now(UTC)
             snapshot = load_observer_snapshot(vault, subject_id, topic_id)
             return TopicSummary(
@@ -284,6 +336,7 @@ def read_router() -> APIRouter:
                 open_pending=len(snapshot.state.open_pending()),
                 notes_version=_notes_version(sync, subject_id, topic_id),
                 generated=list_generated(vault, subject_id, topic_id),
+                digest_excerpt=digest_excerpt(topic_digest(vault, subject_id, topic_id)),
             )
 
         async with _not_found():
@@ -303,6 +356,46 @@ def read_router() -> APIRouter:
         version = await _read(_notes_version, sync, subject_id, topic_id)
         return TopicNotes(subject_id=subject_id, topic_id=topic_id, text=text, version=version)
 
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/pending",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_pending(
+        request: Request,
+        subject_id: SubjectId,
+        topic_id: TopicId,
+        which: Annotated[
+            PendingFilter,
+            Query(alias="status", description="`open`, `closed` (settled, dismissed) or `all`."),
+        ] = "all",
+    ) -> TopicPending:
+        vault = await _vault(request)
+        async with _not_found():
+            snapshot = await _read(
+                lambda: load_observer_snapshot(vault, subject_id, topic_id, write_back=False)
+            )
+        review = pending_review(snapshot.state)
+        items = [
+            item for item in review.items if which == "all" or item.is_open == (which == "open")
+        ]
+        return TopicPending(
+            subject_id=subject_id, topic_id=topic_id, open_count=review.open_count, items=items
+        )
+
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/digest",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_digest_route(
+        request: Request, subject_id: SubjectId, topic_id: TopicId
+    ) -> TopicDigest:
+        vault = await _vault(request)
+        async with _not_found():
+            text = await _read(topic_digest, vault, subject_id, topic_id)
+        return TopicDigest(
+            subject_id=subject_id, topic_id=topic_id, text=text, excerpt=digest_excerpt(text)
+        )
+
     @router.get("/subjects/{subject_id}/topics/{topic_id}/sessions")
     async def topic_sessions(
         request: Request, subject_id: SubjectId, topic_id: TopicId
@@ -320,6 +413,8 @@ def read_router() -> APIRouter:
                     started_at=meta.started_at,
                     ended_at=meta.ended_at,
                     minutes=_minutes(meta, now),
+                    kind=meta.kind,
+                    label=SESSION_LABELS[meta.kind],
                 )
                 for meta in metas
             ],

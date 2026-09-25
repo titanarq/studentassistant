@@ -1,14 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The pairing QR scanner (and, later, page capture). Requested at runtime. -->
+    <!-- The pairing QR scanner and the capture screen's preview. Requested at runtime. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- The capture screen's speech recognition / server-STT audio. Requested at runtime. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- The capture trigger's haptic feedback. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- The paired backend on the LAN. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <!-- Android 11+ package visibility: SpeechRecognizer must see the recognition service. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <!--
       allowBackup/dataExtractionRules: the paired backends' bearer tokens live in app-private
