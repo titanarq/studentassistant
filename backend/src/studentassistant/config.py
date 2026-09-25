@@ -83,6 +83,7 @@ DEFAULT_PUSH_DEBOUNCE_SECONDS = 120.0
 DEFAULT_PUSH_BACKOFF_INITIAL_SECONDS = 15.0
 DEFAULT_PUSH_BACKOFF_MAX_SECONDS = 900.0
 DEFAULT_GIT_TIMEOUT_SECONDS = 120.0
+DEFAULT_ACTIVE_HOST_STALE_SECONDS = 6 * 3600.0
 DEFAULT_VAULT_REMOTE = "origin"
 # The author email a vault commit carries when none is configured: a reserved `.invalid` domain,
 # so no real mailbox is ever claimed on the student's behalf.
@@ -108,6 +109,8 @@ class VaultGitSettings(BaseModel):
     push_backoff_max_seconds: float = Field(default=DEFAULT_PUSH_BACKOFF_MAX_SECONDS, gt=0)
     # A network git command (push, pull, ls-remote) is killed after this long.
     timeout_seconds: float = Field(default=DEFAULT_GIT_TIMEOUT_SECONDS, gt=0)
+    # Another PC's active-host record (`.sa/active.yaml`) older than this is ignored as stale.
+    active_host_stale_seconds: float = Field(default=DEFAULT_ACTIVE_HOST_STALE_SECONDS, gt=0)
 
 
 class VaultSettings(BaseModel):

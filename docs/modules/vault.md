@@ -9,7 +9,8 @@ The only writer of the vault and the only module that runs git on it.
 
 ```text
 vault.yaml                                   format_version, created_at, student display name
-.gitattributes                               *.jsonl merge=union
+.gitattributes                               *.jsonl merge=union, .sa/active.yaml merge=sa-active
+.sa/active.yaml                              active-host record: host, session, claimed/released
 subjects/<subject-slug>/subject.yaml         name, style_guide (editor preferences)
 subjects/<subject-slug>/topics/<topic-slug>/
   topic.yaml                                 title, fidelity_mode, created_at, sessions list
@@ -149,8 +150,9 @@ the highest already in the directory, derived files included. Numbering is atomi
 the content, derived files and sidecar under it happen under one process-wide lock of that
 directory, so concurrent writers into one topic (a capture stored while a PDF upload runs, say)
 always get distinct numbers and never overwrite each other.
-Two separate processes writing the same topic at once are not covered: the backend is the vault's
-single writer. `sources_directory(...)` gives the
+Two separate processes writing the same topic at once are not covered (the CLI's `import-pdf`
+while the server runs, say): the active-host record below is about PCs, not processes, and
+cross-process safety on one PC is #165. `sources_directory(...)` gives the
 path; `SOURCE_KINDS` lists the kinds and `SourceKind` is their `Literal` type. Refusals are a `SourceError` (`UnknownSourceKindError`, or a
 paged `name` without extension); nothing of a refused source is left on disk.
 `list_sources(vault, subject_slug, topic_slug)` returns a `StoredSource` (`kind`, `path` -- the
@@ -251,7 +253,20 @@ thread:
   still shows the topic-only form.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
-  `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`.
+  `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`,
+  `divergence`.
+- Divergence: a `conflict` sync keeps both sides -- the local HEAD (still checked out) and the
+  fetched remote commit are pinned under `refs/studentassistant/divergence/local` and `/remote`
+  (`DIVERGENCE_LOCAL_REF`, `DIVERGENCE_REMOTE_REF`) and described by `status().divergence`, a
+  `Divergence` (`paths`, `local_commit`, `remote_commit`, `detected_at`).
+  `divergent_versions(path)` returns a `DivergentVersions` (`path`, `local`, `remote`: each
+  side's text, `None` where that side has no file), or `None` for a path not diverging. A failed
+  sync for another reason keeps the divergence; the next successful sync clears it and deletes
+  the refs. How the student picks a side is not written yet (web UI).
+- `request_push()` -- makes a push due now for the next `run_due()` (runs no git): the
+  active-host claim at session start reaches the remote without the start waiting on the network.
+- The pull defines the `sa-active` merge driver (`merge.sa-active.driver=true`) on its command
+  line: `.sa/active.yaml` keeps the remote's side of a rebase, so it is never a conflict.
 - `run(interval=1.0)` -- the asyncio loop: `run_due()` in a worker thread every `interval`, until
   cancelled. Every other method blocks on git; async callers use `asyncio.to_thread`.
 
@@ -259,7 +274,25 @@ Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yam
 `author_email` (default `estudiante@studentassistant.invalid`), `remote` (`origin`),
 `commit_quiet_seconds`, `commit_max_delay_seconds`, `push_debounce_seconds`,
 `push_backoff_initial_seconds`, `push_backoff_max_seconds`, `timeout_seconds` (120, per git
-command).
+command), `active_host_stale_seconds` (21600: an active-host claim older than this is ignored).
+
+### Active host -- `active.py`
+One active writer between PCs (ADR-0002). `.sa/active.yaml` is an `ActiveHost` (`host`,
+`session_id?`, `subject?`, `topic?`, `claimed_at`, `released_at?`; `released`).
+`claim_active_host(vault, host, session_id=None, subject_slug=None, topic_slug=None,
+claimed_at=None)` writes a fresh claim (and appends the `sa-active` line to an older vault's
+`.gitattributes`, `ensure_active_host_attribute`); `release_active_host(vault, host,
+session_id=None, released_at=None)` sets `released_at` only when the record is still that host's
+unreleased claim of that session (a newer claim is never overwritten), else returns `None`;
+`read_active_host(vault)` returns the record or `None` (missing, or unreadable: logged).
+`active_host_warning(record, host, stale_after, now=None)` / `check_active_host(vault, host,
+stale_after, now=None)` return an `ActiveHostWarning` (`record`, Spanish `message`: that PC has a
+session open and may have unpushed changes) only for another host's unreleased claim younger
+than `stale_after` seconds (`is_stale`). A warning, never a refusal. These write files only;
+committing and pushing is the caller's (`server`: claimed, checkpointed and `request_push()`ed at
+session start after the pull and check; released before the end's checkpoint and push; the
+warning from the pulls at vault open and session start is `SessionService.host_warning`, shown by
+`GET /api/vault/status`).
 
 ### GitHub and setup -- `github.py`, `setup.py`
 `studentassistant setup` gets a fresh PC to a working vault (ADR-0002: install -> setup -> clone
@@ -384,7 +417,9 @@ number of searchable documents and any unit left out; `setup` rebuilds it right 
 (ADR-0002: install -> setup -> clone -> index rebuild).
 
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
-ledger, notes, git sync and secret-guard names of this section; the YAML models, the slug helpers, the
+ledger, notes, git sync (with `Divergence`, `DivergentVersions`), active-host (`ActiveHost`,
+`ActiveHostWarning`, `claim_active_host`, `release_active_host`, `read_active_host`,
+`check_active_host`, `active_host_warning`) and secret-guard names of this section; the YAML models, the slug helpers, the
 file writers, `redact`, `summarize_changes` and the GitHub, setup and index names are imported
 from their own module (`studentassistant.vault.github`, `studentassistant.vault.setup`,
 `studentassistant.vault.index`).
