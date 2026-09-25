@@ -12,6 +12,9 @@ enum class Route {
 
     /** A topic's notes and the editor chat, in a WebView of the backend's web UI (#83). */
     DESK,
+
+    /** «Preguntar al tutor»: a topic's voice tutor (#248). */
+    TUTOR,
 }
 
 /** Where the app opens: pairing when no backend is stored yet, else the subjects/topics home. */

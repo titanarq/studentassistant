@@ -17,10 +17,16 @@
         android:name="android.hardware.microphone"
         android:required="false" />
 
-    <!-- Android 11+ package visibility: SpeechRecognizer must see the recognition service. -->
+    <!--
+      Android 11+ package visibility: SpeechRecognizer must see the recognition service, and the
+      tutor's TextToSpeech the synthesis engines.
+    -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 

@@ -79,6 +79,7 @@
     <string name="home_session_conflict">Hay otra sesión abierta. Termínala o continúala antes de empezar una nueva; la lista se ha actualizado.</string>
     <string name="home_dismiss">Entendido</string>
     <string name="home_read_notes">Apuntes</string>
+    <string name="home_ask_tutor">Preguntar al tutor</string>
 
     <!-- Study desk on the phone: the topic's notes and the editor chat (#83) -->
     <string name="desk_title">Apuntes de %1$s</string>
@@ -155,4 +156,31 @@
     <string name="share_error_not_a_page">No se ha podido guardar: no es una página de texto (si es un PDF, impórtalo como PDF) o no se pudo descargar.</string>
     <string name="share_error_claude">Claude no ha podido descargar la página. Inténtalo de nuevo.</string>
     <string name="share_error_unavailable">La descarga de páginas web no está disponible en el ordenador.</string>
+
+    <!-- Voice tutor on the phone (#248) -->
+    <string name="tutor_title">Tutor: %1$s</string>
+    <string name="tutor_no_questions">Pregúntale al tutor lo que no entiendas de este tema: contesta con tus apuntes y sus fuentes.</string>
+    <string name="tutor_history_failed">No se han podido cargar las preguntas anteriores: %1$s</string>
+    <string name="tutor_you_asked">Tú: %1$s</string>
+    <string name="tutor_thinking">El tutor está pensando…</string>
+    <string name="tutor_sources">Fuentes:</string>
+    <string name="tutor_source">[%1$s] %2$s</string>
+    <string name="tutor_read_again">Leer otra vez</string>
+    <string name="tutor_continue_over_cap">Continuar igualmente</string>
+    <string name="tutor_ask_voice">Preguntar por voz</string>
+    <string name="tutor_listening">Te escucho…</string>
+    <string name="tutor_heard">Lo que te oigo: %1$s</string>
+    <string name="tutor_stop_voice">Ya he terminado</string>
+    <string name="tutor_question_label">Escribe tu pregunta</string>
+    <string name="tutor_ask">Preguntar</string>
+    <string name="tutor_read_aloud">Leer las respuestas en voz alta</string>
+    <string name="tutor_stop_reading">Parar de leer</string>
+    <string name="tutor_no_speech_output">Este teléfono no puede leer en voz alta en español: las respuestas solo se muestran escritas.</string>
+    <string name="tutor_voice_no_speech">No te he oído. Vuelve a intentarlo o escribe la pregunta.</string>
+    <string name="tutor_voice_permission">Sin permiso para usar el micrófono no puedo oírte. Puedes escribir la pregunta.</string>
+    <string name="tutor_voice_unavailable">Este teléfono no tiene reconocimiento de voz en español. Escribe la pregunta.</string>
+    <string name="tutor_voice_failed">El reconocimiento de voz ha fallado. Vuelve a intentarlo o escribe la pregunta.</string>
+    <string name="tutor_error_not_found">El ordenador no encuentra este tema o no tiene el tutor (actualiza el servidor).</string>
+    <string name="tutor_error_unavailable">El tutor no está disponible en el ordenador.</string>
+    <string name="tutor_error_interrupted">Se cortó la conexión con el tutor antes de terminar la respuesta.</string>
 </resources>

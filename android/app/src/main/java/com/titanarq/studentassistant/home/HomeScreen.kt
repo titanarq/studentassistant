@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.ui.backendFailureMessage
 import java.text.DateFormat
@@ -49,6 +50,7 @@ fun HomeScreen(
     onBackends: () -> Unit,
     onReadNotes: (DeskTopic) -> Unit,
     modifier: Modifier = Modifier,
+    onAskTutor: (TutorTopic) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.load() }
@@ -84,6 +86,7 @@ fun HomeScreen(
                         session = state.session,
                         onOpen = viewModel::startOrContinue,
                         onReadNotes = { row -> onReadNotes(DeskTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
+                        onAskTutor = { row -> onAskTutor(TutorTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
                         onRetry = viewModel::refreshTopics,
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -150,6 +153,7 @@ private fun TopicList(
     session: SessionAction,
     onOpen: (TopicRow) -> Unit,
     onReadNotes: (TopicRow) -> Unit,
+    onAskTutor: (TopicRow) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -168,6 +172,7 @@ private fun TopicList(
                             busy = session is SessionAction.Opening,
                             onOpen = { onOpen(row) },
                             onReadNotes = { onReadNotes(row) },
+                            onAskTutor = { onAskTutor(row) },
                         )
                     }
                 }
@@ -176,7 +181,14 @@ private fun TopicList(
 }
 
 @Composable
-private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: () -> Unit, onReadNotes: () -> Unit) {
+private fun TopicCard(
+    row: TopicRow,
+    opening: Boolean,
+    busy: Boolean,
+    onOpen: () -> Unit,
+    onReadNotes: () -> Unit,
+    onAskTutor: () -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.topic.name, style = MaterialTheme.typography.titleMedium)
@@ -217,6 +229,7 @@ private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: ()
                 Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
                 OutlinedButton(onClick = onReadNotes) { Text(stringResource(R.string.home_read_notes)) }
             }
+            OutlinedButton(onClick = onAskTutor) { Text(stringResource(R.string.home_ask_tutor)) }
         }
     }
 }

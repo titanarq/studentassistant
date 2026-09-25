@@ -26,6 +26,9 @@ import com.titanarq.studentassistant.home.HomeScreen
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingScreen
 import com.titanarq.studentassistant.pairing.PairingViewModel
+import com.titanarq.studentassistant.tutor.TutorScreen
+import com.titanarq.studentassistant.tutor.TutorTopic
+import com.titanarq.studentassistant.tutor.TutorViewModel
 import com.titanarq.studentassistant.ui.PlaceholderScreen
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.StudentAssistantTheme
@@ -54,6 +57,8 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
     var route by rememberSaveable { mutableStateOf<Route?>(null) }
     // The topic Route.DESK shows, as [subjectId, topicId, topicName] so it survives recreation.
     var deskTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
+    // The topic Route.TUTOR asks about, kept the same way.
+    var tutorTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
 
     val current = stored
     LaunchedEffect(current == null) {
@@ -84,7 +89,25 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
                 deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
                 route = Route.DESK
             },
+            onAskTutor = { topic ->
+                tutorTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
+                route = Route.TUTOR
+            },
         )
+        Route.TUTOR -> {
+            val topic = tutorTopic?.takeIf { it.size == 3 }?.let { TutorTopic(it[0], it[1], it[2]) }
+            if (topic == null) {
+                LaunchedEffect(Unit) { route = Route.HOME }
+            } else {
+                TutorScreen(
+                    viewModel = viewModel<TutorViewModel>(
+                        key = "tutor-${topic.subjectId}/${topic.topicId}",
+                        factory = container.tutorViewModelFactory(topic),
+                    ),
+                    onBack = { route = Route.HOME },
+                )
+            }
+        }
         Route.DESK -> {
             val topic = deskTopic?.takeIf { it.size == 3 }?.let { DeskTopic(it[0], it[1], it[2]) }
             if (topic == null) {
