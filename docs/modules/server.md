@@ -180,7 +180,9 @@ Routes registered today:
     rounded to 0.1), `open_pending` (`len(open_pending())` of the observer's
     `load_observer_snapshot`, which may write the refreshed snapshot back), `notes_version` (the
     highest `version` of `GitSync.list_notes_tags(subject_id, topic_id)`, `null` without tags)
-    and `generated` (`list_generated`: vault-relative paths; empty until a generator exists).
+    and `generated` (`list_generated`: vault-relative paths; empty until a generator exists),
+    `digest_excerpt` (the topic digest's summary paragraph, `observer.digest_excerpt`, `null`
+    before the topic's first session end).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
     (`"Todavía no hay apuntes de este tema."`).
@@ -190,6 +192,9 @@ Routes registered today:
     `resolution`, `added_at`, `resolved_at`, `merged_ids`), open first, filtered by `status`
     (default `all`; `closed` = resolved, auto-resolved or dismissed). Read from the fold
     (`load_observer_snapshot(write_back=False)`), so it writes nothing.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/digest` -> `TopicDigest`: `text` (the
+    stored `state/digest.md`, `observer.topic_digest`; `null` before the first session end) and
+    `excerpt` (its summary paragraph). Reads the file only, writes nothing (#56).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/sessions` -> `TopicSessions`: `sessions`, by
     id, each `session_id`, `started_at`, `ended_at` (`null` while unended) and `minutes`.
   - `GET /api/sessions/{session_id}/transcript?subject=..&topic=..&t=HH:MM:SS-HH:MM:SS` ->
@@ -374,7 +379,11 @@ another PC left open is seen.
   for correctness: a batch it could not land is caught up in the next session of the topic (or
   the resume), see `docs/modules/observer.md` (catch-up, #176).
   The app adds `TranscriptPipeline.drain()` as a before-close hook, so every `transcript.final`
-  published before `session.ended` is in `transcript.jsonl` before the session is marked ended.
+  published before `session.ended` is in `transcript.jsonl` before the session is marked ended,
+  then the observer's `DigestOnEnd` (#56), which regenerates the topic's `state/digest.md` from
+  the log (`session.ended` included) before the end's checkpoint, with or without Claude. The
+  digest reader `observer.topic_digest` is what the app gives the live observer (`digest=`) and
+  the notes route gives `generate_notes`.
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
 - `await open_vault()` -> the `Vault`, opened (pulled and scanned) on first use like every other
   call, or `VaultUnavailableError`: what the read routes read through.

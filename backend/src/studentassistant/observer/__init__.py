@@ -1,5 +1,12 @@
 """Sonnet observer: event-sourced session state, pending-review queue, topic digest."""
 
+from studentassistant.observer.digest import (
+    DigestOnEnd,
+    digest_excerpt,
+    regenerate_topic_digest,
+    render_digest,
+    topic_digest,
+)
 from studentassistant.observer.fold import (
     CAPTURE_EVENT_KIND,
     CAPTURE_ID_KEY,
@@ -75,6 +82,7 @@ __all__ = [
     "AddSection",
     "AssignSegments",
     "Concept",
+    "DigestOnEnd",
     "DuplicateIdError",
     "EventOrderError",
     "EventRef",
@@ -102,6 +110,7 @@ __all__ = [
     "UnknownIdError",
     "advance_snapshot",
     "apply_op",
+    "digest_excerpt",
     "find_duplicate",
     "fold",
     "fold_from",
@@ -109,7 +118,10 @@ __all__ = [
     "op_payload",
     "parse_op",
     "pending_review",
+    "regenerate_topic_digest",
+    "render_digest",
     "snapshot_of",
     "text_similarity",
+    "topic_digest",
     "validate_op",
 ]

@@ -291,7 +291,7 @@ class ObserverLoop:
 
     `lookup` gives an attached session's vault handle; `client_factory` builds the observer client
     of a session from its ledger binding (tests pass `default_client_factory(transport=fake)`);
-    `digest` reads a topic's digest (none until the digest task, #56); `clock` stamps the
+    `digest` reads a topic's digest (`digest.topic_digest`); `clock` stamps the
     conversation records.
     """
 

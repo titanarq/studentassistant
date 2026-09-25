@@ -115,8 +115,8 @@ on_event=None, confirm_over_cap=False, clock=..., max_page_images=20,
 max_attachment_bytes=24 MiB) -> GenerationResult` writes the topic's notes with the `editor` role:
 `client` is `get_client("editor", ledger=LedgerBinding(vault, subject, topic))` (Opus from
 `[llm.roles.editor]`; tests pass `FakeClaude().client("editor")`), `sync` the vault's `GitSync`,
-`digest(vault, subject, topic) -> str | None` reads the topic digest (none until #56 writes
-`state/digest.md`), `on_event(kind, payload)` an async sink for the `notes.generated` event.
+`digest(vault, subject, topic) -> str | None` reads the topic digest (`state/digest.md`; the
+server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink for the `notes.generated` event.
 
 - **Input** (`assemble_input(vault, subject, topic, *, prompt, digest=None, max_page_images,
   max_attachment_bytes) -> EditorInput`, blocking), stable parts first for caching. System: the

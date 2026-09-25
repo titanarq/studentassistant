@@ -15,9 +15,9 @@
   threshold and at session end; context is always one topic only (ADR-0003).
 
 ## Public surface
-What exists today, after issues #29, #51, #55 and #176: the knowledge-state model, its ops, the pure
-fold, the snapshot, the vault-backed loader, the live loop and the pending-review queue. The
-digest (#56) and the purge (#60) are not written yet. Everything below except the live loop is
+What exists today, after issues #29, #51, #55, #176 and #56: the knowledge-state model, its ops,
+the pure fold, the snapshot, the vault-backed loader, the live loop, the pending-review queue and
+the topic digest. The purge (#60) is not written yet. Everything below except the live loop is
 re-exported by `studentassistant.observer`; the live loop is `studentassistant.observer.live`
 (its batch rendering `studentassistant.observer.context`), kept out of the package root so that
 importing the state model never imports the llm module.
@@ -124,7 +124,7 @@ calls in flight). `lookup(session_id)` gives an attached session's vault handle
 (`SessionBus.attached`); `client_factory(LedgerBinding)` builds the session's `observer` client
 (`default_client_factory(settings, transport)`: `get_client("observer", ...)` bound to the
 session's ledger, so every call is capped and recorded); `digest(vault, subject, topic)` reads the
-topic digest (none until #56). The server builds one when `create_app` gets an `llm_transport`
+topic digest (the server passes `topic_digest`, below). The server builds one when `create_app` gets an `llm_transport`
 (`serve` passes the real one) and `[observer] enabled`.
 
 - **Input** (`OBSERVER_KINDS`): `transcript.final`, `capture.stored`, `page.transcribed`
@@ -186,6 +186,30 @@ topic digest (none until #56). The server builds one when `create_app` gets an `
   are refused and duplicate doubts merged. A topic with no ack yet is not replayed: the first
   open writes a baseline ack (`through` = the newest event before it, `null` for none). The
   `context` record carries the `catch_up` count.
+
+### Topic digest -- `digest.py` (#56)
+`state/digest.md` (Spanish Markdown) is how a topic is resumed another day ("continúa el tema")
+and an input of the editor. It holds, in this order: the title, a one-paragraph summary (sessions
+with content, the last one's date and sections, the open doubt count -- the excerpt), the subject,
+`## Índice` (the outline, nested, with each section's segment count), `## Sesiones` (one block per
+session: date from the session id, `terminada`/`sin terminar`, minutes from the events' `t`; the
+sources set, sections worked on -- by the session its segments came from --, new sections still
+empty, new concepts, segment and capture counts, doubts added and settled, the last
+`NOTES_PER_SESSION` (5) observer remarks, each cut at 240 characters) and `## Dudas abiertas`.
+- `render_digest(subject_name, topic_title, events, state) -> str`: pure and deterministic (no
+  clock, no Claude): the same log always gives the same text.
+- `regenerate_topic_digest(vault, subject_slug, topic_slug) -> bool`: renders it from the vault
+  (`read_topic_events`, `load_observer_snapshot(write_back=False)`) and writes it with
+  `vault.write_topic_digest` only when the text changed; returns whether it wrote.
+- `DigestOnEnd(lookup)`: the async end hook the app registers with
+  `SessionService.add_before_close` (after the transcript drain, so `session.ended` is in the log
+  and the file lands in the end's checkpoint). It runs whether or not the observer uses Claude.
+- `topic_digest(vault, subject_slug, topic_slug) -> str | None`: the stored digest, `None` before
+  the topic's first session end. The server gives it to `ObserverLoop(digest=...)`, so a new
+  session of the topic or a resume puts it in the cached prefix (`render_topic`), and to the
+  editor's `generate_notes(digest=...)`.
+- `digest_excerpt(text, limit=400) -> str | None`: the summary paragraph, for the web summary
+  (`digest_excerpt`) and `GET .../digest` (server module).
 
 ## Boundaries
 - Never writes notes; that is the editor's job.

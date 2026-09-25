@@ -1,5 +1,5 @@
-"""The web UI's read API under `/api`: study-desk summary, notes, pending review, sources, sessions,
-transcripts.
+"""The web UI's read API under `/api`: study-desk summary, notes, pending review, topic digest,
+sources, sessions, transcripts.
 
 Read-only and thin: every route opens the vault through the `SessionService` on
 `app.state.sessions` (so the lazily opened, pulled vault is the one the lifecycle routes use) and
@@ -25,7 +25,13 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from studentassistant.observer import PendingItem, load_observer_snapshot, pending_review
+from studentassistant.observer import (
+    PendingItem,
+    digest_excerpt,
+    load_observer_snapshot,
+    pending_review,
+    topic_digest,
+)
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
@@ -112,6 +118,10 @@ class TopicSummary(BaseModel):
     generated: list[str] = Field(
         description="Vault-relative paths of the generated material under `generated/`."
     )
+    digest_excerpt: str | None = Field(
+        default=None,
+        description="The topic digest's summary paragraph, `null` before the first session end.",
+    )
 
 
 class TopicNotes(BaseModel):
@@ -135,6 +145,17 @@ class TopicPending(BaseModel):
 
 
 PendingFilter = Literal["all", "open", "closed"]
+
+
+class TopicDigest(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/digest`: the observer's topic digest."""
+
+    subject_id: str
+    topic_id: str
+    text: str | None = Field(
+        description="`state/digest.md` as Markdown, `null` before the topic's first session end."
+    )
+    excerpt: str | None = Field(description="Its summary paragraph, `null` when there is none.")
 
 
 class SourceMeta(BaseModel):
@@ -299,6 +320,7 @@ def read_router() -> APIRouter:
                 open_pending=len(snapshot.state.open_pending()),
                 notes_version=_notes_version(sync, subject_id, topic_id),
                 generated=list_generated(vault, subject_id, topic_id),
+                digest_excerpt=digest_excerpt(topic_digest(vault, subject_id, topic_id)),
             )
 
         async with _not_found():
@@ -342,6 +364,20 @@ def read_router() -> APIRouter:
         ]
         return TopicPending(
             subject_id=subject_id, topic_id=topic_id, open_count=review.open_count, items=items
+        )
+
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/digest",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_digest_route(
+        request: Request, subject_id: SubjectId, topic_id: TopicId
+    ) -> TopicDigest:
+        vault = await _vault(request)
+        async with _not_found():
+            text = await _read(topic_digest, vault, subject_id, topic_id)
+        return TopicDigest(
+            subject_id=subject_id, topic_id=topic_id, text=text, excerpt=digest_excerpt(text)
         )
 
     @router.get("/subjects/{subject_id}/topics/{topic_id}/sessions")

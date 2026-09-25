@@ -78,12 +78,16 @@ from studentassistant.vault.sources import (
     sources_directory,
 )
 from studentassistant.vault.state import (
+    DigestFileError,
     SnapshotFileError,
     StateError,
     pending_review_path,
     read_observer_snapshot,
+    read_topic_digest,
+    topic_digest_path,
     write_observer_snapshot,
     write_pending_review,
+    write_topic_digest,
 )
 from studentassistant.vault.subjects import (
     StoredSubject,
@@ -162,6 +166,7 @@ __all__ = [
     "SessionFileError",
     "SessionMeta",
     "SessionNotFoundError",
+    "DigestFileError",
     "SnapshotFileError",
     "SourceContent",
     "SourceError",
@@ -214,6 +219,7 @@ __all__ = [
     "notes_path",
     "notes_tag_name",
     "pending_review_path",
+    "topic_digest_path",
     "put_source",
     "read_active_host",
     "read_all_ledgers",
@@ -222,6 +228,7 @@ __all__ = [
     "read_notes",
     "read_notes_draft",
     "read_observer_snapshot",
+    "read_topic_digest",
     "read_session_transcript",
     "read_source",
     "read_topic_events",
@@ -238,4 +245,5 @@ __all__ = [
     "write_notes_draft",
     "write_observer_snapshot",
     "write_pending_review",
+    "write_topic_digest",
 ]
