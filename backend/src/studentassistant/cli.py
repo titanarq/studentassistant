@@ -3,8 +3,9 @@
 `serve` runs the backend, `version` prints the version, `pair` shows a pairing QR minted by the
 running backend, `devices` lists (or `devices revoke <id>` removes) the paired capture clients,
 `cost` prints what the Claude calls recorded in the vault's ledgers cost, `import-pdf` adds a PDF
-(or a page range of it) to a topic as a source, and `setup` creates or clones the vault on this PC
-and records it in the configuration file.
+(or a page range of it) to a topic as a source, `replay` feeds a recorded session through the
+gateway as a capture client would, and `setup` creates or clones the vault on this PC and records
+it in the configuration file.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -15,6 +16,7 @@ options are the answers it writes into that configuration, not a second way to s
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import urllib.error
@@ -34,6 +36,14 @@ from studentassistant.config import ServerSettings, Settings, check_repo_name, w
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.server.app import create_app
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.recording import Recording, RecordingError, read_recording
+from studentassistant.server.replay import (
+    AsgiTransport,
+    HttpTransport,
+    ReplayError,
+    ReplayResult,
+    replay,
+)
 from studentassistant.sources import (
     PdfImportError,
     PdfTooLargeError,
@@ -271,6 +281,70 @@ def import_pdf_command(
             + ", ".join(str(number) for number in empty)
             + "."
         )
+
+
+async def _replay_in_process(recording: Recording, **options: Any) -> ReplayResult:
+    """Replay into an app built from the configuration, its lifespan run as `serve` runs it."""
+    async with AsgiTransport(create_app()) as transport:
+        return await replay(recording, transport, **options)
+
+
+async def _replay_to(url: str, recording: Recording, **options: Any) -> ReplayResult:
+    async with HttpTransport(url) as transport:
+        return await replay(recording, transport, **options)
+
+
+@cli.command("replay")
+def replay_command(
+    directory: Annotated[Path, typer.Argument(help="La carpeta de la sesión grabada.")],
+    speed: Annotated[
+        float, typer.Option("--speed", help="Cuántas veces más rápido que la grabación.")
+    ] = 1.0,
+    topic: Annotated[
+        str | None,
+        typer.Option("--topic", help="Otro tema en vez del grabado, como <asignatura>/<tema>."),
+    ] = None,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help="Un backend en marcha, p. ej. http://localhost:8765."),
+    ] = None,
+) -> None:
+    """Replay a recorded session as a capture client: start, hello, the timed inputs, the end.
+
+    With `--url` it talks to that running backend; without it, it builds the app in-process
+    against the configured vault (and `[stt]`, which must match the recording's STT mode).
+    """
+    subject_id = topic_id = None
+    if topic is not None:
+        subject_id, _, topic_id = topic.partition("/")
+        if not subject_id or not topic_id or "/" in topic_id:
+            typer.echo(f"«{topic}» no es un tema: escríbelo como <asignatura>/<tema>.")
+            raise typer.Exit(code=2)
+    if speed <= 0:
+        typer.echo("--speed tiene que ser mayor que 0.")
+        raise typer.Exit(code=2)
+    try:
+        recording = read_recording(directory)
+    except RecordingError as error:
+        typer.echo(f"No se puede leer la grabación «{directory}»: {error}")
+        raise typer.Exit(code=1) from error
+    options: dict[str, Any] = {"speed": speed, "subject": subject_id, "topic": topic_id}
+    try:
+        if url is None:
+            result = asyncio.run(_replay_in_process(recording, **options))
+        else:
+            result = asyncio.run(_replay_to(url, recording, **options))
+    except ReplayError as error:
+        typer.echo(f"La reproducción ha fallado: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        f"Sesión {result.session_id} reproducida en {result.subject_id}/{result.topic_id}: "
+        f"{result.finals_sent} frases finales, {result.partials_sent} parciales, "
+        f"{result.events_sent} eventos, {result.audio_frames_sent} tramas de audio, "
+        f"{result.captures_stored} capturas guardadas"
+        + (f" ({result.captures_duplicate} repetidas)" if result.captures_duplicate else "")
+        + "."
+    )
 
 
 class SetupMode(StrEnum):
