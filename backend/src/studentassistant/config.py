@@ -448,6 +448,7 @@ DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
 
 DEFAULT_MARP_COMMAND = ["marp"]
 DEFAULT_MARP_TIMEOUT_SECONDS = 180.0
+DEFAULT_GROUNDING_MIN_SUPPORT = 0.6
 
 
 class GeneratorsSettings(BaseModel):
@@ -462,6 +463,9 @@ class GeneratorsSettings(BaseModel):
     marp_timeout_seconds: float = Field(default=DEFAULT_MARP_TIMEOUT_SECONDS, gt=0)
     # The Chromium-based browser Marp renders with; unset, Marp finds one itself.
     marp_browser_path: Path | None = None
+    # A generated item (a quiz answer, a flashcard's back...) whose share of content words found
+    # in the note sections it cites is under this is reported as not grounded (never dropped).
+    grounding_min_support: float = Field(default=DEFAULT_GROUNDING_MIN_SUPPORT, ge=0, le=1)
 
 
 class ObserverSettings(BaseModel):

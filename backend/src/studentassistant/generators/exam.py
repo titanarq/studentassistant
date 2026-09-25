@@ -487,6 +487,9 @@ class ExamGenerator(Generator):
                 ItemProvenance(item=question.id, anchors=question.anchors)
                 for question in [*exam.exercises, *exam.questions]
             ],
+            item_texts={
+                question.id: question.solution for question in [*exam.exercises, *exam.questions]
+            },
             warnings=warnings,
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,

@@ -344,6 +344,7 @@ class FlashcardsGenerator(Generator):
                 ),
             },
             items=[ItemProvenance(item=card.id, anchors=card.anchors) for card in cards],
+            item_texts={card.id: card.back for card in cards},
             warnings=warnings,
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,

@@ -209,6 +209,16 @@ def test_an_unknown_anchor_is_reported(
     assert [entry.item for entry in result.unresolved] == ["d01"]
 
 
+def test_bullets_the_cited_section_does_not_hold_are_reported(
+    topic: ReviseTopic, fake: FakeClaude, exporter: FakeExporter
+) -> None:
+    invented = {**DECK["slides"][1], "bullets": ["Integrales impropias de segunda especie."]}
+    result = _generate(topic, fake, {**DECK, "slides": [DECK["slides"][0], invented]})
+    assert [(entry.item, entry.support) for entry in result.ungrounded] == [("d02", 0.0)]
+    assert result.items == 2  # kept
+    assert "Integrales impropias" in _file(topic, MARKDOWN_NAME).decode("utf-8")
+
+
 def test_render_markdown_keeps_comments_and_headings_safe() -> None:
     deck = DraftDeck(
         title="# Tema",

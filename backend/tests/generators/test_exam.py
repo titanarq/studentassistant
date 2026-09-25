@@ -164,7 +164,9 @@ def test_it_writes_the_statements_and_the_solutions_apart(
     names = [path.rsplit("/", 1)[-1] for path in result.files]
     assert sorted(names[:-1]) == sorted([EXAM_MD, SOLUTIONS_MD, EXAM_PDF, SOLUTIONS_PDF])
     assert names[-1] == f"{KIND}.meta.yaml"
-    assert result.warnings == []
+    # The worked solutions go beyond the fixture's two-line notes: reported, kept.
+    assert [entry.item for entry in result.ungrounded] == ["e1", "p1", "p2"]
+    assert len(result.warnings) == 1 and "3 elementos no se apoyan" in result.warnings[0]
     assert result.items == 3
 
     exam = _text(topic, EXAM_MD)
@@ -274,7 +276,9 @@ def test_extra_items_are_cut_and_points_that_do_not_add_up_are_reported(
         "Claude ha propuesto 3 preguntas de examen; se guardan las 2 primeras.",
         "Las preguntas del examen suman 9 puntos, no 10 puntos.",
         "Los criterios de la pregunta 1 suman 4 puntos, no 3 puntos.",
+        result.warnings[-1],
     ]
+    assert [entry.item for entry in result.ungrounded] == ["e1", "e2", "p1", "p2"]
     assert result.items == 4
     assert "Una pregunta de más." not in _text(topic, EXAM_MD)
 

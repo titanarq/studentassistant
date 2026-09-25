@@ -138,6 +138,10 @@ class Outline(_Strict):
             ItemProvenance(item=number, anchors=node.anchors) for number, _, node in self.walk()
         ]
 
+    def item_texts(self) -> dict[str, str]:
+        """Per node number, what must come from the notes it cites: its gloss, else its title."""
+        return {number: node.gloss or node.title for number, _, node in self.walk()}
+
 
 # -- what Claude answers ---------------------------------------------------------------------------
 
@@ -300,6 +304,7 @@ class OutlineGenerator(Generator):
         return GeneratorOutput(
             files={FILE_NAME: render_outline(outline, known_anchors=known)},
             items=outline.provenance(),
+            item_texts=outline.item_texts(),
             model=result.responses[-1].model,
             prompt_hash=prompt.hash,
         )

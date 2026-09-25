@@ -127,7 +127,14 @@ def test_writes_the_cards_the_csv_and_an_anki_deck(
 ) -> None:
     result = _generate(topic, fake, CARDS)
 
-    assert result.items == 2 and not result.unresolved and not result.warnings
+    assert result.items == 2 and not result.unresolved
+    # The second card's back goes beyond the fixture's notes: reported, kept.
+    [ungrounded] = result.ungrounded
+    assert ungrounded.anchors == ["definicion"] and ungrounded.support < 0.6
+    assert result.warnings == [
+        f"1 elemento no se apoya claramente en los apuntes: {ungrounded.item} (25 %, #definicion)."
+        " Revísalos antes de estudiar con ellos."
+    ]
     names = sorted(path.rsplit("/", 1)[-1] for path in result.files)
     assert names == sorted([APKG_NAME, CSV_NAME, YAML_NAME, f"{KIND}.meta.yaml"])
 

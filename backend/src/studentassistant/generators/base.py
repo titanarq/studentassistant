@@ -10,7 +10,8 @@ and that every file it writes under `generated/` starts with), a Spanish `title`
 anchors, the notes version they are, the validated options and an LLM helper bound to the
 `generator` role and the topic's cost ledger -- and returns a `GeneratorOutput`: the files to
 write (names relative to `generated/`), the provenance of every item (which note anchors it was
-built from, ADR-0005) and any Spanish warnings. It never writes the vault: storing, stale
+built from, ADR-0005), the text of every item to check against those sections and any Spanish
+warnings. It never writes the vault: storing, stale
 detection and committing are the framework's (`generators.run`).
 """
 
@@ -82,10 +83,14 @@ class GeneratorOutput:
     `files` maps names relative to `generated/` to their content (text is written as UTF-8); every
     name starts with the generator's kind followed by `.`, `-` or `/`. `items` is the provenance
     of every item; an item with no anchor, or one the notes do not have, is kept and reported.
+    `item_texts` maps an item's id to the text of it that must come from the notes it cites (a
+    quiz answer and explanation, a flashcard's back...); the framework checks it against those
+    sections (`generators.grounding`) and reports, never drops, what they do not hold.
     """
 
     files: dict[str, str | bytes]
     items: list[ItemProvenance] = field(default_factory=list)
+    item_texts: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     model: str | None = None
     prompt_hash: str | None = None
