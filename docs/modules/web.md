@@ -66,6 +66,7 @@ token):
   conversation), Pendiente (doubts to review), Material (`Apuntes v<N>` from `notes_version`, then
   Esquema, Quiz, Flashcards, Examen, Diapositivas marked present when a file under `generated/`
   is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
+  `PrepareTopic` ("Prepárame el tema", below) sits above the upload form.
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
@@ -100,21 +101,52 @@ token):
   - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
     `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
     localhost trust as every other request of the web app.
-- `src/pending/` (#80): the pending-doubts panel. `PendingPage` (`← Tema <name>` link, "Dudas
-  pendientes", "<N> dudas por revisar" in a polite live region, a "Por revisar / Cerradas /
-  Todas" filter mapped to `?status=open|closed|all`) reads `GET /api/subjects/{s}/topics/{t}/pending`
-  and reads it again every `POLL_MS` (5 s, `pollMs` prop) while the page is visible, so the count
-  and cards follow a live session; a failed re-read keeps the last queue and says so.
+- `src/pending/` (#80): the pending-doubts panel and the doubts-resolution flow. `PendingPage`
+  (`← Tema <name>` link, "Dudas pendientes", "<N> dudas por revisar" in a polite live region, a
+  "Por revisar / Cerradas / Todas" filter applied on the page, `applyFilter`) reads the editor's
+  doubts queue `GET /api/subjects/{s}/topics/{t}/doubts` (#68) and reads it again every `POLL_MS`
+  (5 s, `pollMs` prop) while the page is visible, so the count and cards follow a live session; a
+  failed re-read keeps the last queue and says so, and an older read never overwrites a newer one.
   Cards are grouped by kind (`byKind`: contradiction, possible_error, illegible, incomplete,
-  unexplained_concept, then unknown kinds), one region per kind.
+  unexplained_concept, then unknown kinds), one region per kind. The topic's notes are shown under
+  the cards ("Apuntes · versión <N>", `NotesView` with the `SourcePanel`).
+  - One doubt at a time: the open doubt being resolved (the queue's `current`, unless the student
+    pressed "Resolver esta duda" on another) carries `DoubtResolver`, a form "Resolver la duda":
+    the editor's question (or a note that there is none yet), one button per suggested answer
+    (`{"suggestion": n}`, 1-based), for a contradiction the options as radios "<source>: «says»"
+    (`sourceLabel`: "Tus apuntes, página 3", "El libro, página 12", "El PDF, página 82"...) with
+    "Guardar también una nota con lo que dicen las otras" (`keep_discarded`), free text (alone, or
+    as the comment of a source), "Responder" and "Descartar". After an answer or a dismissal the
+    page says what happened ("Duda resuelta: <resolution>", "Los apuntes se han actualizado.", the
+    warning), reads the queue again and, when `notes_changed`, the notes. Only one doubts operation
+    of the page runs at a time.
+  - "Preparar las preguntas" (shown while an open doubt has no question) calls `POST
+    .../doubts/review` and says what it did (`describeReview`: "El editor ha resuelto 2 dudas con
+    tus fuentes y tiene 1 pregunta para ti.").
+  - Refusals show the backend's Spanish `detail` (409 closed doubt, unended session, another
+    operation running, no notes yet; 422; 502; 503). A closed or unknown doubt (409/404) makes the
+    page read the queue again. A reached cost cap (the 409 whose detail starts "Se ha alcanzado el
+    límite de gasto") offers "Continuar igualmente", which repeats the same request with
+    `confirm_over_cap: true`.
   - `PendingCard`: an `article` "<kind label>: <text>" with the status, a per-kind hint while
     open, what it refers to (`describeRefs`: pages, conversation fragments, sources), merged
-    duplicates, and the resolution once closed.
-  - `api.ts`: `fetchPending(subject, topic, filter) -> ReadResult<TopicPending>`, strict
-    `decodeTopicPending` (kind and status kept as strings so a new one is labelled generically),
-    `kindLabel`, `statusLabel`.
-  - Not yet: answering (suggested answers, free text), picking a source for a contradiction and
-    dismissing need the editor's doubts API (#68); the panel only reads until it exists.
+    duplicates, the resolution once closed, and its `children` (the form or the pick button).
+  - `api.ts`: the observer's queue `fetchPending(subject, topic, filter) -> ReadResult<TopicPending>`
+    (`GET .../pending`, strict `decodeTopicPending`), `kindLabel`, `statusLabel`.
+  - `doubts.ts`: `fetchDoubts -> ReadResult<DoubtsQueue>` (strict `decodeDoubtsQueue`: items
+    `{item, question, outcome}`), `reviewDoubts(s, t, confirmOverCap)`, `answerDoubt(s, t, id,
+    answer, confirmOverCap)`, `dismissDoubt(s, t, id)` -> `ActionResult<T>` = `{kind: "ok", value}
+    | {kind: "refused", status, detail, overCap} | {kind: "error", status} | {kind:
+    "unreachable"}` (results read leniently: `ReviewResult` {`auto_resolved`, `asked`,
+    `notes_changed`, `warning`}, `ResolutionResult` {`pending_id`, `status`, `resolution`,
+    `notes_changed`, `warning`}), `describeActionFailure`, `describeReview`, `isOverCap`, and the
+    generic `postAction(path, body, read)`.
+- `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
+  confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
+  then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
+  listos.", what the review did and a "Ver las dudas" link to the panel. A draft is reported and
+  not reviewed. Refusals are shown in Spanish; a reached cost cap offers "Continuar igualmente",
+  which repeats the step that stopped with `confirm_over_cap`. The topic card reloads afterwards.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.

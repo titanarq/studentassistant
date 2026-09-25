@@ -76,13 +76,13 @@ export function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status;
 }
 
-function nullable<T>(decode: Decoder<T>): Decoder<T | null> {
+export function nullable<T>(decode: Decoder<T>): Decoder<T | null> {
   return (value, path) => (value === null ? null : decode(value, path));
 }
 
 const nonEmpty = str({ minLength: 1 });
 const ids = array(nonEmpty);
-const eventRef: Decoder<EventRef> = object({ session_id: nonEmpty, seq: int({ min: 1 }) });
+export const eventRef: Decoder<EventRef> = object({ session_id: nonEmpty, seq: int({ min: 1 }) });
 
 const decodeRefs: Decoder<PendingRefs> = (value, path) => {
   const refs = object({}, { pages: ids, segments: ids, sources: ids })(value, path);

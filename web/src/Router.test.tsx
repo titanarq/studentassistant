@@ -59,5 +59,5 @@ it("renders the pending-doubts panel at the topic's /pending path", async () => 
   render(<Router pathname="/subjects/historia/topics/revolucion-industrial/pending" />);
 
   expect(screen.getByRole("heading", { name: "Dudas pendientes" })).toBeInTheDocument();
-  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar las dudas");
+  expect(await screen.findByText(/No se pudieron cargar las dudas/)).toBeInTheDocument();
 });

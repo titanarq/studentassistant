@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { kindLabel, type PendingItem, statusLabel } from "./api";
 
 /** What each kind of doubt asks of the student, shown under the card's title. */
@@ -26,9 +27,10 @@ export function describeRefs({ pages, segments, sources }: PendingItem["refs"]):
 /**
  * One doubt of the pending-review queue as a card: its kind (a Spanish title and what that kind
  * asks), the doubt's text, what it refers to, how many equal doubts were merged into it, and, once
- * closed, how it was closed and the resolution.
+ * closed, how it was closed and the resolution. `children` (the answer form of the doubt being
+ * resolved, or the button that picks it) go at the end.
  */
-export default function PendingCard({ item }: { item: PendingItem }) {
+export default function PendingCard({ item, children }: { item: PendingItem; children?: ReactNode }) {
   const label = kindLabel(item.kind);
   const refs = describeRefs(item.refs);
   const open = item.status === "open";
@@ -54,6 +56,7 @@ export default function PendingCard({ item }: { item: PendingItem }) {
       {!open && item.resolution !== null && item.resolution !== "" && (
         <p className="pending-resolution">Resolución: {item.resolution}</p>
       )}
+      {children}
     </article>
   );
 }
