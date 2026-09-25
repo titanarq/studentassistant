@@ -12,6 +12,8 @@ Taking it: the web reads the quiz (`read_quiz`) with its manifest, the student a
 short answer by comparing it with the expected one (case, accents, spaces and final punctuation
 aside), else by the student's own assessment after seeing the answer -- and appends a `QuizResult`
 to `study/quiz-results.jsonl` through the vault, committing it. `quiz_results` reads that history.
+An attempt may be partial (`QuizAttempt.questions`: the ids asked, e.g. retaking only the ones
+answered wrong): only those are graded and the result records them (`QuizResult.questions`).
 """
 
 from __future__ import annotations
@@ -299,6 +301,12 @@ class QuizAttempt(_Strict):
     built_at: datetime = Field(description="`built_at` of the quiz manifest answered.")
     answers: list[QuizAnswer]
     duration_seconds: int | None = Field(default=None, ge=0)
+    questions: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="A partial attempt: the ids of the questions asked (for example only the "
+        "ones answered wrong before). `None` asks the whole quiz.",
+    )
 
 
 class GradedAnswer(_Strict):
@@ -324,6 +332,10 @@ class QuizResult(_Strict):
     correct: int
     duration_seconds: int | None = None
     answers: list[GradedAnswer]
+    questions: list[str] | None = Field(
+        default=None,
+        description="A partial attempt: the ids asked, in the quiz's order; `None` for a full one.",
+    )
 
 
 class StoredQuiz(_Strict):
@@ -406,7 +418,8 @@ def record_quiz_result(
     Raises:
         QuizNotFoundError: the topic has no quiz.
         QuizChangedError: the quiz was generated again after the attempt started.
-        InvalidAttemptError: an answer names a question the quiz lacks, or one twice.
+        InvalidAttemptError: an answer or an asked question names a question the quiz lacks (or
+            one not asked), or one twice.
         GenerationError, VaultError: the quiz or the topic cannot be read or written.
     """
     stored = read_quiz(vault, subject, topic)
@@ -417,14 +430,31 @@ def record_quiz_result(
     meta = read_artifact_meta(vault, subject, topic, KIND)
     assert meta is not None  # read_quiz found it
     ids = {question.id for question in stored.quiz.questions}
+    asked = ids
+    if attempt.questions is not None:
+        asked = set()
+        for question_id in attempt.questions:
+            if question_id not in ids:
+                raise InvalidAttemptError(f"El quiz no tiene la pregunta «{question_id}».")
+            if question_id in asked:
+                raise InvalidAttemptError(f"La pregunta «{question_id}» se pide dos veces.")
+            asked.add(question_id)
     answers: dict[str, QuizAnswer] = {}
     for answer in attempt.answers:
         if answer.question not in ids:
             raise InvalidAttemptError(f"El quiz no tiene la pregunta «{answer.question}».")
+        if answer.question not in asked:
+            raise InvalidAttemptError(
+                f"La pregunta «{answer.question}» no está entre las que se han hecho."
+            )
         if answer.question in answers:
             raise InvalidAttemptError(f"La pregunta «{answer.question}» está respondida dos veces.")
         answers[answer.question] = answer
-    graded = [grade(question, answers.get(question.id)) for question in stored.quiz.questions]
+    graded = [
+        grade(question, answers.get(question.id))
+        for question in stored.quiz.questions
+        if question.id in asked
+    ]
     result = QuizResult(
         time=clock(),
         quiz_built_at=stored.built_at,
@@ -435,9 +465,11 @@ def record_quiz_result(
         correct=sum(answer.correct for answer in graded),
         duration_seconds=attempt.duration_seconds,
         answers=graded,
+        questions=None if attempt.questions is None else [answer.question for answer in graded],
     )
     append_study_record(vault, subject, topic, RESULTS_LOG, result)
-    sync.checkpoint(f"Resultado del quiz de {subject}/{topic}: {result.correct}/{result.total}")
+    kind = "Resultado parcial" if result.questions is not None else "Resultado"
+    sync.checkpoint(f"{kind} del quiz de {subject}/{topic}: {result.correct}/{result.total}")
     return result
 
 

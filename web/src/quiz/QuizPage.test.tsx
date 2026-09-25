@@ -131,6 +131,87 @@ it("takes the quiz, corrects it with self-assessment and saves the result", asyn
   expect(within(screen.getByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite")).not.toBeChecked();
 });
 
+function stubRetakeApi(posts: Record<string, unknown>[]) {
+  const fetchMock = stubApi({});
+  fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      posts.push(body);
+      const answers = body.answers as unknown[];
+      return jsonResponse({
+        time: `2026-09-25T18:0${posts.length}:00Z`,
+        total: answers.length,
+        correct: posts.length === 1 ? 1 : answers.length,
+        ...(Array.isArray(body.questions) && { questions: body.questions }),
+      });
+    }
+    if (input === `${TOPIC}/quiz`) return jsonResponse(storedQuiz());
+    if (input === `${TOPIC}/quiz/results`) return jsonResponse([]);
+    return TOPICS["/api/subjects/matematicas/topics"].clone();
+  });
+}
+
+it("retakes only the questions answered wrong and marks the attempt in the history", async () => {
+  const posts: Record<string, unknown>[] = [];
+  stubRetakeApi(posts);
+  renderPage();
+
+  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite"));
+  fireEvent.click(within(screen.getByRole("group", { name: "Pregunta 2" })).getByLabelText("Falso"));
+  fireEvent.click(screen.getByRole("button", { name: "Corregir" }));
+  fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Resultado guardado: 1 de 3.");
+  expect(posts[0]).not.toHaveProperty("questions");
+
+  fireEvent.click(screen.getByRole("button", { name: "Repetir las falladas" }));
+  expect(screen.getByText(/Repaso de falladas: 2 preguntas/)).toBeInTheDocument();
+  expect(screen.getAllByRole("group", { name: /^Pregunta \d$/ })).toHaveLength(2);
+  const first = screen.getByRole("group", { name: "Pregunta 1" });
+  expect(first).toHaveTextContent("La derivada se escribe f'(x).");
+  expect(within(first).getByLabelText("Falso")).not.toBeChecked();
+  fireEvent.click(within(first).getByLabelText("Verdadero"));
+  fireEvent.change(within(screen.getByRole("group", { name: "Pregunta 2" })).getByLabelText("Tu respuesta"), {
+    target: { value: "la regla de la cadena" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Corregir" }));
+  expect(screen.getByRole("region", { name: "Resultado" })).toHaveTextContent("Aciertos: 2 de 2");
+  fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
+
+  expect(await screen.findByRole("status")).toHaveTextContent("Resultado guardado: 2 de 2.");
+  expect(posts[1]).toMatchObject({
+    built_at: BUILT_AT,
+    questions: ["q2", "q3"],
+    answers: [
+      { question: "q2", given: "Verdadero" },
+      { question: "q3", given: "la regla de la cadena" },
+    ],
+  });
+  expect(screen.queryByRole("button", { name: "Repetir las falladas" })).not.toBeInTheDocument();
+  const items = screen.getByRole("region", { name: "Intentos anteriores" }).querySelectorAll("li");
+  expect(items[0]).toHaveTextContent("2 de 2 (repaso de falladas)");
+  expect(items[1]).toHaveTextContent("1 de 3");
+  expect(items[1]).not.toHaveTextContent("repaso");
+
+  fireEvent.click(screen.getByRole("button", { name: "Repetir el quiz" }));
+  expect(screen.getAllByRole("group", { name: /^Pregunta \d$/ })).toHaveLength(3);
+});
+
+it("does not offer to retake the failed questions when there are none", async () => {
+  const posts: Record<string, unknown>[] = [];
+  stubRetakeApi(posts);
+  renderPage();
+
+  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite"));
+  fireEvent.click(within(screen.getByRole("group", { name: "Pregunta 2" })).getByLabelText("Verdadero"));
+  fireEvent.change(within(screen.getByRole("group", { name: "Pregunta 3" })).getByLabelText("Tu respuesta"), {
+    target: { value: "La regla de la cadena" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Corregir" }));
+  fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
+  expect(await screen.findByRole("button", { name: "Repetir el quiz" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Repetir las falladas" })).not.toBeInTheDocument();
+});
+
 it("offers to generate the quiz when there is none, then shows it", async () => {
   let generated = false;
   let body: unknown = null;

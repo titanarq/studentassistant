@@ -151,15 +151,20 @@ answer), `answer` (the option's exact text, or the expected short answer), `expl
 Taking it: `read_quiz(vault, s, t) -> StoredQuiz | None` (`quiz`, the manifest's `built_at`,
 `notes_version`, `warnings`, `stale`, `stale_reason`). `record_quiz_result(vault, s, t,
 attempt, *, sync, clock) -> QuizResult` grades a `QuizAttempt` (`built_at` of the quiz answered,
-`answers` of `question` id, `given`, `self_assessed`, `duration_seconds`): a choice or a short
+`answers` of `question` id, `given`, `self_assessed`, `duration_seconds`; optional
+`questions`, #282: a partial attempt asking only those ids, e.g. retaking the ones answered
+wrong -- only they are graded and `total` is their number): a choice or a short
 answer equal to the expected one after `normalize_answer` (case, accents, spaces, surrounding
 punctuation) is right; a short answer that is not is judged by `self_assessed` when given
 (`graded_by: student`); no answer is wrong. The `QuizResult` (`time`, `quiz_built_at`,
 `generator_version`, `notes_version`, `notes_sha256`, `total`, `correct`, `duration_seconds`,
-`answers`: `GradedAnswer` with `expected`, `correct`, `graded_by`, `anchors`) is appended to
-`study/quiz-results.jsonl` (`vault.study`) and committed (`Resultado del quiz de s/t: c/n`).
+`answers`: `GradedAnswer` with `expected`, `correct`, `graded_by`, `anchors`; `questions`: the
+ids asked in quiz order for a partial attempt, `None` for a full one and for lines written before
+the field) is appended to `study/quiz-results.jsonl` (`vault.study`) and committed (`Resultado
+del quiz de s/t: c/n`, `Resultado parcial del quiz ...` when partial).
 Refusals (`GenerationError`, Spanish): `QuizNotFoundError`, `QuizChangedError` (the quiz was
-generated again since `built_at`), `InvalidAttemptError`. `quiz_results(vault, s, t)` reads the
+generated again since `built_at`, also for a partial attempt), `InvalidAttemptError` (an unknown
+id in `answers` or `questions`, an id twice, an answer to a question not asked). `quiz_results(vault, s, t)` reads the
 history. REST: `server/quiz_routes.py` (`docs/modules/server.md`); web: `src/quiz/`.
 
 ### Practice with spaced repetition -- `practice.py` (#81)

@@ -531,7 +531,10 @@ token):
   to `<topic path>/notes#<anchor>`; a short answer that does not match (compared like the backend,
   `normalizeAnswer`) asks "¿La has acertado?" (Sí/No). "Aciertos: <c> de <n>"; "Guardar
   resultado" (once every short answer is judged) posts the attempt and shows "Resultado guardado:
-  <c> de <n>." with "Repetir el quiz". "Intentos anteriores" lists the latest ten results. The
+  <c> de <n>." with "Repetir el quiz" and, when some answer was wrong, "Repetir las falladas"
+  (#282): a round with only those questions (same UI, meta prefixed "Repaso de falladas: "),
+  posted with `questions` (their ids) as a partial attempt. "Intentos anteriores" lists the
+  latest ten results, a partial one marked "(repaso de falladas)" (`QuizResult.partial`). The
   form "Generar un quiz" ("Número de preguntas" 1-30, "Dificultad" Variada/Fácil/Media/Difícil,
   "Generar quiz"; "Generar igualmente" past a cost cap) posts `POST .../generated/quiz` and reads
   the quiz again. `api.ts`: `fetchQuiz`, `fetchQuizResults`, `generateQuiz`, `saveQuizResult` ->

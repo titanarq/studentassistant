@@ -101,3 +101,24 @@ def test_refusals(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> N
     )
     assert bad.status_code == 422 and "q9" in bad.json()["detail"]
     assert client.get(f"{base}/quiz/results").json() == []
+
+
+def test_partial_attempt(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> None:
+    base = _topic_base(topic)
+    reply_quiz(fake)
+    assert client.post(f"{base}/generated/quiz").status_code == 200
+    built_at = client.get(f"{base}/quiz").json()["built_at"]
+    retake = {
+        "built_at": built_at,
+        "questions": ["q2"],
+        "answers": [{"question": "q2", "given": "Verdadero"}],
+    }
+    recorded = client.post(f"{base}/quiz/results", json=retake)
+    assert recorded.status_code == 200
+    body = recorded.json()
+    assert (body["total"], body["correct"], body["questions"]) == (1, 1, ["q2"])
+    unknown = client.post(
+        f"{base}/quiz/results", json={**retake, "questions": ["q9"], "answers": []}
+    )
+    assert unknown.status_code == 422 and "q9" in unknown.json()["detail"]
+    assert [r["questions"] for r in client.get(f"{base}/quiz/results").json()] == [["q2"]]

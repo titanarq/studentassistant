@@ -21,8 +21,10 @@ import "./quiz.css";
  * "Corregir" shows each verdict, the right answer, its explanation and links to the note sections
  * it comes from. A short answer that does not match the expected one is judged by the student
  * ("¿La has acertado?"). "Guardar resultado" sends the attempt, which the backend grades and keeps
- * in the vault; earlier attempts are listed below. A form generates the quiz (or a new one) with a
- * number of questions and a difficulty.
+ * in the vault; earlier attempts are listed below. After saving an attempt with mistakes,
+ * "Repetir las falladas" (#282) starts a round with only the questions answered wrong, recorded as
+ * a partial attempt ("repaso de falladas" in the history). A form generates the quiz (or a new
+ * one) with a number of questions and a difficulty.
  */
 
 type Phase = "answering" | "corrected";
@@ -220,10 +222,13 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
   const [phase, setPhase] = useState<Phase>("answering");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<ActionResult<QuizResult> | null>(null);
+  /** The ids asked in a retake of the questions answered wrong; `null` asks the whole quiz. */
+  const [round, setRound] = useState<string[] | null>(null);
   const startedAt = useRef(Date.now());
   const reads = useRef(0);
 
-  const restart = useCallback(() => {
+  const restart = useCallback((ids: string[] | null = null) => {
+    setRound(ids);
     setAnswers({});
     setAssessed({});
     setPhase("answering");
@@ -257,10 +262,11 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
 
   const base = topicPath(subjectId, topicId);
   const stored = quiz?.kind === "ok" ? quiz.value : null;
-  const questions = stored?.questions ?? [];
+  const questions = (stored?.questions ?? []).filter((q) => round === null || round.includes(q.id));
   const verdicts = questions.map((q) => autoVerdict(q, answers[q.id]) ?? assessed[q.id] ?? null);
   const toAssess = verdicts.filter((v) => v === null).length;
   const correct = verdicts.filter((v) => v === true).length;
+  const failed = questions.filter((_, index) => verdicts[index] === false).map((q) => q.id);
 
   async function save() {
     if (stored === null) return;
@@ -277,6 +283,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
         return answer;
       }),
       duration_seconds: Math.max(0, Math.round((Date.now() - startedAt.current) / 1000)),
+      ...(round !== null && { questions: round }),
     });
     setSaving(false);
     setSaved(result);
@@ -294,6 +301,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
       {stored !== null && (
         <>
           <p className="quiz-meta">
+            {round !== null && "Repaso de falladas: "}
             {questions.length} preguntas · dificultad {DIFFICULTY_LABELS[stored.difficulty].toLowerCase()}
             {stored.notes_version !== null && ` · de los apuntes v${stored.notes_version}`}
           </p>
@@ -331,9 +339,17 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
               {saved?.kind === "ok" ? (
                 <p role="status">
                   Resultado guardado: {saved.value.correct} de {saved.value.total}.{" "}
-                  <button type="button" onClick={restart}>
+                  <button type="button" onClick={() => restart()}>
                     Repetir el quiz
                   </button>
+                  {failed.length > 0 && (
+                    <>
+                      {" "}
+                      <button type="button" onClick={() => restart(failed)}>
+                        Repetir las falladas
+                      </button>
+                    </>
+                  )}
                 </p>
               ) : (
                 <button type="button" onClick={() => void save()} disabled={saving || toAssess > 0}>
@@ -355,6 +371,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
               .map((entry, index) => (
                 <li key={`${entry.time}-${index}`}>
                   {formatTime(entry.time)}: {entry.correct} de {entry.total}
+                  {entry.partial && " (repaso de falladas)"}
                 </li>
               ))}
           </ul>

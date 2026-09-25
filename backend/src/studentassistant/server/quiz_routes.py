@@ -8,7 +8,8 @@ like the other topic routes.
   explanations, the manifest's `built_at` and notes version); 404 when there is no quiz yet.
 - `POST .../topics/{topic_id}/quiz/results`, body `QuizAttempt` -> `QuizResult`: graded, appended
   to `study/quiz-results.jsonl` and committed. 404 no quiz, 409 the quiz was generated again since
-  (`built_at` differs), 422 an answer to a question the quiz lacks.
+  (`built_at` differs), 422 an answer to a question the quiz lacks. A partial attempt
+  (`questions`: the ids asked, e.g. the ones answered wrong) grades only those.
 - `GET .../topics/{topic_id}/quiz/results` -> `[QuizResult]`, oldest first.
 
 Errors as `{"detail": "..."}` in Spanish; an unknown topic is 404, a vault that cannot be opened
