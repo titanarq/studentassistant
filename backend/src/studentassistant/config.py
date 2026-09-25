@@ -33,6 +33,8 @@ DEFAULT_DEVICES_PATH = Path("~/.local/share/studentassistant/devices.json")
 DEFAULT_RECORDINGS_DIR = Path("~/.cache/studentassistant/recordings")
 # The derived SQLite index of the vault (ADR-0002): a cache, rebuildable from the vault at any time.
 DEFAULT_INDEX_PATH = Path("~/.cache/studentassistant/index.sqlite3")
+# `eval run`: the student's recorded sessions with reference notes; never in the code repo.
+DEFAULT_EVAL_PATH = Path("~/StudentAssistant/evals")
 
 # The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
 DEFAULT_API_KEY_FILE_NAME = "secrets.env"
@@ -498,6 +500,25 @@ def write_vault_config(vault_path: Path, repo: str) -> bool:
     return True
 
 
+DEFAULT_EVAL_SPEED = 4.0
+
+
+class EvalSettings(BaseModel):
+    """`studentassistant eval run`: where the eval set lives and how its sessions are replayed."""
+
+    model_config = ConfigDict(validate_default=True)
+
+    # One directory per case (recording + reference); every run's report goes to `runs/` in it.
+    path: Path = DEFAULT_EVAL_PATH
+    # How many times faster than recorded each session is replayed.
+    speed: float = Field(default=DEFAULT_EVAL_SPEED, gt=0)
+
+    @field_validator("path")
+    @classmethod
+    def expand_user(cls, path: Path) -> Path:
+        return path.expanduser()
+
+
 class Settings(BaseSettings):
     """The whole backend configuration."""
 
@@ -513,6 +534,7 @@ class Settings(BaseSettings):
     stt: SttSettings = Field(default_factory=SttSettings)
     sources: SourcesSettings = Field(default_factory=SourcesSettings)
     observer: ObserverSettings = Field(default_factory=ObserverSettings)
+    eval: EvalSettings = Field(default_factory=EvalSettings)
 
     @classmethod
     def settings_customise_sources(
