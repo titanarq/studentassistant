@@ -87,6 +87,42 @@
     one), `spokenText(reply)` and `shownText(reply)`.
   - `TutorScreen({subjectId, topicId, subjectName, topicName, onClose?, speech?, listen?,
     voiceSupported?})`: the last three are the seams tests use.
+- **Study workspace** (`/subjects/<s>/topics/<t>/workspace`, "Espacio de estudio", `src/workspace/`,
+  #312, epic #311): one screen for a topic, linked from the topic page ("Abrir espacio de
+  estudio"). The header has the crumbs, the topic name and the open-doubts counter ("N dudas
+  pendientes", from `GET .../pending?status=open`, read again whenever the document changes,
+  linking to the pending page). Two columns (a CSS grid):
+  - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
+    with wrap-around, Home/End) with **Captura** and **Recursos**. Both panels stay mounted and
+    the inactive one is only `hidden`, so switching to **Recursos** never stops a running capture
+    (camera, recognizer and socket keep running); while a session runs the tab reads "Captura en
+    curso". **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
+    **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
+    "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by
+    `resourceList(counts, tree)` (`resources.ts`) from the summary counts (`GET .../summary`, read
+    again each time the tab is shown) and the notes' provenance footnotes: the read API lists no
+    source files, so handwritten/book pages and PDFs are numbered `page-001…` up to the count, and
+    webs (named after their title) are openable only when the notes cite them; the rest are
+    counted ("Hay N webs guardadas que los apuntes todavía no citan."). Choosing one shows it in
+    the existing `SourcePanel` in place of the list (static there, not floating); "Cerrar" goes
+    back to the list.
+  - Left, bottom: the chat slot `WorkspaceChatSlot` -- today the existing `EditorChat` with
+    `useEditorChat`, unchanged; #317 replaces this component.
+  - Right: the document, `NotesView` read-only (no "¿Por qué?" here), with the sections the last
+    applied turn changed highlighted. A provenance footnote (in the document or in a chat answer)
+    switches the left column to **Recursos** and opens that source there. Without notes (404) it
+    says "Todavía no hay apuntes: pídeselos al asistente en el chat."
+  - Below 900 px (56.25rem) the columns become one and a switch **Documento** |
+    **Captura/Recursos** | **Chat** (`aria-pressed` buttons, the root's `data-view`) shows one
+    part; the others are `display: none`, never unmounted. A footnote switches to
+    Captura/Recursos.
+  - `state.ts`: `useWorkspaceState(subjectId, topicId) -> WorkspaceState {subjectId, topicId,
+    notes, changedSections, reloadNotes(changedSections?)}`, where `notes` is `{kind: "loading"} |
+    {kind: "ready", text, revision, version} | {kind: "empty"} | {kind: "failed", message}` from
+    `GET .../notes` (only the latest read is kept; `revision` is null while the backend does not
+    send it, before #313); `WorkspaceContext` / `useWorkspace()` give it to the page's children.
+    The chat slot calls `reloadNotes(sections)` after an applied turn or an undo. #316 and #317
+    build on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -136,15 +172,19 @@ token):
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
   `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../exam` -> `ExamPage`, `.../practice` -> `PracticePage`,
-  `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
+  `.../workspace` -> `WorkspacePage`, `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except
-  `src/Router.tsx`, and inside it only `api.ts` and `sessionSocket.ts` reach the network:
-  - `CapturePage.tsx`: `CapturePage` -- shows `SessionPicker` until a session is open, then
-    `CaptureScreen` keyed by `session_id`, so a second session in the same visit is a new
-    component and not the old one with new props. That state is all the page remembers: nothing
-    of a session survives a reload.
+  `src/Router.tsx` and the study workspace (`CapturePage` only), and inside it only `api.ts` and
+  `sessionSocket.ts` reach the network:
+  - `CapturePage.tsx`: `CapturePage({now?, preset?, onRunningChange?})` -- shows `SessionPicker`
+    until a session is open, then `CaptureScreen` keyed by `session_id`, so a second session in
+    the same visit is a new component and not the old one with new props. That state is all the
+    page remembers: nothing of a session survives a reload. With `preset` `{subjectId, topicId}`
+    (#312) `TopicSessionStart` replaces the picker: no subject/topic lists and no tutor, just
+    "Empezar una sesión nueva" / "Continuar la sesión abierta" for that topic (same resume-or-start
+    rule as the picker); `onRunningChange(running)` reports whether a session's screen is shown.
   - `SessionPicker.tsx`: `SessionPicker({onSession?, now?})` -- subject and topic lists with
     their create forms; for the chosen topic it resumes `open_session_id` or starts a new
     session, and reports the result as `OpenedSession {session, subjectName, topicName}`.

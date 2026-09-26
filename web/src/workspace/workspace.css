@@ -1,0 +1,183 @@
+/* The study workspace (#312): two columns -- Captura/Recursos above the chat on the left, the
+   document on the right -- and one column with a three-way switch below 900 px (56.25rem). */
+
+.workspace {
+  max-width: var(--width-full);
+  margin: 0 auto;
+  padding: var(--space-4) var(--gutter) var(--space-6);
+  overflow-wrap: anywhere;
+}
+
+.workspace-header h1 {
+  margin-bottom: var(--space-1);
+}
+
+.workspace-header .page-context {
+  margin-bottom: var(--space-2);
+}
+
+.workspace-pending {
+  margin: 0 0 var(--space-3);
+  font-size: var(--step--1);
+}
+
+.workspace-pending a {
+  color: var(--ink-muted);
+}
+
+.workspace-columns {
+  display: grid;
+  grid-template-columns: minmax(20rem, 1fr) minmax(0, 1.25fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.workspace-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.workspace-sources,
+.workspace-chat,
+.workspace-document {
+  min-width: 0;
+}
+
+.workspace-document {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+/* ---- Tabs ---- */
+
+.workspace-tablist {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--space-3);
+}
+
+.workspace-tab {
+  margin: 0 0 -1px;
+  min-height: var(--target);
+  border: 1px solid transparent;
+  border-bottom-color: var(--line);
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
+  background: none;
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.workspace-tab[aria-selected="true"] {
+  border-color: var(--line);
+  border-bottom-color: var(--paper);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.workspace-live {
+  color: var(--correction);
+  font-size: var(--step--1);
+  font-weight: 400;
+}
+
+/* The capture flow is a whole page elsewhere; here it fills its tab. */
+.workspace .capture-page {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workspace .capture-header h1 {
+  font-size: var(--step-1);
+}
+
+/* ---- Recursos ---- */
+
+.workspace-resource-group h3 {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: var(--step-0);
+}
+
+.workspace-resource-group ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-resource {
+  margin: 0;
+}
+
+.workspace-resources-note {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.workspace .source-panel {
+  position: static;
+  width: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: none;
+}
+
+.workspace .source-panel-body {
+  max-height: 70vh;
+}
+
+.workspace-empty {
+  color: var(--ink-muted);
+}
+
+/* ---- One column ---- */
+
+.workspace-switch {
+  display: none;
+}
+
+@media (max-width: 56.25rem) {
+  .workspace-switch {
+    display: flex;
+    gap: var(--space-1);
+    margin-bottom: var(--space-4);
+  }
+
+  .workspace-switch button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--target-phone);
+    margin: 0;
+    padding-inline: var(--space-2);
+  }
+
+  .workspace-switch button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+
+  .workspace-columns {
+    display: block;
+  }
+
+  .workspace-document {
+    position: static;
+    max-height: none;
+  }
+
+  .workspace[data-view="document"] .workspace-left,
+  .workspace[data-view="left"] .workspace-chat,
+  .workspace[data-view="left"] .workspace-document,
+  .workspace[data-view="chat"] .workspace-sources,
+  .workspace[data-view="chat"] .workspace-document {
+    display: none;
+  }
+}

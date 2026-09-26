@@ -15,6 +15,11 @@ export interface TopicNotes {
   text: string;
   /** The notes version, `null` when none is tagged. */
   version: number | null;
+  /**
+   * SHA-256 hex of `text` (epic #311, #313): the token a student save sends back as
+   * `base_revision`. Absent from a backend that does not send it yet.
+   */
+  revision?: string;
 }
 
 export interface SourceMeta {
@@ -59,7 +64,7 @@ export const decodeTopicNotes: Decoder<TopicNotes> = object({
   topic_id: id,
   text: str(),
   version: nullable(int({ min: 1 })),
-});
+}, { revision: str({ minLength: 1 }) });
 
 export const decodeSourceMeta: Decoder<SourceMeta> = object({
   vault_id: str({ minLength: 1 }),

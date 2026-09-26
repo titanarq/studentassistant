@@ -6,6 +6,7 @@ import {
   fetchTopicSummary,
   type ReadResult,
   type TopicSummary,
+  topicPath,
 } from "../desk/api";
 import MaterialsPanel from "../materials/MaterialsPanel";
 import BookTitleForm from "./BookTitleForm";
@@ -68,6 +69,9 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
       </p>
       <h1>Tema {topicName}</h1>
       <p className="page-context">Asignatura {subjectName}</p>
+      <p className="topic-workspace-link">
+        <a href={`${topicPath(subjectId, topicId)}/workspace`}>Abrir espacio de estudio</a>
+      </p>
       {summary === null && <p>Cargando el tema…</p>}
       {summary !== null && summary.kind === "ok" && <TopicCard summary={summary.value} />}
       {summary !== null && summary.kind !== "ok" && (

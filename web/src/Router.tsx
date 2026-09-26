@@ -11,10 +11,11 @@ import QuizPage from "./quiz/QuizPage";
 import StyleGuidePage from "./styleGuide/StyleGuidePage";
 import TopicPage from "./topic/TopicPage";
 import VersionsPage from "./versions/VersionsPage";
+import WorkspacePage from "./workspace/WorkspacePage";
 
 const STYLE_GUIDE_PATH = /^\/subjects\/([^/]+)\/style-guide$/;
 const MATERIAL_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)\/material\/([^/]+)$/;
-const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions|\/quiz|\/practice|\/exam)?$/;
+const TOPIC_PATH = /^\/subjects\/([^/]+)\/topics\/([^/]+)(\/notes|\/pending|\/versions|\/quiz|\/practice|\/exam|\/workspace)?$/;
 
 function decode(segment: string): string | null {
   try {
@@ -57,6 +58,7 @@ export default function Router({ pathname = window.location.pathname }: { pathna
       if (topic[3] === "/quiz") return <QuizPage subjectId={subjectId} topicId={topicId} />;
       if (topic[3] === "/exam") return <ExamPage subjectId={subjectId} topicId={topicId} />;
       if (topic[3] === "/practice") return <PracticePage subjectId={subjectId} topicId={topicId} />;
+      if (topic[3] === "/workspace") return <WorkspacePage subjectId={subjectId} topicId={topicId} />;
       if (topic[3] === "/pending") return <PendingPage subjectId={subjectId} topicId={topicId} />;
       return <TopicPage subjectId={subjectId} topicId={topicId} />;
     }

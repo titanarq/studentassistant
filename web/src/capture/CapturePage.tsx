@@ -12,20 +12,33 @@
  *
  * The picker also leads to the voice tutor (#82) of the chosen topic, which only reads the topic
  * and opens no session; "Volver" returns to the picker.
+ *
+ * With `preset` (the study workspace's **Captura** tab, #312) the subject and topic are given:
+ * `TopicSessionStart` replaces the picker (no tutor), and `onRunningChange` tells the host
+ * whether a session is on screen.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import CaptureScreen from "./CaptureScreen";
 import TutorScreen from "../tutor/TutorScreen";
 import SessionPicker, { type OpenedSession, type TutorTopic } from "./SessionPicker";
+import TopicSessionStart from "./TopicSessionStart";
 
 export interface CapturePageProps {
   /** The client clock every `client_time_ms` this page sends is read from. */
   now?: () => number;
+  /** The subject and topic to capture, chosen by the host page: no picker is shown. */
+  preset?: { subjectId: string; topicId: string };
+  /** Called with true when a session's screen takes over and false when it gives way. */
+  onRunningChange?: (running: boolean) => void;
 }
 
-export default function CapturePage({ now = Date.now }: CapturePageProps) {
+export default function CapturePage({ now = Date.now, preset, onRunningChange }: CapturePageProps) {
   const [opened, setOpened] = useState<OpenedSession | null>(null);
+  const running = opened !== null;
+  useEffect(() => {
+    onRunningChange?.(running);
+  }, [running, onRunningChange]);
 
   const onSession = useCallback((session: OpenedSession) => setOpened(session), []);
   const onEnded = useCallback(() => setOpened(null), []);
@@ -33,6 +46,9 @@ export default function CapturePage({ now = Date.now }: CapturePageProps) {
   const onTutor = useCallback((topic: TutorTopic) => setTutor(topic), []);
   const onTutorClosed = useCallback(() => setTutor(null), []);
 
+  if (opened === null && preset !== undefined) {
+    return <TopicSessionStart subjectId={preset.subjectId} topicId={preset.topicId} onSession={onSession} now={now} />;
+  }
   if (opened === null && tutor !== null) {
     return <TutorScreen key={`${tutor.subjectId}/${tutor.topicId}`} {...tutor} onClose={onTutorClosed} />;
   }
