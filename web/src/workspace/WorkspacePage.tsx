@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CapturePage from "../capture/CapturePage";
 import { fetchTopics, topicPath } from "../desk/api";
 import { parseNotes } from "../notes/markdown";
-import NotesView from "../notes/NotesView";
 import { fetchPending } from "../pending/api";
+import DocumentPanel from "./DocumentPanel";
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
@@ -15,7 +15,7 @@ type Tab = "capture" | "resources";
 /** What the single column shows below 900 px. */
 export type NarrowView = "document" | "left" | "chat";
 
-export const EMPTY_NOTES = "Todavía no hay apuntes: pídeselos al asistente en el chat.";
+export { EMPTY_NOTES } from "./DocumentPanel";
 
 const VIEWS: Array<[NarrowView, string]> = [
   ["document", "Documento"],
@@ -27,8 +27,8 @@ const VIEWS: Array<[NarrowView, string]> = [
  * `/subjects/<subject>/topics/<topic>/workspace`, "Espacio de estudio" (#312, epic #311): one
  * screen with, on the left, the tabs **Captura** (the capture flow, preset to this topic) and
  * **Recursos** (the topic's sources and the sources viewer) above the chat, and on the right the
- * topic's document (`apuntes.md`, read-only). A provenance footnote opens its source in
- * **Recursos**. The capture tab stays mounted while hidden, so a running session goes on.
+ * topic's document (`apuntes.md`), which the student can also edit (`DocumentPanel`, #316). A
+ * provenance footnote opens its source in **Recursos**. The capture tab stays mounted while hidden, so a running session goes on.
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat.
  */
 export default function WorkspacePage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
@@ -172,17 +172,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
             </section>
           </div>
           <section className="workspace-document" aria-label="Documento">
-            {notes.kind === "loading" && <p>Cargando los apuntes…</p>}
-            {notes.kind === "empty" && <p className="workspace-empty">{EMPTY_NOTES}</p>}
-            {notes.kind === "failed" && <p role="alert">No se pudieron cargar los apuntes: {notes.message}</p>}
-            {tree !== null && (
-              <NotesView
-                tree={tree}
-                onOpenSource={openSource}
-                activeLabel={open?.label ?? null}
-                changedSections={state.changedSections}
-              />
-            )}
+            <DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />
           </section>
         </div>
       </div>

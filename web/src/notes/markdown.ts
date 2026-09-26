@@ -36,6 +36,8 @@ export type Inline =
   | { type: "em"; children: Inline[] }
   | { type: "code"; text: string }
   | { type: "link"; href: string; children: Inline[] }
+  /** `![Imagen pegada 1](../sources/images/img-001.png)`: a pasted image (#316). */
+  | { type: "image"; src: string; alt: string }
   | { type: "footnote"; label: string }
   /** `[[?word]]`: a word the page transcription was unsure of. */
   | { type: "uncertain"; text: string };
@@ -304,6 +306,16 @@ export function parseInline(text: string): Inline[] {
         flush();
         out.push({ type: "code", text: text.slice(i + 1, end) });
         i = end + 1;
+        continue;
+      }
+    }
+
+    if (char === "!" && text[i + 1] === "[") {
+      const image = /^!\[([^\]]*)\]\(([^)\s]*)\)/.exec(rest);
+      if (image) {
+        flush();
+        out.push({ type: "image", alt: image[1], src: image[2] });
+        i += image[0].length;
         continue;
       }
     }
