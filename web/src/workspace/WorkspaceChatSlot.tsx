@@ -1,16 +1,25 @@
 import { useCallback } from "react";
-import EditorChat, { type OpenSource } from "../chat/EditorChat";
-import { useEditorChat } from "../chat/useEditorChat";
+import type { OpenSource } from "../chat/EditorChat";
+import { topicPath } from "../desk/api";
+import ChatPanel from "./chat/ChatPanel";
+import { useWorkspaceChat } from "./chat/useWorkspaceChat";
 import { useWorkspace } from "./state";
 
 /**
- * The chat slot of the workspace (#312): for now the existing editor chat, unchanged, whose
- * applied turns refresh the document through `reloadNotes()`. #317 replaces this component with
- * the live chat panel; the page only renders `<WorkspaceChatSlot onOpenSource />`.
+ * The chat slot of the workspace: the live chat panel (#317), fed by the topic's workspace stream;
+ * every change of the notes it hears of reloads the document through `reloadNotes()`. The page
+ * only renders `<WorkspaceChatSlot onOpenSource />` (the notes page keeps `EditorChat`).
  */
-export default function WorkspaceChatSlot({ onOpenSource }: { onOpenSource: OpenSource }) {
+export default function WorkspaceChatSlot({
+  onOpenSource,
+  retryDelays,
+}: {
+  onOpenSource: OpenSource;
+  /** The stream's reconnect backoff; tests pass short ones. */
+  retryDelays?: readonly number[];
+}) {
   const { subjectId, topicId, reloadNotes } = useWorkspace();
-  const onNotesChanged = useCallback((sections: string[]) => void reloadNotes(sections), [reloadNotes]);
-  const chat = useEditorChat(subjectId, topicId, onNotesChanged);
-  return <EditorChat chat={chat} onOpenSource={onOpenSource} />;
+  const reload = useCallback((sections?: string[]) => void reloadNotes(sections), [reloadNotes]);
+  const chat = useWorkspaceChat({ subjectId, topicId, reloadNotes: reload, retryDelays });
+  return <ChatPanel chat={chat} versionsPath={`${topicPath(subjectId, topicId)}/versions`} onOpenSource={onOpenSource} />;
 }
