@@ -27,7 +27,9 @@ the `studentassistant` console script.
   so there is one way to configure the backend and not two.
 - `studentassistant setup` -- the vault part is the vault module's (`docs/modules/vault.md`);
   after it this module adds, in order: the Anthropic API key (`--api-key-stdin`, else a hidden
-  Spanish prompt; skipped when already stored or in `ANTHROPIC_API_KEY`, and when unattended),
+  Spanish prompt; skipped when already stored or in `ANTHROPIC_API_KEY`, and when unattended;
+  never asked with `[llm] backend = "claude-code"`, and skipping it under `auto` says Claude Code
+  will be used),
   the STT provider (the faster-whisper model download, only when it is selected) and the systemd
   unit (`--service/--no-service`; asked when interactive, installed when unattended). Any step
   that fails makes it exit 1 after the others ran.
@@ -82,7 +84,10 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   registry; with faster-whisper also installed, CUDA unless `device = "cpu"` -- a visible GPU
   plus `whisper.cuda_libraries_error()` (`stt.cuda.check`: cuBLAS/cuDNN load and create a handle);
   `aviso` for `auto` without a GPU or with a broken library, `fallo` for `cuda` -- and the model
-  cached); the API key (in the environment, in a `0600` key
+  cached); how Claude is reached (`llm.resolve_backend` with the probes' `environ` and
+  `ant_profile`): for `claude-code`, the `Claude Code` line from the `claude_code` probe
+  (`llm.check_claude_code`: the executable on PATH and `claude auth status --json` saying
+  `loggedIn`, one subprocess, no model call), else the API key (in the environment, in a `0600` key
   file or, failing both, an `ant auth` profile found by `llm.find_ant_profile` through the
   `ant_profile` probe; the line names the source; with `api_call`, `llm.check_api_key` with the
   key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`

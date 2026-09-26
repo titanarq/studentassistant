@@ -11,7 +11,7 @@ Decision: ADR-0004.
 - `FakeClaude`: scripted responses (including tool calls and usage) for every other module's tests.
 
 ## Boundaries
-- The only importer of `anthropic`. No domain logic.
+- The only importer of `anthropic` and the only code that runs the `claude` CLI. No domain logic.
 
 ## Configuration
 
@@ -28,6 +28,75 @@ Decision: ADR-0004.
 surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile);
 `studentassistant serve` exports it from the key file `setup` stores (`llm.api_key_file`, see
 `docs/modules/infra.md`) when the environment has none.
+
+### Backend: the API or Claude Code (`[llm] backend`)
+
+`[llm] backend` (`SA_LLM__BACKEND`) is `api`, `claude-code` or `auto` (default).
+`resolve_backend(settings=None, *, environ=None, ant_profile=find_ant_profile)` turns `auto` into
+`api` when a key is on the machine (`ANTHROPIC_API_KEY`, a non-empty key in the key file, or an
+`ant auth` profile; `api_key_available`) and into `claude-code` otherwise.
+`default_transport(settings=None)` is the real transport of the resolved backend
+(`AnthropicTransport` or `ClaudeCodeTransport`); `get_client` uses it when no `transport=` is given,
+and `serve`, `generate` and `eval` build one per process and hand it to every feature, so nothing
+outside this module knows which backend runs.
+
+`ClaudeCodeTransport(settings: ClaudeCodeSettings | None = None, *, spawn=None, monotonic=...)`
+(`claude_code.py`) drives the locally installed Claude Code CLI headless, on the user's
+subscription, with no polling and no re-sent conversation:
+
+- One long-lived `claude -p --input-format stream-json --output-format stream-json --verbose
+  --include-partial-messages` process per conversation, started with `--model` / `--effort` from
+  the request (so from `[llm.roles.<role>]`), the system prompt through `--system-prompt-file`,
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS` = the request's `max_tokens`, `--tools ""` (no built-in tool:
+  no file edit, no bash, no web), `--strict-mcp-config`, `--setting-sources ""`,
+  `--disable-slash-commands`, `--no-session-persistence`, `--safe-mode`, then
+  `[llm.claude_code] extra_args`; its working directory is `[llm.claude_code] workdir`.
+  A request is one user turn written as a JSON line on stdin; stdout is read line by line up to
+  the turn's `result` event.
+- A conversation is keyed by model, effort, `max_tokens` and the whole system prompt (tools
+  included). A request whose messages are what an idle process has already seen (its earlier
+  messages plus the assistant turn it returned; `cache_control` markers ignored) followed only by
+  user turns is sent to that process as just those turns, so the CLI's own prompt cache is reused.
+  Anything else starts a new process; an earlier history is rendered as a transcript into its
+  first turn. After `idle_timeout_seconds` without a turn a timer closes the process; at most
+  `max_processes` live (the least recently used idle one is closed first); a turn longer than
+  `turn_timeout_seconds` kills its process. `aclose()` closes them all.
+- Client tools (`structured`'s strict tool, the observer's and the editor's tools) are described
+  in the system prompt (name, description, input schema) with the instruction to answer a call as
+  one JSON object `{"tool_calls": [{"name", "input"}]}`; such a reply becomes `tool_use` blocks
+  (ids `toolu_cc_...`, `stop_reason: tool_use`, a malformed one keeps its raw input string so
+  `structured` reports the JSON error and re-asks once). `tool_result` blocks go back as text,
+  images and documents as blocks. Server tools (`web_search_*`, `web_fetch_*`) raise
+  `LLMAPIError` before anything starts: web sources need the `api` backend.
+- `on_text` gets the text deltas (`stream_event` `text_delta`); a reply that looks like a tool
+  call (first visible character `{` or a fence) is held back and, if it is not one, sent whole.
+- Usage is the `result` event's `usage`; the turn's cost is the increase of the process's running
+  `total_cost_usd`, returned as `LLMResponse.reported_usd`, with `LLMResponse.billing` =
+  `subscription` (`api` when the CLI's `init` event names an API key source). The ledger records
+  `reported_usd` as `estimated_usd` (the price table when absent) and `billing: "subscription"`;
+  the caps apply to it as to any entry. On a subscription it is the CLI's list-price equivalent,
+  not money charged.
+- Errors: a `result` with `is_error` maps `api_error_status` 429 to `LLMRateLimitError`, 5xx to
+  `LLMServerError`, anything else to `LLMAPIError`; a process that exits before answering or
+  times out is an `LLMConnectionError` (retried by `LLMClient` on a fresh process); a missing
+  executable is an `LLMAPIError`. A failed or cancelled turn drops its process.
+- `check_claude_code(settings=None, *, which=shutil.which, run=...) -> ClaudeCodeStatus`
+  (`executable`, `logged_in`, `auth_method`, `subscription_type`): one `claude auth status --json`
+  bounded by `auth_check_timeout_seconds`, no model call, for `doctor`.
+
+`[llm.claude_code]` (`SA_LLM__CLAUDE_CODE__<KEY>`):
+
+| key | default |
+|---|---|
+| `executable` | `claude` |
+| `extra_args` | `[]` |
+| `idle_timeout_seconds` | `600` |
+| `max_processes` | `6` |
+| `turn_timeout_seconds` | `600` |
+| `auth_check_timeout_seconds` | `20` |
+| `workdir` | `~/.cache/studentassistant/claude-code` |
+
+Tests drive it with a fake `claude` script (`tests/llm/fake_claude_cli.py`), never the real CLI.
 
 Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
 `SA_LLM__PRICES__claude-sonnet-5__INPUT_PER_MTOK=2`):
@@ -137,6 +206,7 @@ No price or cap lives anywhere but these config defaults.
   `no_sleep`); `fake.requests` records every `LLMRequest` (model, effort, system, messages,
   tools, tool_choice, role, prompt_hash); `FakeClaudeExhaustedError` when the script runs out.
   `tests/llm/test_integration.py` is the only real call (`@pytest.mark.integration`).
+- `LLMResponse.billing` (`api` | `subscription`) and `reported_usd` (see "Backend" above).
 - `Transport` protocol / `AnthropicTransport`: the only code that imports `anthropic`
   (`tests/llm/test_import_boundary.py` enforces it for the whole package).
 

@@ -14,6 +14,7 @@ from studentassistant.config import Effort
 
 Role = Literal["observer", "transcriber", "editor", "generator"]
 ROLES: tuple[Role, ...] = ("observer", "transcriber", "editor", "generator")
+Billing = Literal["api", "subscription"]
 
 
 class Usage(BaseModel):
@@ -81,6 +82,11 @@ class LLMResponse(BaseModel):
     # assistant turn when continuing a conversation.
     content: list[dict[str, Any]] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
+    # How the call is paid: `api` (per token, priced from `[llm.prices]`) or `subscription` (the
+    # Claude Code backend on the user's plan). `reported_usd` is the cost the backend itself
+    # reported for this call (Claude Code's `total_cost_usd`), recorded instead of the estimate.
+    billing: Billing = "api"
+    reported_usd: float | None = None
 
     @property
     def text(self) -> str:

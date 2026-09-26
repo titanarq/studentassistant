@@ -269,10 +269,50 @@ DEFAULT_WEB_FETCH_TOOL = "web_fetch_20260209"
 DEFAULT_WEB_SEARCH_USD_PER_THOUSAND = 10.0
 
 
+# How Claude is reached: the Anthropic API with a key, or the locally installed Claude Code CLI
+# running headless on the user's subscription; `auto` picks the API when a key is on this PC.
+LlmBackend = Literal["auto", "api", "claude-code"]
+DEFAULT_LLM_BACKEND: LlmBackend = "auto"
+DEFAULT_CLAUDE_CODE_EXECUTABLE = "claude"
+# A conversation's `claude` process is closed after this long without a turn.
+DEFAULT_CLAUDE_CODE_IDLE_TIMEOUT_SECONDS = 600.0
+# At most this many `claude` processes live at once (the least recently used idle one goes first).
+DEFAULT_CLAUDE_CODE_MAX_PROCESSES = 6
+# One turn (the answer to one request) may take at most this long before the process is killed.
+DEFAULT_CLAUDE_CODE_TURN_TIMEOUT_SECONDS = 600.0
+# `claude auth status` for `doctor`.
+DEFAULT_CLAUDE_CODE_AUTH_CHECK_TIMEOUT_SECONDS = 20.0
+# The private, empty working directory the `claude` processes run in (no CLAUDE.md, no repo).
+DEFAULT_CLAUDE_CODE_WORKDIR = Path("~/.cache/studentassistant/claude-code")
+
+
+class ClaudeCodeSettings(BaseModel):
+    """`[llm.claude_code]`: the headless Claude Code CLI backend (`llm/claude_code.py`)."""
+
+    executable: str = DEFAULT_CLAUDE_CODE_EXECUTABLE
+    # Appended to every `claude` command line (after the flags this backend always passes).
+    extra_args: list[str] = Field(default_factory=list)
+    idle_timeout_seconds: float = Field(default=DEFAULT_CLAUDE_CODE_IDLE_TIMEOUT_SECONDS, gt=0)
+    max_processes: int = Field(default=DEFAULT_CLAUDE_CODE_MAX_PROCESSES, ge=1)
+    turn_timeout_seconds: float = Field(default=DEFAULT_CLAUDE_CODE_TURN_TIMEOUT_SECONDS, gt=0)
+    auth_check_timeout_seconds: float = Field(
+        default=DEFAULT_CLAUDE_CODE_AUTH_CHECK_TIMEOUT_SECONDS, gt=0
+    )
+    workdir: Path = DEFAULT_CLAUDE_CODE_WORKDIR
+
+    @field_validator("workdir")
+    @classmethod
+    def expand_user(cls, path: Path) -> Path:
+        return path.expanduser()
+
+
 class LlmSettings(BaseModel):
     """Claude client configuration (ADR-0004)."""
 
     roles: LlmRolesSettings = Field(default_factory=LlmRolesSettings)
+    # `api`, `claude-code`, or `auto` (the API when a key is on this PC, Claude Code otherwise).
+    backend: LlmBackend = DEFAULT_LLM_BACKEND
+    claude_code: ClaudeCodeSettings = Field(default_factory=ClaudeCodeSettings)
     # The machine-local file (`KEY=value` lines, mode 600) `setup` stores the Anthropic API key
     # in and `serve` exports from; unset, `secrets.env` next to the configuration file. Never in
     # the vault, and never the key itself in `config.toml`.

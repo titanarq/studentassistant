@@ -2,7 +2,9 @@
 
 The checks, in order: the Python dependencies, the configured STT mode and provider (and, only
 when faster-whisper is selected, faster-whisper itself, CUDA and the downloaded model), the
-Anthropic API key (present; with `api_call` also accepted by the API, through one free call),
+Anthropic API key (present; with `api_call` also accepted by the API, through one free call) or,
+when `[llm] backend` resolves to `claude-code`, the Claude Code CLI (on PATH and signed in,
+through one `claude auth status`, never a model call),
 the vault (opens, has an `origin`, may be pushed to, stays under `vault.size_warning_mb`), the
 server port, the systemd service, and
 Marp CLI (the slides generator's PDF/PPTX export; missing is only an `aviso`).
@@ -26,10 +28,24 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from typing import Literal
 
-from studentassistant.config import GeneratorsSettings, ServerSettings, Settings, SttSettings
+from studentassistant.config import (
+    ClaudeCodeSettings,
+    GeneratorsSettings,
+    ServerSettings,
+    Settings,
+    SttSettings,
+)
 from studentassistant.install import service, whisper
 from studentassistant.install.apikey import API_KEY_ENV_VAR, file_is_private, read_api_key
-from studentassistant.llm import LLMAPIError, LLMError, check_api_key, find_ant_profile
+from studentassistant.llm import (
+    ClaudeCodeStatus,
+    LLMAPIError,
+    LLMError,
+    check_api_key,
+    check_claude_code,
+    find_ant_profile,
+    resolve_backend,
+)
 from studentassistant.stt.registry import UnknownProviderError, provider_class
 from studentassistant.vault import Vault, VaultError
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
@@ -91,6 +107,9 @@ class DoctorProbes:
     api_key_check: Callable[[str | None], None] = check_api_key
     # The `ant auth` profile the SDK would use, or `None` (never reads a secret).
     ant_profile: Callable[[], str | None] = find_ant_profile
+    # `claude auth status` of the Claude Code CLI (the `claude-code` backend); raises `LLMError`
+    # when the executable is missing or cannot be run.
+    claude_code: Callable[[ClaudeCodeSettings], ClaudeCodeStatus] = check_claude_code
     port_free: Callable[[str, int], bool] = port_is_free
     # Whether a Student Assistant backend answers `GET /api/health` on this PC.
     backend_answers: Callable[[], bool] = _no_backend
@@ -201,6 +220,38 @@ def check_api_key_setting(settings: Settings, api_call: bool, probes: DoctorProb
     except LLMError as error:
         return Check(name, "fallo", f"no se pudo contactar con la API de Anthropic: {error}")
     return Check(name, "ok", f"la clave {of_where} funciona")
+
+
+def check_claude_code_setting(settings: Settings, probes: DoctorProbes) -> Check:
+    """The `claude-code` backend: the CLI is on PATH and signed in (no model call, no tokens)."""
+    name = "Claude Code"
+    executable = settings.llm.claude_code.executable
+    try:
+        status = probes.claude_code(settings.llm.claude_code)
+    except LLMError as error:
+        return Check(
+            name,
+            "fallo",
+            f"no se puede usar `{executable}` ({error}): instala Claude Code o configura"
+            " `llm.claude_code.executable`",
+        )
+    if not status.logged_in:
+        return Check(
+            name,
+            "fallo",
+            f"`{executable}` no tiene la sesión iniciada: ejecuta `{executable} auth login`",
+        )
+    plan = f", plan {status.subscription_type}" if status.subscription_type else ""
+    how = status.auth_method or "sesión iniciada"
+    return Check(name, "ok", f"{status.executable} ({how}{plan}); Claude va por tu suscripción")
+
+
+def check_llm_access(settings: Settings, api_call: bool, probes: DoctorProbes) -> Check:
+    """How Claude is reached on this PC: the API key check, or the Claude Code one."""
+    backend = resolve_backend(settings, environ=probes.environ, ant_profile=probes.ant_profile)
+    if backend == "claude-code":
+        return check_claude_code_setting(settings, probes)
+    return check_api_key_setting(settings, api_call, probes)
 
 
 def check_vault(settings: Settings, probes: DoctorProbes) -> list[Check]:
@@ -334,7 +385,7 @@ def run_doctor(
     return [
         check_python_dependencies(),
         *check_stt(settings.stt),
-        check_api_key_setting(settings, api_call, probes),
+        check_llm_access(settings, api_call, probes),
         *check_vault(settings, probes),
         check_port(settings.server, probes),
         check_service(),

@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 
@@ -49,6 +50,9 @@ class LedgerEntry(VaultFileModel):
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_write_tokens: int = Field(default=0, ge=0)
     estimated_usd: float | None = Field(default=None, ge=0)
+    # `subscription` for a call made on the user's Claude plan (the Claude Code backend), whose
+    # `estimated_usd` is the cost the CLI reported; absent for a per-token API call.
+    billing: Literal["subscription"] | None = None
     subject: str = Field(min_length=1)
     topic: str = Field(min_length=1)
     session: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)

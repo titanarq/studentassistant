@@ -147,7 +147,9 @@ missing file), which stays right after a `merge=union` reordered lines.
 ### Ledger -- `ledger.py`
 `LedgerEntry` is one line of a topic's `ledger.jsonl`: `time` (timezone-aware, kept in UTC),
 `role`, `model`, `prompt_hash?`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
-`cache_write_tokens`, `estimated_usd?` (`None` when the model has no price), `subject`, `topic`,
+`cache_write_tokens`, `estimated_usd?` (`None` when the model has no price), `billing?`
+(`subscription` for a call on the user's Claude plan through Claude Code, whose `estimated_usd` is
+the cost the CLI reported; `None` for the API), `subject`, `topic`,
 `session?`. `append_ledger_entry(vault, subject_slug, topic_slug, entry)` appends it through
 `append_jsonl` (secret guard included), creating the file on first use; an unknown subject or topic
 is the usual `SubjectNotFoundError`/`TopicNotFoundError`, and an entry whose `subject`/`topic` are

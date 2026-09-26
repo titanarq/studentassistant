@@ -367,6 +367,7 @@ def test_building_a_client_needs_no_api_key(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    settings.llm.backend = "api"
 
     client = get_client("editor", settings=settings)
 
