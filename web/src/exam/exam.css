@@ -1,22 +1,26 @@
 /* The exam correction page: questions, their solution and rubric, points and the total. */
 
 .exam-page {
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: 0 1rem 4rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+  --page-width: var(--width-page);
 }
 
 .exam-meta,
 .exam-points,
 .exam-sources,
 .exam-subtotal {
-  color: #555;
+  color: var(--ink-muted);
+}
+
+.exam-points {
+  font-weight: 400;
+}
+
+.exam-sources {
+  font-size: var(--step--1);
 }
 
 .exam-warning {
-  color: #8a4b00;
+  color: var(--warn);
 }
 
 .exam-questions {
@@ -24,29 +28,49 @@
   list-style: none;
 }
 
+.exam-question {
+  margin: 0;
+}
+
 .exam-question fieldset {
-  border: 1px solid #ccc;
-  border-radius: 0.5rem;
-  margin-bottom: 1rem;
-  padding: 0.5rem 1rem 1rem;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  background: var(--surface);
+  border-color: var(--line);
+  box-shadow: var(--shadow-sheet);
+}
+
+.exam-question legend {
+  padding: 0.1em 0.6em;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  font-size: var(--step--1);
 }
 
 .exam-statement {
+  margin-top: var(--space-2);
+  font-family: var(--font-read);
+  font-size: 1.1rem;
   font-weight: 600;
+  line-height: 1.5;
   white-space: pre-line;
 }
 
 .exam-reveal {
-  border-top: 1px solid #eee;
-  margin-top: 0.75rem;
+  border-top: 1px dashed var(--line-strong);
+  margin-top: var(--space-3);
+  padding-top: var(--space-1);
 }
 
 .exam-reveal h3 {
-  font-size: 1rem;
-  margin-bottom: 0.25rem;
+  margin: var(--space-3) 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
 }
 
 .exam-solution {
+  font-family: var(--font-read);
+  line-height: var(--leading-read);
   white-space: pre-line;
 }
 
@@ -55,21 +79,28 @@
 }
 
 .exam-criteria li {
-  margin: 0.35rem 0;
+  margin: var(--space-2) 0;
 }
 
 .exam-criteria input {
-  width: 4rem;
+  width: 5rem;
+  min-height: 2.25rem;
 }
 
 .exam-criteria input[aria-invalid="true"],
 .exam-invalid {
-  color: #a3261b;
-  border-color: #a3261b;
+  color: var(--correction);
+  border-color: var(--correction);
 }
 
 .exam-score {
-  margin-top: 1.5rem;
-  border-top: 1px solid #ccc;
-  font-weight: 600;
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--accent-soft);
+  border-radius: var(--radius-l);
+  font-weight: 700;
+}
+
+.exam-score > h2:first-child {
+  margin-top: 0;
 }

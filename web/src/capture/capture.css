@@ -1,0 +1,339 @@
+/* The capture page (`/capture`, #40): the session picker, the capture screen and "Preparar los
+   apuntes". It runs on the laptop (camera and microphone) and at phone width. */
+
+.capture-page {
+  --page-width: 56rem;
+}
+
+.capture-header {
+  margin-bottom: var(--space-4);
+}
+
+.capture-header > p:last-child {
+  margin-bottom: 0;
+}
+
+/* One step of the picker (subject, topic, session, tutor) or of the notes progress. */
+.capture-step {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+.capture-step > h2:first-child {
+  margin-top: 0;
+}
+
+.capture-step > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--target);
+  font-weight: 700;
+}
+
+.capture-start {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.capture-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.capture-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Subjects and topics as a set of choices; the chosen one is `aria-current`. */
+.choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.choice-list li {
+  margin: 0;
+}
+
+.choice-list button {
+  margin: 0;
+  border-radius: 999px;
+}
+
+.choice-hint {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+/* "Nueva asignatura" / "Nuevo tema": one line, the field and its button. */
+.capture-create {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.capture-create h3 {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.capture-create p {
+  display: inline-block;
+  margin: 0 var(--space-2) var(--space-2) 0;
+  vertical-align: bottom;
+}
+
+.capture-create p button {
+  margin: 0;
+}
+
+.capture-create label {
+  font-weight: 400;
+}
+
+/* ---- The capture screen ---- */
+
+.capture-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.capture-connection::before {
+  content: "";
+  flex: none;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.capture-connection[data-connection="open"]::before {
+  background: var(--ok);
+}
+
+.capture-connection[data-connection="lost"]::before,
+.capture-connection[data-connection="unavailable"]::before {
+  background: var(--correction);
+}
+
+.capture-camera {
+  display: grid;
+  margin-bottom: var(--space-4);
+}
+
+.capture-camera > h2 {
+  grid-row: 1;
+}
+
+.capture-preview,
+.capture-flash {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.capture-preview {
+  display: block;
+  width: 100%;
+  max-height: 62vh;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: var(--media-bg);
+  border-radius: var(--radius-l);
+}
+
+.capture-flash {
+  z-index: 1;
+  border-radius: var(--radius-l);
+  background: var(--flash);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.capture-camera-status {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.capture-camera [role="alert"] {
+  margin-top: var(--space-2);
+}
+
+/* The controls: the shutter first and largest, the source toggles together, the two ways to end
+   apart at the end of the row. */
+.capture-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+.capture-controls > h2 {
+  flex-basis: 100%;
+  margin: 0 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.capture-controls > button {
+  margin: 0;
+}
+
+.capture-controls .capture-shutter {
+  min-height: 3.25rem;
+  padding-inline: var(--space-6);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--step-1);
+}
+
+.capture-controls .capture-shutter:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.capture-controls .capture-important {
+  background: var(--highlight);
+  border-color: var(--highlight-edge);
+  color: var(--on-highlight);
+}
+
+.capture-controls .capture-important:hover:not(:disabled) {
+  background: var(--highlight);
+  border-color: var(--on-highlight);
+}
+
+.capture-controls .capture-source {
+  border-radius: 999px;
+}
+
+.capture-controls .capture-end {
+  font-weight: 400;
+}
+
+.capture-controls .capture-source + .capture-end {
+  margin-left: auto;
+}
+
+.capture-health {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-2) calc(var(--space-3) + 1.1rem);
+  border-left: 3px solid var(--warn-line);
+  background: var(--warn-soft);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  font-size: var(--step--1);
+}
+
+.capture-pending {
+  color: var(--ink-muted);
+}
+
+.capture-transcript ol {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  font-family: var(--font-read);
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.capture-segment {
+  margin-bottom: var(--space-1);
+}
+
+.capture-segment-final {
+  color: var(--ink);
+}
+
+.capture-segment-partial {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.capture-bursts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.capture-burst {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.capture-burst img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-sunken);
+}
+
+.capture-burst-guardada,
+.capture-burst-duplicada {
+  color: var(--ok);
+}
+
+.capture-burst-error {
+  color: var(--correction);
+}
+
+@media (max-width: 48rem) {
+  .capture-step {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .capture-preview {
+    max-height: 50vh;
+  }
+
+  .capture-controls .capture-shutter {
+    flex: 1 1 100%;
+  }
+
+  .capture-controls .capture-source + .capture-end {
+    margin-left: 0;
+  }
+
+  .capture-create p {
+    display: block;
+  }
+}

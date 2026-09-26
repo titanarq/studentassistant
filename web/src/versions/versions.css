@@ -1,78 +1,153 @@
 /* The notes versions page: the history list, the comparison form and the diff by section. */
 
 .versions-page {
-  max-width: 64rem;
-  margin: 0 auto;
-  padding: 0 1rem 4rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+  --page-width: var(--width-wide);
+  line-height: var(--leading-ui);
+}
+
+/* The history: a timeline down the left edge, newest first. */
+.versions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-5);
+  border-left: 2px solid var(--line);
 }
 
 .versions-list li {
-  margin-bottom: 0.75rem;
+  position: relative;
+  margin-bottom: var(--space-4);
+}
+
+.versions-list li::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-5) - 6px);
+  top: 0.45em;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--line-strong);
+}
+
+.versions-list li:has(.versions-current)::before {
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .versions-date,
 .versions-current,
 .versions-message {
-  color: #555;
+  color: var(--ink-muted);
+}
+
+.versions-current {
+  font-weight: 700;
+  color: var(--accent);
 }
 
 .versions-message {
-  margin: 0.25rem 0;
+  margin: var(--space-1) 0;
+  font-family: var(--font-read);
 }
 
 .versions-warning {
-  color: #8a4b00;
+  color: var(--warn);
+}
+
+.versions-list [role="group"] {
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--warn-soft);
+  border-radius: var(--radius-m);
+}
+
+.versions-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.versions-compare label:has(> select) {
+  width: auto;
+}
+
+.versions-compare select {
+  width: auto;
+  min-width: 12rem;
 }
 
 .versions-compare fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
   border: none;
   padding: 0;
-  margin: 0.5rem 0;
+  margin: 0;
+}
+
+.versions-compare legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
 }
 
 .version-section {
-  border-left: 4px solid #ccc;
-  padding-left: 0.75rem;
-  margin: 1rem 0;
+  --status: var(--line-strong);
+  margin: var(--space-4) 0;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--status);
+  border-radius: var(--radius-s) var(--radius-m) var(--radius-m) var(--radius-s);
 }
 
 .version-added {
-  border-left-color: #2ec27e;
+  --status: var(--ok);
 }
 
 .version-removed {
-  border-left-color: #e01b24;
+  --status: var(--correction);
 }
 
 .version-changed {
-  border-left-color: #1a5fb4;
+  --status: var(--accent);
 }
 
 .version-section h3 {
-  margin: 0.25rem 0;
-  font-size: 1.05rem;
+  margin: var(--space-1) 0;
+  font-family: var(--font-read);
+  font-size: var(--step-1);
+  font-weight: 600;
 }
 
 .version-status {
-  font-size: 0.8rem;
-  font-weight: normal;
-  color: #555;
+  margin-left: var(--space-1);
+  padding: 0.05em 0.5em;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--status);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  font-weight: 700;
+  vertical-align: 0.15em;
 }
 
 .version-section-notes,
 .version-section-stats {
-  margin: 0.25rem 0;
-  font-size: 0.9rem;
-  color: #555;
+  margin: var(--space-1) 0;
+  font-size: var(--step--1);
+  color: var(--ink-muted);
 }
 
 .version-diff-inline,
 .version-diff-side {
+  margin: var(--space-2) 0 0;
   font-size: 0.85rem;
-  background: #f6f6f6;
-  padding: 0.5rem;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-m);
+  padding: var(--space-2) 0;
   overflow-x: auto;
 }
 
@@ -82,25 +157,29 @@
 
 .version-diff-inline > * {
   display: block;
+  padding: 0 var(--space-3);
   text-decoration: none;
 }
 
 .version-diff-side table {
   width: 100%;
+  margin: 0;
   border-collapse: collapse;
   table-layout: fixed;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .version-diff-side th {
+  padding: var(--space-1) var(--space-3);
   text-align: left;
-  font-family: sans-serif;
+  font-family: var(--font-ui);
 }
 
 .version-diff-side td {
   vertical-align: top;
   white-space: pre-wrap;
-  padding: 0 0.25rem;
+  padding: 0 var(--space-3);
+  border: 0;
 }
 
 .version-diff-side ins,
@@ -109,17 +188,24 @@
 }
 
 .version-diff .diff-add {
-  background: #d7f5d9;
+  background: var(--diff-add);
+  box-shadow: inset 3px 0 0 var(--ok);
 }
 
 .version-diff .diff-del {
-  background: #fbdada;
+  background: var(--diff-del);
+  box-shadow: inset 3px 0 0 var(--correction);
 }
 
 .version-diff-inline .diff-del {
   text-decoration: line-through;
+  text-decoration-color: var(--correction-line);
 }
 
 .version-diff .diff-hunk {
-  color: #777;
+  color: var(--diff-hunk);
+}
+
+.version-unchanged {
+  margin: var(--space-4) 0;
 }

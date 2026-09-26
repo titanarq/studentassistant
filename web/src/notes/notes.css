@@ -1,87 +1,177 @@
-/* The notes viewer and its sources panel. The panel is fixed to the viewport edge so opening it
-   never rewraps nor scrolls the notes (the reading position stays put); on a wide screen the
-   column slides left, at its same width, to stay clear of it. Below the phone breakpoint
-   (48rem) the page is one column -- notes, sources panel (sticky to the screen bottom), chat --
-   and the sources panel and chat collapse behind their toggles (see the end of this file). */
+/* The notes viewer and its sources panel. The notes are a notebook sheet (`.sheet`,
+   styles/components.css). The panel is fixed to the viewport edge so opening it never rewraps
+   nor scrolls the notes (the reading position stays put); on a wide screen the column slides
+   left, at its same width, to stay clear of it. Below the phone breakpoint (48rem) the page is
+   one column -- notes, sources panel (sticky to the screen bottom), chat -- and the sources panel
+   and chat collapse behind their toggles (see the end of this file). */
 
 .notes-page main {
-  max-width: 46rem;
+  max-width: var(--width-read);
   margin: 0 auto;
-  padding: 0 1rem 4rem;
-  line-height: 1.6;
+  padding: var(--space-5) var(--gutter) var(--space-8);
   overflow-wrap: anywhere;
 }
 
 .notes-meta {
-  color: #555;
+  margin-bottom: var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+  font-weight: 700;
 }
 
 .notes-anchor {
-  font-size: 0.8em;
-  color: #999;
+  font-family: var(--font-ui);
+  font-size: 0.7em;
+  font-weight: 400;
+  color: var(--ink-faint);
   text-decoration: none;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+
+:is(h1, h2, h3, h4, h5, h6):hover > .notes-anchor,
+.notes-anchor:focus-visible {
+  opacity: 1;
+}
+
+/* A provenance reference: a small blue chip after the sentence it backs. */
+.notes-ref {
+  line-height: 0;
 }
 
 .notes-ref a {
-  padding: 0 0.1em;
+  display: inline-block;
+  margin: 0 0.1em;
+  padding: 0.12em 0.32em;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 0.72em;
+  font-weight: 700;
+  line-height: 1.2;
   text-decoration: none;
 }
 
-/* External sources (web snapshots, #59): green and dotted, apart from the student's own. */
+.notes-ref a:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.notes-ref-ia a {
+  background: var(--highlight);
+  color: var(--on-highlight);
+}
+
+/* External sources (web snapshots, #59): dotted and in their own colour, apart from the
+   student's own. */
 .notes-ref-web a {
-  color: #26a269;
+  background: transparent;
+  color: var(--external);
   text-decoration: underline dotted;
+  outline: 1px dotted var(--external);
+  outline-offset: -1px;
 }
 
 .notes-footnote-external a {
-  color: #26a269;
+  color: var(--external);
 }
 
 .notes-external-tag {
   font-size: 0.85em;
-  color: #26a269;
+  color: var(--external);
 }
 
 .notes-ref a[aria-current="true"] {
-  outline: 2px solid #1a5fb4;
-  border-radius: 2px;
+  background: var(--accent);
+  color: var(--on-accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
+/* Content the AI added: highlighter over the text. */
 .notes-ia {
-  background: #fff3c4;
-  border-left: 4px solid #e5a50a;
-  padding-left: 0.5rem;
+  background: var(--highlight);
+  border-left: 3px solid var(--highlight-edge);
+  margin-left: -0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
 }
 
+/* A word the transcription was unsure of: the red pen's wavy underline. */
 .notes-uncertain {
-  text-decoration: underline wavy #c01c28;
+  text-decoration: underline wavy var(--correction);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
 }
 
 .notes-table {
   overflow-x: auto;
+  margin-bottom: var(--space-4);
 }
 
 .notes-table table {
   border-collapse: collapse;
+  margin: 0;
 }
 
 .notes-table th,
 .notes-table td {
-  border: 1px solid #ccc;
-  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  padding: var(--space-1) var(--space-3);
+}
+
+.notes-table th {
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--font-ui);
 }
 
 .notes-code,
 .source-text {
   white-space: pre-wrap;
-  background: #f6f6f6;
-  padding: 0.5rem;
+  background: var(--surface-sunken);
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
   overflow-x: auto;
+}
+
+.source-text {
+  font-family: var(--font-read);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+/* The footnotes: the sources, in the sheet's smaller type. */
+.notes-footnotes {
+  margin-top: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+  font-size: 0.9em;
+  line-height: 1.55;
+}
+
+.notes-footnotes h2 {
+  margin-top: 0;
+  font-size: var(--step-1);
 }
 
 .notes-footnotes ol {
   list-style: none;
   padding-left: 0;
+}
+
+.notes-footnotes li {
+  margin-bottom: var(--space-2);
+}
+
+.notes-footnote-number {
+  display: inline-block;
+  min-width: 2.2em;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
 }
 
 .source-panel {
@@ -92,9 +182,9 @@
   width: min(32rem, 45vw);
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-left: 1px solid #ccc;
-  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
   z-index: 10;
 }
 
@@ -109,33 +199,60 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid #ddd;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-sunken);
 }
 
 .source-panel-header h2 {
-  font-size: 1.1rem;
+  font-family: var(--font-read);
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin: 0;
+}
+
+.source-panel-header button {
   margin: 0;
 }
 
 .source-panel-body {
   overflow-y: auto;
-  padding: 0.5rem 1rem 1rem;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.source-panel-body h3 {
+  margin-top: var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.source-caption {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
 }
 
 .source-zoom-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-2);
+}
+
+.source-zoom-controls button {
+  margin: 0;
+  min-height: 2.25rem;
+  min-width: 2.25rem;
+  padding: var(--space-1) var(--space-3);
 }
 
 .source-image-frame {
   overflow: auto;
   max-height: 60vh;
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-sunken);
 }
 
 .source-image-frame img {
@@ -150,25 +267,27 @@
 .source-transcript {
   list-style: none;
   padding-left: 0;
+  font-family: var(--font-read);
+}
+
+.source-transcript li {
+  margin-bottom: var(--space-2);
 }
 
 .source-transcript time {
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
   font-variant-numeric: tabular-nums;
-  color: #555;
-}
-
-button,
-.notes-ref a,
-.notes-footnotes a {
-  min-height: 1.5rem;
+  color: var(--ink-faint);
+  margin-right: var(--space-2);
 }
 
 /* The editor chat (#71): beside the notes on a wide screen, below them otherwise. The sources
    panel still floats over the viewport edge, above the chat. */
 .notes-chat {
-  max-width: 46rem;
+  max-width: var(--width-read);
   margin: 0 auto;
-  padding: 0 1rem 2rem;
+  padding: 0 var(--gutter) var(--space-6);
 }
 
 @media (min-width: 80rem) {
@@ -176,7 +295,7 @@ button,
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    gap: 1.5rem;
+    gap: var(--space-5);
   }
 
   .notes-page main {
@@ -191,7 +310,7 @@ button,
     max-height: 100vh;
     overflow-y: auto;
     margin: 0;
-    padding: 0 1rem 1rem;
+    padding: var(--space-5) var(--space-4) var(--space-4);
   }
 
   .notes-page-with-panel main {
@@ -203,16 +322,34 @@ button,
   position: relative;
 }
 
+/* What the editor changed in its last message. */
 .notes-changed {
-  background: #e3f4e1;
-  border-left: 4px solid #26a269;
-  padding-left: 0.5rem;
+  background: var(--ok-soft);
+  border-left: 3px solid var(--ok);
+  margin-left: -0.75rem;
+  padding-left: calc(0.75rem - 3px);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
 }
 
+/* "¿Por qué?": a quiet question in the right margin of each block. */
 .notes-why {
-  font-size: 0.8rem;
+  display: flex;
+  min-height: 1.75rem;
+  margin: calc(-1 * var(--space-3)) 0 var(--space-2) auto;
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  font-weight: 400;
   opacity: 0.55;
-  margin-bottom: 0.5rem;
+}
+
+.notes-why:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
 }
 
 .notes-block:hover .notes-why,
@@ -235,7 +372,8 @@ button,
   }
 
   .notes-page main {
-    padding-bottom: 1.5rem;
+    padding-top: var(--space-4);
+    padding-bottom: var(--space-5);
   }
 
   .notes-toggle {
@@ -244,12 +382,11 @@ button,
     justify-content: space-between;
     width: 100%;
     min-height: 2.75rem;
-    padding: 0.5rem 0.75rem;
-    font: inherit;
-    font-weight: 600;
-    background: #f3f5f9;
-    border: 1px solid #c8cfdc;
-    border-radius: 0.25rem;
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface-sunken);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
     color: inherit;
   }
 
@@ -261,16 +398,16 @@ button,
     position: sticky;
     bottom: 0;
     z-index: 10;
-    background: #fff;
-    border-top: 1px solid #ccc;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
-    padding: 0.5rem 1rem;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    box-shadow: var(--shadow-float);
+    padding: var(--space-2) var(--space-4);
   }
 
   .notes-sources-hint {
     display: block;
-    margin: 0.5rem 0;
-    color: #555;
+    margin: var(--space-2) 0;
+    color: var(--ink-muted);
   }
 
   .source-panel {
@@ -281,12 +418,14 @@ button,
   }
 
   .source-panel-header {
-    padding: 0.5rem 0;
+    padding: var(--space-2) 0;
+    background: none;
+    border-bottom: 0;
   }
 
   .source-panel-body {
     max-height: 55vh;
-    padding: 0 0 0.5rem;
+    padding: 0 0 var(--space-2);
     overflow-wrap: anywhere;
   }
 
@@ -295,7 +434,7 @@ button,
   }
 
   .notes-chat {
-    padding: 1rem 1rem 2rem;
+    padding: var(--space-4) var(--gutter) var(--space-6);
     overflow-wrap: anywhere;
   }
 
@@ -304,9 +443,13 @@ button,
     min-width: 2.75rem;
   }
 
+  .notes-page .notes-why {
+    opacity: 0.8;
+  }
+
   .notes-ref a {
-    display: inline-block;
     min-width: 1.75rem;
+    padding-block: 0.3em;
     text-align: center;
   }
 }

@@ -15,6 +15,7 @@ import type { NotesGenerationStart, NotesGenerationStatus } from "../protocol";
 import { topicPath } from "../desk/api";
 import { fetchNotesGeneration, type NotesGenerationResult } from "./api";
 import { describeFailure, type ApiFailure } from "./failures";
+import "./capture.css";
 
 /** Opus takes minutes: a poll every few seconds is plenty. */
 export const NOTES_POLL_MS = 3_000;
@@ -117,16 +118,16 @@ export default function NotesProgress({
   const notesHref = `${topicHref}/notes`;
 
   return (
-    <main>
-      <header>
+    <main className="capture-page capture-progress">
+      <header className="capture-header">
         <h1>Preparar los apuntes</h1>
-        <p>
+        <p className="page-context">
           {subjectName} · {topicName}
         </p>
         <p>La sesión se ha terminado.</p>
       </header>
 
-      <section aria-label="Preparación de los apuntes">
+      <section className="capture-step" aria-label="Preparación de los apuntes">
         {progress.kind === "running" && (
           <>
             <p role="status">Preparando los apuntes… Puede tardar unos minutos.</p>

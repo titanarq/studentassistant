@@ -1,0 +1,167 @@
+/* Design tokens (#296). Every colour, size and font of the app comes from here; page CSS uses
+   these custom properties and never a literal colour.
+
+   The light theme is a sheet of notebook paper written in blue ballpoint ink, with a yellow
+   highlighter and the teacher's red pen; the dark theme (the OS setting, `prefers-color-scheme`)
+   is a slate blackboard written in chalk. Text/background pairs meet WCAG AA in both. */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --paper: #f8f8f5;
+  --surface: #ffffff;
+  --surface-sunken: #efefea;
+  --line: #deded7;
+  --line-strong: #b4b6ad;
+
+  /* Ink */
+  --ink: #1d2230;
+  --ink-muted: #545a68;
+  --ink-faint: #737886;
+
+  /* Ballpoint blue: links, the primary action, focus, selection */
+  --accent: #2a4c9e;
+  --accent-hover: #1f3b7e;
+  --accent-soft: #e5ebf7;
+  --accent-line: #a9bbe3;
+  --on-accent: #ffffff;
+
+  /* Highlighter yellow: content added by the AI, "Importante", marked text */
+  --highlight: #fff1a8;
+  --highlight-edge: #d9ad1f;
+  --on-highlight: #3b3000;
+
+  /* Red pen: errors, contradictions, removed text */
+  --correction: #b3261e;
+  --correction-soft: #fbe9e6;
+  --correction-line: #eab1aa;
+
+  /* Semantic */
+  --ok: #22693f;
+  --ok-soft: #e2f1e7;
+  --ok-line: #8fc6a2;
+  --warn: #7f4600;
+  --warn-soft: #fbf0db;
+  --warn-line: #e3be78;
+  --external: #1c6b5b; /* sources from the web, apart from the student's own */
+
+  /* Doubt kinds (pending panel) */
+  --kind-contradiction: var(--correction);
+  --kind-possible-error: #c05307;
+  --kind-illegible: var(--accent);
+  --kind-incomplete: #8a6641;
+  --kind-unexplained: #6b4699;
+
+  /* Diffs */
+  --diff-add: #d9f0de;
+  --diff-del: #f9dcd8;
+  --diff-hunk: var(--ink-faint);
+
+  /* The red margin line of the notebook page (notes viewer) */
+  --margin-rule: #e39a9a;
+
+  /* Fixed in both themes: the camera preview's letterbox, the shutter flash, the pairing QR
+     (a scanner needs dark on white) */
+  --media-bg: #0d1110;
+  --flash: #ffffff;
+  --qr-bg: #ffffff;
+
+  /* Type: a hyperlegible sans for the interface, a reading serif for the notes */
+  --font-ui: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Ubuntu,
+    sans-serif;
+  --font-read: "Literata", "Iowan Old Style", Charter, "Noto Serif", Georgia, serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+
+  /* Type scale: minor third (1.2) */
+  --step--2: 0.694rem;
+  --step--1: 0.833rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.44rem;
+  --step-3: 1.728rem;
+  --step-4: clamp(1.6rem, 1.25rem + 1.6vw, 2.074rem);
+  --leading-ui: 1.5;
+  --leading-read: 1.7;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --gutter: clamp(1rem, 4vw, 2rem);
+
+  /* Page widths */
+  --width-read: 46rem;
+  --width-page: 48rem;
+  --width-wide: 64rem;
+  --width-full: 72rem;
+
+  /* Shape */
+  --radius-s: 4px;
+  --radius-m: 7px;
+  --radius-l: 12px;
+  --shadow-sheet: 0 1px 2px rgb(29 34 48 / 6%), 0 10px 30px -18px rgb(29 34 48 / 30%);
+  --shadow-float: 0 2px 6px rgb(29 34 48 / 8%), 0 18px 40px -20px rgb(29 34 48 / 40%);
+
+  /* Touch targets: 40 px with a pointer, 44 px at phone width (see base.css) */
+  --target: 2.5rem;
+  --target-phone: 2.75rem;
+
+  --focus-ring: 2px solid var(--accent);
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --paper: #17201d;
+    --surface: #1e2925;
+    --surface-sunken: #131a18;
+    --line: #2f3c37;
+    --line-strong: #4b5a54;
+
+    --ink: #e6e9e2;
+    --ink-muted: #a8b1aa;
+    --ink-faint: #8a948d;
+
+    --accent: #9fbcf4;
+    --accent-hover: #bcd0f8;
+    --accent-soft: #24324a;
+    --accent-line: #48608d;
+    --on-accent: #0f1829;
+
+    --highlight: rgb(240 214 104 / 17%);
+    --highlight-edge: #d6bb4c;
+    --on-highlight: #f5e8b0;
+
+    --correction: #f29b91;
+    --correction-soft: #3a2421;
+    --correction-line: #7a3f38;
+
+    --ok: #8bd3a6;
+    --ok-soft: #1d3428;
+    --ok-line: #3f7355;
+    --warn: #ecc27d;
+    --warn-soft: #362d1b;
+    --warn-line: #75603a;
+    --external: #7fd0bb;
+
+    --kind-possible-error: #f0a36a;
+    --kind-incomplete: #c9a57e;
+    --kind-unexplained: #c3a5ef;
+
+    --diff-add: rgb(139 211 166 / 18%);
+    --diff-del: rgb(242 155 145 / 18%);
+
+    --margin-rule: #6d4448;
+
+    --shadow-sheet: 0 1px 2px rgb(0 0 0 / 30%), 0 12px 30px -18px rgb(0 0 0 / 70%);
+    --shadow-float: 0 2px 6px rgb(0 0 0 / 35%), 0 18px 40px -18px rgb(0 0 0 / 80%);
+  }
+}

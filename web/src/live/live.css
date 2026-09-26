@@ -1,15 +1,12 @@
 /* The live session view: transcript and outline side by side from 60rem, captured pages below. */
 
 .live-page {
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 0 1rem 4rem;
-  overflow-wrap: anywhere;
+  --page-width: var(--width-full);
 }
 
 .live-columns {
   display: grid;
-  gap: 1.5rem;
+  gap: var(--space-5);
 }
 
 @media (min-width: 60rem) {
@@ -18,53 +15,84 @@
   }
 }
 
+.live-transcript,
+.live-outline {
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+.live-transcript h2,
+.live-outline h2 {
+  margin-top: 0;
+}
+
 .live-transcript ol {
   list-style: none;
   padding: 0;
   max-height: 60vh;
   overflow-y: auto;
+  font-family: var(--font-read);
+  line-height: 1.6;
 }
 
 .live-transcript li {
-  margin: 0 0 0.35rem;
+  margin: 0 0 var(--space-2);
 }
 
 .live-muted {
-  color: #666;
-  font-size: 0.9em;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
 }
 
 .live-partial {
+  font-family: var(--font-read);
   font-style: italic;
-  color: #555;
+  color: var(--ink-muted);
 }
 
 .live-captures {
   list-style: none;
   padding: 0;
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+}
+
+.live-capture {
+  margin: 0;
 }
 
 .live-capture article {
-  border: 1px solid #ccc;
-  border-radius: 0.4rem;
-  padding: 0.5rem;
+  height: 100%;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
 }
 
 .live-capture img {
   display: block;
   width: 100%;
   height: auto;
-  margin: 0.5rem 0;
+  margin: var(--space-2) 0;
+  border-radius: var(--radius-s);
+}
+
+.live-capture-status {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
 }
 
 .live-capture-failed .live-capture-status {
-  color: #a40000;
+  color: var(--correction);
 }
 
 .live-capture pre {
   white-space: pre-wrap;
-  font-family: inherit;
+  font-family: var(--font-read);
+  font-size: 0.95rem;
 }

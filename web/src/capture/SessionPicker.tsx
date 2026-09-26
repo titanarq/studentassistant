@@ -24,6 +24,7 @@ import {
   startSession,
 } from "./api";
 import { describeFailure } from "./failures";
+import "./capture.css";
 
 /** The session the student opened, with the names the picker showed it under. */
 export interface OpenedSession {
@@ -152,7 +153,7 @@ function CreateForm<T>({
 
   const saving = status.state === "saving";
   return (
-    <form aria-label={labels.form} onSubmit={submit}>
+    <form className="capture-create" aria-label={labels.form} onSubmit={submit}>
       <h3>{labels.form}</h3>
       <p>
         <label>
@@ -304,7 +305,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
 
   if (opened !== null) {
     return (
-      <main>
+      <main className="capture-page capture-picker">
         <h1>Capturar una sesión de estudio</h1>
         <p role="status">
           Sesión {opened.session.session_id} en marcha: {opened.subjectName}, {opened.topicName}.
@@ -314,14 +315,14 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
   }
 
   return (
-    <main>
+    <main className="capture-page capture-picker">
       <h1>Capturar una sesión de estudio</h1>
       <p>
         Elige la asignatura y el tema. Una sesión es siempre de un solo tema: para cambiar de tema
         hay que terminarla y empezar otra.
       </p>
 
-      <section aria-label="Asignaturas">
+      <section className="capture-step" aria-label="Asignaturas">
         <h2>Asignaturas</h2>
         {subjects.state === "loading" && <p>Cargando las asignaturas…</p>}
         {subjects.state === "failed" && (
@@ -338,7 +339,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
               <p>Todavía no hay ninguna asignatura: crea la primera.</p>
             )}
             {subjects.subjects.length > 0 && (
-              <ul>
+              <ul className="choice-list">
                 {subjects.subjects.map((subject) => (
                   <li key={subject.subject_id}>
                     <button
@@ -358,7 +359,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
       </section>
 
       {selection !== null && (
-        <section aria-label="Temas">
+        <section className="capture-step" aria-label="Temas">
           <h2>{subjectName === undefined ? "Temas" : `Temas de ${subjectName}`}</h2>
           {selection.topics.state === "loading" && <p>Cargando los temas…</p>}
           {selection.topics.state === "failed" && (
@@ -375,7 +376,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
                 <p>Esta asignatura todavía no tiene ningún tema: crea el primero.</p>
               )}
               {selection.topics.topics.length > 0 && (
-                <ul>
+                <ul className="choice-list">
                   {selection.topics.topics.map((topic) => {
                     const hint = topicHint(topic);
                     return (
@@ -387,7 +388,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
                         >
                           {topic.name}
                         </button>
-                        {hint !== null && <span> ({hint})</span>}
+                        {hint !== null && <span className="choice-hint"> ({hint})</span>}
                       </li>
                     );
                   })}
@@ -404,7 +405,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
       )}
 
       {chosenTopic !== undefined && (
-        <section aria-label="Sesión">
+        <section className="capture-step capture-start" aria-label="Sesión">
           <h2>La sesión</h2>
           <p>
             {subjectName === undefined ? chosenTopic.subject_id : subjectName} ·{" "}
@@ -417,6 +418,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
           </p>
           <button
             type="button"
+            className="capture-primary"
             disabled={opening.state === "opening"}
             onClick={() => void openSession(chosenTopic)}
           >
@@ -431,7 +433,7 @@ export default function SessionPicker({ onSession, now = Date.now, onTutor }: Se
       )}
 
       {chosenTopic !== undefined && onTutor !== undefined && (
-        <section aria-label="Tutor">
+        <section className="capture-step" aria-label="Tutor">
           <h2>Estudiar con el tutor</h2>
           <p>Pregúntale por voz sobre este tema: contesta con tus apuntes y tus fuentes.</p>
           <button

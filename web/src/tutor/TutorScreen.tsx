@@ -17,6 +17,7 @@ import {
   voiceQuestionSupported,
 } from "./voiceQuestion";
 import "../chat/chat.css";
+import "./tutor.css";
 
 export const MAX_QUESTION_CHARS = 1000;
 
@@ -214,19 +215,19 @@ export default function TutorScreen({
   const busy = asking !== null;
 
   return (
-    <main>
-      <p>
+    <main className="tutor-page">
+      <p className="crumbs">
         <button type="button" onClick={onClose}>
           ← Volver
         </button>
       </p>
       <h1>Preguntar al tutor</h1>
-      <p>
+      <p className="page-context">
         {subjectName} · {topicName}. El tutor contesta con tus apuntes y tus fuentes.{" "}
         <a href={`${topicPath(subjectId, topicId)}/notes`}>Ver los apuntes del tema</a>
       </p>
 
-      <section aria-label="Conversación con el tutor">
+      <section className="tutor-conversation" aria-label="Conversación con el tutor">
         {history.state === "loading" && <p role="status">Cargando las preguntas anteriores…</p>}
         {history.state === "failed" && <p role="alert">{history.message}</p>}
         {history.state === "ready" && turns.length === 0 && !busy && (
@@ -269,8 +270,8 @@ export default function TutorScreen({
         )}
       </section>
 
-      <section aria-label="Tu pregunta">
-        <p>
+      <section className="tutor-ask" aria-label="Tu pregunta">
+        <p className="tutor-voice">
           <button
             type="button"
             aria-pressed={listening}
@@ -286,7 +287,7 @@ export default function TutorScreen({
           </p>
         )}
         {voiceProblem !== null && <p role="alert">{voiceProblem}</p>}
-        <form onSubmit={submit}>
+        <form className="tutor-form" onSubmit={submit}>
           <label>
             Escribe tu pregunta
             <textarea

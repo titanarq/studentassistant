@@ -349,8 +349,11 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
 
   return (
     <main className="practice-page">
-      <p>
+      <p className="crumbs">
         <a href={base}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>Practicar {topicName}</h1>
       {loaded === null && <p>Cargando la práctica…</p>}

@@ -113,8 +113,11 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
   return (
     <div className={open === null ? "notes-page" : "notes-page notes-page-with-panel"}>
       <main>
-        <p>
+        <p className="crumbs">
           <a href={topicPath(subjectId, topicId)}>← Tema {topicName}</a>
+          <a className="crumbs-home" href="/">
+            Mesa de estudio
+          </a>
         </p>
         <p className="notes-meta">
           Apuntes de {topicName}

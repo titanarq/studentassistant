@@ -63,11 +63,11 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
 
   return (
     <main className="topic-page">
-      <p>
+      <p className="crumbs">
         <a href="/">← Mesa de estudio</a>
       </p>
       <h1>Tema {topicName}</h1>
-      <p>Asignatura {subjectName}</p>
+      <p className="page-context">Asignatura {subjectName}</p>
       {summary === null && <p>Cargando el tema…</p>}
       {summary !== null && summary.kind === "ok" && <TopicCard summary={summary.value} />}
       {summary !== null && summary.kind !== "ok" && (

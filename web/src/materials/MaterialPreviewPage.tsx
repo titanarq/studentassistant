@@ -57,8 +57,11 @@ export default function MaterialPreviewPage({
 
   return (
     <main className="material-preview">
-      <p>
+      <p className="crumbs">
         <a href={topicPath(subjectId, topicId)}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>
         {title} de {topicName}

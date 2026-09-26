@@ -1,42 +1,94 @@
-/* The subject's style guide page. */
+/* The subject's style guide page: the rules as a numbered list on a sheet, then "Nueva regla". */
 
 .style-guide-page {
-  max-width: 48rem;
+  --page-width: var(--width-page);
 }
 
 .style-guide-intro {
-  color: #555;
+  color: var(--ink-muted);
+  max-width: 38rem;
+}
+
+.style-guide-rules {
+  margin: var(--space-4) 0;
+  padding: var(--space-2) var(--space-5);
+  list-style: none;
+  counter-reset: rule;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
 }
 
 .style-guide-rules li {
-  padding: 0.4rem 0;
-  border-bottom: 1px solid #eee;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.style-guide-rules li:last-child {
+  border-bottom: 0;
+}
+
+/* The rule's number (a flex item cannot keep its list marker). */
+.style-guide-rules li::before {
+  counter-increment: rule;
+  content: counter(rule) ".";
+  flex: none;
+  min-width: 1.5rem;
+  color: var(--ink-faint);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .style-guide-rule {
+  flex: 1 1 18rem;
+  font-family: var(--font-read);
+  font-size: 1.05rem;
   white-space: pre-wrap;
-  margin-right: 0.5rem;
 }
 
 .style-guide-actions {
   display: inline-flex;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.style-guide-actions button {
+  margin: 0;
+  min-height: 2.25rem;
+  padding-inline: var(--space-3);
+  font-weight: 400;
 }
 
 .style-guide-edit,
 .style-guide-add {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: var(--space-2);
   align-items: flex-start;
+  flex: 1 1 100%;
+}
+
+.style-guide-edit label,
+.style-guide-add label {
+  font-weight: 700;
 }
 
 .style-guide-edit textarea,
 .style-guide-add textarea {
   width: 100%;
-  box-sizing: border-box;
+  margin: 0;
 }
 
 .style-guide-add {
-  margin-top: 1rem;
+  margin-top: var(--space-5);
+}
+
+.style-guide-add button {
+  margin: 0;
 }

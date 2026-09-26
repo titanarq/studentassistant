@@ -78,7 +78,7 @@ export default function DeskPractice() {
   if (result === null) return null;
   if (result.kind === "ok" && result.value.topics.length === 0 && result.value.warnings.length === 0) return null;
   return (
-    <section aria-label="Repasos para hoy">
+    <section className="desk-block desk-practice" aria-label="Repasos para hoy">
       <h2>Repasos para hoy</h2>
       {result.kind === "ok" ? (
         result.value.topics.length === 0 ? (
