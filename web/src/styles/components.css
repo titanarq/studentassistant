@@ -1,0 +1,238 @@
+/* Shared components (#296): the header crumbs, panels, cards, badges, messages and the notebook
+   sheet. Pages compose these; their own CSS only lays them out. */
+
+/* ---- Header crumbs: "← Tema X" back to the parent, "Mesa de estudio" home on the right ---- */
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.crumbs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.crumbs .crumbs-home {
+  margin-left: auto;
+  font-weight: 400;
+}
+
+.crumbs button {
+  min-height: 2rem;
+  margin: 0;
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: inherit;
+}
+
+.crumbs button:hover:not(:disabled) {
+  background: var(--surface-sunken);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+/* The context line under a page title ("Asignatura Historia", "Historia · Tema 3"). */
+.page-context {
+  margin-top: calc(-1 * var(--space-2));
+  color: var(--ink-muted);
+}
+
+/* ---- Panels and cards ---- */
+
+/* A panel groups one tool or one block of information on a page. */
+.panel {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+.panel > h2:first-child,
+.panel > h3:first-child {
+  margin-top: 0;
+}
+
+/* A card is one item of a list (a doubt, a question, a material). */
+.card {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+/* ---- Badges ---- */
+
+.badge {
+  display: inline-block;
+  padding: 0.05em 0.5em;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  font-weight: 700;
+  line-height: 1.45;
+  white-space: nowrap;
+  vertical-align: 0.1em;
+}
+
+.badge-warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+.badge-ok {
+  background: var(--ok-soft);
+  border-color: var(--ok-line);
+  color: var(--ok);
+}
+
+/* ---- Messages ---- */
+
+/* Problems the student must see: a red-pen margin note. */
+[role="alert"] {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--correction);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: var(--correction-soft);
+  color: var(--ink);
+}
+
+[role="alert"] > :last-child {
+  margin-bottom: 0;
+}
+
+[role="alert"] [role="alert"] {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Side remarks: unpriced calls, a stale material. */
+[role="note"] {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warn-line);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: var(--warn-soft);
+  color: var(--ink);
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.text-ok {
+  color: var(--ok);
+}
+
+.text-warn {
+  color: var(--warn);
+}
+
+.text-error {
+  color: var(--correction);
+}
+
+/* A row of actions. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.actions > button {
+  margin: 0;
+}
+
+/* ---- The notebook sheet: rendered notes, with the red margin line ---- */
+
+.sheet {
+  --sheet-margin: 2.5rem;
+  position: relative;
+  padding: var(--space-5) var(--space-5) var(--space-5) calc(var(--sheet-margin) + var(--space-4));
+  background:
+    linear-gradient(
+        to right,
+        transparent var(--sheet-margin),
+        var(--margin-rule) var(--sheet-margin),
+        var(--margin-rule) calc(var(--sheet-margin) + 2px),
+        transparent calc(var(--sheet-margin) + 2px)
+      )
+      no-repeat,
+    var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-sheet);
+  font-family: var(--font-read);
+  font-size: 1.0625rem;
+  line-height: var(--leading-read);
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+
+.sheet :where(h1, h2, h3, h4) {
+  font-family: var(--font-read);
+  letter-spacing: -0.005em;
+}
+
+.sheet :where(h1) {
+  font-size: var(--step-3);
+  margin: 0 0 var(--space-4);
+}
+
+.sheet :where(h2) {
+  font-size: var(--step-2);
+  font-weight: 600;
+  margin: var(--space-6) 0 var(--space-3);
+}
+
+.sheet :where(h3) {
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+.sheet :where(p, li) {
+  hyphens: auto;
+}
+
+.sheet :where(p, ul, ol, table, pre, blockquote) {
+  margin-bottom: var(--space-4);
+}
+
+.sheet :where(table) {
+  font-size: 0.94em;
+}
+
+@media (max-width: 48rem) {
+  .sheet {
+    --sheet-margin: 1.1rem;
+    margin-inline: calc(-1 * var(--gutter) + var(--space-2));
+    padding: var(--space-4) var(--space-4) var(--space-4) calc(var(--sheet-margin) + var(--space-3));
+    font-size: 1.03rem;
+  }
+}

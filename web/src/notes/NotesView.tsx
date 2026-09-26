@@ -275,7 +275,7 @@ export default function NotesView({
   const cited = [...numbers.keys()].filter((label) => definitions.has(label));
 
   return (
-    <article className="notes-body" aria-label="Apuntes">
+    <article className="notes-body sheet" aria-label="Apuntes">
       {body}
       {cited.length > 0 && (
         <section className="notes-footnotes" aria-labelledby="notes-footnotes-heading">

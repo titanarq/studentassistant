@@ -51,24 +51,28 @@ function TopicRow({ topic }: { topic: Topic }) {
     details.push(pendingText(topic.pending_count));
   }
   return (
-    <li>
-      <a href={topicPath(topic.subject_id, topic.topic_id)}>{topic.name}</a>
+    <li className="desk-topic">
+      <a className="desk-topic-name" href={topicPath(topic.subject_id, topic.topic_id)}>
+        {topic.name}
+      </a>
       {topic.open_session_id !== undefined && (
         <>
           {" · "}
-          <a href="/live">Sesión abierta</a>
+          <a className="desk-live" href="/live">
+            Sesión abierta
+          </a>
         </>
       )}
-      {details.length > 0 && <> · {details.join(" · ")}</>}
+      {details.length > 0 && <span className="desk-topic-details"> · {details.join(" · ")}</span>}
     </li>
   );
 }
 
 function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadResult<Topic[]> }) {
   return (
-    <section aria-label={subject.name}>
+    <section className="desk-subject" aria-label={subject.name}>
       <h2>{subject.name}</h2>
-      <p>
+      <p className="desk-subject-guide">
         <a href={styleGuidePagePath(subject.subject_id)}>Guía de estilo</a>
       </p>
       {topics.kind !== "ok" && (
@@ -76,7 +80,7 @@ function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadRes
       )}
       {topics.kind === "ok" && topics.value.length === 0 && <p>Esta asignatura todavía no tiene temas.</p>}
       {topics.kind === "ok" && topics.value.length > 0 && (
-        <ul>
+        <ul className="desk-topics">
           {topics.value.map((topic) => (
             <TopicRow key={topic.topic_id} topic={topic} />
           ))}
@@ -112,17 +116,22 @@ export default function App() {
   return (
     <main className="desk">
       <h1>Mesa de estudio</h1>
-      <DeskCost session={openSession(desk)} />
-      <DeskPractice />
+      <div className="desk-today">
+        <DeskCost session={openSession(desk)} />
+        <DeskPractice />
+      </div>
       {desk.state === "loading" && <p>Cargando asignaturas…</p>}
       {desk.state === "failed" && <p role="alert">{desk.message}</p>}
       {desk.state === "ok" && desk.subjects.length === 0 && (
         <p>Todavía no hay asignaturas. Aparecerán aquí cuando empieces tu primera sesión de estudio.</p>
       )}
-      {desk.state === "ok" &&
-        desk.subjects.map(({ subject, topics }) => (
-          <SubjectSection key={subject.subject_id} subject={subject} topics={topics} />
-        ))}
+      {desk.state === "ok" && desk.subjects.length > 0 && (
+        <div className="desk-subjects">
+          {desk.subjects.map(({ subject, topics }) => (
+            <SubjectSection key={subject.subject_id} subject={subject} topics={topics} />
+          ))}
+        </div>
+      )}
     </main>
   );
 }

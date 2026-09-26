@@ -118,6 +118,19 @@ token):
     `/` (#85).
   - `npm test` -- vitest with Testing Library in `jsdom` (`src/test/setup.ts` loads
     `@testing-library/jest-dom`); `scripts/test.sh web` runs it with `--run`.
+- Design system (#296): `src/styles/` is imported once by `src/main.tsx`, before the pages.
+  `tokens.css` holds every colour, font, type step, spacing, radius and shadow as a CSS custom
+  property: a light "notebook paper" theme (blue ink accent, highlighter yellow for AI-added
+  content and **Importante**, red pen for errors) and a dark "blackboard" theme chosen by
+  `prefers-color-scheme`. `fonts.css` self-hosts Atkinson Hyperlegible (interface) and Literata
+  (notes, sources, footnotes, questions), both OFL (`styles/fonts/`); nothing loads from a CDN.
+  `base.css` styles the plain elements inside `:where()` (so any class wins); `components.css`
+  has the shared pieces: `.crumbs` (the header line of every page: "← Tema X" / "← Mesa de
+  estudio" back link, and on topic sub-pages a "Mesa de estudio" home link on the right),
+  `.page-context`, `.panel`, `.card`, `.badge`, `[role="alert"]` / `[role="note"]` messages and
+  `.sheet` (the notes body: a sheet with a red margin line). Each page sets its column width with
+  `--page-width` and its own CSS (`src/<page>/*.css`) uses only the tokens. The phone breakpoint
+  stays 48rem (44 px touch targets below it).
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`

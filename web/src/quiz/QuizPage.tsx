@@ -292,8 +292,11 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
 
   return (
     <main className="quiz-page">
-      <p>
+      <p className="crumbs">
         <a href={base}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>Quiz de {topicName}</h1>
       {quiz === null && <p>Cargando el quiz…</p>}

@@ -1,0 +1,74 @@
+/* The voice tutor (#82): the conversation (chat classes of chat/chat.css), then the question:
+   the voice button first and largest, the written question below it. */
+
+.tutor-page {
+  --page-width: var(--width-read);
+}
+
+.tutor-conversation {
+  margin: var(--space-5) 0;
+}
+
+.tutor-conversation .chat-reply {
+  font-family: var(--font-read);
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+
+.tutor-conversation .chat-reply .chat-who {
+  font-family: var(--font-ui);
+}
+
+.tutor-ask {
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-sheet);
+}
+
+.tutor-voice button {
+  min-height: 3.25rem;
+  padding-inline: var(--space-6);
+  border-radius: 999px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--step-1);
+}
+
+.tutor-voice button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.tutor-voice button[aria-pressed="true"] {
+  background: var(--correction);
+  border-color: var(--correction);
+  color: var(--surface);
+}
+
+.tutor-form {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  margin-bottom: var(--space-3);
+}
+
+.tutor-form label {
+  width: 100%;
+}
+
+.tutor-form button {
+  margin: 0;
+}
+
+@media (max-width: 48rem) {
+  .tutor-ask {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .tutor-voice button {
+    width: 100%;
+  }
+}

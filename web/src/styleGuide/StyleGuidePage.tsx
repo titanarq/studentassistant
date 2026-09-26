@@ -96,7 +96,7 @@ export default function StyleGuidePage({ subjectId }: { subjectId: string }) {
 
   return (
     <main className="style-guide-page">
-      <p>
+      <p className="crumbs">
         <a href="/">← Mesa de estudio</a>
       </p>
       <h1>Guía de estilo de {subjectName}</h1>

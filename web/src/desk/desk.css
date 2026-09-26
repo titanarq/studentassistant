@@ -1,29 +1,139 @@
-/* The study desk (`/`). Wider than the phone breakpoint it keeps the browser's default flow;
-   below it (48rem, docs/modules/web.md) it is one column with 44 px touch targets and no
-   horizontal scroll. */
+/* The study desk (`/`): today's spend and reviews side by side, then one notebook per subject
+   (a coloured spine tells them apart). Below the phone breakpoint (48rem, docs/modules/web.md)
+   it is one column with 44 px touch targets and no horizontal scroll. */
+
+.desk {
+  --page-width: var(--width-wide);
+}
+
+.desk > h1 {
+  margin-bottom: var(--space-5);
+}
+
+.desk-today {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.desk-block {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-l);
+}
+
+.desk-block h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--step-0);
+  color: var(--ink-muted);
+}
+
+.desk-block p:last-child,
+.desk-block ul:last-child {
+  margin-bottom: 0;
+}
+
+.desk-practice ul {
+  padding-left: 1.1rem;
+}
+
+.desk-subjects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.desk-subject {
+  --spine: var(--accent);
+  padding: var(--space-4) var(--space-5) var(--space-3) calc(var(--space-5) + 6px);
+  background:
+    linear-gradient(to right, var(--spine) 6px, transparent 6px) no-repeat,
+    var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s) var(--radius-l) var(--radius-l) var(--radius-s);
+  box-shadow: var(--shadow-sheet);
+}
+
+.desk-subject:nth-child(4n + 2) {
+  --spine: var(--ok);
+}
+
+.desk-subject:nth-child(4n + 3) {
+  --spine: var(--kind-unexplained);
+}
+
+.desk-subject:nth-child(4n + 4) {
+  --spine: var(--kind-possible-error);
+}
+
+.desk-subject h2 {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: var(--step-2);
+  font-weight: 600;
+}
+
+.desk-subject-guide {
+  margin: 0 0 var(--space-3);
+  font-size: var(--step--1);
+}
+
+.desk-topics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.desk-topic {
+  margin: 0;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.desk-topic-name {
+  color: var(--ink);
+  font-size: var(--step-0);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.desk-topic-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.desk-live {
+  display: inline-block;
+  padding: 0 0.5em;
+  border-radius: 999px;
+  background: var(--highlight);
+  color: var(--on-highlight);
+  font-weight: 700;
+  text-decoration: none;
+}
 
 @media (max-width: 48rem) {
-  .desk {
-    padding: 0 0.5rem 2rem;
-    overflow-wrap: anywhere;
-  }
-
-  .desk ul {
-    padding-left: 1rem;
-  }
-
-  .desk li {
-    padding: 0.25rem 0;
-  }
-
-  .desk a,
-  .desk button {
-    display: inline-flex;
+  .desk-topic-name {
+    display: flex;
     align-items: center;
     min-height: 2.75rem;
   }
 
-  .desk button {
-    min-width: 2.75rem;
+  .desk-subject-guide a,
+  .desk-practice a {
+    display: inline-block;
+    padding-block: 0.6rem;
+  }
+
+  .desk-live {
+    padding-block: 0.35rem;
+  }
+
+  .desk-subject {
+    padding-inline: calc(var(--space-4) + 6px) var(--space-4);
   }
 }

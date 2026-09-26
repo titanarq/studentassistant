@@ -223,8 +223,11 @@ export default function PendingPage({
 
   return (
     <main className="pending-page">
-      <p>
+      <p className="crumbs">
         <a href={topicHref}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>Dudas pendientes</h1>
       {doubts !== null && (

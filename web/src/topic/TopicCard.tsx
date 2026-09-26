@@ -57,7 +57,7 @@ export default function TopicCard({ summary }: { summary: TopicSummary }) {
     </span>
   ));
   return (
-    <section aria-label="Resumen del tema">
+    <section className="topic-card" aria-label="Resumen del tema">
       <dl>
         <dt>Fuentes</dt>
         <dd>{sourceItems(summary.sources).join("  ")}</dd>

@@ -195,8 +195,11 @@ export default function ExamPage({ subjectId, topicId }: { subjectId: string; to
 
   return (
     <main className="exam-page">
-      <p>
+      <p className="crumbs">
         <a href={base}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>Corregir examen de {topicName}</h1>
       {exam === null && <p>Cargando el examen…</p>}

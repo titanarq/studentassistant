@@ -1040,12 +1040,13 @@ describe("what the backend sends back", () => {
 
     await push({ type: "transcript.partial", ...segment, text: "la célul" });
     expect(transcript().getAllByRole("listitem")).toHaveLength(1);
-    expect(transcript().getByText("la célul")).toHaveStyle("color: rgb(92, 92, 92)");
+    expect(transcript().getByText("la célul")).toHaveClass("capture-segment-partial");
 
     await push({ type: "transcript.final", ...segment, text: "la célula" });
     // The final settles the utterance: one item, the interim text gone.
     expect(transcript().getAllByRole("listitem")).toHaveLength(1);
-    expect(transcript().getByText("la célula")).toHaveStyle("color: rgb(17, 17, 17)");
+    expect(transcript().getByText("la célula")).toHaveClass("capture-segment-final");
+    expect(transcript().getByText("la célula")).not.toHaveClass("capture-segment-partial");
     expect(transcript().queryByText("la célul")).not.toBeInTheDocument();
   });
 

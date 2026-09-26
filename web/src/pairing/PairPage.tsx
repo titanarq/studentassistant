@@ -1,6 +1,7 @@
 import QRCode from "qrcode";
 import { useCallback, useEffect, useState } from "react";
 import { type PairingCode, qrPayload, requestPairingCode } from "./api";
+import "./pair.css";
 
 /**
  * `/pair`: shows a QR of `{url, code}` so a capture client can pair with this PC (ADR-0001).
@@ -54,6 +55,7 @@ function PairingQr({ payload }: { payload: string }) {
   if (svg === null) return <p>Generando el código QR…</p>;
   return (
     <img
+      className="pair-qr"
       src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`}
       alt="Código QR de emparejamiento"
       width={256}
@@ -111,11 +113,11 @@ export default function PairPage() {
   const expire = useCallback(() => setPage({ state: "expired" }), []);
 
   return (
-    <main>
+    <main className="pair-page">
       <h1>Emparejar un dispositivo</h1>
       {page.state === "loading" && <p>Pidiendo un código de emparejamiento…</p>}
       {page.state === "ready" && (
-        <section>
+        <section className="pair-card">
           <p>Escanea este código QR con la app de captura para emparejarla con este PC.</p>
           <PairingQr payload={qrPayload(page.pairing)} />
           <p>Si la cámara no funciona, escribe estos datos en la app:</p>

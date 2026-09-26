@@ -44,17 +44,17 @@ import { type ClientTranscriber, type TranscriberProblemCode } from "./transcrib
 import { useSessionHealth } from "./sessionHealth";
 import { ScreenWakeLock } from "./wakeLock";
 import { WebSpeechTranscriber } from "./webSpeechTranscriber";
+import "./capture.css";
 
 /** How long a burst's flash covers the preview: long enough to see, short enough to not miss. */
 export const FLASH_MS = 160;
 
 /**
- * The partial's grey and the final's near-black. The app has no stylesheet yet, so the two colours
- * the transcript is specified in are carried by the elements themselves instead of a class a
- * stylesheet nobody wrote would have to define.
+ * The partial's muted grey and the final's full ink colour, as classes of `capture.css` so both
+ * follow the light and dark themes of the design system (#296).
  */
-const PARTIAL_STYLE = { color: "#5c5c5c" } as const;
-const FINAL_STYLE = { color: "#111111" } as const;
+const PARTIAL_CLASS = "capture-segment capture-segment-partial";
+const FINAL_CLASS = "capture-segment capture-segment-final";
 
 /** How a burst's upload is going, in the words the strip shows. */
 type BurstState = "subiendo" | "guardada" | "duplicada" | "error";
@@ -731,13 +731,13 @@ export default function CaptureScreen({
   }
 
   return (
-    <main>
-      <header>
+    <main className="capture-page capture-screen">
+      <header className="capture-header">
         <h1>Capturar una sesión de estudio</h1>
-        <p>
+        <p className="page-context">
           {subjectName} · {topicName}
         </p>
-        <p role="status" aria-label="Estado de la conexión">
+        <p className="capture-connection" data-connection={connection} role="status" aria-label="Estado de la conexión">
           {CONNECTION_TEXT[connection]}
           {live && modeLine !== null ? `. ${modeLine}` : ""}
         </p>
@@ -760,11 +760,11 @@ export default function CaptureScreen({
         </p>
       )}
 
-      <section aria-label="Cámara">
+      <section className="capture-camera" aria-label="Cámara">
         <h2>Cámara</h2>
-        <video ref={preview} autoPlay playsInline muted aria-label="Vista previa de la cámara" />
-        {flashing && <div data-testid="capture-flash" aria-hidden="true" />}
-        <p role="status" aria-label="Estado de la cámara">
+        <video className="capture-preview" ref={preview} autoPlay playsInline muted aria-label="Vista previa de la cámara" />
+        {flashing && <div className="capture-flash" data-testid="capture-flash" aria-hidden="true" />}
+        <p className="capture-camera-status" role="status" aria-label="Estado de la cámara">
           {cameraOn ? "La cámara está en marcha." : "La cámara no está en marcha."}
         </p>
         {cameraLost !== null && !ending && (
@@ -781,22 +781,24 @@ export default function CaptureScreen({
         )}
       </section>
 
-      <section aria-label="Controles de la sesión">
+      <section className="capture-controls" aria-label="Controles de la sesión">
         <h2>Controles</h2>
         <button
           type="button"
+          className="capture-shutter"
           disabled={!live || !cameraOn}
           onClick={() => void captureBurst({ trigger: "button" })}
         >
           Capturar
         </button>
-        <button type="button" disabled={!live} onClick={() => signal("important")}>
+        <button type="button" className="capture-important" disabled={!live} onClick={() => signal("important")}>
           Importante
         </button>
         {SOURCE_LABELS.map((entry) => (
           <button
             key={entry.source}
             type="button"
+            className="capture-source"
             aria-pressed={source === entry.source}
             disabled={!live}
             onClick={() => chooseSource(entry.source)}
@@ -804,33 +806,33 @@ export default function CaptureScreen({
             {entry.label}
           </button>
         ))}
-        <button type="button" disabled={ending} onClick={() => void finish()}>
+        <button type="button" className="capture-end" disabled={ending} onClick={() => void finish()}>
           {ending ? "Terminando la sesión…" : "Terminar"}
         </button>
-        <button type="button" disabled={ending} onClick={() => void finish(true)}>
+        <button type="button" className="capture-end" disabled={ending} onClick={() => void finish(true)}>
           Terminar y preparar apuntes
         </button>
       </section>
 
       {health.length > 0 && (
-        <ul role="status" aria-label="Estado del servidor">
+        <ul className="capture-health" role="status" aria-label="Estado del servidor">
           {health.map((line) => (
             <li key={line}>{line}</li>
           ))}
         </ul>
       )}
 
-      <p role="status" aria-label="Dudas pendientes">
+      <p className="capture-pending" role="status" aria-label="Dudas pendientes">
         {pendingLine}
       </p>
 
-      <section aria-label="Transcripción en directo">
+      <section className="capture-transcript" aria-label="Transcripción en directo">
         <h2>Transcripción</h2>
         {segments.length === 0 && <p>Todavía no se ha transcrito nada.</p>}
         {segments.length > 0 && (
           <ol aria-label="Segmentos transcritos">
             {segments.map((segment) => (
-              <li key={segment.segmentId} style={segment.final ? FINAL_STYLE : PARTIAL_STYLE}>
+              <li key={segment.segmentId} className={segment.final ? FINAL_CLASS : PARTIAL_CLASS}>
                 {segment.text}
               </li>
             ))}
@@ -838,13 +840,13 @@ export default function CaptureScreen({
         )}
       </section>
 
-      <section aria-label="Fotografías de la sesión">
+      <section className="capture-photos" aria-label="Fotografías de la sesión">
         <h2>Fotografías</h2>
         {bursts.length === 0 && <p>Todavía no has capturado ninguna página.</p>}
         {bursts.length > 0 && (
-          <ul aria-label="Ráfagas capturadas">
+          <ul className="capture-bursts" aria-label="Ráfagas capturadas">
             {bursts.map((entry) => (
-              <li key={entry.key}>
+              <li key={entry.key} className={`capture-burst capture-burst-${entry.state}`}>
                 {entry.thumb !== null && <img src={entry.thumb} alt={`Ráfaga ${entry.key}`} />}
                 {BURST_LABELS[entry.state]}
               </li>

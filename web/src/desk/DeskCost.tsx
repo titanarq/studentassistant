@@ -52,7 +52,7 @@ export default function DeskCost({ session }: { session?: ActiveSession }) {
   }, [subjectId, topicId, sessionId]);
 
   return (
-    <section aria-label="Gasto de hoy">
+    <section className="desk-block desk-cost" aria-label="Gasto de hoy">
       <h2>Gasto de hoy</h2>
       {status === null && <p>Cargando el gasto…</p>}
       {status !== null && status.kind === "ok" && <StatusLines status={status.value} session={session} />}

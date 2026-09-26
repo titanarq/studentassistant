@@ -98,7 +98,7 @@ export default function LivePage({ source = defaultSource }: { source?: LiveSour
 
   return (
     <main className="live-page">
-      <p>
+      <p className="crumbs">
         <a href="/">← Mesa de estudio</a>
       </p>
       <h1>Sesión en directo</h1>

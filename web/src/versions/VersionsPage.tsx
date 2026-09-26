@@ -112,8 +112,11 @@ export default function VersionsPage({ subjectId, topicId }: { subjectId: string
 
   return (
     <main className="versions-page">
-      <p>
+      <p className="crumbs">
         <a href={topicPath(subjectId, topicId)}>← Tema {topicName}</a>
+        <a className="crumbs-home" href="/">
+          Mesa de estudio
+        </a>
       </p>
       <h1>Versiones de los apuntes de {topicName}</h1>
       {list === null && <p>Cargando las versiones…</p>}

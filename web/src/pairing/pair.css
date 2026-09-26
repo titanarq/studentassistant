@@ -1,0 +1,53 @@
+/* The pairing page (`/pair`): the QR on white (a scanner needs dark on white in both themes),
+   the address and the code large enough to type from across the desk. */
+
+.pair-page {
+  --page-width: 40rem;
+}
+
+.pair-card {
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-sheet);
+  text-align: center;
+}
+
+.pair-qr {
+  display: block;
+  width: min(100%, 16rem);
+  height: auto;
+  margin: var(--space-3) auto var(--space-5);
+  padding: var(--space-3);
+  background: var(--qr-bg);
+  border-radius: var(--radius-m);
+}
+
+.pair-card dl {
+  justify-content: center;
+  align-items: baseline;
+  text-align: left;
+}
+
+.pair-card dd {
+  font-family: var(--font-mono);
+  font-size: var(--step-1);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.pair-card [data-testid="pair-countdown"] {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 48rem) {
+  .pair-card {
+    padding: var(--space-4);
+  }
+
+  .pair-card dl {
+    text-align: center;
+  }
+}

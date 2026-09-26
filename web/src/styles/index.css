@@ -1,0 +1,6 @@
+/* The app's design system (#296), imported once by main.tsx. Page CSS (src/<page>/*.css) builds
+   on these tokens and components. */
+@import "./fonts.css";
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
