@@ -351,6 +351,14 @@ class SttSettings(BaseModel):
     # most 50) and characters. `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`.
     vocabulary_max_terms: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_TERMS, ge=0, le=50)
     vocabulary_max_chars: int = Field(default=DEFAULT_STT_VOCABULARY_MAX_CHARS, ge=1)
+    # Voice-command grammar file (ADR-0006) replacing the packaged `stt/commands.yaml`; unset uses
+    # the packaged one. `SA_STT__COMMANDS_PATH`.
+    commands_path: Path | None = None
+
+    @field_validator("commands_path")
+    @classmethod
+    def expand_commands_path(cls, path: Path | None) -> Path | None:
+        return path.expanduser() if path is not None else None
 
     def provider_options(self, name: str | None = None) -> dict[str, Any]:
         """The options table of `name` (the configured provider by default); empty when absent."""

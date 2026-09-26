@@ -1,0 +1,27 @@
+# Default voice-command grammar (ADR-0006). Replace it with `[stt] commands_path`.
+#
+# Each command name maps to `phrases` (any of them fires the command) and optional `exclude`
+# (a matching exclude phrase suppresses it). Phrases and transcripts are compared after the same
+# normalisation: lower case, accents and punctuation dropped, whitespace collapsed, whole words.
+capture:
+  phrases: ["mira aquí", "mira esto", "captura", "haz foto"]
+  exclude: ["mira, aquí no"]
+next_page:
+  phrases: ["siguiente", "pasamos página"]
+important:
+  phrases: ["esto es importante", "importante"]
+source_book:
+  phrases: ["ahora el libro", "mira el libro"]
+source_notes:
+  phrases: ["vuelvo a mis apuntes"]
+source_pdf:
+  phrases: ["ahora el pdf", "mira el pdf"]
+pause:
+  phrases: ["pausa", "para un momento"]
+resume:
+  phrases: ["reanuda", "seguimos"]
+end_and_prepare:
+  phrases: ["ya está, prepárame el tema"]
+# The text after the phrase is the search query.
+web_search:
+  phrases: ["busca en internet"]
