@@ -1,6 +1,15 @@
 """Pluggable STT: segment ingestion, providers (Whisper, cloud), voice-command grammar."""
 
 from studentassistant.stt.buffered import BufferedProvider, buffered_provider_from_settings
+from studentassistant.stt.commands import (
+    CommandDetector,
+    CommandGrammar,
+    CommandMatcher,
+    CommandSpec,
+    FiredCommand,
+    GrammarError,
+    load_grammar,
+)
 from studentassistant.stt.models import AudioChunk, ClientSegment, NormalisedSegment
 from studentassistant.stt.pipeline import EventBus, SessionLookup, TranscriptPipeline
 from studentassistant.stt.provider import (
@@ -34,7 +43,13 @@ __all__ = [
     "AudioChunk",
     "BufferedProvider",
     "ClientSegment",
+    "CommandDetector",
+    "CommandGrammar",
+    "CommandMatcher",
+    "CommandSpec",
     "EventBus",
+    "FiredCommand",
+    "GrammarError",
     "InMemoryTranscriptSink",
     "NormalisedSegment",
     "NotServerModeError",
@@ -49,6 +64,7 @@ __all__ = [
     "buffered_provider_from_settings",
     "get_provider",
     "hotwords_text",
+    "load_grammar",
     "provider_class",
     "provider_from_settings",
     "register_provider",

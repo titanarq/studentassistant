@@ -10,19 +10,34 @@ Phrases and transcripts are compared after the same `normalise`: lower case, acc
 punctuation removed, whitespace collapsed.
 
 `CommandMatcher` applies a grammar to the partials and finals of transcript segments and says which
-commands fire, each at most once per segment.
+commands fire, each at most once per segment. `CommandDetector` runs one matcher per session over
+the bus' `transcript.partial` / `transcript.final` events and publishes what fires as persisted
+`voice.command` events (origin `stt`); `capture` and `next_page` also publish a persisted `command`
+`capture_now`, which the WebSocket gateway forwards to the capture client. It depends on the bus
+only through `stt.pipeline.EventBus`, so `stt` never imports `studentassistant.server`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from studentassistant.stt.pipeline import (
+    SESSION_ENDED,
+    TRANSCRIPT_FINAL,
+    EventBus,
+    SubscriptionLike,
+)
+
+logger = logging.getLogger(__name__)
 
 # The grammar shipped as package data, used when `[stt] commands_path` is unset.
 DEFAULT_GRAMMAR_PATH = Path(__file__).resolve().parent / "commands.yaml"
@@ -259,3 +274,159 @@ class CommandMatcher:
         cut = min(tokens[end - 1].end for end in ends)
         query = text[cut:].lstrip(" \t\n,.;:-").rstrip()
         return query if normalise(query) else None
+
+
+TRANSCRIPT_PARTIAL = "transcript.partial"
+VOICE_COMMAND = "voice.command"
+COMMAND = "command"
+CAPTURE_NOW = "capture_now"
+DETECTOR_KINDS = frozenset({TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL, SESSION_ENDED})
+
+# Voice commands that ask the capture client for a burst of stills.
+CAPTURE_COMMANDS = frozenset({"capture", "next_page"})
+
+# Source-switch commands -> the `source` their `voice.command` payload carries.
+SOURCE_COMMANDS = {"source_book": "book", "source_notes": "notes", "source_pdf": "pdf"}
+
+DETECTOR_QUEUE_SIZE = 1024
+"""The detector's subscription bound. Partials are notices, which a lagging subscription drops
+before any persisted event; a dropped partial only delays a command to a later partial or the
+final of the same segment."""
+
+
+def voice_command_payload(fired: FiredCommand) -> dict[str, str]:
+    """The `voice.command` event payload of a fired command."""
+    payload = {"command": fired.command, "segment_id": fired.segment_id, "text": fired.text}
+    if fired.command in SOURCE_COMMANDS:
+        payload["source"] = SOURCE_COMMANDS[fired.command]
+    if fired.query is not None:
+        payload["query"] = fired.query
+    return payload
+
+
+class CommandDetector:
+    """Detect voice commands in the bus' transcript events and publish them (ADR-0006).
+
+    One `CommandMatcher` per session (segment ids are only unique within a session);
+    `session.ended` drops it. Each fired command is a persisted `voice.command` at `t` = the
+    segment's `session_start_ms`; `capture` / `next_page` also publish a persisted `command` whose
+    `command_id` is `voice-<seq of the voice.command>`, unique within the session's event log.
+
+    `start()`, `stop()` and `drain()` behave as `TranscriptPipeline`'s. A failure on one event is
+    logged and the detector carries on.
+    """
+
+    def __init__(
+        self, bus: EventBus, grammar: CommandGrammar, *, queue_size: int = DETECTOR_QUEUE_SIZE
+    ) -> None:
+        self.bus = bus
+        self.grammar = grammar
+        self.queue_size = queue_size
+        self._matchers: dict[str, CommandMatcher] = {}
+        self._subscription: SubscriptionLike | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._busy = False
+        self._settled = asyncio.Event()
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def start(self) -> None:
+        """Subscribe to the bus and start consuming; call it inside the running event loop."""
+        if self._subscription is not None:
+            return
+        self._subscription = self.bus.subscribe(
+            name="stt:commands", kinds=DETECTOR_KINDS, maxsize=self.queue_size
+        )
+        self._task = asyncio.create_task(self._run(self._subscription), name="stt:commands")
+
+    async def stop(self) -> None:
+        """Stop receiving, handle what was already delivered, then end the consumer task."""
+        subscription, task = self._subscription, self._task
+        if subscription is None or task is None:
+            return
+        subscription.close()
+        try:
+            await task
+        finally:
+            self._subscription = None
+            self._task = None
+            self._settled.set()
+
+    async def drain(self) -> None:
+        """Return once every event delivered to the detector so far has been handled."""
+        await asyncio.sleep(0)
+        while (
+            self.running
+            and self._subscription is not None
+            and (len(self._subscription) or self._busy)
+        ):
+            self._settled.clear()
+            await self._settled.wait()
+
+    # -- consumer ------------------------------------------------------------------------------
+
+    async def _run(self, subscription: SubscriptionLike) -> None:
+        async for event in subscription:
+            self._busy = True
+            try:
+                if event.kind == SESSION_ENDED:
+                    self._matchers.pop(event.session_id, None)
+                else:
+                    await self._on_segment(
+                        event.session_id, event.payload, event.kind == TRANSCRIPT_FINAL
+                    )
+            except Exception:
+                logger.exception(
+                    "the voice-command detector failed on a %s event of session %s",
+                    event.kind,
+                    event.session_id,
+                )
+            finally:
+                self._busy = False
+                if not len(subscription):
+                    self._settled.set()
+
+    async def _on_segment(
+        self, session_id: str, payload: Mapping[str, object], is_final: bool
+    ) -> None:
+        segment_id, text, start_ms = (
+            payload.get("segment_id"),
+            payload.get("text"),
+            payload.get("session_start_ms"),
+        )
+        if not (
+            isinstance(segment_id, str) and isinstance(text, str) and isinstance(start_ms, int)
+        ):
+            logger.warning("a transcript segment of session %s is malformed; skipped", session_id)
+            return
+        matcher = self._matchers.get(session_id)
+        if matcher is None:
+            matcher = self._matchers[session_id] = CommandMatcher(self.grammar)
+        for fired in matcher.match(segment_id, text, is_final):
+            await self._publish(session_id, fired, start_ms)
+
+    async def _publish(self, session_id: str, fired: FiredCommand, start_ms: int) -> None:
+        voice = await self.bus.publish(
+            session_id, VOICE_COMMAND, "stt", voice_command_payload(fired), t=start_ms
+        )
+        logger.info(
+            "voice command %s fired in segment %s of session %s",
+            fired.command,
+            fired.segment_id,
+            session_id,
+            extra={"session_id": session_id, "command": fired.command},
+        )
+        if fired.command in CAPTURE_COMMANDS:
+            await self.bus.publish(
+                session_id,
+                COMMAND,
+                "stt",
+                {
+                    "command_id": f"voice-{voice.seq}",
+                    "command": CAPTURE_NOW,
+                    "voice_command": fired.command,
+                    "segment_id": fired.segment_id,
+                },
+            )

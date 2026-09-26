@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -43,7 +43,7 @@ dropped: the bound only decides when the bus logs that the pipeline lags)."""
 
 
 class BusEventLike(Protocol):
-    """What the pipeline reads of a bus event (`studentassistant.server.bus.BusEvent`)."""
+    """What `stt` reads of a bus event (`studentassistant.server.bus.BusEvent`)."""
 
     @property
     def session_id(self) -> str: ...
@@ -51,6 +51,8 @@ class BusEventLike(Protocol):
     def kind(self) -> str: ...
     @property
     def payload(self) -> Mapping[str, Any]: ...
+    @property
+    def seq(self) -> int | None: ...
 
 
 class SubscriptionLike(Protocol):
@@ -62,7 +64,8 @@ class SubscriptionLike(Protocol):
 
 
 class EventBus(Protocol):
-    """The bus surface the pipeline uses (`studentassistant.server.bus.SessionBus` has it)."""
+    """The bus surface `stt` uses (`studentassistant.server.bus.SessionBus` has it): the pipeline
+    only subscribes, the command detector also publishes."""
 
     def subscribe(
         self,
@@ -72,6 +75,17 @@ class EventBus(Protocol):
         kinds: Collection[str] | None = ...,
         maxsize: int | None = ...,
     ) -> SubscriptionLike: ...
+
+    def publish(
+        self,
+        session_id: str,
+        kind: str,
+        origin: Any,
+        payload: Mapping[str, Any] | None = ...,
+        *,
+        persist: bool = ...,
+        t: int | None = ...,
+    ) -> Awaitable[BusEventLike]: ...
 
 
 SessionLookup = Callable[[str], Session | None]
@@ -272,6 +286,10 @@ class TranscriptPipeline:
 
 __all__ = [
     "PIPELINE_KINDS",
+    "SESSION_ENDED",
+    "TRANSCRIPT_FINAL",
+    "BusEventLike",
+    "SubscriptionLike",
     "EventBus",
     "SessionLookup",
     "TranscriptPipeline",

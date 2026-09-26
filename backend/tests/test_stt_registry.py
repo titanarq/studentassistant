@@ -134,6 +134,7 @@ def test_importing_stt_pulls_in_no_concrete_provider() -> None:
     assert set(loaded) == {
         "studentassistant.stt",
         "studentassistant.stt.buffered",
+        "studentassistant.stt.commands",
         "studentassistant.stt.models",
         "studentassistant.stt.pipeline",
         "studentassistant.stt.provider",
