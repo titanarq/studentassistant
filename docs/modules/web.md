@@ -25,7 +25,10 @@
   clears it; the session goes on meanwhile. A server `capture_now` command takes a burst with that `command_id` and is
   answered with an `ack`. Denied or missing camera/microphone, a browser without
   `SpeechRecognition`, a non-secure context and a lost backend connection each get their own
-  Spanish explanation. A long session does not silently lose the screen or the camera (#256):
+  Spanish explanation. The backend closes the session socket itself when the session ends
+  (`SESSION_NOT_ACTIVE_CLOSE`, 4404): a close while the page's own end request is in flight is
+  the normal end, not a lost connection (#319; if the end then fails, both are shown), and a 4404
+  close mid-capture says "La sesión ha terminado en el servidor…" instead of the lost connection. A long session does not silently lose the screen or the camera (#256):
   while a session runs the screen holds a Screen Wake Lock (`wakeLock.ts`), asked for again each
   time the page becomes visible and released on **Terminar**, a lost connection or unmount (a
   browser without the API, or a refusal, is silent); a camera track that ends mid-session (lid

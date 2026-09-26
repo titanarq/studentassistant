@@ -55,6 +55,13 @@ const NORMAL_CLOSURE = 1000;
 const PROTOCOL_ERROR = 1002;
 
 /**
+ * The backend's close code for a session that is not (or no longer) the active one
+ * (`CLOSE_UNKNOWN_SESSION` in `studentassistant.server.ws`): after the handshake it means the
+ * session ended, by this page's own Terminar or elsewhere, never that the backend went away.
+ */
+export const SESSION_NOT_ACTIVE_CLOSE = 4404;
+
+/**
  * The absolute URL a browser socket dials for the `ws_path` of a session answer: the page's own
  * origin, `wss` for a page served over TLS and `ws` otherwise. `base` is the page's URL, and only
  * a test passes another one.

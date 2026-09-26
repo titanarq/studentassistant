@@ -1009,6 +1009,118 @@ describe("the student's buttons", () => {
     });
   });
 
+  describe("the backend closes the socket while the session ends (#319)", () => {
+    /** An end route the test answers itself, after the backend's close. */
+    function heldEnd(): { answer: (response: Response) => void } {
+      let answer!: (response: Response) => void;
+      const held = new Promise<Response>((resolve) => {
+        answer = resolve;
+      });
+      backend({ [END_PATH]: () => held });
+      return { answer };
+    }
+
+    for (const code of [4404, 1000, 1006]) {
+      it(`is no lost connection when the close (${code}) comes before the end's answer`, async () => {
+        const end = heldEnd();
+        const ended = vi.fn();
+        renderScreen({ onEnded: ended });
+        await open();
+
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Terminar" }));
+        });
+        await act(async () => {
+          socket().serverClose(code, code === 4404 ? "session s is no longer active" : "");
+        });
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        await act(async () => {
+          end.answer(jsonResponse(ENDED));
+        });
+
+        await waitFor(() => expect(ended).toHaveBeenCalledWith(ENDED));
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
+      });
+    }
+
+    it("follows the notes generation without a lost connection (the real case)", async () => {
+      const GENERATION_PATH = `/api/subjects/${SESSION.subject_id}/topics/${SESSION.topic_id}/notes/generation`;
+      let answer!: (response: Response) => void;
+      const held = new Promise<Response>((resolve) => {
+        answer = resolve;
+      });
+      backend({
+        [END_PATH]: () => held,
+        [GENERATION_PATH]: () =>
+          jsonResponse({
+            subject_id: SESSION.subject_id,
+            topic_id: SESSION.topic_id,
+            status: "running",
+          }),
+      });
+      renderScreen();
+      await open();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
+      });
+      await act(async () => {
+        socket().serverClose(4404, "session s is no longer active");
+      });
+      // What the student saw on 2026-09-26 while the end was still being answered.
+      expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
+      await act(async () => {
+        answer(jsonResponse({ ...ENDED, notes_generation: "started" }));
+      });
+
+      expect(await screen.findByText(/Preparando los apuntes…/)).toBeInTheDocument();
+      expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
+    });
+
+    it("shows the lost connection too when the end then fails", async () => {
+      const end = heldEnd();
+      renderScreen();
+      await open();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Terminar" }));
+      });
+      await act(async () => {
+        socket().serverClose(1006);
+      });
+      await act(async () => {
+        end.answer(jsonResponse({ detail: "El servidor no ha podido terminar la sesión." }, 500));
+      });
+
+      const alerts = await screen.findAllByRole("alert");
+      const text = alerts.map((alert) => alert.textContent).join(" ");
+      expect(text).toContain("No se ha podido terminar la sesión");
+      expect(text).toContain("Se ha perdido la conexión con el servidor.");
+      expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+        "Se ha perdido la conexión con el servidor",
+      );
+    });
+  });
+
+  it("says the session has ended when the backend closes it with 4404 mid-capture", async () => {
+    renderScreen();
+    await open();
+
+    await act(async () => {
+      socket().serverClose(4404, "session s is no longer active");
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "La sesión ha terminado en el servidor.",
+    );
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "La sesión ha terminado",
+    );
+    expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
+  });
+
   it("says in Spanish when the backend will not end the session, and stays on the page", async () => {
     backend({ [END_PATH]: () => jsonResponse({ detail: "La sesión ya está terminada." }, 409) });
     renderScreen();

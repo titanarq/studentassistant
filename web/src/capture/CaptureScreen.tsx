@@ -35,6 +35,7 @@ import {
 import { describeFailure } from "./failures";
 import {
   CAPTURE_CAPABILITIES,
+  SESSION_NOT_ACTIVE_CLOSE,
   SessionSocket,
   type SessionSocketEvent,
   WEB_SPEECH_PROVIDER,
@@ -65,12 +66,13 @@ type BurstState = "subiendo" | "guardada" | "duplicada" | "error";
  * because a student who loaded the page from an address the browser does not trust has nothing to
  * reconnect to.
  */
-type ConnectionState = "connecting" | "open" | "lost" | "unavailable";
+type ConnectionState = "connecting" | "open" | "lost" | "ended" | "unavailable";
 
 const CONNECTION_TEXT: Record<ConnectionState, string> = {
   connecting: "Conectando con el servidor…",
   open: "Conectado con el servidor",
   lost: "Se ha perdido la conexión con el servidor",
+  ended: "La sesión ha terminado",
   unavailable: "Esta página no puede abrir la sesión",
 };
 
@@ -129,6 +131,12 @@ const INSECURE: Blocking = {
 const DISCONNECTED: Blocking = {
   message:
     "Se ha perdido la conexión con el servidor. Comprueba que sigue en marcha y vuelve a abrir la sesión.",
+};
+
+/** The backend closed the socket because the session ended without this page's Terminar (#319). */
+const ENDED_ELSEWHERE: Blocking = {
+  message:
+    "La sesión ha terminado en el servidor. Vuelve a la lista de sesiones para empezar o reanudar otra.",
 };
 
 const HANDSHAKE_REFUSED: Blocking = {
@@ -348,6 +356,13 @@ export default function CaptureScreen({
   }>({ socket: null, camera: null, transcriber: null, wakeLock: null });
   /** True once this screen stopped the session itself: its own close is not a lost connection. */
   const stopped = useRef(false);
+  /**
+   * True while this screen's end request is in flight (#319): the backend ends the session and
+   * closes the socket before it answers, so a close then is the end of the session, not a loss.
+   * `closedWhileEnding` keeps it in case the end fails after all.
+   */
+  const endingRef = useRef(false);
+  const closedWhileEnding = useRef<string | null | undefined>(undefined);
   const burstKeys = useRef(0);
   const thumbs = useRef<string[]>([]);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -502,7 +517,19 @@ export default function CaptureScreen({
       case "closed":
       case "failed":
         if (stopped.current) return;
+        if (endingRef.current) {
+          // Only the first report counts: a failure is followed by its close.
+          if (closedWhileEnding.current === undefined) {
+            closedWhileEnding.current = event.kind === "failed" ? event.problem : null;
+          }
+          return;
+        }
         runtime.current.wakeLock?.stop();
+        if (event.kind === "closed" && event.code === SESSION_NOT_ACTIVE_CLOSE) {
+          setConnection("ended");
+          setBlocking({ ...ENDED_ELSEWHERE, detail: event.reason || undefined });
+          return;
+        }
         setConnection("lost");
         setBlocking({
           ...DISCONNECTED,
@@ -678,7 +705,10 @@ export default function CaptureScreen({
    */
   async function finish(prepareNotes = false) {
     setEnding(true);
+    endingRef.current = true;
+    closedWhileEnding.current = undefined;
     const result = await endSession(session.session_id, "button", now(), prepareNotes);
+    endingRef.current = false;
     stopped.current = true;
     runtime.current.wakeLock?.stop();
     runtime.current.transcriber?.stop();
@@ -696,11 +726,19 @@ export default function CaptureScreen({
     }
     setEnding(false);
     setTrouble(describeFailure(END_FAILURE, result));
+    // The end failed, so a close that came meanwhile was a lost connection after all.
+    if (closedWhileEnding.current !== undefined) {
+      setConnection("lost");
+      setBlocking({ ...DISCONNECTED, detail: closedWhileEnding.current ?? undefined });
+    }
   }
 
   const live = connection === "open" && blocking === null && !ending;
   // Failures behind the scenes (#262): a discreet line each, only while something is wrong.
-  const health = useSessionHealth(session.session_id, !ending && connection !== "lost");
+  const health = useSessionHealth(
+    session.session_id,
+    !ending && connection !== "lost" && connection !== "ended",
+  );
   const pendingLine =
     pending === null
       ? "El servidor todavía no ha avisado de ninguna duda."
