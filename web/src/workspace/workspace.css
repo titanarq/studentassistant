@@ -313,3 +313,126 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---- Recursos: source states (#328) ---- */
+
+.resources-counts {
+  margin: 0 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.resources-hint {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-faint);
+  font-size: var(--step--1);
+}
+
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.resource-grid[hidden] {
+  display: none;
+}
+
+.resource-card button {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--target);
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+.resource-card button:hover {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.resource-thumb {
+  display: block;
+  width: 100%;
+  height: 6.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface-sunken);
+  object-fit: cover;
+  object-position: top;
+}
+
+.resource-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--external);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.resource-set-aside .resource-thumb {
+  opacity: 0.6;
+}
+
+.resource-title {
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.resource-set-aside .resource-title {
+  color: var(--ink-muted);
+}
+
+.resource-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.resource-reason {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.resource-warning {
+  color: var(--warn);
+  font-size: var(--step--1);
+}
+
+.resource-set-aside h3 {
+  margin: var(--space-2) 0;
+  font-size: var(--step-0);
+}
+
+.resource-disclosure {
+  min-height: var(--target);
+  margin: 0;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+}
+
+.resource-disclosure::before {
+  content: "▸ ";
+}
+
+.resource-disclosure[aria-expanded="true"]::before {
+  content: "▾ ";
+}

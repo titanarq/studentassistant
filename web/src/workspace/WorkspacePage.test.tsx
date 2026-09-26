@@ -176,7 +176,7 @@ it("opens a footnote's source in Recursos instead of a panel over the document",
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Cerrar" }));
   expect(within(resources).queryByRole("dialog")).toBeNull();
-  expect(await within(resources).findByRole("region", { name: "Páginas de apuntes" })).toBeInTheDocument();
+  expect(await within(resources).findByRole("list", { name: "Fuentes del tema" })).toBeInTheDocument();
 });
 
 it("lists the topic's sources in Recursos and opens one in the viewer", async () => {
@@ -186,15 +186,18 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
   fireEvent.click(tab("Recursos"));
 
   const resources = document.getElementById("workspace-panel-resources")!;
-  const pages = await within(resources).findByRole("region", { name: "Páginas de apuntes" });
-  expect(within(pages).getAllByRole("button").map((b) => b.textContent)).toEqual([
-    "Apuntes, página 1",
-    "Apuntes, página 2",
+  const pages = await within(resources).findByRole("list", { name: "Fuentes del tema" });
+  expect(within(pages).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+    "Página 1 · apuntes",
+    "Página 2 · apuntes",
+    "Libro, página 1",
+    "PDF",
+    "Web: 001-maquina-de-vapor.md",
   ]);
-  expect(within(resources).getByRole("region", { name: "Webs" })).toBeInTheDocument();
+  expect(within(resources).getByText("0 pendientes · 5 incorporadas · 0 apartadas")).toBeInTheDocument();
   expect(within(resources).getByText("Hay 1 web guardada que los apuntes todavía no citan.")).toBeInTheDocument();
 
-  fireEvent.click(within(pages).getByRole("button", { name: "Apuntes, página 1" }));
+  fireEvent.click(within(pages).getByRole("button", { name: /Página 1 · apuntes/ }));
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
   expect(await within(dialog).findByText("Gran Bretaña, s. XVIII")).toBeInTheDocument();
 });
@@ -254,6 +257,13 @@ it("builds the resource list from the counts and the notes' citations", () => {
   expect(byKind.pdf).toEqual(["PDF 1", "PDF, página 3"]);
   expect(byKind.web).toEqual(["Web: 001-maquina-de-vapor.md"]);
   expect(byKind.transcript).toHaveLength(2);
+  expect(resourceList(null, parseNotes("# T\n\nUna imagen.[^img001]\n\n[^img001]: [Imagen pegada 1](../sources/images/img-001.png)\n")).groups).toEqual([
+    {
+      kind: "images",
+      title: "Imágenes pegadas",
+      items: [{ key: "images/img-001.png", label: "img001", definition: "[Imagen pegada 1](../sources/images/img-001.png)", title: "Imagen pegada 1" }],
+    },
+  ]);
   expect(list.uncitedWebs).toBe(0);
   expect(resourceList(null, null)).toEqual({ groups: [], uncitedWebs: 0 });
 });
