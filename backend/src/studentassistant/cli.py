@@ -8,8 +8,9 @@ as a source, `replay` feeds a recorded session through the gateway as a capture 
 `setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
 systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
 index from the vault, `vault stats` shows how big the vault is and what makes it big, `purge`
-applies the vault's retention policy, and `generate <kind> --topic`
-builds one kind of study material from a topic's notes (`studentassistant.generators`).
+applies the vault's retention policy, `generate <kind> --topic`
+builds one kind of study material from a topic's notes (`studentassistant.generators`), and
+`triage <subject> <topic> [--apply]` shows (or stores) the capture triage of a topic.
 
 Typer builds the command tree and `[project.scripts]` in `pyproject.toml` exposes it as the
 `studentassistant` console script. Nothing here takes a flag the configuration cannot already set:
@@ -98,6 +99,7 @@ from studentassistant.sources import (
     import_pdf,
     parse_page_range,
 )
+from studentassistant.sources.triage import format_retro, retro_triage
 from studentassistant.vault import (
     GitSync,
     LedgerEntry,
@@ -1139,3 +1141,43 @@ def generate_command(
         typer.echo(f"  (borrado) {path}")
     for warning in result.warnings:
         typer.echo(f"Aviso: {warning}")
+
+
+@cli.command("triage")
+def triage_command(
+    subject: Annotated[str, typer.Argument(help="La asignatura (su slug).")],
+    topic: Annotated[str, typer.Argument(help="El tema (su slug).")],
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Guarda la decisión de las capturas que aún no tienen."),
+    ] = False,
+) -> None:
+    """Print each capture's triage metrics and what the current thresholds decide (reads only).
+
+    With `--apply`, the decision is written for the captures without a `triage` block (through
+    `studentassistant.vault`) and committed locally; the server's sync pushes it.
+    """
+    settings = Settings()
+    try:
+        vault = Vault.open(settings.vault.path)
+        require_topic(vault, subject, topic)
+        rows = retro_triage(vault, subject, topic, settings.sources, apply=apply)
+    except (SubjectNotFoundError, TopicNotFoundError) as error:
+        typer.echo(f"No existe el tema «{subject}/{topic}» en la bóveda.")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se puede leer la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    if not rows:
+        typer.echo(f"El tema {subject}/{topic} no tiene capturas.")
+        return
+    for row in rows:
+        typer.echo(format_retro(row))
+    written = sum(row.written for row in rows)
+    if apply and written:
+        GitSync(vault, settings.vault.git).checkpoint(
+            f"Triaje de {written} capturas de {subject}/{topic}"
+        )
+        typer.echo(f"Guardado el triaje de {written} capturas.")
+    elif apply:
+        typer.echo("Todas las capturas tenían ya su triaje: nada que guardar.")

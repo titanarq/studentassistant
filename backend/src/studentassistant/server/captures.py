@@ -18,7 +18,12 @@ session's current source context (`current_source_context`: the `source` of its 
 the session's latest WebSocket `hello` (client time taken as backend time when there was none).
 Then a persisted `capture.stored` event (origin `phone`) is published on the bus, which is also
 what later uploads read to recognise a repeated `capture_id` (`sessions.stored_captures`), and
-which the WebSocket gateway forwards to the connected client as its capture `ack`.
+which the WebSocket gateway forwards to the connected client as its capture `ack`. Right after
+it, a persisted `capture.triaged` event (origin `observer`: ADR-0003 has no `sources` origin)
+carries the capture's triage (`sources.triage`: `capture_id`, `source_path`, `source_id`,
+`status`, `reasons`, `duplicate_of`, `decided_by`), and one more for an older capture the new one
+displaced as a sharper duplicate. With `[sources] triage_llm_check` the ambiguous checks are
+asked to Claude before the capture is stored (`sources.triage_llm`).
 A new capture answers 201 `stored`, a repeated one 200 `duplicate` storing and publishing nothing;
 the check-and-store is serialised per session, so two concurrent uploads of one id store it once.
 With a recorder (`serve --record`), a newly stored burst is also recorded, every image of it, in
@@ -45,6 +50,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 
 from studentassistant import protocol
 from studentassistant.config import ServerSettings, SourcesSettings
+from studentassistant.llm import LedgerBinding
 from studentassistant.observer import CAPTURE_EVENT_KIND, CAPTURE_ID_KEY
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.bus import SessionNotAttachedError
@@ -56,7 +62,21 @@ from studentassistant.server.sessions import (
     VaultUnavailableError,
     stored_captures,
 )
-from studentassistant.sources import BurstStill, CaptureImageError, store_capture
+from studentassistant.sources import (
+    BurstStill,
+    CaptureImageError,
+    StoredCapture,
+    process_burst,
+    store_capture,
+)
+from studentassistant.sources.triage import (
+    CAPTURE_KINDS,
+    CAPTURE_TRIAGED_KIND,
+    TriageChange,
+    prepare_triage,
+    triaged_payload,
+)
+from studentassistant.sources.triage_llm import refine_triage
 from studentassistant.vault import SecretRefused, Session, SessionEndedError
 
 logger = logging.getLogger(__name__)
@@ -359,11 +379,9 @@ def captures_router() -> APIRouter:
                 for image in metadata.images
             ]
             try:
-                stored_capture = await asyncio.to_thread(
-                    store_capture,
-                    session.vault,
-                    session.subject_slug,
-                    session.topic_slug,
+                stored_capture = await _store(
+                    request,
+                    session,
                     context,
                     stills,
                     _source_meta(session, metadata, context),
@@ -399,6 +417,7 @@ def captures_router() -> APIRouter:
                     status.HTTP_409_CONFLICT,
                     f"la sesión {session.id} terminó mientras llegaba la captura",
                 ) from error
+            await _publish_triage(request, session, metadata.capture_id, stored_capture)
             recorder: SessionRecorder | None = request.app.state.recorder
             if recorder is not None:
                 await _record(request, recorder, session.id, metadata, parts)
@@ -406,6 +425,95 @@ def captures_router() -> APIRouter:
             return JSONResponse(body.model_dump(exclude_none=True), status.HTTP_201_CREATED)
 
     return router
+
+
+async def _store(
+    request: Request,
+    session: Session,
+    kind: str,
+    stills: list[BurstStill],
+    meta: dict[str, Any],
+    session_t_ms: int,
+    sources: SourcesSettings,
+) -> StoredCapture:
+    """`store_capture` in a worker thread; with `[sources] triage_llm_check` (and a triage client,
+    `app.state.triage_client_factory`), the burst is processed and triaged first so the ambiguous
+    checks can be asked to Claude (`sources.triage_llm`) before the capture is stored."""
+    factory = getattr(request.app.state, "triage_client_factory", None)
+    if not (
+        factory is not None
+        and sources.triage_enabled
+        and sources.triage_llm_check
+        and kind in CAPTURE_KINDS
+    ):
+        return await asyncio.to_thread(
+            store_capture,
+            session.vault,
+            session.subject_slug,
+            session.topic_slug,
+            kind,
+            stills,
+            meta,
+            session_t_ms,
+            sources,
+        )
+    processed = await asyncio.to_thread(process_burst, [still.data for still in stills], sources)
+    triage = await asyncio.to_thread(
+        prepare_triage,
+        session.vault,
+        session.subject_slug,
+        session.topic_slug,
+        kind,
+        processed,
+        sources,
+    )
+    client = factory(
+        LedgerBinding(session.vault, session.subject_slug, session.topic_slug, session.id)
+    )
+    triage = await refine_triage(client, processed.page, triage, sources)
+    return await asyncio.to_thread(
+        store_capture,
+        session.vault,
+        session.subject_slug,
+        session.topic_slug,
+        kind,
+        stills,
+        meta,
+        session_t_ms,
+        sources,
+        processed=processed,
+        triage=triage,
+    )
+
+
+async def _publish_triage(
+    request: Request, session: Session, capture_id: str, stored: StoredCapture
+) -> None:
+    """`capture.triaged` (origin `observer`) for the new capture, then for each older capture
+    whose triage it changed. A publish that fails is logged: the capture is stored already."""
+    if stored.triage is None:
+        return
+    root = session.vault.path
+    source_path = _relative(stored.path, root)
+    changes = [
+        TriageChange(
+            source_id=f"sources/{stored.path.parent.name}/{stored.path.name}",
+            source_path=source_path,
+            capture_id=capture_id,
+            capture_session_id=session.id,
+            result=stored.triage,
+        ),
+        *stored.triage_changes,
+    ]
+    for change in changes:
+        try:
+            await request.app.state.bus.publish(
+                session.id, CAPTURE_TRIAGED_KIND, "observer", triaged_payload(change)
+            )
+        except (SessionNotAttachedError, SessionEndedError):
+            logger.warning(
+                "session %s took no capture.triaged for %s", session.id, change.source_path
+            )
 
 
 async def _record(

@@ -43,6 +43,11 @@ topic, which both the observer's fold and the editor read, and `page.transcribed
 `page.transcription_failed` carry `capture_session_id` (the capture's session). An `add_pending` id
 already in the topic's log is never published again (the fold refuses a duplicate id).
 
+Triage (#324, `triage.py`): a capture set aside is never transcribed (checked in its sidecar
+before the call); after a page is transcribed, `triage.check_same_content` may set it or an alike
+page aside (`capture.triaged`, origin `observer`); a student's `capture.triaged` that restores a
+page without a transcription transcribes it at once (`enqueue`).
+
 The transcriber reaches the bus only through the protocols below (it never imports
 `studentassistant.server`), Claude only through `studentassistant.llm` and the vault only through
 `studentassistant.vault`.
@@ -81,6 +86,7 @@ from studentassistant.sources.catchup import (
     PAGE_TRANSCRIPTION_FAILED_KIND,
     PageRef,
     read_owed,
+    transcription_path,
 )
 from studentassistant.sources.transcription import (
     BOOK_KIND,
@@ -93,10 +99,18 @@ from studentassistant.sources.transcription import (
     render_request_text,
     transcribe_page,
 )
+from studentassistant.sources.triage import (
+    CAPTURE_TRIAGED_KIND,
+    check_same_content,
+    is_set_aside,
+    triage_of,
+    triaged_payload,
+)
 from studentassistant.vault import (
     ConversationRecord,
     SecretRefused,
     Session,
+    SourceNotFoundError,
     TranscriptSegment,
     Vault,
     VaultError,
@@ -244,6 +258,7 @@ class PageTranscriber:
             name="transcriber",
             kinds=(
                 CAPTURE_EVENT_KIND,
+                CAPTURE_TRIAGED_KIND,
                 SEGMENT_KIND,
                 SESSION_STARTED,
                 SESSION_RESUMED,
@@ -357,6 +372,17 @@ class PageTranscriber:
             except (KeyError, TypeError, ValueError):
                 logger.warning("a malformed transcript.final of session %s", pages.id)
             return
+        if event.kind == CAPTURE_TRIAGED_KIND:
+            restored = payload.get("decided_by") == "student" and payload.get("status") in (
+                "kept",
+                "flagged",
+            )
+            source_path = payload.get("source_path")
+            if restored and isinstance(source_path, str):
+                self._track(
+                    pages, ("", f"restore:{event.seq}"), self.enqueue(pages.id, source_path)
+                )
+            return
         capture_id = payload.get("capture_id")
         if not isinstance(capture_id, str) or (pages.id, capture_id) in pages.jobs:
             return
@@ -428,6 +454,19 @@ class PageTranscriber:
                 self._inflight.discard(key)
             asyncio.get_running_loop().call_soon(self._forget_if_done, pages)
 
+    async def enqueue(self, session_id: str, source_path: str) -> bool:
+        """Transcribe the stored page at `source_path` now (no window wait) unless it has a
+        transcription, is set aside or a job has it; its events go to `session_id` (a live
+        session of the page's topic) as for any late page. What a restored capture (a
+        `capture.triaged` of the student) goes through; `True` when a job was started."""
+        pages = self._pages_of(session_id)
+        if pages is None or not self.running:
+            return False
+        ref = await asyncio.to_thread(_restored_ref, pages.vault, source_path, session_id)
+        if ref is None:
+            return False
+        return self._spawn(pages, ref, wait=False)
+
     # -- catch-up ------------------------------------------------------------------------------
 
     async def _catch_up(
@@ -488,6 +527,13 @@ class PageTranscriber:
             window_end = await asyncio.to_thread(_window_end, pages.vault, ref.source_path)
             delay = max(0, (window_end if window_end is not None else ref.t) - ref.t) / 1000
             await self._pause(pages, delay + self.settings.transcription_grace_seconds)
+        if await asyncio.to_thread(is_set_aside, pages.vault, ref.source_path):
+            logger.info(
+                "capture %s of session %s is set aside: not transcribed",
+                ref.capture_id,
+                ref.session_id,
+            )
+            return
         live_segments = ref.session_id == pages.id
         assert self._slots is not None
         attempts = 0
@@ -551,6 +597,38 @@ class PageTranscriber:
                 ),
             },
         )
+        await self._same_content(pages, ref, result.text)
+
+    async def _same_content(self, pages: _Pages, ref: PageRef, text: str) -> None:
+        """The content-duplicate check of a page just transcribed (`triage.check_same_content`),
+        each change published as `capture.triaged` on `_target`."""
+        try:
+            changes = await asyncio.to_thread(
+                check_same_content,
+                pages.vault,
+                pages.subject_slug,
+                pages.topic_slug,
+                ref.source_path,
+                text,
+                self.settings,
+            )
+        except (VaultError, OSError):
+            logger.exception("the content check of capture %s failed", ref.capture_id)
+            return
+        if not changes:
+            return
+        if self.on_write is not None:
+            self.on_write()
+        target = self._target(pages)
+        if target is None:
+            return
+        for change in changes:
+            try:
+                await self.bus.publish(
+                    target, CAPTURE_TRIAGED_KIND, ORIGIN, triaged_payload(change)
+                )
+            except Exception:
+                logger.exception("session %s took no capture.triaged event", target)
 
     async def _pause(self, pages: _Pages, seconds: float) -> None:
         if seconds <= 0 or pages.hurry.is_set():
@@ -747,6 +825,40 @@ def _window_end(vault: Vault, source_path: str) -> int | None:
     if isinstance(window, Mapping) and isinstance(window.get("t_end"), int):
         return int(window["t_end"])
     return None
+
+
+def _restored_ref(vault: Vault, source_path: str, session_id: str) -> PageRef | None:
+    """The `PageRef` of a stored capture to transcribe again, from its sidecar; `None` when it
+    is set aside, already transcribed, or not a capture."""
+    try:
+        meta = read_source(vault, source_path).meta or {}
+    except (VaultError, OSError):
+        return None
+    if triage_of(meta).set_aside:
+        return None
+    try:
+        read_source(vault, transcription_path(source_path))
+        return None
+    except SourceNotFoundError:
+        pass
+    except (VaultError, OSError):
+        return None
+    capture_id = meta.get("capture_id")
+    if not isinstance(capture_id, str):
+        return None
+    path = PurePosixPath(source_path)
+    stem = path.name.split(".", 1)[0]
+    page_path = path.with_name(f"{stem}.page.jpg").as_posix()
+    owner = meta.get("session")
+    t = meta.get("session_t_ms")
+    return PageRef(
+        session_id=owner if isinstance(owner, str) else session_id,
+        capture_id=capture_id,
+        source_path=source_path,
+        page_path=page_path,
+        t=t if isinstance(t, int) else 0,
+        source_kind=path.parent.name,
+    )
 
 
 def _book_page_meta(vault: Vault, source_path: str) -> dict[str, Any]:

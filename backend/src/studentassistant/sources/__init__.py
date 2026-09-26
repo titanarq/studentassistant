@@ -29,8 +29,32 @@ from studentassistant.sources.pdf import (
     render_pdf_page,
     scanned_pages_without_transcription,
 )
+from studentassistant.sources.triage import (
+    CAPTURE_TRIAGED_KIND,
+    TriageChange,
+    TriageRecord,
+    TriageResult,
+    check_same_content,
+    is_set_aside,
+    set_aside_ids,
+    set_capture_triage,
+    triage_capture,
+    triage_status,
+    triaged_payload,
+)
 
 __all__ = [
+    "CAPTURE_TRIAGED_KIND",
+    "TriageChange",
+    "TriageRecord",
+    "TriageResult",
+    "check_same_content",
+    "is_set_aside",
+    "set_aside_ids",
+    "set_capture_triage",
+    "triage_capture",
+    "triage_status",
+    "triaged_payload",
     "BurstStill",
     "CaptureImageError",
     "ProcessedBurst",

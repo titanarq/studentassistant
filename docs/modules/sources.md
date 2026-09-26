@@ -16,8 +16,8 @@
 
 ## Public surface (`from studentassistant.sources import ...`)
 
-What exists today, after issues #34, #44, #50, #58, #59 and #62: PDF import, capture processing,
-page transcription, textbook pages, web search and web pages by URL.
+What exists today, after issues #34, #44, #50, #58, #59, #62 and #324: PDF import, capture
+processing and triage, page transcription, textbook pages, web search and web pages by URL.
 
 ### Capture processing -- `captures.py`
 - `store_capture(vault, subject_slug, topic_slug, kind, stills, meta, session_t_ms, settings)
@@ -39,15 +39,98 @@ page transcription, textbook pages, web search and web pages by URL.
     `transcript_window: {t_start, t_end}` (session ms; `capture_window_before_seconds` before to
     `capture_window_after_seconds` after, never below 0) -- the span of `transcript.jsonl` a page
     transcription reads as spoken hints -- `selected_image` (the kept still's `K`), `sharpness`
-    (per still, `null` for one that did not decode) and `page_detected`.
-  `StoredCapture` has `path` (`page-NNN.jpg`), `page_path` and `processed`.
+    (per still, `null` for one that did not decode), `page_detected` and `triage` (below).
+  `StoredCapture` has `path` (`page-NNN.jpg`), `page_path`, `processed`, `triage` (the
+  `TriageResult`, `None` with `triage_enabled` off) and `triage_changes` (an older capture it
+  displaced). A caller that already processed and triaged the burst (the optional Sonnet stage)
+  passes `processed=` and `triage=`.
 - `process_burst(stills: Sequence[bytes], settings) -> ProcessedBurst` (`selected`, `sharpness`,
-  `still`, `page`, `page_detected`, `width_px`, `height_px`) is the same processing without
+  `still`, `page`, `page_detected`, `width_px`, `height_px`, `page_corners`) is the same processing without
   storing; `transcript_window(session_t_ms, settings) -> {"t_start", "t_end"}`.
 - The building blocks (`decode_image`, `sharpness`, `pick_sharpest`, `downscale`, `find_page`,
   `crop_page`, `enhance_contrast`) are importable from `studentassistant.sources.captures`.
 - Everything is CPU-bound (OpenCV, `opencv-python-headless`): the capture upload
   (`server/captures.py`) runs `store_capture` in a worker thread.
+
+### Capture triage -- `triage.py`, `triage_llm.py` (#324)
+Every capture is triaged when it is stored, by cheap deterministic checks (OpenCV/NumPy, no GPU,
+no LLM), so a bad one never reaches the notes. A capture that fails is **set aside**: kept in the
+vault with its reason, never deleted, never transcribed, never given to the editor.
+
+- `triage_capture(processed: ProcessedBurst, others: Sequence[TriageRecord], settings) ->
+  TriageResult` (pure; `decide(metrics, others, settings)` is the same on computed metrics).
+  `TriageResult`: `status` (`kept` | `flagged` | `set_aside`), `reasons` (`blank` | `duplicate` |
+  `blurry` | `partial` | `same_content`), `duplicate_of` (topic-relative source id or null),
+  `metrics`, `decided_by` (`auto` | `student` | `legacy`), `decided_at`, `note` and `history`
+  when there are; `replaces` (not stored) names an older capture a sharper duplicate displaces.
+  `TriageRecord`: `source_id`, `status`, `dhash`, `dhash256`, `sharpness`, `protected` (the
+  current notes link it, or the student decided about it). The metrics
+  (`capture_metrics(processed)`): `ink_ratio` (share of ink pixels of the page image, measured
+  inside an 8 % margin; a pixel is ink when 25 % darker than the mean of its 41 px neighbourhood,
+  after a 2x2 opening, at a 1200 px long edge -- paper texture, a shadow and a squared notebook's
+  faint grid are not ink), `border_ink` (the largest ink share of the four 2 % border bands of the
+  frame), `sharpness` (the kept still's Laplacian variance, as `pick_sharpest` scored it),
+  `dhash` (64-bit, 16 hex digits) and `dhash256` (the finer 256-bit one) of the page image's ink
+  density smoothed by a Gaussian of 2 % of its long edge (on grey levels a mostly white page's
+  bits flip between two shots of one page), `page_detected`, `page_border_sides` and, when
+  compared, `duplicate_distance` / `duplicate_distance_256`. The checks:
+  - **blank**: `ink_ratio < triage_blank_max_ink`; a blank page is only `blank`.
+  - **duplicate**: the nearest kept capture of the same topic and kind (their stored hashes) at a
+    64-bit distance `<= triage_duplicate_max_distance`, confirmed by the 256-bit one within four
+    times that (two different pages of lined handwriting can come within 10 bits on 64). The
+    newer one is set aside as `duplicate` of it, unless it is not blurry and
+    `triage_duplicate_sharper_ratio` times sharper and the older one is not protected: then it is
+    kept and `store_capture` sets the older one aside (`apply_swap`, the old decision kept in
+    `history`).
+  - **blurry**: `sharpness < triage_min_sharpness`.
+  - **partial**: a detected page with corners on two or more image sides, or `border_ink >
+    triage_partial_max_border_ink`: `flagged` (kept, with the reason), `set_aside` with
+    `triage_partial_sets_aside`.
+- Stored in the sidecar by `store_capture` in the same `put_source` call: `triage: {status,
+  reasons, duplicate_of, metrics, decided_by, decided_at}`; later changes go through
+  `vault.update_page_meta`. The upload route publishes `capture.triaged` (`CAPTURE_TRIAGED_KIND`,
+  `triaged_payload(change)`: `capture_id`, `source_path`, `source_id`, `status`, `reasons`,
+  `duplicate_of`, `decided_by`, `capture_session_id`; `server.md`); the observer's fold ignores
+  it.
+- **Content duplicates**: `check_same_content(vault, s, t, source_path, text, settings) ->
+  [TriageChange]`, run by the page transcriber after a page's Markdown is stored: its normalised
+  text (`normalise_text`: no case, accents, Markdown, HTML comments or `[[?...]]` marks) is
+  compared word by word (`difflib`) with every kept page of the topic and kind that has a
+  transcription; a pair at least `triage_same_content_min_similarity` alike sets aside the one
+  with more `[[?` marks (ties: the less sharp, then the newer) as `same_content`, `duplicate_of`
+  the other -- never a protected page. Transcriptions under five words are not compared. Each
+  change is published as `capture.triaged` (origin `observer`).
+- **Student decision**: `set_capture_triage(vault, s, t, source_id, "set_aside" | "restore", *,
+  reason=None, sync) -> TriageResult`: `decided_by: student`; restore is `kept` with no reasons;
+  `reason` is kept in `reasons` when it is a triage reason, else as `note`; the previous decision
+  goes to `history`. Commits (`sync.checkpoint`) `Página N de <s>/<t> apartada` / `recuperada`.
+  The caller (the server's chat routing, #327) publishes `capture.triaged` with origin `user`.
+  A restored page with no transcription is owed again: the transcriber takes a student's
+  `capture.triaged` that is not `set_aside` and transcribes the page at once
+  (`PageTranscriber.enqueue(session_id, source_path)`), and the catch-up finds it owed too.
+- **Excluded downstream**: `PageTranscriber` checks the sidecar before transcribing and skips a
+  set-aside capture (no call, no `page.transcribed`, no pending items); `catchup.owed_pages(...,
+  set_aside=)` / `read_owed` leave set-aside captures out; `editor.inputs.assemble_input` leaves
+  them out of the catalogue and the sources, and leaves out the open pending items whose page refs
+  are all set-aside captures (flagged ones stay in).
+- **Readers**: `triage_status(vault, s, t) -> {source_id: TriageResult}` for every stored source
+  (topic-relative ids; a source with no `triage` block -- stored before #324, or not a capture --
+  reads as `kept`, `decided_by: legacy`); `set_aside_ids(vault, s, t)`; `is_set_aside(vault,
+  source_path)`; `triage_of(meta)`.
+- **Optional Sonnet stage** (`triage_llm.py`, `[sources] triage_llm_check = false` by default):
+  `refine_triage(client, page, result, settings)` sends the page image (role `transcriber`,
+  prompt `capture_triage`, strict tool `triage_verdict` through `llm.structured`) only when a
+  check is within `triage_llm_margin` (relative) of its threshold (`ambiguous_checks`: `blank`,
+  `blurry`, `partial`; the duplicate check stays deterministic); the verdict replaces those
+  checks (`with_verdict`, recorded as `metrics.llm_verdict` / `llm_reason`); any `LLMError` keeps
+  the deterministic result. The upload route runs it before storing, with a client bound to the
+  session's ledger.
+- **CLI**: `studentassistant triage <subject> <topic> [--apply]` (`retro_triage`) triages every
+  stored capture oldest first, as if it arrived now, and prints its metrics and decision (and the
+  stored one, if any); it only reads. With `--apply` it writes the decision of each capture with
+  no `triage` block (and sets aside an older duplicate it displaces) and commits (`Triaje de N
+  capturas de <s>/<t>`). For calibrating the thresholds on a real vault and triaging captures
+  stored before #324.
 
 ### Page transcription -- `transcription.py`, `transcriber.py`
 Not re-exported by the package root (they import `studentassistant.llm`): import them from their
@@ -339,3 +422,13 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `web_fetch_max_content_tokens` | 30000 | content a kept page is fetched with |
 | `web_search_concurrency` | 1 | searches running at once; the rest wait |
 | `web_auto_keep` | false | true: the pages Claude marks relevant are kept without asking |
+| `triage_enabled` | true | false: no capture is triaged (nothing is set aside) |
+| `triage_blank_max_ink` | 0.002 | a page image with less ink (share of pixels) is `blank` |
+| `triage_duplicate_max_distance` | 10 | a capture within this many dHash bits (of 64) of a kept one of the topic is a `duplicate` |
+| `triage_duplicate_sharper_ratio` | 1.25 | a duplicate this much sharper replaces the older capture instead |
+| `triage_min_sharpness` | 25 | a still with a lower Laplacian variance is `blurry` |
+| `triage_partial_max_border_ink` | 0.01 | more ink along one side of the frame is `partial` |
+| `triage_partial_sets_aside` | false | true: a `partial` capture is set aside, not only flagged |
+| `triage_same_content_min_similarity` | 0.85 | two transcriptions this alike set the worse page aside |
+| `triage_llm_check` | false | true: checks near a threshold are asked to Claude (`transcriber` role) |
+| `triage_llm_margin` | 0.25 | how near (relative to the threshold) counts as ambiguous |

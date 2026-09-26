@@ -21,6 +21,10 @@ state) and lays it out for one `editor` call:
      ones are doubts, resolved ones decisions), the topic digest and the current notes, if any;
   4. the instruction, with a second breakpoint so that a re-ask re-reads all of it from the cache.
 
+Captures set aside by triage (`sources.triage`, #324) are left out of the catalogue and the
+sources, and so are the open pending items whose page refs are all set-aside captures; flagged
+captures stay in.
+
 Attachments are bounded: at most `max_page_images` page images (the API refuses more than 20
 images of this size in one request) and `max_attachment_bytes` of base64 in total (requests are
 capped at 32 MB). What does not fit is sent as text only and listed in `EditorInput.omitted`.
@@ -49,7 +53,12 @@ from studentassistant.observer import (
     TopicState,
     load_observer_snapshot,
 )
-from studentassistant.sources import original_page, pdf_document_block, read_pdf_page_text
+from studentassistant.sources import (
+    original_page,
+    pdf_document_block,
+    read_pdf_page_text,
+    set_aside_ids,
+)
 from studentassistant.vault import (
     SourceError,
     StoredSource,
@@ -267,7 +276,9 @@ _CLOSED_LABEL = {
 }
 
 
-def _render_pending(state: TopicState, log: _Log) -> str:
+def _render_pending(state: TopicState, log: _Log, set_aside: frozenset[str] = frozenset()) -> str:
+    """The pending items; an open one whose page refs are all set-aside captures (`set_aside`:
+    capture ids) is left out -- its page never reaches the editor."""
     where: dict[str, _Segment] = {segment.segment_id: segment for segment in log.segments}
 
     def refs(item: PendingItem) -> str:
@@ -279,7 +290,11 @@ def _render_pending(state: TopicState, log: _Log) -> str:
         return f" ({'; '.join(parts)})" if parts else ""
 
     lines = ["## Dudas pendientes", ""]
-    open_items = state.open_pending()
+    open_items = [
+        item
+        for item in state.open_pending()
+        if not (item.refs.pages and all(page in set_aside for page in item.refs.pages))
+    ]
     closed = state.resolved_pending()
     if not open_items and not closed:
         lines.append("(No hay dudas registradas.)")
@@ -582,7 +597,13 @@ def assemble_input(
     builder = _Builder(max_page_images, max_attachment_bytes)
     catalogue: list[CitableSource] = []
 
-    stored = list_sources(vault, subject_slug, topic_slug)
+    # Captures set aside by triage (#324) are neither catalogued nor sent; flagged ones are.
+    excluded = set_aside_ids(vault, subject_slug, topic_slug)
+    stored = [
+        source
+        for source in list_sources(vault, subject_slug, topic_slug)
+        if _topic_relative(source, prefix) not in excluded
+    ]
     book = (
         get_book(vault, subject_slug, topic_slug) if any(s.kind == "book" for s in stored) else None
     )
@@ -645,7 +666,10 @@ def assemble_input(
     state = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False).state
     log = _read_log(vault, subject_slug, topic_slug)
     builder.text(_render_transcript(state, log))
-    builder.text(_render_pending(state, log))
+    set_aside_captures = frozenset(
+        capture_id for capture_id, page in log.capture_pages.items() if page in excluded
+    )
+    builder.text(_render_pending(state, log, set_aside_captures))
     digest_text = digest(vault, subject_slug, topic_slug) if digest is not None else None
     if digest_text and digest_text.strip():
         builder.text(f"## Resumen del tema (sesiones anteriores)\n\n{digest_text.strip()}\n")

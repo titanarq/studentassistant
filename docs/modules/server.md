@@ -153,6 +153,18 @@ Routes registered today:
     client (see "Forwarded to the client" below). Answer: 201 `rest.sessions.captures.response`,
     `status: "stored"`, `image_count` the images in the burst, `received_at_ms` the backend
     clock.
+  - Right after `capture.stored`, a persisted `capture.triaged` event (#324, origin `observer`:
+    ADR-0003 has no `sources` origin; `sources.triage.CAPTURE_TRIAGED_KIND`, which the
+    observer's fold ignores) carries the capture's triage, stored in its sidecar by
+    `store_capture`: `capture_id`, `source_path`, `source_id` (topic-relative), `status`
+    (`kept` | `flagged` | `set_aside`), `reasons`, `duplicate_of`, `decided_by`,
+    `capture_session_id`. When the new capture is a sharper repeat that displaced an older one,
+    a second `capture.triaged` sets the older one aside. With `[sources] triage_llm_check` and an
+    LLM transport (`app.state.triage_client_factory`, role `transcriber`), the burst is processed
+    and triaged first and the checks near a threshold are asked to Claude, bound to the session's
+    ledger, before it is stored (`sources.triage_llm`). A student's decision
+    (`sources.set_capture_triage`, from the chat routing of #327) is published by its caller as
+    `capture.triaged` with origin `user`.
   - Idempotent on `capture_id`: the stored ids of a session are its `capture.stored` events
     (`sessions.stored_captures(session)`, reading `events.jsonl`, so it survives a restart). A
     stored id is answered 200 `status: "duplicate"` with the stored `image_count`, storing and

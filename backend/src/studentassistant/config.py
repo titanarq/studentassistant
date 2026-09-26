@@ -441,6 +441,14 @@ DEFAULT_WEB_SEARCH_MAX_USES = 3
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS = 30_000
 DEFAULT_WEB_SEARCH_CONCURRENCY = 1
+# Capture triage (`sources/triage.py`, #324): deterministic checks at capture time.
+DEFAULT_TRIAGE_BLANK_MAX_INK = 0.002
+DEFAULT_TRIAGE_DUPLICATE_MAX_DISTANCE = 10
+DEFAULT_TRIAGE_DUPLICATE_SHARPER_RATIO = 1.25
+DEFAULT_TRIAGE_MIN_SHARPNESS = 25.0
+DEFAULT_TRIAGE_PARTIAL_MAX_BORDER_INK = 0.01
+DEFAULT_TRIAGE_SAME_CONTENT_MIN_SIMILARITY = 0.85
+DEFAULT_TRIAGE_LLM_MARGIN = 0.25
 
 
 class SourcesSettings(BaseModel):
@@ -499,6 +507,35 @@ class SourcesSettings(BaseModel):
     web_fetch_max_content_tokens: int = Field(default=DEFAULT_WEB_FETCH_MAX_CONTENT_TOKENS, ge=1000)
     web_search_concurrency: int = Field(default=DEFAULT_WEB_SEARCH_CONCURRENCY, ge=1)
     web_auto_keep: bool = False
+    # Capture triage (`sources/triage.py`): a capture is set aside (kept in the vault, never
+    # transcribed nor given to the editor) when its page image has less ink than
+    # `triage_blank_max_ink` (share of dark pixels), when its 64-bit dHash is within
+    # `triage_duplicate_max_distance` bits of a kept capture of the topic and kind (unless it is
+    # `triage_duplicate_sharper_ratio` times sharper: then the older one is set aside), or when its
+    # still's sharpness is below `triage_min_sharpness`. A page cut by the frame (a detected page
+    # on two image sides, or more than `triage_partial_max_border_ink` of ink along one side) is
+    # flagged, or set aside with `triage_partial_sets_aside`. Two transcriptions at least
+    # `triage_same_content_min_similarity` alike set the worse one aside. With `triage_llm_check`,
+    # a capture whose metrics are within `triage_llm_margin` (relative) of a threshold is asked to
+    # Claude (role `transcriber`), whose verdict replaces the ambiguous check.
+    triage_enabled: bool = True
+    triage_blank_max_ink: float = Field(default=DEFAULT_TRIAGE_BLANK_MAX_INK, ge=0, le=1)
+    triage_duplicate_max_distance: int = Field(
+        default=DEFAULT_TRIAGE_DUPLICATE_MAX_DISTANCE, ge=0, le=64
+    )
+    triage_duplicate_sharper_ratio: float = Field(
+        default=DEFAULT_TRIAGE_DUPLICATE_SHARPER_RATIO, ge=1
+    )
+    triage_min_sharpness: float = Field(default=DEFAULT_TRIAGE_MIN_SHARPNESS, ge=0)
+    triage_partial_max_border_ink: float = Field(
+        default=DEFAULT_TRIAGE_PARTIAL_MAX_BORDER_INK, ge=0, le=1
+    )
+    triage_partial_sets_aside: bool = False
+    triage_same_content_min_similarity: float = Field(
+        default=DEFAULT_TRIAGE_SAME_CONTENT_MIN_SIMILARITY, ge=0, le=1
+    )
+    triage_llm_check: bool = False
+    triage_llm_margin: float = Field(default=DEFAULT_TRIAGE_LLM_MARGIN, ge=0, le=1)
 
 
 # The live observer (`studentassistant.observer.live`): a batch goes to Claude once this many final
