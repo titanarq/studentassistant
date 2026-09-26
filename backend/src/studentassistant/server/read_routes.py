@@ -1,5 +1,5 @@
-"""The web UI's read API under `/api`: study-desk summary, notes, pending review, topic digest,
-sources, sessions, transcripts.
+"""The web UI's read API under `/api`: study-desk summary, a topic's source list, notes, pending
+review, topic digest, sources, sessions, transcripts.
 
 Read-only and thin: every route opens the vault through the `SessionService` on
 `app.state.sessions` (so the lazily opened, pulled vault is the one the lifecycle routes use) and
@@ -131,6 +131,30 @@ class TopicSummary(BaseModel):
     digest_excerpt: str | None = Field(
         default=None,
         description="The topic digest's summary paragraph, `null` before the first session end.",
+    )
+
+
+class TopicSourceItem(BaseModel):
+    """One stored source of a topic, as `GET .../sources` lists it."""
+
+    vault_id: str = Field(
+        description="The source's vault-relative path (what `/api/sources` takes)."
+    )
+    kind: str = Field(description="Its source kind: `notes`, `book`, `pdf`, `web` or `images`.")
+    title: str | None = Field(
+        default=None,
+        description="From the sidecar: a web snapshot's `title`, a PDF's `original_name`; `null`"
+        " when it has neither.",
+    )
+
+
+class TopicSources(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/sources`: the topic's stored sources."""
+
+    subject_id: str
+    topic_id: str
+    sources: list[TopicSourceItem] = Field(
+        description="In `vault.list_sources` order: by kind, then by number."
     )
 
 
@@ -304,6 +328,14 @@ def _served_media_type(media_type: str) -> str:
     return "application/octet-stream"
 
 
+def _source_title(meta: dict[str, Any] | None) -> str | None:
+    for key in ("title", "original_name"):
+        value = (meta or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def _kind_of(vault_id: str) -> str:
     # `read_source` accepted it, so it is `subjects/<s>/topics/<t>/sources/<kind>/<file>`.
     return vault_id.split("/")[5]
@@ -347,6 +379,27 @@ def read_router() -> APIRouter:
 
         async with _not_found():
             return await _read(summarise)
+
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/sources",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_sources(
+        request: Request, subject_id: SubjectId, topic_id: TopicId
+    ) -> TopicSources:
+        vault = await _vault(request)
+        async with _not_found():
+            sources = await _read(list_sources, vault, subject_id, topic_id)
+        return TopicSources(
+            subject_id=subject_id,
+            topic_id=topic_id,
+            sources=[
+                TopicSourceItem(
+                    vault_id=source.path, kind=source.kind, title=_source_title(source.meta)
+                )
+                for source in sources
+            ],
+        )
 
     @router.get(
         "/subjects/{subject_id}/topics/{topic_id}/notes",
