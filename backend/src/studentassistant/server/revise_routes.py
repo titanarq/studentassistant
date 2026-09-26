@@ -14,14 +14,18 @@ notes and doubts routes.
   and the doubts, so turns of one topic run one at a time, but it applies its change under the
   short write lock of `editor.notes_lock`, so a student save (`notes_edit_routes.py`) interleaves
   with it and the turn re-asks the editor on the new notes. A topic without notes is revised
-  from `# <topic title>` (the turn can create them).
+  from `# <topic title>` (the turn can create them). The turn is also broadcast on the topic's
+  workspace stream (`workspace.py`: `turn.started` with `origin` `typed`, the reply, then
+  `turn.result` or `turn.error`, and `notes.changed` when the notes changed); its `turn_id` is in
+  the `result` too.
 - `POST .../notes/why` (`WhyRequest`: `section`, `block`, `quote`, `confirm_over_cap`): the
   editor's explanation of one block from its cited sources, streamed the same way (`reply.delta`,
   then `result` with the `ExplanationResult` -- `reply` and the block's `refs` for the sources
   panel -- or `error`); the answer is appended to the editor conversation, the notes unchanged.
   It holds the notes lock too. A block that is not in the notes is a 422 before the stream.
 - `GET .../notes/chat` -> `ChatHistory` (explanations included, `kind` `explain`);
-  `POST .../notes/chat/undo` -> `UndoResult` (no Claude call, but the notes lock too).
+  `POST .../notes/chat/undo` -> `UndoResult` (no Claude call, but the notes lock too); an undo
+  that changed the notes is a `notes.changed` (origin `editor`) on the workspace stream.
 
 Errors before the stream starts are ordinary HTTP errors, as `{"detail": "..."}` in Spanish: no
 `llm_transport` 503 (chat only), a vault that cannot be opened 503, an unknown topic 404, another
@@ -75,6 +79,7 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import caller_speaks_error_codes, cost_cap_error
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.workspace import TurnBroadcast, WorkspaceHub
 from studentassistant.vault import (
     GitSync,
     SubjectNotFoundError,
@@ -125,7 +130,8 @@ def sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
-def _error_of(error: BaseException) -> tuple[int, str, ErrorCode | None]:
+def turn_error(error: BaseException) -> tuple[int, str, ErrorCode | None]:
+    """`(status, detail, code)` of a failed editor turn, as its REST error would have been."""
     if isinstance(error, InvalidMessageError):
         return 422, str(error), None
     if isinstance(error, RevisionError):
@@ -186,13 +192,17 @@ def revise_router() -> APIRouter:
         topic_id: str,
         what: str,
         work: Callable[[LLMClient, ReplySink], Awaitable[BaseModel]],
+        broadcast: TurnBroadcast | None = None,
     ) -> StreamingResponse:
-        """Run one editor turn as its own task (the notes lock claimed) and stream it as SSE."""
+        """Run one editor turn as its own task (the notes lock claimed) and stream it as SSE;
+        with `broadcast`, the turn goes to the topic's workspace stream too."""
         speaks_codes = caller_speaks_error_codes(request)
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
         async def on_reply(kind: str, data: dict[str, Any]) -> None:
             queue.put_nowait(sse(kind, data))
+            if broadcast is not None:
+                await broadcast.reply(kind, data)
 
         async def run() -> None:
             try:
@@ -204,8 +214,10 @@ def revise_router() -> APIRouter:
                 )
                 result = await work(client, on_reply)
                 queue.put_nowait(sse("result", result.model_dump(mode="json")))
+                if broadcast is not None:
+                    broadcast.result(result)
             except Exception as error:
-                status, detail, code = _error_of(error)
+                status, detail, code = turn_error(error)
                 if status == 500:
                     logger.exception("the notes %s of %s/%s failed", what, subject_id, topic_id)
                 elif status == 502:
@@ -216,6 +228,8 @@ def revise_router() -> APIRouter:
                 if code is not None and speaks_codes:
                     data["code"] = code.value
                 queue.put_nowait(sse("error", data))
+                if broadcast is not None:
+                    broadcast.error(status, detail, None if code is None else code.value)
             finally:
                 generator.release(subject_id, topic_id)
                 queue.put_nowait(None)
@@ -273,6 +287,9 @@ def revise_router() -> APIRouter:
         generator, vault, sync = await claim_notes(
             request, subject_id, topic_id, invalid, need_notes=False
         )
+        hub: WorkspaceHub = request.app.state.workspace
+        broadcast = TurnBroadcast(hub, subject_id, topic_id, origin="typed")
+        broadcast.started()
 
         async def work(client: LLMClient, on_reply: ReplySink) -> BaseModel:
             return await revise_notes(
@@ -285,9 +302,10 @@ def revise_router() -> APIRouter:
                 on_reply=on_reply,
                 on_event=publisher(request, subject_id, topic_id),
                 confirm_over_cap=body.confirm_over_cap,
+                turn_id=broadcast.turn_id,
             )
 
-        return stream_turn(request, generator, vault, subject_id, topic_id, "chat", work)
+        return stream_turn(request, generator, vault, subject_id, topic_id, "chat", work, broadcast)
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/notes/why")
     async def why(
@@ -326,13 +344,23 @@ def revise_router() -> APIRouter:
         if generator is not None and not generator.claim(subject_id, topic_id):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         try:
-            return await undo_last_revision(
+            result = await undo_last_revision(
                 vault,
                 subject_id,
                 topic_id,
                 sync=sync,
                 on_event=publisher(request, subject_id, topic_id),
             )
+            if result.notes_changed:
+                hub: WorkspaceHub = request.app.state.workspace
+                hub.notes_changed(
+                    subject_id,
+                    topic_id,
+                    revision=result.revision,
+                    origin="editor",
+                    summary=f"Deshecho: {result.summary}" if result.summary else "Deshecho",
+                )
+            return result
         except RevisionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         finally:

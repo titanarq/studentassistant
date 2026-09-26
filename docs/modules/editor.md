@@ -365,7 +365,8 @@ mode, and the student's message.
   first applied change creates the file, typically with `add_section`); `NotesMissingError` is no
   longer raised by a turn.
 - `await revise_notes(vault, subject, topic, message, *, client, sync, on_reply=None,
-  on_event=None, digest=None, confirm_over_cap=False, clock=..., ...) -> RevisionResult`. The
+  on_event=None, digest=None, confirm_over_cap=False, clock=..., ..., request=None,
+  turn_id=None) -> RevisionResult`. The
   editor first writes its Spanish reply as text -- streamed through `LLMClient.create(on_text=...)`
   to `on_reply("reply.delta", {"text", "attempt"})` -- and then, if anything changes, calls the
   strict tool `apply_edits` once (`EditsOutput`: `ops` (the `EditOp`s above), `footnotes`,
@@ -376,6 +377,13 @@ mode, and the student's message.
   `confirmed_style_rules` (a rule proposed in an earlier turn and still pending that the student
   confirms in the chat: appended with `style_guide.append_rules`)). No tool call: a chat-only
   turn, nothing written but the conversation.
+- **Spoken requests** (#315): `request` (`ChatRequestRef`: `request_id`, `summary`, `session_id`,
+  `segment_ids`, `t_start_ms`, `t_end_ms`, `text`) is the `assistant.request` the turn answers
+  (the server's `assistant_requests.py` passes it, with the raw `text` as `message`). The turn is
+  then `origin` `voice`: the new message is introduced to the editor as a literal transcription of
+  what the student said (`SPOKEN_NOTE`), and in the conversation so far such turns read
+  "Estudiante (en voz alta, transcrito): ...". `turn_id` is the caller's id of the turn (the
+  workspace stream's), stored as given.
 - **Checks**: the ops must apply (`apply_edits`) and the edited notes must pass `validate` in the
   mode the turn leaves (so "no inventes" must also remove every `[^ia]` block); a `summary` is
   required when something is applied, at most 5 proposed and 5 confirmed style rules of 300
@@ -386,7 +394,8 @@ mode, and the student's message.
 - **Applied**: the notes (`vault.write_notes`), `topic.yaml` and `subject.yaml` as needed, then
   `GitSync.checkpoint("Apuntes de <s>/<t> revisados: <summary>")` at once; no notes tag.
   `on_event("notes.edited", payload)` gets the result without the `notes` text.
-- `RevisionResult`: `subject`, `topic`, `message`, `reply`, `applied`, `summary`, `ops`,
+- `RevisionResult`: `subject`, `topic`, `turn_id`, `origin` (`typed` | `voice`), `request` (the
+  `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`, `summary`, `ops`,
   `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added to the guide:
   the confirmed ones), `proposed_style_rules` (proposed, minus those the guide has), `notes_changed`,
   `changed_sections` (anchors the ops touched; a new section's `anchor`), `diff` (unified diff of
@@ -401,8 +410,10 @@ mode, and the student's message.
   `notes_changed`, `diff`, `notes`, `paths`, `revision`. No Claude call. A student save after the
   turn changes `apuntes.md`, so undoing it then is an `UndoConflictError`.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
-  (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `message`,
-  `reply`, `applied`, `summary`, `changed_sections`, `commit`, `undone`, `warning`, `refs`,
+  (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `turn_id`,
+  `origin` (`typed` | `voice`), `request_summary` (the spoken request's short line, `None` when
+  typed), `transcript` (its `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`,
+  `summary` (the applied change's), `changed_sections`, `commit`, `undone`, `warning`, `refs`,
   `proposed_style_rules` -- the turn's proposals the subject's guide does not have yet, also shown
   to the editor in the conversation so far) and `can_undo`. The explanations are also in the
   conversation the editor is given on a turn, and so are the student's own edits (the
@@ -410,14 +421,17 @@ mode, and the student's message.
   (#anchors)" plus the diff, cut at `STUDENT_EDIT_DIFF_CHARS`); `chat_history` leaves those out.
 - **Conversation** `conversations/editor.jsonl`: `context` (reason `revise`), `user`, `assistant`,
   `validation` per call, then one `revision` record per turn (the `RevisionResult`) and one
-  `notes.undone` per undo (the `UndoResult`) -- what `chat_history` and the undo read.
+  `notes.undone` per undo (the `UndoResult`) -- what `chat_history` and the undo read. A
+  `revision` record written before #315 has no `turn_id`, `origin` or `request` and reads as a
+  typed turn.
 - Errors (`RevisionError`, Spanish): `InvalidMessageError` (empty, or over 4000 characters),
   `NothingToUndoError`, `UndoConflictError` (a file of the
   turn changed afterwards -- a later turn, a regeneration, a doubt's edit); plus the llm errors as
   in `generate_notes`, with nothing written but the conversation records.
 - Limitations: a turn is committed as soon as it is applied; when the sync loop happened to commit
   the files first, `commit` is `None` and that turn cannot be undone. Nothing here streams to the
-  web itself: that is the server's `POST .../notes/chat` (SSE, `docs/modules/server.md`).
+  web itself: that is the server's `POST .../notes/chat` (SSE) and the workspace stream
+  (`docs/modules/server.md`).
 
 ### The student editing the document -- `direct_edit.py`
 The web's document editor (#316) saves the whole `apuntes.md` the student ended up with. No Claude

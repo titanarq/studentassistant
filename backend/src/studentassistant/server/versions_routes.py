@@ -11,7 +11,8 @@ Claude, so they all work without an `llm_transport`.
 - `POST .../notes/versions/{version}/restore`, no body -> `RestoreResult` (a new commit and the
   next `apuntes-vN` tag). It holds the topic's notes lock (`NotesGenerator.claim`) like the
   generation, the chat and the doubts; `notes.restored` is published on the bus (origin
-  `editor`) when the topic's session is the active one.
+  `editor`) when the topic's session is the active one, and `notes.changed` (origin `restore`) on
+  the topic's workspace stream (`workspace.py`).
 
 Errors, as `{"detail": "..."}` in Spanish: a vault that cannot be opened 503, an unknown topic or
 version 404, nothing to compare with, the current notes already being that version, or another
@@ -40,6 +41,7 @@ from studentassistant.editor.versions import (
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.workspace import WorkspaceHub
 from studentassistant.vault import (
     GitSync,
     SubjectNotFoundError,
@@ -134,7 +136,7 @@ def versions_router() -> APIRouter:
                 await sessions.bus.publish(active.session_id, kind, "editor", payload)
 
         try:
-            return await restore_version(
+            result = await restore_version(
                 vault, subject_id, topic_id, version, sync=sync, on_event=publish
             )
         except VersionError as error:
@@ -142,5 +144,14 @@ def versions_router() -> APIRouter:
         finally:
             if generator is not None:
                 generator.release(subject_id, topic_id)
+        hub: WorkspaceHub = request.app.state.workspace
+        hub.notes_changed(
+            subject_id,
+            topic_id,
+            revision=result.revision,
+            origin="restore",
+            summary=f"Restaurada la versión {result.restored_version}.",
+        )
+        return result
 
     return router

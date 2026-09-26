@@ -21,6 +21,10 @@ lock. `GET .../notes/generation` answers the topic's latest generation, backgrou
 `protocol.NotesGenerationStatus` (`idle` | `running` | `done` | `failed` | `needs_confirmation`),
 kept in memory since the backend started; a reached cost cap is `needs_confirmation` and the
 student confirms through `POST .../notes/generate` with `confirm_over_cap`.
+
+A generation that wrote the notes (not a draft) is a `notes.changed` (origin `generation`) on the
+topic's workspace stream (`workspace.py`), whichever way it was started (this route, a session
+end, or a spoken "prepárame el tema" through `assistant_requests.py`).
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ from studentassistant.observer import topic_digest
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.workspace import WorkspaceHub
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, Vault, get_topic
 
 logger = logging.getLogger(__name__)
@@ -92,10 +97,17 @@ class NotesGenerator:
     """
 
     def __init__(
-        self, settings: Settings, transport: Transport, *, clock: Clock = _utc_now
+        self,
+        settings: Settings,
+        transport: Transport,
+        *,
+        clock: Clock = _utc_now,
+        workspace: WorkspaceHub | None = None,
     ) -> None:
         self.settings = settings
         self.transport = transport
+        self.workspace = workspace
+        """Where a generation that wrote the notes publishes `notes.changed` (None: nowhere)."""
         self._clock = clock
         self._running: dict[tuple[str, str], str] = {}
         self._statuses: dict[tuple[str, str], protocol.NotesGenerationStatus] = {}
@@ -170,6 +182,16 @@ class NotesGenerator:
             finish("failed", detail=ERROR_DETAIL)
             raise
         finish("done", version=result.version, draft=result.draft, warning=result.warning)
+        if self.workspace is not None and not result.draft:
+            self.workspace.notes_changed(
+                subject_id,
+                topic_id,
+                revision=result.revision,
+                origin="generation",
+                summary=f"Apuntes preparados (versión {result.version})."
+                if result.version is not None
+                else "Apuntes preparados.",
+            )
         return result
 
     def start_background(

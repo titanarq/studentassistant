@@ -43,6 +43,7 @@ from studentassistant.observer.live import ObserverLoop, default_client_factory
 from studentassistant.observer.requests import RequestDetector
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
+from studentassistant.server.assistant_requests import AssistantRequestConsumer
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.book_routes import book_router
 from studentassistant.server.bus import SessionBus
@@ -75,6 +76,8 @@ from studentassistant.server.tutor_routes import tutor_router
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.web_search_routes import web_search_router
+from studentassistant.server.workspace import WorkspaceHub
+from studentassistant.server.workspace_routes import workspace_router
 from studentassistant.server.ws import SessionGateway, ws_router
 from studentassistant.sources.pdf_transcription import ScannedPdfTranscriber
 from studentassistant.sources.pdf_transcription import (
@@ -211,6 +214,9 @@ def create_app(
     # its dates in `[observer] digest_timezone`.
     digest_zone = (llm_settings or Settings()).observer.digest_zone()
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
+    # The study workspace's live stream, per topic (`workspace.py`, `workspace_routes.py`).
+    app.state.workspace = WorkspaceHub()
+    app.state.assistant_requests = None
     app.state.observer = None
     app.state.requests = None
     app.state.transcriber = None
@@ -222,7 +228,11 @@ def create_app(
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
-        app.state.notes = NotesGenerator(llm_settings, llm_transport)
+        app.state.notes = NotesGenerator(llm_settings, llm_transport, workspace=app.state.workspace)
+        # Spoken requests to the assistant -> editor turns, per topic in order (#315).
+        app.state.assistant_requests = AssistantRequestConsumer(
+            app.state.bus, app.state.sessions, app.state.notes, app.state.workspace
+        )
         # Study materials: the generator role (`generators_routes.py`).
         app.state.materials = MaterialGenerators(llm_settings, llm_transport)
         if sources.transcription_enabled:
@@ -321,6 +331,7 @@ def create_app(
     app.include_router(doubts_router())
     app.include_router(revise_router())
     app.include_router(versions_router())
+    app.include_router(workspace_router())
     app.include_router(tutor_router())
     app.include_router(style_guide_router())
     app.include_router(generators_router())
@@ -350,6 +361,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     requests: RequestDetector | None = app.state.requests
     if requests is not None:
         requests.start()
+    assistant_requests: AssistantRequestConsumer | None = app.state.assistant_requests
+    if assistant_requests is not None:
+        assistant_requests.start()
     if transcriber is not None:
         transcriber.start()
     if web_searcher is not None:
@@ -371,6 +385,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await observer.stop()
         if requests is not None:
             await requests.stop()
+        if assistant_requests is not None:
+            await assistant_requests.stop()
+        app.state.workspace.close()
         notes: NotesGenerator | None = app.state.notes
         if notes is not None:
             # Background "prepárame el tema" of an ended session (#258): finish or cancel it.
