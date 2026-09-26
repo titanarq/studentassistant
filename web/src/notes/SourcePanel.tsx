@@ -14,6 +14,7 @@ import { originalPage, type Provenance, parseProvenance, sourceVaultId, stemOf }
  * - a handwritten or book page: the page image (the flattened `page-NNN.page.jpg` when the capture
  *   produced one, else the cited file), zoomable, and its transcription (the sidecar's
  *   `transcription`, else the derived `page-NNN.md`);
+ * - an image pasted into the notes (`sources/images/`, #316): the image, zoomable;
  * - a PDF page: its thumbnail and text (`page-NNN.pKKK.jpg`/`.txt`), numbered as in the original
  *   PDF (`first_page` of the sidecar, `originalPage`);
  * - a web snapshot: its Markdown and the URL it was taken from;
@@ -157,6 +158,10 @@ function PageSource({ subjectId, topicId, source }: { subjectId: string; topicId
   );
 }
 
+function ImageSource({ subjectId, topicId, source }: { subjectId: string; topicId: string; source: Extract<Provenance, { kind: "image" }> }) {
+  return <ZoomableImage src={sourceUrl(sourceVaultId(subjectId, topicId, "images", source.file))} alt={source.text} />;
+}
+
 function PdfSource({ subjectId, topicId, source }: { subjectId: string; topicId: string; source: Extract<Provenance, { kind: "pdf" }> }) {
   const vaultId = sourceVaultId(subjectId, topicId, "pdf", source.file);
   const stem = stemOf(source.file);
@@ -262,6 +267,7 @@ export default function SourcePanel({ subjectId, topicId, label, definition, onC
         )}
         {provenance?.kind === "unknown" && <p>{provenance.text}</p>}
         {provenance?.kind === "page" && <PageSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
+        {provenance?.kind === "image" && <ImageSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
         {provenance?.kind === "pdf" && <PdfSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
         {provenance?.kind === "web" && <WebSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
         {provenance?.kind === "transcript" && (

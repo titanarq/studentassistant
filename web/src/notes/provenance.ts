@@ -11,6 +11,8 @@ export type Provenance =
   | { kind: "page"; sourceKind: "notes" | "book"; text: string; file: string }
   /** A page of a stored PDF: `../sources/pdf/page-NNN.pdf#page=K` (`page` null for the whole). */
   | { kind: "pdf"; text: string; file: string; page: number | null }
+  /** An image the student pasted into the notes (#316): `../sources/images/img-NNN.<ext>`. */
+  | { kind: "image"; text: string; file: string }
   /** A web snapshot: `../sources/web/NNN-<slug>.md`. */
   | { kind: "web"; text: string; file: string }
   /** A transcript span: `../sessions/<id>/transcript.jsonl#t=HH:MM:SS-HH:MM:SS`. */
@@ -22,7 +24,7 @@ export type Provenance =
 
 const LINK = /^\[([^\]]*)\]\(([^)\s]+)\)\s*$/;
 const FILE = "([a-z0-9][a-z0-9._-]*)";
-const SOURCE = new RegExp(`^\\.\\./sources/(notes|book|pdf|web)/${FILE}(?:#page=(\\d+))?$`);
+const SOURCE = new RegExp(`^\\.\\./sources/(notes|book|pdf|web|images)/${FILE}(?:#page=(\\d+))?$`);
 const TRANSCRIPT = /^\.\.\/sessions\/([A-Za-z0-9][A-Za-z0-9_-]*)\/transcript\.jsonl#t=(\d{2,}:[0-5]\d:[0-5]\d-\d{2,}:[0-5]\d:[0-5]\d)$/;
 
 export function parseProvenance(label: string, definition: string): Provenance {
@@ -36,6 +38,7 @@ export function parseProvenance(label: string, definition: string): Provenance {
     if (kind === "pdf") return { kind: "pdf", text, file, page: page === undefined ? null : Number(page) };
     if (page !== undefined) return { kind: "unknown", text };
     if (kind === "web") return { kind: "web", text, file };
+    if (kind === "images") return { kind: "image", text, file };
     return { kind: "page", sourceKind: kind as "notes" | "book", text, file };
   }
   const transcript = TRANSCRIPT.exec(href);

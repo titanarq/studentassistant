@@ -6,6 +6,7 @@
  *   `sources/book/*.jpg`, `sources/pdf/*.pdf`, docs/modules/vault.md), one per counted source;
  * - web snapshots are named after their title (`NNN-<slug>.md`), so only the ones the notes cite
  *   can be opened; the rest are counted (`uncitedWebs`);
+ * - images pasted into the notes (`sources/images/`, #316) are listed when the notes cite them;
  * - transcript spans the notes cite are listed too.
  * Every item carries a footnote-like `label` and `definition`, which is what `SourcePanel` opens.
  */
@@ -14,7 +15,7 @@ import type { SourceCounts } from "../desk/api";
 import type { NotesTree } from "../notes/markdown";
 import { parseProvenance, type Provenance } from "../notes/provenance";
 
-export type ResourceGroupKind = "notes" | "book" | "pdf" | "web" | "transcript";
+export type ResourceGroupKind = "notes" | "book" | "pdf" | "web" | "images" | "transcript";
 
 export interface ResourceItem {
   key: string;
@@ -40,10 +41,11 @@ export const GROUP_TITLES: Record<ResourceGroupKind, string> = {
   book: "Páginas del libro",
   pdf: "PDF",
   web: "Webs",
+  images: "Imágenes pegadas",
   transcript: "Fragmentos de la transcripción",
 };
 
-const ORDER: ResourceGroupKind[] = ["notes", "book", "pdf", "web", "transcript"];
+export const ORDER: ResourceGroupKind[] = ["notes", "book", "pdf", "web", "images", "transcript"];
 
 function pageFile(n: number, ext: string): string {
   return `page-${String(n).padStart(3, "0")}.${ext}`;
@@ -57,6 +59,8 @@ function keyOf(provenance: Provenance): { group: ResourceGroupKind; key: string 
       return { group: "pdf", key: `pdf/${provenance.file}#${provenance.page ?? ""}` };
     case "web":
       return { group: "web", key: `web/${provenance.file}` };
+    case "image":
+      return { group: "images", key: `images/${provenance.file}` };
     case "transcript":
       return { group: "transcript", key: `transcript/${provenance.sessionId}#${provenance.span}` };
     default:

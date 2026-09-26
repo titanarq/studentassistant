@@ -106,9 +106,33 @@
     again each time the tab is shown) and the notes' provenance footnotes: the read API lists no
     source files, so handwritten/book pages and PDFs are numbered `page-001…` up to the count, and
     webs (named after their title) are openable only when the notes cite them; the rest are
-    counted ("Hay N webs guardadas que los apuntes todavía no citan."). Choosing one shows it in
-    the existing `SourcePanel` in place of the list (static there, not floating); "Cerrar" goes
-    back to the list.
+    counted ("Hay N webs guardadas que los apuntes todavía no citan."); images pasted into the
+    notes (`sources/images/img-NNN.<ext>`, #316) are listed when the notes cite them. Each stored
+    source is one card (thumbnail -- the flattened `page-NNN.page.jpg`, else the capture; a PDF's
+    first page image; the pasted image -- its name, "Página 3 · apuntes", "Libro, página 83",
+    "PDF «nombre»", "Web: …", "Imagen pegada 1", and a state chip), derived by
+    `resourceStates` (`resources/state.ts`, #328):
+    - **Pendiente**: kept and not cited by the current notes;
+    - **Incorporada**: kept and linked by a provenance footnote definition of the current notes
+      (`citedSources`, via `parseProvenance`), so it follows `notes.changed` without a request;
+    - **Apartada**: the sidecar's `triage.status` is `set_aside` (#324), read from
+      `GET /api/sources/{id}/meta`, with its reasons in Spanish (`blank` "En blanco",
+      `duplicate` "Repetida de la página N" from `duplicate_of`, `blurry` "Borrosa", `partial`
+      "Puede estar cortada", `same_content` "Mismo contenido que la página N") and "(la
+      apartaste tú)" when `decided_by` is `student`.
+    A `flagged` capture is **Pendiente** (or **Incorporada**) plus "Aviso: <reason>"; a source
+    without a `triage` block (stored before #324, or not a capture), or whose metadata cannot be
+    read, is kept. Kept sources come first in source order, then a collapsed "Apartadas (N)"
+    group (a disclosure button with `aria-expanded`); above them the counts "N pendientes · M
+    incorporadas · K apartadas" and the hint that incorporating, setting aside and restoring are
+    asked in the chat ("incorpora la página 3"): there are no action buttons. Cited transcript
+    spans follow, without a state. The metadata is read by `useSourceMetas`
+    (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
+    source; every listed source is read again each time the tab is shown and after each change
+    of the notes (a new tree), which is how a `capture.triaged` change shows up. Choosing a
+    source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
+    (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
+    the list.
   - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
     #317; the notes page keeps `EditorChat`). "Chat con el asistente": an `aria-live="polite"`
     `role="log"` list of turns, oldest first. A spoken request shows "Por voz · HH:MM" and
@@ -489,8 +513,8 @@ token):
     code, links, `[^label]`, `[[?word]]`). It builds a tree rendered as React elements, so the
     notes' HTML is never markup; only `http(s):`, `mailto:` and `#` links become links.
   - `provenance.ts`: `parseProvenance(label, definition)` -> `page` (notes/book), `pdf` (file,
-    `#page=K`), `web`, `transcript` (session id, span), `ia` or `unknown`; `sourceVaultId`,
-    `originalPage(meta, page)` (`first_page + page - 1`, the rule of `sources.pdf.original_page`).
+    `#page=K`), `image` (a pasted image, `sources/images/`, #316), `web`, `transcript` (session
+    id, span), `ia` or `unknown`; `sourceVaultId`, `originalPage(meta, page)` (`first_page + page - 1`, the rule of `sources.pdf.original_page`).
   - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
     its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
     sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
