@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from revise_topic import ReviseTopic, make_revise_topic
+from studentassistant.editor.notes_format import notes_revision
 from studentassistant.editor.versions import (
     NOTES_RESTORED_KIND,
     PREAMBLE_KEY,
@@ -223,6 +224,7 @@ def test_restore_writes_the_old_version_as_a_new_commit_and_tag(
     assert result.tag == f"{topic.subject}/{topic.topic}/apuntes-v3"
     assert result.errors == [] and result.warning is None
     assert result.notes == topic.notes
+    assert result.revision == notes_revision(topic.notes)
     assert read_notes(topic.vault, topic.subject, topic.topic) == topic.notes
     assert "-## 1. Próximos pasos {#proximo-dia}" in result.diff
     tags = sync.list_notes_tags(topic.subject, topic.topic)

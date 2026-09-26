@@ -861,7 +861,7 @@ def _index_sources(root: Path, directory: Path, subject: str, topic: str, rows: 
             (subject, topic, kind, number, relative, None if meta is None else _json(meta))
         )
         originals.setdefault(entry.name.split(".", 1)[0], relative)
-        if kind not in PAGED_KINDS:
+        if kind == "web":
             rows.docs.append(
                 (_text(entry), DOC_WEB, relative, relative, subject, topic, None, None, None)
             )

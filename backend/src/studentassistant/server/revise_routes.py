@@ -10,7 +10,11 @@ notes and doubts routes.
   event with the `RevisionResult` (the applied diff) or one `error` event (`status`, `detail`,
   and `code` when the failure has one and the caller speaks it, as in a REST error body).
   The turn runs as its own task, so a client that goes away does not cut a change in half; it
-  holds the topic's notes lock (`NotesGenerator.claim`) with "prepárame el tema" and the doubts.
+  holds the topic's notes lock (`NotesGenerator.claim`, as `TURN_HOLDER`) with "prepárame el tema"
+  and the doubts, so turns of one topic run one at a time, but it applies its change under the
+  short write lock of `editor.notes_lock`, so a student save (`notes_edit_routes.py`) interleaves
+  with it and the turn re-asks the editor on the new notes. A topic without notes is revised
+  from `# <topic title>` (the turn can create them).
 - `POST .../notes/why` (`WhyRequest`: `section`, `block`, `quote`, `confirm_over_cap`): the
   editor's explanation of one block from its cited sources, streamed the same way (`reply.delta`,
   then `result` with the `ExplanationResult` -- `reply` and the block's `refs` for the sources
@@ -21,10 +25,10 @@ notes and doubts routes.
 
 Errors before the stream starts are ordinary HTTP errors, as `{"detail": "..."}` in Spanish: no
 `llm_transport` 503 (chat only), a vault that cannot be opened 503, an unknown topic 404, another
-notes operation of the topic running or no notes yet 409, an invalid message 422; undo: nothing to
-undo or a later change in the way 409. Inside the stream, the `error` event carries the status the
-same failure would have had: a reached cost cap 409 `cost_cap_reached` (until the body says
-`confirm_over_cap`), a Claude refusal or failure 502.
+notes operation of the topic running or (for `why`) no notes yet 409, an invalid message 422;
+undo: nothing to undo or a later change in the way 409. Inside the stream, the `error` event
+carries the status the same failure would have had: a reached cost cap 409 `cost_cap_reached`
+(until the body says `confirm_over_cap`), a Claude refusal or failure 502.
 """
 
 from __future__ import annotations
@@ -69,7 +73,7 @@ from studentassistant.llm import (
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import caller_speaks_error_codes, cost_cap_error
-from studentassistant.server.notes_routes import NotesGenerator
+from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
     GitSync,
@@ -239,21 +243,25 @@ def revise_router() -> APIRouter:
         topic_id: str,
         invalid: str | None = None,
         check: Callable[[str], None] | None = None,
+        *,
+        need_notes: bool = True,
     ) -> tuple[NotesGenerator, Vault, GitSync]:
         """The checks before a streamed turn (`invalid`: a 422 detail for the body, once the topic
-        is known); claims the notes lock last."""
+        is known); claims the notes lock last, as a `TURN_HOLDER` (a student save may interleave).
+        A chat turn works on a topic without notes too (`need_notes=False`: it starts them)."""
         generator: NotesGenerator | None = request.app.state.notes
         if generator is None:
             raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
         vault, sync = await open_topic(request, subject_id, topic_id)
         if invalid is not None:
             raise HTTPException(status_code=422, detail=invalid)
-        notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
-        if not notes or not notes.strip():
-            raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
-        if check is not None:
-            check(notes)
-        if not generator.claim(subject_id, topic_id):
+        if need_notes or check is not None:
+            notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
+            if not notes or not notes.strip():
+                raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
+            if check is not None:
+                check(notes)
+        if not generator.claim(subject_id, topic_id, TURN_HOLDER):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         return generator, vault, sync
 
@@ -262,7 +270,9 @@ def revise_router() -> APIRouter:
         request: Request, subject_id: SubjectId, topic_id: TopicId, body: ChatRequest
     ) -> StreamingResponse:
         invalid = None if body.message.strip() else "Escribe qué quieres cambiar."
-        generator, vault, sync = await claim_notes(request, subject_id, topic_id, invalid)
+        generator, vault, sync = await claim_notes(
+            request, subject_id, topic_id, invalid, need_notes=False
+        )
 
         async def work(client: LLMClient, on_reply: ReplySink) -> BaseModel:
             return await revise_notes(

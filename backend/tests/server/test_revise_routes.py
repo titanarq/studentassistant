@@ -162,8 +162,9 @@ def test_errors_before_the_stream(
     missing = client.post("/api/subjects/nada/topics/nada/notes/chat", json={"message": "Hola"})
     assert missing.status_code == 404
     bare = create_topic(tmp_vault, topic.subject, "Integrales").slug
+    # A chat turn starts the notes of a bare topic; "¿por qué?" needs notes.
     no_notes = client.post(
-        f"/api/subjects/{topic.subject}/topics/{bare}/notes/chat", json={"message": "Hola"}
+        f"/api/subjects/{topic.subject}/topics/{bare}/notes/why", json={"block": 1}
     )
     assert no_notes.status_code == 409 and "prepáralos" in no_notes.json()["detail"]
     assert client.post(f"{_base(topic)}/undo").status_code == 409

@@ -380,6 +380,18 @@ def assemble_explanation(
                 " tú (modo ampliado).\n"
             )
             continue
+        if ref.kind == "student":
+            builder.text(
+                f"### [^{ref.label}] {ref.text}\nEsta parte la escribió el estudiante directamente"
+                " en el documento.\n"
+            )
+            continue
+        if ref.kind == "images":
+            builder.text(
+                f"### [^{ref.label}] {ref.text} ({ref.source_id})\nUna imagen que el estudiante"
+                " pegó en el documento.\n"
+            )
+            continue
         if ref.kind == "transcript":
             _add_span(builder, ref, log.segments)
             continue

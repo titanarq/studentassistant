@@ -18,7 +18,6 @@ from studentassistant.editor.revise import (
     REPLY_DELTA,
     REPLY_RESTART,
     InvalidMessageError,
-    NotesMissingError,
     NothingToUndoError,
     RevisionResult,
     UndoConflictError,
@@ -30,7 +29,6 @@ from studentassistant.llm import FakeClaude, LLMRequest, load_prompt
 from studentassistant.vault import (
     GitSync,
     Vault,
-    create_topic,
     get_subject,
     get_topic,
     read_conversation,
@@ -433,13 +431,6 @@ def test_bad_requests_send_nothing(tmp_vault: Vault, topic: ReviseTopic, sync: G
         _revise(topic, sync, fake, "   ")
     with pytest.raises(InvalidMessageError):
         _revise(topic, sync, fake, "x" * 5000)
-    bare = create_topic(tmp_vault, topic.subject, "Integrales").slug
-    with pytest.raises(NotesMissingError):
-        _run(
-            revise_notes(
-                tmp_vault, topic.subject, bare, "Hola", client=fake.client("editor"), sync=sync
-            )
-        )
     assert fake.requests == []
 
 

@@ -10,7 +10,12 @@ at least one provenance footnote reference (`[^p4]`); runs of footnote definitio
 Every definition other than `[^ia]` is a Markdown link relative to `notes/apuntes.md`, so it works
 when the vault is browsed on GitHub; the source it points to is named by its topic-relative id
 (`sources/notes/page-004.jpg`, `sessions/<id>#t=00:02:34-00:03:10`). `[^ia]` marks content that is
-in none of the student's sources and is only allowed in the `ampliado` fidelity mode.
+in none of the student's sources and is only allowed in the `ampliado` fidelity mode; `[^est]`
+(`Escrito por el estudiante`) marks a block the student wrote in the document themselves and is
+allowed in both modes. A pasted image is a source of its own (`sources/images/img-NNN.png`).
+
+`notes_revision(text)` is the content revision token of the notes (SHA-256 hex of the text),
+which every read and write of the notes carries so concurrent writers never lose an update.
 
 Parsing keeps every byte: `serialize(parse(text)) == text` for any text. The validator only
 reports; it never patches the notes (ADR-0005: the editor is re-asked instead). This module never
@@ -19,6 +24,7 @@ reads the vault itself: whether a cited source exists is asked of an injected `s
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -31,13 +37,16 @@ from studentassistant.vault import Vault, sessions_directory, sources_directory
 
 FidelityMode = Literal["estricto", "ampliado"]
 BlockKind = Literal["title", "paragraph", "list", "table", "rule", "footnotes"]
-ProvenanceKind = Literal["notes", "book", "pdf", "web", "transcript", "ia"]
+ProvenanceKind = Literal["notes", "book", "pdf", "web", "images", "transcript", "ia", "student"]
 
 # Blocks the student reads as content: each must end with at least one provenance footnote.
 CONTENT_KINDS: tuple[str, ...] = ("paragraph", "list", "table")
 
 IA_LABEL = "ia"
 IA_TEXT = "Ampliado por la IA: no está en tus fuentes"
+EST_LABEL = "est"
+EST_TEXT = "Escrito por el estudiante"
+IMAGE_TEXT = "Imagen pegada"
 TRANSCRIPT_FILE_NAME = "transcript.jsonl"
 # `apuntes.md` lives in `notes/`, one level below the topic directory the source ids start at.
 LINK_PREFIX = "../"
@@ -56,11 +65,17 @@ _TARGETS: dict[str, re.Pattern[str]] = {
     "book": re.compile(r"^sources/book/page-(?P<page>\d{3,})\.[A-Za-z0-9]+$"),
     "pdf": re.compile(r"^sources/pdf/page-(?P<page>\d{3,})\.[A-Za-z0-9]+(?:#page=(?P<at>\d+))?$"),
     "web": re.compile(r"^sources/web/\d{3,}-[a-z0-9-]+\.md$"),
+    "images": re.compile(r"^sources/images/img-(?P<number>\d{3,})\.(?:png|jpg|webp)$"),
     "transcript": re.compile(
         rf"^sessions/(?P<session>\d{{8}}-\d{{6}})/{re.escape(TRANSCRIPT_FILE_NAME)}"
         rf"#t=(?P<start>{_TIME})-(?P<end>{_TIME})$"
     ),
 }
+
+
+def notes_revision(text: str) -> str:
+    """The revision token of the notes `text`: the SHA-256 hex digest of its UTF-8 bytes."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class _Model(BaseModel):
@@ -91,8 +106,8 @@ class Provenance(_Model):
 
     @property
     def link(self) -> str | None:
-        """The Markdown link target, relative to `notes/apuntes.md`, or `None` for `[^ia]`."""
-        if self.kind == "ia" or self.source_id is None or self.path is None:
+        """The Markdown link target, relative to `notes/apuntes.md`; `None` for `[^ia]`/`[^est]`."""
+        if self.kind in ("ia", "student") or self.source_id is None or self.path is None:
             return None
         if self.kind == "transcript":
             fragment = self.source_id.partition("#")[2]
@@ -103,6 +118,8 @@ class Provenance(_Model):
         """The footnote definition line citing this provenance under `label` (no newline)."""
         if self.kind == "ia":
             return f"[^{IA_LABEL}]: {IA_TEXT}"
+        if self.kind == "student":
+            return f"[^{EST_LABEL}]: {EST_TEXT}"
         return f"[^{label}]: [{self.text}]({self.link})"
 
 
@@ -144,7 +161,14 @@ def transcript_provenance(session_id: str, start_seconds: int, end_seconds: int)
     )
 
 
+def image_provenance(number: int, extension: str = "png") -> Provenance:
+    """A pasted image `sources/images/img-NNN.<ext>`, shown as «Imagen pegada N»."""
+    path = f"sources/images/img-{number:03d}.{extension.lstrip('.').lower()}"
+    return Provenance(kind="images", text=f"{IMAGE_TEXT} {number}", source_id=path, path=path)
+
+
 IA_PROVENANCE = Provenance(kind="ia", text=IA_TEXT)
+EST_PROVENANCE = Provenance(kind="student", text=EST_TEXT)
 
 
 def parse_provenance(definition: FootnoteDefinition) -> Provenance:
@@ -156,6 +180,8 @@ def parse_provenance(definition: FootnoteDefinition) -> Provenance:
     """
     if definition.label == IA_LABEL:
         return IA_PROVENANCE
+    if definition.label == EST_LABEL:
+        return EST_PROVENANCE
     match = _LINK.match(definition.text.strip())
     if match is None:
         raise ProvenanceError(
@@ -188,7 +214,8 @@ def parse_provenance(definition: FootnoteDefinition) -> Provenance:
         )
     raise ProvenanceError(
         f"la nota [^{definition.label}] enlaza a {target}, que no es una página de apuntes, de"
-        " libro o de PDF, una página web guardada ni un fragmento de transcripción"
+        " libro o de PDF, una página web guardada, una imagen pegada ni un fragmento de"
+        " transcripción"
     )
 
 
@@ -500,6 +527,8 @@ def validate(
         except ProvenanceError as error:
             errors.append(f"Nota al pie [^{label}]: {error}.")
             continue
+        if provenance.kind == "student":
+            continue
         if provenance.kind == "ia":
             if mode == "estricto":
                 errors.append(
@@ -540,7 +569,9 @@ def _opening(block: Block, width: int = 40) -> str:
 # Resolver over the vault's public API
 # --------------------------------------------------------------------------------------------
 
-_SOURCE_PATH = re.compile(r"^sources/(?P<kind>notes|book|pdf|web)/(?P<name>[A-Za-z0-9._-]+)$")
+_SOURCE_PATH = re.compile(
+    r"^sources/(?P<kind>notes|book|pdf|web|images)/(?P<name>[A-Za-z0-9._-]+)$"
+)
 _PDF_PAGE_PATH = re.compile(r"^sources/pdf/[A-Za-z0-9._-]+#page=\d+$")
 _TRANSCRIPT_PATH = re.compile(rf"^sessions/(?P<session>\d{{8}}-\d{{6}})/{TRANSCRIPT_FILE_NAME}$")
 

@@ -26,3 +26,10 @@ class ErrorCode(StrEnum):
     SESSION_OPEN = "session_open"
     """409: an unended session is in the way (another session when starting one, or the
     topic's own session when resolving its doubts)."""
+
+    NOTES_CHANGED = "notes_changed"
+    """409: the topic's notes changed since the `base_revision` a student save started from; the
+    body also carries the current notes' `text` and `revision`."""
+
+    NOTES_BUSY = "notes_busy"
+    """409: "prepárame el tema", a restore or another rewrite holds the topic's notes."""

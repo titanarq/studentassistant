@@ -54,6 +54,7 @@ from studentassistant.server.exam_routes import exam_router
 from studentassistant.server.generators_routes import MaterialGenerators, generators_router
 from studentassistant.server.live_routes import live_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
+from studentassistant.server.notes_edit_routes import notes_edit_router
 from studentassistant.server.notes_routes import NotesGenerator, notes_router
 from studentassistant.server.pairing import PairingCodes, pairing_router
 from studentassistant.server.pdf_upload import pdf_upload_router
@@ -305,6 +306,7 @@ def create_app(
     app.include_router(search_router())
     app.include_router(vault_status_router())
     app.include_router(notes_router())
+    app.include_router(notes_edit_router())
     app.include_router(doubts_router())
     app.include_router(revise_router())
     app.include_router(versions_router())

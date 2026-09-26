@@ -31,6 +31,7 @@ from studentassistant.editor.inputs import fidelity_mode_of
 from studentassistant.editor.notes_format import (
     Block,
     NotesDocument,
+    notes_revision,
     parse,
     topic_source_resolver,
     validate,
@@ -155,6 +156,8 @@ class RestoreResult(_Strict):
     diff: str
     """Unified diff from the notes before the restore to the restored ones."""
     notes: str
+    revision: str | None = None
+    """The revision (`notes_revision`) of `apuntes.md` after the restore."""
     errors: list[str] = []
     """What the provenance validator says of the restored text today (for example a source
     purged since): the restore is done anyway, since it is what the student asked for."""
@@ -418,6 +421,7 @@ def _restore(vault: Vault, sync: GitSync, subject: str, topic: str, version: int
         path=path.relative_to(vault.path).as_posix(),
         diff=_unified(current or "", text, "apuntes.md (antes)", "apuntes.md"),
         notes=text,
+        revision=notes_revision(text),
         errors=errors,
         warning=(
             "La versión restaurada no cumple hoy todas las reglas de procedencia (quizá cita una"

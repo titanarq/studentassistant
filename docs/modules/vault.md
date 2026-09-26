@@ -24,6 +24,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/book/page-NNN.*                    textbook pages, as notes pages; the sidecar adds book_page (+ _from, _printed, _spoken)
   sources/book/book.yaml                     the topic's textbook: title (never listed as a source)
   sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
+  sources/images/img-NNN.png|jpg|webp        an image the student pasted into the notes (+ .yaml: origin: pasted, content_type, sha256, added_at)
   sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
@@ -177,7 +178,9 @@ Claude: it stores what the role hands it.
 `put_source(vault, subject_slug, topic_slug, kind, name, content, meta, derived=None)` stores
 bytes or text under `sources/<kind>/` and a `.yaml` sidecar of `meta` next to it, returning the
 content's path: `page-NNN.<ext>` + `page-NNN.yaml` for `notes`, `book` and `pdf` (the extension
-taken from `name`) and `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`).
+taken from `name`), `NNN-<slug>.md` + `NNN-<slug>.yaml` for `web` (the slug from `name`) and
+`img-NNN.<ext>` + `img-NNN.yaml` for `images` (the extension from `name`: `.png`, `.jpg` --
+`.jpeg` is stored as `.jpg` -- or `.webp`, anything else a `SourceError`).
 `derived` (paged kinds only) maps suffixes to files written in the same call as
 `page-NNN.<suffix>` -- a suffix is dot-separated lowercase letters and digits with at least one
 dot, e.g. `p003.txt`, `p003.jpg` for a PDF's page 3 -- all guarded before anything is written and
@@ -201,6 +204,14 @@ anything else, `SourceNotFoundError` when the page's sidecar is not there.
 `update_page_meta(vault, vault_relative_path, updates) -> Path` merges `updates` into a stored
 page's sidecar (same path rules and errors; other keys kept in order; guarded, atomic, under the
 directory's lock): what `sources` learns after storing, such as a textbook page's `book_page`.
+`put_pasted_image(vault, subject_slug, topic_slug, content, content_type, *, added_at=None) ->
+Path` stores an image the student pasted into the notes (#313) as `sources/images/img-NNN.<ext>`,
+the extension from `content_type` (`IMAGE_EXTENSIONS`: `image/png`, `image/jpeg`, `image/webp`),
+with a sidecar `origin: pasted`, `content_type`, `sha256` of the content and `added_at` (now, UTC,
+by default); another type or an empty content is a `SourceError`, nothing written. The notes cite
+it as `[Imagen pegada N](../sources/images/img-NNN.<ext>)` (source id
+`sources/images/img-NNN.<ext>`, ADR-0005 proposal in epic #311). Images are listed, read and
+indexed as sources like the others (the index keeps no text of them).
 `set_book(vault, subject_slug, topic_slug, title) -> Book` / `get_book(...) -> Book | None` keep
 the topic's textbook (`Book(title)`, spaces collapsed; `ValueError` for an empty title) in
 `sources/book/book.yaml`, which is not a source, not numbered and not indexed as one.
