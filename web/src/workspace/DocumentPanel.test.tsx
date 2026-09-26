@@ -44,7 +44,7 @@ function renderPanel(state: WorkspaceState) {
 
 /** Enters the editor and switches it to the raw Markdown. */
 async function editAsMarkdown(): Promise<HTMLTextAreaElement> {
-  fireEvent.click(screen.getByRole("button", { name: "Edición" }));
+  fireEvent.click(screen.getByRole("button", { name: "Editar" }));
   fireEvent.click(await screen.findByRole("button", { name: "Markdown" }));
   return screen.getByLabelText("Apuntes en Markdown") as HTMLTextAreaElement;
 }
@@ -69,7 +69,7 @@ it("opens the visual editor with fixed provenance chips and saves an untouched d
   renderPanel(workspace(ready(), reloadNotes));
 
   expect(screen.getByText("v4 · guardado")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Edición" }));
+  fireEvent.click(screen.getByRole("button", { name: "Editar" }));
   expect(await screen.findByText("Editando sobre v4")).toBeInTheDocument();
   const surface = screen.getByLabelText("Apuntes en edición");
   await waitFor(() => expect(within(surface).getByLabelText("Escrito por ti")).toHaveTextContent("tú"));
@@ -80,7 +80,7 @@ it("opens the visual editor with fixed provenance chips and saves an untouched d
   await waitFor(() => expect(reloadNotes).toHaveBeenCalledWith(["funciones"]));
   expect(putBodies(fetchMock)).toEqual([{ text: TEXT, base_revision: R1 }]);
   expect(screen.queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Edición" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
 });
 
 it("saves the edited Markdown with the revision the edit started from", async () => {
@@ -140,7 +140,7 @@ it("on notes_changed can discard the student's changes", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Descartar mis cambios" }));
   await waitFor(() => expect(reloadNotes).toHaveBeenCalled());
   expect(screen.queryByLabelText("Apuntes en Markdown")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Edición" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
 });
 
 it("on notes_busy asks to wait and keeps the editor", async () => {

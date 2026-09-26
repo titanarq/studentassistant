@@ -112,13 +112,13 @@
   - Left, bottom: the chat slot `WorkspaceChatSlot` -- today the existing `EditorChat` with
     `useEditorChat`, unchanged; #317 replaces this component.
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
-    **Edición** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
+    **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
     the document or in a chat answer) switches the left column to **Recursos** and opens that
     source there. Without notes (404) it says "Todavía no hay apuntes: pídeselos al asistente en el
-    chat." and **Edición** starts a document from `# <topic name>` (saved with `base_revision:
+    chat." and **Editar** starts a document from `# <topic name>` (saved with `base_revision:
     null`).
-  - **Edición** replaces the document with the notes editor (`NoteEditor`, below), headed
+  - **Editar** replaces the document with the notes editor (`NoteEditor`, below), headed
     "Editando sobre vN" with **Cancelar** (asks before discarding unsaved changes) and **Guardar**:
     `PUT .../notes {text, base_revision}` with the revision the edit started from; on success the
     workspace re-reads the notes (the saved sections highlighted) and the panel leaves edit mode.
@@ -149,7 +149,8 @@
   insertMarkdown, setBlock, toggleStrong, toggleEmphasis, bulletList, orderedList, rule,
   insertTable, addRow, addColumn, focus, view, destroy}`. Provenance references are atomic chips
   (`[^p3]` "p3", `[^ia]` "IA" highlighted, `[^est]` "tú" in green; moved or deleted whole, never
-  typed into). Markdown is a `textarea` beside a live `NotesView` preview. The toolbar has block
+  typed into); a heading's `{#anchor}` is hidden by a decoration but stays in the text and the
+  saved Markdown. Markdown is a `textarea` beside a live `NotesView` preview. The toolbar has block
   type (Párrafo / Título 2 / Título 3), Negrita, Cursiva, Lista, **Tabla** (visual: a 3x2 table,
   plus "+fila"/"+col"; Markdown: a table skeleton at the cursor) and **Imagen** (a file picker).
   Pasting or dropping a PNG/JPEG/WebP image anywhere in the editor uploads it

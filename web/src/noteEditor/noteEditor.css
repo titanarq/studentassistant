@@ -358,3 +358,8 @@
     border-bottom: 1px solid var(--line);
   }
 }
+
+/* A heading's {#anchor}: kept in the text, not shown. */
+.note-editor-visual .note-anchor-hidden {
+  display: none;
+}

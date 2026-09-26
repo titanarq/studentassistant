@@ -7,7 +7,7 @@ import { useWorkspace } from "./state";
 
 /**
  * The document column of the workspace (#312, #316): the topic's `apuntes.md` read-only with an
- * **Edición** button, or the notes editor. Saving sends the whole text with the revision the edit
+ * **Editar** button, or the notes editor. Saving sends the whole text with the revision the edit
  * started from (`PUT .../notes`, epic #311): a stale base shows both versions and lets the student
  * discard their changes or keep them on the current version (nothing is overwritten silently);
  * busy notes and format errors are explained in Spanish. While editing, a newer revision of the
@@ -181,7 +181,7 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
               <path d="M4 20h4L19 9l-4-4L4 16v4z" />
               <path d="M13 7l4 4" />
             </svg>
-            Edición
+            Editar
           </button>
         )}
       </div>

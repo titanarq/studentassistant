@@ -8,6 +8,7 @@
  *   rules, unpadded tables) and without the escapes remark adds to `{#anchor}` and `[[?word]]`;
  * - provenance references (`[^p4]`, `[^ia]`, `[^est]`) are atomic chips: they can be moved or
  *   deleted but not typed into; `[^est]` shows as "tú";
+ * - a heading's `{#anchor}` is hidden (kept in the text and the saved Markdown);
  * - images without a title load (Milkdown 7.22 drops them otherwise) and show from the vault.
  */
 
@@ -35,6 +36,7 @@ import {
 } from "@milkdown/preset-gfm";
 import type { Node as ProseNode } from "@milkdown/prose/model";
 import { Plugin } from "@milkdown/prose/state";
+import { Decoration, DecorationSet } from "@milkdown/prose/view";
 import type { EditorView } from "@milkdown/prose/view";
 import { $prose, callCommand, insert } from "@milkdown/utils";
 import { IA_LABEL } from "../notes/markdown";
@@ -100,6 +102,7 @@ export interface VisualEditorOptions {
   resolveImage?: (src: string) => string;
 }
 
+const HEADING_ANCHOR = /\s*\{#[A-Za-z0-9_-]+\}\s*$/;
 const TABLE_ROWS = 3;
 const TABLE_COLUMNS = 2;
 
@@ -151,6 +154,27 @@ export async function createVisualEditor(
       }),
   );
 
+  // A heading's `{#anchor}` stays in the text (and the saved Markdown) but is not shown.
+  const anchors = $prose(
+    () =>
+      new Plugin({
+        props: {
+          decorations: (state) => {
+            const hidden: Decoration[] = [];
+            state.doc.descendants((node, pos) => {
+              if (node.type.name !== "heading") return true;
+              const match = HEADING_ANCHOR.exec(node.textContent);
+              if (match && node.childCount > 0 && node.content.content.every((child) => child.isText)) {
+                hidden.push(Decoration.inline(pos + 1 + match.index, pos + 1 + node.textContent.length, { class: "note-anchor-hidden" }));
+              }
+              return false;
+            });
+            return DecorationSet.create(state.doc, hidden);
+          },
+        },
+      }),
+  );
+
   const editor = await Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root);
@@ -164,6 +188,7 @@ export async function createVisualEditor(
     .use(reference)
     .use(history)
     .use(changes)
+    .use(anchors)
     .create();
 
   const map: SourceMap | null = editor.action((ctx) => {

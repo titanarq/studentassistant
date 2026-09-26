@@ -33,6 +33,14 @@ async function visualReady() {
   return screen.getByLabelText("Apuntes en edición");
 }
 
+it("hides heading anchors in the visual editor but keeps them in the text", async () => {
+  const { ref } = renderEditor();
+  const surface = await visualReady();
+  const hidden = surface.querySelector(".note-anchor-hidden");
+  expect(hidden).toHaveTextContent("{#funciones_del_lenguaje}");
+  expect(ref.current?.getText()).toBe(TEXT);
+});
+
 it("keeps the text across Visual and Markdown", async () => {
   const { ref } = renderEditor();
   await visualReady();
