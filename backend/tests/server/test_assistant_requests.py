@@ -62,7 +62,7 @@ def make_app(
             llm_settings=Settings(
                 observer=ObserverSettings(enabled=False),
                 llm=llm or LlmSettings(),
-                editor=EditorSettings(doubts_in_chat=False),
+                editor=EditorSettings(doubts_in_chat=False, prepare_mode="single"),
             ),
         )
 

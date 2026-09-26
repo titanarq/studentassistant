@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from eval_fixtures import CAPTURE_ID, PipelineClaude, make_case
-from studentassistant.config import ObserverSettings, Settings
+from studentassistant.config import EditorSettings, ObserverSettings, Settings
 from studentassistant.evals import read_case, run_eval, write_report
 from studentassistant.evals.run import REPORT_JSON
 
@@ -33,7 +33,8 @@ def test_the_sample_case_is_replayed_scored_and_reported(home: Path) -> None:
     case = read_case(make_case(home / "evals"))
     runs = home / "evals" / "runs" / "now"
     claude = PipelineClaude(runs)
-    settings = Settings(observer=ObserverSettings())
+    # The whole-topic call the scripted editor answers (batched mode is tested in the editor).
+    settings = Settings(observer=ObserverSettings(), editor=EditorSettings(prepare_mode="single"))
     moments = iter([datetime(2026, 9, 25, 10, tzinfo=UTC), datetime(2026, 9, 25, 11, tzinfo=UTC)])
 
     report = asyncio.run(

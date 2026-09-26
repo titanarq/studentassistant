@@ -139,7 +139,7 @@ def test_a_replayed_session_becomes_pushed_master_notes(
         # The doubts chat (#325) is left out: it would review the observer's doubts too.
         llm_settings=Settings(
             observer=ObserverSettings(request_detection="off"),
-            editor=EditorSettings(doubts_in_chat=False),
+            editor=EditorSettings(doubts_in_chat=False, prepare_mode="single"),
         ),
     )
 

@@ -12,7 +12,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from generate_topic import GenerateTopic, make_topic, valid_notes
-from studentassistant.config import LlmSettings, ObserverSettings, ServerSettings, Settings
+from studentassistant.config import (
+    EditorSettings,
+    LlmSettings,
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+)
 from studentassistant.llm import FakeClaude, LLMServerError
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
@@ -42,7 +48,9 @@ def make_app(
             llm_transport=transport,
             # The observer stays off, so every scripted reply is the editor's.
             llm_settings=Settings(
-                observer=ObserverSettings(enabled=False), llm=llm or LlmSettings()
+                observer=ObserverSettings(enabled=False),
+                llm=llm or LlmSettings(),
+                editor=EditorSettings(prepare_mode="single"),
             ),
         )
 

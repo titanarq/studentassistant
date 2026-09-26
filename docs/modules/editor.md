@@ -18,7 +18,7 @@
   sources, with the refs; in writing too, for the study screen's question chat, citing sections.
 
 ## Public surface
-What exists today, after issues #30, #61, #68, #63, #64, #69, #70, #65, #313 and #325: the master notes format
+What exists today, after issues #30, #61, #68, #63, #64, #69, #70, #65, #313, #325 and #326: the master notes format
 of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
@@ -26,7 +26,8 @@ itself), "prepárame el tema", the first version of the notes, in
 ops in `studentassistant.editor.edits`, the doubts resolution in
 `studentassistant.editor.doubts`, the contradictions between sources in
 `studentassistant.editor.contradictions`, the conversational revision of the notes in
-`studentassistant.editor.revise`, the student's own edits in `studentassistant.editor.direct_edit`
+`studentassistant.editor.revise`, the incremental incorporation of a few sources per request
+and the source states in `studentassistant.editor.incorporate`, the student's own edits in `studentassistant.editor.direct_edit`
 (with the shared write lock of `studentassistant.editor.notes_lock`), the notes versions in
 `studentassistant.editor.versions`,
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
@@ -228,7 +229,8 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   ledger through the client's binding. There is no live text preview yet: `LLMClient` returns the
   final message only.
 - Entry point: the server's `POST /api/subjects/{s}/topics/{t}/notes/generate`
-  (`docs/modules/server.md`). The voice command "ya está, prepárame el tema" does not exist yet
+  (`docs/modules/server.md`) with `[editor] prepare_mode = "single"`; by default (`batched`) the
+  server runs `incorporate.incorporate_pending` instead (below). The voice command "ya está, prepárame el tema" does not exist yet
   (the command grammar is stt's).
 - `assemble_input(..., instruction=None)`: `instruction` replaces the closing request, so another
   task (the doubts resolution) reads the same, cached, input.
@@ -469,7 +471,7 @@ mode, and the student's message.
   changed), `commit`, `revision` (of the notes after the turn, `None` while there are none),
   `attempts`, `errors`, `warning`, `model`.
 - `await undo_last_revision(vault, subject, topic, *, sync, on_event=None) -> UndoResult`: the
-  latest applied turn not yet undone is reverted with `GitSync.revert_paths(commit, paths, ...)`
+  latest applied turn (a revision or, since #326, an incorporation) not yet undone is reverted with `GitSync.revert_paths(commit, paths, ...)`
   (a `git revert` of that commit restricted to its `paths`, so the ledger and conversation lines it
   carried stay) and committed as `Deshecho en <s>/<t>: <summary>`; `notes.undone` to `on_event`.
   Undoing again goes one turn further back. `UndoResult`: `undone_commit`, `summary`, `commit`,
@@ -485,7 +487,9 @@ mode, and the student's message.
   of kind `doubt` (a doubt asked in the chat, `doubt_chat_turns`: `pending_id`, `question` --
   also the `reply` --, `suggestions`, `options`, `doubt_refs`, `status`, `resolution`, `answer`;
   `applied` when its answer changed the notes) and `doubts_resolved` (a review's short line of
-  auto-resolved doubts, from its `pending.reviewed` record's `summary`: `reply`, `pending_ids`). The explanations are also in the
+  auto-resolved doubts, from its `pending.reviewed` record's `summary`: `reply`, `pending_ids`).
+  Since #326 also turns of kind `incorporate` (an `incorporation` record: `source_ids`, `message`,
+  `reply`, `summary`, `diff`, `commit`, `applied`, `warning`, undone like a revision turn). The explanations are also in the
   conversation the editor is given on a turn, and so are the student's own edits (the
   `student_edit` records of `direct_edit.py`, as "El estudiante editó él mismo los apuntes
   (#anchors)" plus the diff, cut at `STUDENT_EDIT_DIFF_CHARS`); `chat_history` leaves those out.
@@ -502,6 +506,84 @@ mode, and the student's message.
   the files first, `commit` is `None` and that turn cannot be undone. Nothing here streams to the
   web itself: that is the server's `POST .../notes/chat` (SSE) and the workspace stream
   (`docs/modules/server.md`).
+
+### Incorporating a few sources per request -- `incorporate.py`
+Incorporation into the document is iterative and asked in the chat (epic #311, #326): "incorpora
+la página 3", "incorpora las dos últimas". Each request is one small, separate `editor` call
+(Opus, prompt `editor_incorporate`) on the current notes plus **only** those sources -- never the
+whole topic at once. Recognising the request and resolving which pages it means is the chat
+router's (#327); it calls the functions below (the server's `NotesGenerator.incorporate`).
+- **States**: `source_status(vault, subject, topic) -> list[SourceStatus]` (blocking, reads only;
+  public for the chat router and `GET .../sources/status`): one per stored source, in catalogue
+  order (notes pages, book pages, PDFs, web pages, then pasted images), with `source_id`
+  (topic-relative), `kind`, `number` (from the file name), `label` («la página 3», «la página 12
+  del libro», «el PDF «tema.pdf»», «la web «…»»), `state` and `reason`. `apartada`: set aside by
+  capture triage (`sources.triage_status`), `reason` the Spanish reasons («borrosa», «repetida de
+  la página 1»); `incorporada`: the current notes cite it (a footnote definition links its file,
+  a PDF at any page, `cited_source_paths(notes)`); else `pendiente`.
+- `await incorporate_sources(vault, subject, topic, source_ids, *, client, sync, on_reply=None,
+  on_event=None, request=None, confirm_over_cap=False, clock=..., turn_id=None,
+  max_sources=3, max_page_images=20, max_attachment_bytes=24 MiB, live=None, host=None) ->
+  IncorporationResult`. `source_ids` are topic-relative (a PDF page's `#page=K` is dropped: the PDF
+  is the source), deduplicated. **Refused before any call** (`IncorporationError`, Spanish):
+  none (`NoSourcesError`), more than `max_sources` -- the server passes `[editor]
+  incorporate_max_sources`, default 3 -- (`TooManySourcesError`, suggesting smaller steps), a
+  source the topic lacks or a pasted image (`UnknownSourceError`), a set-aside one
+  (`SourceSetAsideError`: «La página N está apartada (<motivo>); recupérala antes si quieres
+  incorporarla.»). A source already cited may be incorporated again (the prompt says to refine,
+  not duplicate); a topic without notes starts from `# <topic title>`.
+- **Input** (`assemble_incorporation`, blocking), stable parts first: system = the prompt and the
+  topic block of `assemble_input`; one user message with the current notes (text and
+  `describe_sections` block map), the requested sources exactly as `assemble_input` gives them
+  (a page's transcription plus its image when `needs_image`, a PDF as its document or page
+  texts, a web page as its text, under the same student/supplementary labels), the transcript
+  segments of each capture's sidecar `transcript_window` in its own `session` (citable spans), the
+  open pending items whose refs name those sources (their captures' pages or source ids), the
+  catalogue of just those sources and the instruction, with one cache breakpoint at the end for
+  the re-asks. No other source, no whole-topic transcript, no digest.
+- **Answer**: a streamed Spanish reply (`on_reply` `reply.delta`/`reply.restart`, as a revision
+  turn) and one call of the strict tool `apply_edits` (`IncorporationOutput`: `ops` -- the edit
+  ops, `add_section` included --, `footnotes`, `summary`, `nothing_new` -- the requested sources
+  that add nothing new, said in the reply -- and `doubts`, `EditorDoubt`s as #325 defines).
+  **Checks**: a call is required; a summary; `nothing_new` names only requested sources; the
+  doubts pass `editor_doubt_errors` (a contradiction may also name a source the notes already
+  cite); the ops apply; the notes pass `validate(..., editor_written=True, previous=<the notes
+  before>)`; every requested source is cited by the new notes unless in `nothing_new`. Failures
+  are re-asked with the Spanish list, at most `MAX_REASKS` (2); past them nothing is applied
+  (`errors`, `warning`).
+- **Applied on the latest revision**, under the per-topic write lock (`notes_lock`), only when the
+  notes are still those the input was built from; else the editor is re-asked with the new notes
+  and block map (`NOTES_CHANGED_NOTE`), counting against `MAX_REASKS`. One commit `Apuntes de
+  <s>/<t>: incorporada la página 3` (`incorporadas la página 3 y la página 1 del libro`); no tag.
+  Its doubts are raised with `doubts.raise_doubts` (`live`, `host`) and so asked in the chat;
+  `on_event("notes.incorporated", <result without notes>)` when applied.
+- `IncorporationResult` (also the `incorporation` record of `conversations/editor.jsonl`, after
+  the `context` -- reason `incorporate`, `incorporated` ids --, `user`, `assistant` and
+  `validation` records): `subject`, `topic`, `turn_id`, `origin` (`typed` | `voice`), `request`
+  (`ChatRequestRef`), `source_ids`, `message` (the request's text, or «Incorpora la página 3.»),
+  `reply`, `applied`, `summary`, `ops`, `footnotes`, `nothing_new`, `notes_changed`, `doubts`,
+  `changed_sections`, `diff`, `notes`, `paths`, `commit`, `revision`, `attempts`, `errors`,
+  `warning`, `model`. `chat_history` shows it as a turn of kind `incorporate`;
+  `undo_last_revision` undoes it.
+- **The whole topic in small batches**: `await incorporate_pending(vault, subject, topic, *,
+  client, sync, batch_size=2, max_sources=3, on_event=None, on_progress=None, turns=None,
+  confirm_over_cap=False, clock=..., detect_contradictions=True, ..., live=None, host=None) ->
+  PendingIncorporationResult` runs `incorporate_sources` over the `pendiente` sources in order
+  (`pending_batches`: notes pages first, then book, PDF, web; pasted images never), one batch
+  after another, each its own call, commit and chat entry (`turns`, a `BatchTurns` with
+  `begin(source_ids) -> (turn_id, reply sink)` and `end(result, error)`), with
+  `on_progress({done, total, source_ids})` after each (the server's `incorporation.progress`). A
+  cost cap, a refusal, a failed call or a batch that could not be applied stops it with the done
+  ones kept (`stopped`, `remaining`, a Spanish `warning`; calling again continues) -- a failure
+  of the very first batch is raised. At the end, when the notes changed, the next notes version is
+  tagged (`GitSync.create_notes_tag`, as a generation does) and, with at least two sources not set
+  aside, `contradictions.detect_contradictions` runs (its failure or an unended session is only a
+  warning). Nothing pending: no call, `NOTHING_PENDING_WARNING`. `PendingIncorporationResult`:
+  `total`, `done`, `remaining`, `batches` (the `IncorporationResult`s), `stopped`,
+  `notes_changed`, `version`, `tag`, `commit`, `contradictions`, `doubts`, `revision`,
+  `attempts`, `warning`, `model`. The server's `NotesGenerator` runs it for "prepárame el tema"
+  (`prepare_notes` requests and `POST .../notes/generate`) unless `[editor] prepare_mode =
+  "single"` (default `"batched"`), with `[editor] incorporate_batch_size` (default 2).
 
 ### The student editing the document -- `direct_edit.py`
 The web's document editor (#316) saves the whole `apuntes.md` the student ended up with. No Claude

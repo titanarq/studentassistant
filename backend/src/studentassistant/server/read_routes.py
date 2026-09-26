@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.incorporate import SourceStatus, source_status
 from studentassistant.editor.notes_format import notes_revision
 from studentassistant.observer import (
     PendingItem,
@@ -155,6 +156,17 @@ class TopicSources(BaseModel):
     topic_id: str
     sources: list[TopicSourceItem] = Field(
         description="In `vault.list_sources` order: by kind, then by number."
+    )
+
+
+class TopicSourcesStatus(BaseModel):
+    """`GET /api/subjects/{subject_id}/topics/{topic_id}/sources/status`: each source's state
+    (`pendiente` | `incorporada` | `apartada`, `editor.incorporate.source_status`, #326)."""
+
+    subject_id: str
+    topic_id: str
+    sources: list[SourceStatus] = Field(
+        description="In catalogue order: notes pages, book pages, PDFs, web pages, pasted images."
     )
 
 
@@ -400,6 +412,18 @@ def read_router() -> APIRouter:
                 for source in sources
             ],
         )
+
+    @router.get(
+        "/subjects/{subject_id}/topics/{topic_id}/sources/status",
+        responses={404: {"description": "Unknown topic."}},
+    )
+    async def topic_sources_status(
+        request: Request, subject_id: SubjectId, topic_id: TopicId
+    ) -> TopicSourcesStatus:
+        vault = await _vault(request)
+        async with _not_found():
+            rows = await _read(source_status, vault, subject_id, topic_id)
+        return TopicSourcesStatus(subject_id=subject_id, topic_id=topic_id, sources=rows)
 
     @router.get(
         "/subjects/{subject_id}/topics/{topic_id}/notes",

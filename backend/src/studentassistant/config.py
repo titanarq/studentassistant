@@ -592,6 +592,9 @@ StudyChatRole = Literal["editor", "observer"]
 """Which Claude role answers the study screen's question chat (`[editor] study_chat_role`)."""
 
 
+PrepareMode = Literal["batched", "single"]
+
+
 class EditorSettings(BaseModel):
     """The tutor-editor (`[editor]`, `SA_EDITOR__*`)."""
 
@@ -602,6 +605,14 @@ class EditorSettings(BaseModel):
     # editor write the next open doubt is asked (the unreviewed ones first reviewed by the editor,
     # an Opus call). Off: nothing is asked in the chat; the doubts API still works.
     doubts_in_chat: bool = True
+    # Incremental incorporation (#326, `editor/incorporate.py`): the most sources one chat request
+    # incorporates in one editor call ("incorpora la página 3"; more is refused, asking for
+    # smaller steps), and the sources of each batch of "prepárame el tema" in batched mode.
+    incorporate_max_sources: int = Field(default=3, ge=1)
+    incorporate_batch_size: int = Field(default=2, ge=1)
+    # "Prepárame el tema": `batched` runs the pending sources in sequential small incorporations
+    # (`incorporate_pending`); `single` keeps the one-call whole-topic `generate_notes`.
+    prepare_mode: PrepareMode = "batched"
 
 
 class ObserverSettings(BaseModel):

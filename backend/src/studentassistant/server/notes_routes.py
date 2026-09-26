@@ -25,6 +25,16 @@ student confirms through `POST .../notes/generate` with `confirm_over_cap`.
 A generation that wrote the notes (not a draft) is a `notes.changed` (origin `generation`) on the
 topic's workspace stream (`workspace.py`), whichever way it was started (this route, a session
 end, or a spoken "prepárame el tema" through `assistant_requests.py`).
+
+**Batched mode** (#326, `[editor] prepare_mode = "batched"`, the default): a generation is
+`editor.incorporate.incorporate_pending` -- the topic's pending sources incorporated in
+sequential small batches of `[editor] incorporate_batch_size`, each batch a chat turn of kind
+`incorporate` on the workspace stream (`turn.started`, its reply, `turn.result`, `notes.changed`
+origin `editor`) followed by `incorporation.progress` `{done, total, source_ids}`; at the end,
+when something changed, the next notes version is tagged. Its result is answered as a
+`GenerationResult` (never a draft; `version`/`tag` only when the notes changed). `single` keeps
+the one-call `generate_notes`. `NotesGenerator.incorporate` is one incorporation of a few sources
+("incorpora la página 3") for the chat router (#327), under the caller's claim of the notes lock.
 """
 
 from __future__ import annotations
@@ -41,6 +51,14 @@ from pydantic import BaseModel
 from studentassistant import protocol
 from studentassistant.config import Settings
 from studentassistant.editor.generate import GenerationResult, generate_notes
+from studentassistant.editor.incorporate import (
+    IncorporationError,
+    IncorporationResult,
+    PendingIncorporationResult,
+    incorporate_pending,
+    incorporate_sources,
+)
+from studentassistant.editor.revise import ChatRequestRef, ReplySink
 from studentassistant.llm import (
     CostConfirmationRequiredError,
     LedgerBinding,
@@ -53,11 +71,21 @@ from studentassistant.observer import topic_digest
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
-from studentassistant.server.workspace import WorkspaceHub
+from studentassistant.server.workspace import (
+    INCORPORATION_PROGRESS,
+    TurnBroadcast,
+    WorkspaceHub,
+)
 
 if TYPE_CHECKING:
     from studentassistant.server.doubt_chat import DoubtChat
-from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, Vault, get_topic
+from studentassistant.vault import (
+    SubjectNotFoundError,
+    TopicNotFoundError,
+    Vault,
+    get_topic,
+    notes_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +216,7 @@ class NotesGenerator:
             finish("failed", detail=ERROR_DETAIL)
             raise
         finish("done", version=result.version, draft=result.draft, warning=result.warning)
-        if self.workspace is not None and not result.draft:
+        if self.workspace is not None and not result.draft and result.version is not None:
             self.workspace.notes_changed(
                 subject_id,
                 topic_id,
@@ -255,9 +283,50 @@ class NotesGenerator:
         finally:
             self.release(subject_id, topic_id)
 
-    async def _generate(
-        self, sessions: SessionService, subject_id: str, topic_id: str, confirm_over_cap: bool
-    ) -> GenerationResult:
+    async def incorporate(
+        self,
+        sessions: SessionService,
+        subject_id: str,
+        topic_id: str,
+        source_ids: list[str],
+        *,
+        on_reply: ReplySink | None = None,
+        request: ChatRequestRef | None = None,
+        turn_id: str | None = None,
+        confirm_over_cap: bool = False,
+    ) -> IncorporationResult:
+        """One incorporation of a few sources ("incorpora la página 3", #326) of a topic the
+        caller has `claim`ed (as `TURN_HOLDER`, like an editor chat turn); the chat router
+        (#327) calls it. The reply streams to `on_reply`; `notes.incorporated` goes on the bus
+        and the doubts to the live session as a revision turn's. Publishing the turn on the
+        workspace stream is the caller's (a `TurnBroadcast` of kind `incorporate`).
+
+        Raises what `editor.incorporate.incorporate_sources` raises (an `IncorporationError`
+        with a Spanish message for a refused request), and `VaultUnavailableError`.
+        """
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
+        return await incorporate_sources(
+            vault,
+            subject_id,
+            topic_id,
+            source_ids,
+            client=client,
+            sync=sync,
+            on_reply=on_reply,
+            on_event=publish,
+            request=request,
+            confirm_over_cap=confirm_over_cap,
+            turn_id=turn_id,
+            max_sources=self.settings.editor.incorporate_max_sources,
+            host=sessions.host,
+            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
+        )
+
+    async def _editor(
+        self, sessions: SessionService, subject_id: str, topic_id: str
+    ) -> tuple[Vault, Any, Any, Callable[[str, dict[str, Any]], Any]]:
+        """The vault, its sync, an `editor` client bound to the topic's ledger and the bus
+        publisher of the topic's active session."""
         vault = await sessions.open_vault()
         sync = sessions.sync
         if sync is None:  # pragma: no cover - the vault opens with its sync
@@ -277,6 +346,14 @@ class NotesGenerator:
             transport=self.transport,
             ledger=LedgerBinding(vault, subject_id, topic_id),
         )
+        return vault, sync, client, publish
+
+    async def _generate(
+        self, sessions: SessionService, subject_id: str, topic_id: str, confirm_over_cap: bool
+    ) -> GenerationResult:
+        if self.settings.editor.prepare_mode == "batched":
+            return await self._generate_batched(sessions, subject_id, topic_id, confirm_over_cap)
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
         return await generate_notes(
             vault,
             subject_id,
@@ -290,8 +367,91 @@ class NotesGenerator:
             live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
         )
 
+    async def _generate_batched(
+        self, sessions: SessionService, subject_id: str, topic_id: str, confirm_over_cap: bool
+    ) -> GenerationResult:
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
+        hub = self.workspace
+
+        def progress(payload: dict[str, Any]) -> None:
+            if hub is not None:
+                hub.publish(subject_id, topic_id, INCORPORATION_PROGRESS, payload)
+
+        settings = self.settings.editor
+        result = await incorporate_pending(
+            vault,
+            subject_id,
+            topic_id,
+            client=client,
+            sync=sync,
+            batch_size=settings.incorporate_batch_size,
+            max_sources=settings.incorporate_max_sources,
+            on_event=publish,
+            on_progress=progress,
+            turns=None if hub is None else _BatchTurns(hub, subject_id, topic_id),
+            confirm_over_cap=confirm_over_cap,
+            host=sessions.host,
+            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
+        )
+        return _as_generation(vault, result)
+
     def _now_ms(self) -> int:
         return int(self._clock().timestamp() * 1000)
+
+
+class _BatchTurns:
+    """Each batch of a batched "prepárame el tema" as a chat turn of kind `incorporate`."""
+
+    def __init__(self, hub: WorkspaceHub, subject_id: str, topic_id: str) -> None:
+        self.hub, self.subject_id, self.topic_id = hub, subject_id, topic_id
+        self._current: TurnBroadcast | None = None
+
+    def begin(self, source_ids: list[str]) -> tuple[str | None, ReplySink | None]:
+        broadcast = TurnBroadcast(
+            self.hub, self.subject_id, self.topic_id, origin="typed", kind="incorporate"
+        )
+        broadcast.started()
+        self._current = broadcast
+        return broadcast.turn_id, broadcast.reply
+
+    def end(self, result: IncorporationResult | None, error: BaseException | None) -> None:
+        broadcast, self._current = self._current, None
+        if broadcast is None:
+            return
+        if result is not None:
+            broadcast.result(result)
+        elif isinstance(error, IncorporationError):
+            broadcast.error(422, str(error))
+        elif isinstance(error, CostConfirmationRequiredError):
+            refused = cost_cap_error(error, CONFIRM_SENTENCE)
+            code = refused.code
+            broadcast.error(
+                refused.status_code, refused.detail, None if code is None else code.value
+            )
+        elif isinstance(error, RefusalError):
+            broadcast.error(502, REFUSED_DETAIL)
+        else:
+            broadcast.error(502, FAILED_DETAIL)
+
+
+def _as_generation(vault: Vault, result: PendingIncorporationResult) -> GenerationResult:
+    """A batched run answered as the `GenerationResult` the routes and the stream already use."""
+    path = notes_path(vault, result.subject, result.topic).relative_to(vault.path).as_posix()
+    return GenerationResult(
+        subject=result.subject,
+        topic=result.topic,
+        draft=False,
+        path=path,
+        version=result.version,
+        tag=result.tag,
+        commit=result.commit,
+        attempts=result.attempts,
+        warning=result.warning,
+        contradictions=result.contradictions,
+        doubts=result.doubts,
+        model=result.model or "",
+        revision=result.revision,
+    )
 
 
 def notes_router() -> APIRouter:
@@ -321,6 +481,8 @@ def notes_router() -> APIRouter:
             )
         except CostConfirmationRequiredError as error:
             raise cost_cap_error(error, CONFIRM_SENTENCE) from error
+        except IncorporationError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except RefusalError as error:
             raise HTTPException(status_code=502, detail=REFUSED_DETAIL) from error
         except LLMError as error:

@@ -14,11 +14,12 @@ The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
 - `request.detected` `{request_id, kind, summary, transcript}`: a spoken request was detected and
   queued (`transcript`: `session_id`, `segment_ids`, `t_start_ms`, `t_end_ms`, `text`).
 - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind}`: an editor turn starts
-  (`kind` `revise`, or `prepare_notes` for "prepárame el tema").
+  (`kind` `revise`, `prepare_notes` for "prepárame el tema", or `incorporate` for one
+  incorporation of a few sources, #326 -- each batch of a batched "prepárame el tema" is one).
 - `reply.delta` `{turn_id, text, attempt}` and `reply.restart` `{turn_id, attempt}`: the reply as
   it is written.
-- `turn.result`: the turn's result (`RevisionResult`, or `GenerationResult` for `prepare_notes`)
-  plus `turn_id`, `request_id` and `kind`.
+- `turn.result`: the turn's result (`RevisionResult`, `GenerationResult` for `prepare_notes`,
+  `IncorporationResult` for `incorporate`) plus `turn_id`, `request_id` and `kind`.
 - `turn.error` `{turn_id, request_id, status, detail, code?}`: the turn failed (`status` as the
   same failure over REST; `code` e.g. `cost_cap_reached`).
 - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
@@ -27,6 +28,8 @@ The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
   (one at a time, `doubt_chat.py`); `doubt.resolved` `{pending_id, status, resolution,
   notes_changed}`: it was answered or dismissed; `doubts.auto_resolved` `{pending_ids, summary}`:
   the editor settled those doubts from the sources, reported as one short line.
+- `incorporation.progress` `{done, total, source_ids}`: a batched "prepárame el tema" finished
+  one batch (`source_ids`); `done` of the `total` pending sources are incorporated.
 
 Delivery never waits for a subscriber: each subscription has a bounded queue, and when it is full
 the oldest `reply.delta` (else the oldest event) is dropped and counted in `dropped`.
@@ -57,6 +60,7 @@ NOTES_CHANGED = "notes.changed"
 DOUBT_ASKED = "doubt.asked"
 DOUBT_RESOLVED = "doubt.resolved"
 DOUBTS_AUTO_RESOLVED = "doubts.auto_resolved"
+INCORPORATION_PROGRESS = "incorporation.progress"
 WORKSPACE_EVENTS: tuple[str, ...] = (
     REQUEST_DETECTED,
     TURN_STARTED,
@@ -68,11 +72,12 @@ WORKSPACE_EVENTS: tuple[str, ...] = (
     DOUBT_ASKED,
     DOUBT_RESOLVED,
     DOUBTS_AUTO_RESOLVED,
+    INCORPORATION_PROGRESS,
 )
 """The events the workspace stream carries today (open: later tasks add kinds)."""
 
 NotesOrigin = Literal["editor", "user", "generation", "restore"]
-TurnKind = Literal["revise", "prepare_notes"]
+TurnKind = Literal["revise", "prepare_notes", "incorporate"]
 
 DEFAULT_QUEUE_SIZE = 1024
 
@@ -255,13 +260,14 @@ class TurnBroadcast:
         self._publish(event, {**data, "turn_id": self.turn_id})
 
     def result(self, result: BaseModel) -> None:
-        """`turn.result`; for a revision that changed the notes, `notes.changed` (`editor`)."""
+        """`turn.result`; for a revision or an incorporation that changed the notes,
+        `notes.changed` (`editor`)."""
         payload = result.model_dump(mode="json")
         self._publish(
             TURN_RESULT,
             {**payload, "turn_id": self.turn_id, "request_id": self.request_id, "kind": self.kind},
         )
-        if self.kind == "revise" and payload.get("notes_changed"):
+        if self.kind in ("revise", "incorporate") and payload.get("notes_changed"):
             self.hub.notes_changed(
                 self.subject_id,
                 self.topic_id,
@@ -287,6 +293,7 @@ __all__ = [
     "DOUBTS_AUTO_RESOLVED",
     "DOUBT_ASKED",
     "DOUBT_RESOLVED",
+    "INCORPORATION_PROGRESS",
     "NOTES_CHANGED",
     "REPLY_DELTA",
     "REPLY_RESTART",
