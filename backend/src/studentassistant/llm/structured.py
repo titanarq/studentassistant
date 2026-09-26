@@ -1,8 +1,10 @@
 """Structured outputs: a strict tool, `tool_choice: auto` and an instruction to call it (ADR-0004).
 
 Forced tool choice (`any`/`tool`) is rejected by Opus 5.5, so Claude is asked to call the tool;
-its input is parsed with `json` and validated against the caller's Pydantic model. A missing or
-invalid call is re-asked exactly once with the error; a second failure raises.
+its input is parsed with `loads_tolerant` (small JSON defects of a call written as text repaired,
+#320) and validated against the caller's Pydantic model. A missing or invalid call is re-asked
+with the error `client.structured_reasks` times (once on the API, twice on the claude-code
+backend, or `[llm] structured_reasks`); a failure after the last re-ask raises.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ INSTRUCTION_PROMPT = "structured-output"
 
 
 class StructuredResult[T: BaseModel](BaseModel):
-    """The validated value plus every response it took (one, or two after a re-ask)."""
+    """The validated value plus every response it took (one, plus one per re-ask)."""
 
     value: T
     responses: list[LLMResponse]
@@ -49,7 +51,7 @@ def _check(response: LLMResponse, tool_name: str, model: type[BaseModel]) -> tup
     if response.stop_reason == "max_tokens":
         return None, "the tool input was cut off by max_tokens; give a shorter complete answer"
     try:
-        data = json.loads(call.input_json)
+        data = call.parsed_input()
     except json.JSONDecodeError as error:
         return None, f"the tool input is not valid JSON: {error}"
     try:
@@ -85,7 +87,7 @@ async def structured[T: BaseModel](
     """Ask `client` for an `output` instance through the strict tool `tool_name`.
 
     Each underlying call (the re-ask included) is capped and recorded like `LLMClient.create`.
-    Raises `StructuredOutputError` when the re-ask fails too, `RefusalError` on a refusal.
+    Raises `StructuredOutputError` when the last re-ask fails too, `RefusalError` on a refusal.
     """
     instruction = load_prompt(INSTRUCTION_PROMPT).render(tool_name=tool_name)
     system_parts: list[Any] = (
@@ -96,7 +98,7 @@ async def structured[T: BaseModel](
     conversation = list(messages)
     responses: list[LLMResponse] = []
     reason = ""
-    for _ in range(2):  # the first attempt, then exactly one re-ask
+    for _ in range(1 + client.structured_reasks):  # the first attempt, then the re-asks
         response = await client.create(
             conversation,
             system=system_parts,

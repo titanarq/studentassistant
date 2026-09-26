@@ -1,4 +1,4 @@
-"""Structured outputs: strict tool + `tool_choice: auto` + instruction, validation, one re-ask."""
+"""Structured outputs: strict tool + `tool_choice: auto` + instruction, validation, re-asks."""
 
 from __future__ import annotations
 
@@ -125,6 +125,48 @@ def test_a_second_failure_raises_a_typed_error(settings: Settings) -> None:
     assert info.value.tool_name == "record_topic"
     assert len(fake.requests) == 2
     assert fake.pending == 1
+
+
+def test_a_repairable_malformed_input_is_parsed_without_a_reask(settings: Settings) -> None:
+    # #320: a missing `,` and a trailing `,` are repaired; the value is still validated.
+    fake = FakeClaude().reply_tool(
+        "record_topic",
+        '{"title": "Derivadas" "confidence": 0.9, "keywords": ["límite", "pendiente",],}',
+    )
+
+    result = ask(fake, settings)
+
+    assert result.value == Topic(**VALID)  # type: ignore[attr-defined]
+    assert len(fake.requests) == 1
+
+
+def test_structured_reasks_sets_the_number_of_reasks(settings: Settings) -> None:
+    settings = settings.model_copy(
+        update={"llm": settings.llm.model_copy(update={"structured_reasks": 2})}
+    )
+    fake = (
+        FakeClaude()
+        .reply_tool("record_topic", {"title": "x"})
+        .reply_tool("record_topic", '{"title": ')
+        .reply_tool("record_topic", VALID)
+    )
+
+    result = ask(fake, settings)
+
+    assert result.value == Topic(**VALID)  # type: ignore[attr-defined]
+    assert len(result.responses) == 3  # type: ignore[attr-defined]
+
+
+def test_the_transport_sets_the_default_number_of_reasks(settings: Settings) -> None:
+    fake = FakeClaude()
+    assert fake.client("observer", settings=settings).structured_reasks == 1
+    fake.default_structured_reasks = 2  # type: ignore[attr-defined]
+    fake.reply_tool("record_topic", {"title": "x"}).reply_tool("record_topic", {"title": "y"})
+    fake.reply_tool("record_topic", VALID)
+
+    result = ask(fake, settings)
+
+    assert len(result.responses) == 3  # type: ignore[attr-defined]
 
 
 def test_a_refusal_raises(settings: Settings) -> None:

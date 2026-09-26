@@ -16,9 +16,11 @@ never waits for Claude, and the bus never waits for the consumer, so capture is 
 Each answer must call the strict tool `apply_state_ops` (`tool_choice: auto` plus the instruction
 of the `observer` prompt, ADR-0004). Every op is parsed (`parse_op`) and validated against the
 current state (`validate_op`, in order, on a working copy); valid ones are published as
-`observer.state_op` events (origin `observer`). Invalid ones (or a missing call) are re-asked once,
-with the errors as the tool result; what is still invalid then is logged and dropped. The next
-batch waits until the consumer has folded the ops just published.
+`observer.state_op` events (origin `observer`). Invalid ones (or a missing call) are re-asked with
+the errors as the tool result, `client.structured_reasks` times (once on the API, twice on the
+claude-code backend, #320); what is still invalid then is logged and dropped. A call written as
+text is parsed tolerantly first (`ToolCall.parsed_input`), so a small JSON defect is no error.
+The next batch waits until the consumer has folded the ops just published.
 
 Caching: the system prompt and the topic block (subject, title, digest) plus the tool form the
 cached prefix; the conversation opens with the state at the start (`render_state`) and grows by
@@ -815,7 +817,10 @@ class ObserverLoop:
         working = observed.snapshot.state
         checked, working = self._check(response, working)
         published = await self._publish(observed, checked.ops)
-        if checked.errors or not checked.called:
+        reasks = observed.client.structured_reasks
+        for attempt in range(1, reasks + 1):
+            if not checked.errors and checked.called:
+                break
             reasons = checked.errors or [f"you did not call the `{TOOL_NAME}` tool"]
             observed.owed_results = [
                 (call.id, "Errors:\n" + "\n".join(reasons), True) for call in response.tool_calls
@@ -829,15 +834,22 @@ class ObserverLoop:
             retry = await self._ask(observed, {"role": "user", "content": content})
             if retry is None:
                 return
-            again, _ = self._check(retry, working)
+            again, working = self._check(retry, working)
             published += await self._publish(observed, again.ops)
-            if again.errors or not again.called:
+            if (again.errors or not again.called) and attempt == reasks:
                 logger.warning(
-                    "observer of session %s: dropped after one re-ask: %s",
+                    "observer of session %s: dropped after %s: %s",
                     observed.id,
+                    "one re-ask" if reasks == 1 else f"{reasks} re-asks",
                     "; ".join(again.errors or ["no apply_state_ops call"]),
                 )
             response, checked = retry, again
+        if reasks == 0 and (checked.errors or not checked.called):
+            logger.warning(
+                "observer of session %s: dropped without a re-ask: %s",
+                observed.id,
+                "; ".join(checked.errors or ["no apply_state_ops call"]),
+            )
         observed.owed_results = [
             (call.id, f"Applied {len(checked.ops)} ops.", False) for call in response.tool_calls
         ]

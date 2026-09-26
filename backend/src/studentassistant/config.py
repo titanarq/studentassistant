@@ -189,6 +189,10 @@ FAST_MAX_TOKENS = 16_000
 CAPABLE_MAX_TOKENS = 64_000
 # Attempts per call (the first one included) before a 429/5xx/connection error surfaces.
 DEFAULT_LLM_MAX_ATTEMPTS = 4
+# Re-asks of a failed strict-tool answer (#320) when `[llm] structured_reasks` is unset: a tool
+# call written as text (the claude-code backend) fails more often than an API one.
+DEFAULT_STRUCTURED_REASKS_API = 1
+DEFAULT_STRUCTURED_REASKS_CLAUDE_CODE = 2
 
 
 class LlmRoleSettings(BaseModel):
@@ -327,6 +331,10 @@ class LlmSettings(BaseModel):
     # the vault, and never the key itself in `config.toml`.
     api_key_file: Path | None = None
     max_attempts: int = Field(default=DEFAULT_LLM_MAX_ATTEMPTS, ge=1)
+    # Re-asks of an invalid or missing strict-tool call (`structured`, the observer) before it is
+    # given up; unset, `DEFAULT_STRUCTURED_REASKS_CLAUDE_CODE` on the claude-code backend and
+    # `DEFAULT_STRUCTURED_REASKS_API` otherwise (`LLMClient.structured_reasks`).
+    structured_reasks: int | None = Field(default=None, ge=0)
     # Cost caps in USD (no cap when unset): the calls of one session, and every call of the
     # current UTC day across the whole vault. Only calls bound to a ledger count and are capped.
     max_usd_per_session: float | None = Field(default=None, ge=0)
