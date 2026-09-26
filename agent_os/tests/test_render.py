@@ -11,6 +11,7 @@ Pure filesystem. This file must not request the `engine` or `db_sandbox` fixture
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from agent_os.cli import AGENT_OS_DIR
 from agent_os.lib import ProjectConfig, load_agents_config
@@ -48,6 +49,8 @@ def test_token_values_covers_every_token_the_issue_names():
         "__HUMAN_LOGIN__": "octocat",
         "__TEST_COMMAND__": "scripts/test.sh",
         "__MODULE_DOCS__": "docs/modules",
+        "__REPO__": "owner/name",
+        "__MERGE_METHOD__": "merge",
     }
 
 
@@ -110,3 +113,48 @@ def test_the_real_agent_templates_render_clean_against_the_example_config(name):
     template = (AGENT_TEMPLATES_DIR / name).read_text()
     rendered = render_agent_template(template, example)
     assert "__" not in rendered, f"{name} still carries a token after rendering"
+
+
+# ---- #88: the control plane's merge step carries the host's configured merge method ----------
+
+
+def _rendered_control_plane(project: ProjectConfig) -> str:
+    return render_agent_template((AGENT_TEMPLATES_DIR / "control-plane.md").read_text(), project)
+
+
+@pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
+def test_control_plane_merges_by_rest_with_the_configured_method(method):
+    rendered = _rendered_control_plane(_project(merge_method=method))
+    assert "gh api -X PUT repos/owner/name/pulls/N/merge" in rendered
+    assert f"-f merge_method={method}" in rendered
+    # Pinned to the head that was verified, so a push after the review cannot ride along.
+    assert "-f sha=" in rendered
+    assert "gh api -X DELETE repos/owner/name/git/refs/heads/" in rendered
+
+
+def test_control_plane_merge_method_defaults_to_a_merge_commit():
+    rendered = _rendered_control_plane(_project())
+    assert "-f merge_method=merge" in rendered
+
+
+def test_control_plane_no_longer_hardcodes_gh_pr_merge():
+    # `gh pr merge` goes through GraphQL (secondary rate limit, #70) and fixed `--merge`, which a
+    # host that squashes had to hand-edit away -- an edit `agent-os-install --force` then wiped.
+    rendered = _rendered_control_plane(_project(merge_method="squash"))
+    assert "gh pr merge" not in rendered
+    assert "--merge" not in rendered
+
+
+@pytest.mark.parametrize("value", ["fast-forward", "Squash", ""])
+def test_an_unknown_merge_method_is_refused_when_the_config_loads(value):
+    with pytest.raises(ValidationError, match="merge_method"):
+        _project(merge_method=value)
+
+
+def test_an_unknown_merge_method_in_agents_yaml_is_refused_by_load_agents_config(tmp_path):
+    example = (AGENT_OS_DIR / "config.example.yaml").read_text()
+    assert "\n  merge_method: merge\n" in example, "config.example.yaml documents the key"
+    broken = tmp_path / "agents.yaml"
+    broken.write_text(example.replace("\n  merge_method: merge\n", "\n  merge_method: octopus\n"))
+    with pytest.raises(ValidationError, match="merge_method"):
+        load_agents_config(broken)

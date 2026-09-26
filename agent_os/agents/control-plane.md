@@ -94,10 +94,23 @@ A PR merges only when **all** of these hold; verify each one yourself, do not tr
 5. The PR body closes exactly the issue it was dispatched for, and the module doc changed if
    behaviour or a contract changed.
 
-Then `gh pr merge N --merge --delete-branch`, `issues.py move <issue> done`, and comment the
-outcome on the issue in two lines. If any condition fails: `gh pr review N --request-changes` with
-the failing condition and the evidence, leave `status:review`, and report it. Never merge to
-"unblock" a round; the next round waits.
+Then merge through REST, pinned to the head SHA you verified the five conditions on
+(`gh pr view N --json headRefOid,headRefName`, read before you started checking):
+
+```bash
+gh api -X PUT repos/__REPO__/pulls/N/merge -f merge_method=__MERGE_METHOD__ -f sha=<verified head sha>
+gh api -X DELETE repos/__REPO__/git/refs/heads/<head branch>
+```
+
+The method is the host's `project.merge_method`; never pick another one by hand. REST, not the
+`gh pr` merge subcommand: that one goes through GraphQL and its secondary rate limit. A `409` means
+the head moved after you verified it: that is a new PR state, so verify all five conditions again
+on the new head -- never retry the merge with the new SHA. A `405` means GitHub refuses the merge
+(method not allowed on the repository, branch protection, a conflict): report it, do not work
+around it. Delete the branch only after the merge answered `"merged": true`. Then
+`issues.py move <issue> done`, and comment the outcome on the issue in two lines. If any condition
+fails: `gh pr review N --request-changes` with the failing condition and the evidence, leave
+`status:review`, and report it. Never merge to "unblock" a round; the next round waits.
 
 Condition 2 cuts both ways. A review that fails a criterion is a claim about two things — the code
 and the criterion — and the criterion was written before the code existed, so the work itself can

@@ -22,6 +22,8 @@ project:
     unreviewed_pull_request: "[studentassistant] Revisión perdida: la PR #{pr} de la incidencia #{issue} no tiene revisión ni un {role} en marcha — puede haber muerto sin dejar rastro"
     backend_worktree_dirty: "[studentassistant] Backend bloqueado: el worktree {worktree} de {backend} tiene trabajo sin confirmar que ninguna ejecución limpiará ({paths}); {issue_count} incidencia(s) lista(s) esperan y ninguna ejecución en él puede empezar ni reanudarse hasta que lo confirmes o lo limpies"
   test_command: scripts/test.sh
+  # agent-os#88: the control plane's REST merge uses this method (squash keeps main linear).
+  merge_method: squash
   # agent-os#41: provision every agent worktree (validator worktree + `worker_task.sh <b> init`).
   # Replaces the default [.venv, .env]: this monorepo has no root .venv; backend/.venv is built.
   worktree_links: [.env]
