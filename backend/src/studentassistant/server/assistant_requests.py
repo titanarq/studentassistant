@@ -57,6 +57,7 @@ from studentassistant.llm import (
 )
 from studentassistant.observer import ASSISTANT_REQUEST_KIND, AssistantRequest
 from studentassistant.server.bus import BusError, SessionBus, Subscription
+from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.notes_routes import (
     CONFIRM_SENTENCE,
@@ -124,8 +125,11 @@ class AssistantRequestConsumer:
         *,
         claim_poll: float = CLAIM_POLL_SECONDS,
         claim_timeout: float = CLAIM_TIMEOUT_SECONDS,
+        doubts: DoubtChat | None = None,
     ) -> None:
         self.bus, self.sessions, self.generator, self.hub = bus, sessions, generator, hub
+        self.doubts = doubts
+        """Asks the next doubt after a turn that changed the notes (#325); None: nothing asked."""
         self.claim_poll, self.claim_timeout = claim_poll, claim_timeout
         self._subscription: Subscription | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -264,6 +268,8 @@ class AssistantRequestConsumer:
             broadcast.started()
             result = await handler(self, queued, broadcast)
             broadcast.result(result)
+            if self.doubts is not None:
+                self.doubts.after(queued.subject_id, queued.topic_id, result)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -321,6 +327,10 @@ class AssistantRequestConsumer:
             on_event=self._publisher(queued.subject_id, queued.topic_id),
             request=queued.reference(),
             turn_id=broadcast.turn_id,
+            live=None
+            if self.doubts is None
+            else self.doubts.live(queued.subject_id, queued.topic_id),
+            host=self.sessions.host,
         )
 
     async def _prepare(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:

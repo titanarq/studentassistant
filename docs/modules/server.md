@@ -51,8 +51,9 @@ is no background loop.
 `gateway` (the `SessionGateway` of the session WebSocket), `recorder` (`None` unless one was
 given), `observer` (the `ObserverLoop`, `None` without an `llm_transport`), `notes` (the
 `NotesGenerator` of the notes generation route, `None` without an `llm_transport`), `workspace`
-(the `WorkspaceHub` of the workspace stream, always) and `assistant_requests` (the
-`AssistantRequestConsumer`, `None` without an `llm_transport`).
+(the `WorkspaceHub` of the workspace stream, always), `assistant_requests` (the
+`AssistantRequestConsumer`, `None` without an `llm_transport`) and `doubt_chat` (the `DoubtChat`
+that asks the doubts in the workspace chat, always; below).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -390,8 +391,15 @@ Routes registered today:
   protocol, for the pending panel (#80): thin over `editor.doubts` (`docs/modules/editor.md`),
   over the vault and `GitSync` of the `SessionService`, host `SessionService.host` for the review
   sessions. One doubts operation per topic at a time; reviewing and answering also hold the
-  topic's notes lock with "prepárame el tema" (`NotesGenerator.claim`) and call the `editor` role
-  through `llm_transport`, bound to the topic's ledger.
+  topic's notes lock with "prepárame el tema" (`NotesGenerator.claim`, as a `TURN_HOLDER`: they
+  apply their edits under the short write lock on the latest notes, so a student save interleaves
+  and the editor is re-asked on the new notes, #325) and call the `editor` role through
+  `llm_transport`, bound to the topic's ledger. With an unended session of the topic that is
+  active on this backend the events go to that live session through the bus
+  (`DoubtChat.live`), so review, answer and dismiss work during a session (#325). An answer or a
+  dismissal is broadcast on the workspace stream (`doubt.resolved`, plus `notes.changed` origin
+  `editor` when the notes changed), a review's auto-resolutions as `doubts.auto_resolved`; then
+  the chat asks the next doubt (`DoubtChat.schedule`).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/doubts` -> `DoubtsQueue`: `subject`,
     `topic`, `open_count`, `current` (the id of the open doubt to ask next, `null` when none) and
     `items`, open first, each `{item, question, outcome}`: `item` is the observer's `PendingItem`
@@ -400,20 +408,20 @@ Routes registered today:
     evidence: [{source_id, quote}], answer, suggestion, chosen_source, discarded, keep_discarded,
     notes_changed, warning, resolved_at}`. Reads only.
   - `POST .../doubts/review`, optional body `{"confirm_over_cap": false}` -> `ReviewResult`
-    (`auto_resolved`, `asked`, `notes_changed`, `session_id`, `commit`, `attempts`, `warning`,
-    `model`): the editor auto-resolves what the sources answer (cited) and writes a question for
+    (`auto_resolved`, `asked`, `notes_changed`, `summary`, `revision`, `session_id`, `commit`,
+    `attempts`, `warning`, `model`): the editor auto-resolves what the sources answer (cited) and writes a question for
     every other open doubt. The web calls it after "prepárame el tema".
   - `POST .../doubts/{pending_id}/answer`, body `{"suggestion": 1}` (1-based) or
     `{"answer": "..."}` or, for a contradiction, `{"source_id": "sources/notes/page-001.jpg",
     "keep_discarded": true}` (an `answer` may go with either), plus `confirm_over_cap` ->
     `ResolutionResult` (`subject`, `topic`, `pending_id`, `status` `resolved`, `resolution`,
-    `notes_changed`, `session_id`, `commit`, `attempts`, `warning`, `model`).
+    `notes_changed`, `revision`, `session_id`, `commit`, `attempts`, `warning`, `model`).
   - `POST .../doubts/{pending_id}/dismiss`, no body -> `ResolutionResult` with `status`
     `dismissed`; never calls Claude, so it works without `llm_transport`.
   - Errors, Spanish `detail` plus `code` where noted: an unknown topic or doubt 404 (`"No existe
     esa duda en este tema."`); a doubt already closed (`doubt_closed`, `"Esa duda ya está
-    cerrada."`), a topic with an unended session (`session_open`, `"Este tema tiene una sesión
-    sin terminar: ..."`), a review before the notes exist, another doubts or notes operation of
+    cerrada."`), a topic with an unended session this backend cannot write to -- not the active
+    one -- (`session_open`, `"Este tema tiene una sesión sin terminar: ..."`), a review before the notes exist, another doubts or notes operation of
     the topic running, or a reached cost cap (`cost_cap_reached`) until the body says
     `confirm_over_cap` 409; an answer that does not fit the question 422; no
     `llm_transport` 503 for review and answer; a Claude refusal or failure 502; a vault that
@@ -541,10 +549,37 @@ Routes registered today:
   - `turn.error` `{turn_id, request_id, status, detail, code?}`;
   - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
     notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that
-    wrote the notes, whichever way it started: `generation`; a restore: `restore`).
+    wrote the notes, whichever way it started: `generation`; a restore: `restore`; a doubt's
+    answer or a review's auto-resolution: `editor`);
+  - `doubt.asked` `{pending_id, question, suggestions, options: [{source_id, says}], refs}`: the
+    chat asks one open doubt (#325; `refs` are the source ids it is about);
+  - `doubt.resolved` `{pending_id, status: resolved|dismissed, resolution, notes_changed}`: a doubt
+    was answered or dismissed (`POST .../doubts/{id}/answer|dismiss`);
+  - `doubts.auto_resolved` `{pending_ids, summary}`: the editor settled those doubts from the
+    sources itself; `summary` is the one short chat line.
   A slow subscriber never blocks a publisher: past 1024 queued events the oldest `reply.delta`
   (else the oldest event) is dropped. Errors before the stream: an unknown topic 404, a vault
   that cannot be opened 503. Needs the bearer check like every non-exempt route.
+- **Doubts in the workspace chat** (`server/doubt_chat.py`, `DoubtChat`, `app.state.doubt_chat`,
+  #325): the doubts are asked in the chat **one at a time**, never written into the notes. After
+  every editor write that changed the notes or raised doubts -- a typed turn (`revise_routes.py`),
+  a spoken one (`assistant_requests.py`), "prepárame el tema" (`NotesGenerator`), a doubt answered,
+  dismissed or reviewed (`doubts_routes.py`) -- the topic is `schedule`d and an asker task runs
+  (one per topic; a schedule meanwhile runs it once more). It does not take the notes lock, so the
+  student's next turn is never refused because of it, and it waits for nothing while "prepárame el
+  tema" rewrites the notes (the generation schedules it again). It asks nothing while a doubt asked
+  in the chat is open or without notes (`editor.doubts.ask_plan`); otherwise the relevant open
+  doubts without a question (at most `REVIEW_BATCH`, 5) are first reviewed by the editor
+  (`review_doubts(pending_ids=...)`: those the sources settle are auto-resolved, one
+  `doubts.auto_resolved` line), then the first relevant open doubt with a question is asked
+  (`ask_in_chat`, `doubt.asked`). Items whose pages are all set aside are never asked. A failed
+  review (a reached cap, a Claude failure) is logged and the doubt asked with a generic question.
+  Its events go to the topic's live session when it is active (`DoubtChat.live`, a `LiveSink`
+  publishing on the bus with the given origin), else to a review session. The chat's history
+  (`GET .../notes/chat`) shows the asked doubts as turns of kind `doubt` and the auto-resolutions
+  as `doubts_resolved`. `[editor] doubts_in_chat = false` turns the asking off (the doubts API and
+  the announcements of its routes stay). Routing a chat message ("la segunda", "pone «escrita»")
+  to the asked doubt is #327; the web renders the turns in #329.
 - **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over
   `editor.tutor` (`docs/modules/editor.md`), over the vault and `GitSync` of the
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only

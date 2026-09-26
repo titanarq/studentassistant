@@ -110,6 +110,16 @@ Doubts accumulate without interrupting the student; only a counter reaches the p
   `vault.write_pending_review` by the live loop after each change and by the loader.
 - **Prompt**: the `observer` prompt describes each kind with a Spanish example and asks not to
   re-add an open doubt, and to close one (`resolve_pending`) only when the session settled it.
+- **Doubts from the editor** (#325): the editor never writes a doubt into the notes; what an
+  editor write leaves unresolved (an illegible word, sources that disagree, something missing) is
+  an `add_pending` of origin `editor` (`editor.doubts.raise_doubts`, `created_by: editor`), merged
+  by this same rule into an open item it duplicates, followed by a `pending.question`; the
+  workspace chat asks the open items one at a time (`in_chat` questions). With an unended session
+  of the topic these events, and the editor's `resolve_pending` closes, go to **that live
+  session** through the server's session bus (so the live loop folds them in `seq` order with the
+  session's own events, and the pending count updates), never to a review session, whose events
+  would fold before the session's later ones; without one they go to a review session as before.
+  Nothing changes in the fold itself.
 - **Web**: `GET /api/subjects/{subject_id}/topics/{topic_id}/pending` (server module).
 - The topic list's `pending_count` (#147) and the summary's `open_pending` are
   `len(open_pending())` of this same fold, so they count merged doubts once.

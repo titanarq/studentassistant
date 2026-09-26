@@ -47,6 +47,7 @@ from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.doubts import LiveSink
 from studentassistant.editor.explain import (
     MAX_QUOTE_CHARS,
     BlockAnchor,
@@ -76,6 +77,7 @@ from studentassistant.llm import (
 )
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import caller_speaks_error_codes, cost_cap_error
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
@@ -179,6 +181,10 @@ def revise_router() -> APIRouter:
 
         return publish
 
+    def live(request: Request, subject_id: str, topic_id: str) -> LiveSink | None:
+        chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
+        return None if chat is None else chat.live(subject_id, topic_id)
+
     @router.get("/api/subjects/{subject_id}/topics/{topic_id}/notes/chat")
     async def history(request: Request, subject_id: SubjectId, topic_id: TopicId) -> ChatHistory:
         vault, _sync = await open_topic(request, subject_id, topic_id)
@@ -216,6 +222,9 @@ def revise_router() -> APIRouter:
                 queue.put_nowait(sse("result", result.model_dump(mode="json")))
                 if broadcast is not None:
                     broadcast.result(result)
+                chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
+                if chat is not None:
+                    chat.after(subject_id, topic_id, result)
             except Exception as error:
                 status, detail, code = turn_error(error)
                 if status == 500:
@@ -303,6 +312,8 @@ def revise_router() -> APIRouter:
                 on_event=publisher(request, subject_id, topic_id),
                 confirm_over_cap=body.confirm_over_cap,
                 turn_id=broadcast.turn_id,
+                live=live(request, subject_id, topic_id),
+                host=request.app.state.sessions.host,
             )
 
         return stream_turn(request, generator, vault, subject_id, topic_id, "chat", work, broadcast)

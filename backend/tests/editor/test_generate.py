@@ -20,6 +20,7 @@ from generate_topic import (
 )
 from studentassistant.config import Settings
 from studentassistant.editor.generate import (
+    DOUBTS_TOOL,
     MAX_REASKS,
     NOTES_GENERATED_KIND,
     GenerationResult,
@@ -142,7 +143,9 @@ def test_the_request_uses_the_editor_role_and_the_generate_prompt(
     assert "Asignatura: Matemáticas" in topic_block and "Tema: Derivadas" in topic_block
     assert "Modo de fidelidad: estricto" in topic_block and STYLE_GUIDE in topic_block
     assert request.system[-1]["cache_control"] == {"type": "ephemeral"}
-    assert request.tools == [] and request.tool_choice is None
+    # The only tool is `report_doubts`, offered, never forced (#325).
+    assert [tool["name"] for tool in request.tools] == [DOUBTS_TOOL]
+    assert request.tool_choice == {"type": "auto"}
 
 
 def test_the_input_puts_the_sources_first_and_the_transcript_by_section(

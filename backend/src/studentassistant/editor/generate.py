@@ -29,16 +29,24 @@ and is capped and recorded in the topic's cost ledger through the client's `Ledg
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from studentassistant.editor.contradictions import detect_contradictions as _detect
-from studentassistant.editor.doubts import OpenSessionError
+from studentassistant.editor.doubts import (
+    EditorDoubt,
+    LiveSink,
+    OpenSessionError,
+    editor_doubt_errors,
+    raise_doubts,
+)
 from studentassistant.editor.inputs import (
     MAX_ATTACHMENT_BYTES,
     MAX_PAGE_IMAGES,
@@ -47,7 +55,7 @@ from studentassistant.editor.inputs import (
     assemble_input,
 )
 from studentassistant.editor.notes_format import notes_revision, topic_source_resolver, validate
-from studentassistant.llm import LLMClient, LLMResponse, RefusalError, load_prompt
+from studentassistant.llm import LLMClient, LLMResponse, RefusalError, load_prompt, strict_tool
 from studentassistant.vault import (
     ConversationRecord,
     GitSync,
@@ -63,6 +71,7 @@ logger = logging.getLogger(__name__)
 PROMPT_NAME = "editor_generate"
 CONVERSATION_NAME = "editor"
 NOTES_GENERATED_KIND = "notes.generated"
+DOUBTS_TOOL = "report_doubts"
 MAX_REASKS = 2
 """How many times a document that fails the validator is sent back before it is kept as a draft."""
 
@@ -95,6 +104,10 @@ class GenerationResult(BaseModel):
         default_factory=list,
         description="Ids of the `contradiction` pending doubts raised after writing the notes.",
     )
+    doubts: list[str] = Field(
+        default_factory=list,
+        description="Ids of the pending doubts the editor reported with the notes (#325).",
+    )
     model: str
     revision: str | None = Field(
         default=None,
@@ -103,8 +116,31 @@ class GenerationResult(BaseModel):
     )
 
 
+class DoubtsReport(BaseModel):
+    """The input of the `report_doubts` tool: what the document leaves unresolved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    doubts: list[EditorDoubt] = Field(default_factory=list)
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _reported_doubts(response: LLMResponse) -> tuple[list[EditorDoubt], list[str]]:
+    """The doubts of the answer's `report_doubts` calls and the errors of a malformed one."""
+    doubts: list[EditorDoubt] = []
+    errors: list[str] = []
+    for call in response.tool_calls:
+        if call.name != DOUBTS_TOOL:
+            errors.append(f"La única herramienta disponible es `{DOUBTS_TOOL}`.")
+            continue
+        try:
+            doubts.extend(DoubtsReport.model_validate(json.loads(call.input_json)).doubts)
+        except (json.JSONDecodeError, ValidationError) as error:
+            errors.append(f"La entrada de `{DOUBTS_TOOL}` no es válida: {error}")
+    return doubts, errors
 
 
 def notes_text(response: LLMResponse) -> str:
@@ -125,9 +161,20 @@ def _reask(errors: list[str]) -> str:
     return (
         "El validador de procedencia ha rechazado el documento por estos motivos:\n\n"
         f"{listing}\n\nCorrígelos y responde otra vez con el documento completo de"
-        " `notes/apuntes.md` y nada más. No borres contenido de los apuntes para evitar un error:"
-        " cítalo."
+        " `notes/apuntes.md` y nada más (y, si queda algo sin resolver, llama después a"
+        f" `{DOUBTS_TOOL}` con todas las dudas). No borres contenido de los apuntes para evitar un"
+        " error: cítalo."
     )
+
+
+def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
+    text = _reask(errors)
+    content: list[dict[str, Any]] = [
+        {"type": "tool_result", "tool_use_id": call.id, "is_error": True, "content": text}
+        for call in response.tool_calls
+    ]
+    content.append({"type": "text", "text": text})
+    return {"role": "user", "content": content}
 
 
 async def generate_notes(
@@ -145,6 +192,7 @@ async def generate_notes(
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
     detect_contradictions: bool = True,
     host: str | None = None,
+    live: LiveSink | None = None,
 ) -> GenerationResult:
     """Write the topic's notes with the editor, validate, save, commit and tag them.
 
@@ -157,6 +205,13 @@ async def generate_notes(
     the sources (`contradictions.detect_contradictions`, a second call); the ids it raises are in
     `contradictions`. A failure there, or an unended session of the topic, never loses the notes:
     it is a Spanish `warning` of the result.
+
+    The document never carries doubts (#325): no `[[?...]]` mark in what it writes (the blocks of
+    the previous notes it keeps as they were may keep theirs), no alternative readings. Every
+    unresolved point goes in the `report_doubts` tool the editor may call after the document;
+    with a valid version they become pending items with their questions (`doubts.raise_doubts`,
+    in the topic's live session through `live` when it has an unended one), whose ids are the
+    result's `doubts`.
 
     Raises:
         CostConfirmationRequiredError: a cost cap is reached and `confirm_over_cap` is false;
@@ -177,6 +232,13 @@ async def generate_notes(
         max_attachment_bytes=max_attachment_bytes,
     )
     source_exists = topic_source_resolver(vault, subject_slug, topic_slug)
+    previous = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug)
+    tool = strict_tool(
+        DOUBTS_TOOL,
+        "Report every point the document leaves unresolved (an illegible or uncertain word,"
+        " sources that disagree, something missing), so the student is asked about them.",
+        DoubtsReport,
+    )
 
     async def record(kind: str, **fields: Any) -> None:
         entry = ConversationRecord(time=clock(), kind=kind, **fields)
@@ -199,6 +261,7 @@ async def generate_notes(
 
     text = ""
     errors: list[str] = []
+    doubts: list[EditorDoubt] = []
     model = client.model
     attempts = 0
     for attempt in range(1, MAX_REASKS + 2):
@@ -206,6 +269,8 @@ async def generate_notes(
         response = await client.create(
             messages,
             system=assembled.system,
+            tools=[tool],
+            tool_choice={"type": "auto"},
             prompt_hash=prompt.hash,
             confirm_over_cap=confirm_over_cap,
         )
@@ -233,7 +298,18 @@ async def generate_notes(
         if response.stop_reason == "refusal":
             raise RefusalError("the editor declined to write the notes")
         text = notes_text(response)
-        errors = await asyncio.to_thread(validate, text, assembled.fidelity_mode, source_exists)
+        errors = await asyncio.to_thread(
+            partial(
+                validate,
+                text,
+                assembled.fidelity_mode,
+                source_exists,
+                editor_written=True,
+                previous=previous,
+            )
+        )
+        doubts, doubt_errors = _reported_doubts(response)
+        errors = [*errors, *doubt_errors, *editor_doubt_errors(doubts, assembled)]
         if response.stop_reason == "max_tokens":
             errors = [TRUNCATED_ERROR, *errors]
         if not text:
@@ -243,7 +319,7 @@ async def generate_notes(
             break
         if attempt > MAX_REASKS:
             break
-        reask = {"role": "user", "content": [{"type": "text", "text": _reask(errors)}]}
+        reask = _reask_turn(response, errors)
         messages = [*messages, response.assistant_turn(), reask]
         await record("user", message=reask, model=model)
 
@@ -251,6 +327,16 @@ async def generate_notes(
         _save, vault, sync, subject_slug, topic_slug, assembled.topic_title, text, errors
     )
     result = result.model_copy(update={"attempts": attempts, "model": model})
+    if not result.draft and doubts:
+        try:
+            raised = await raise_doubts(
+                vault, subject_slug, topic_slug, doubts, sync=sync, host=host, live=live
+            )
+        except Exception:
+            logger.exception("could not record the doubts of %s/%s", subject_slug, topic_slug)
+            result = result.model_copy(update={"warning": DOUBTS_NOT_RECORDED_WARNING})
+        else:
+            result = result.model_copy(update={"doubts": raised})
     if (
         detect_contradictions
         and not result.draft
@@ -283,6 +369,10 @@ async def generate_notes(
     return result
 
 
+DOUBTS_NOT_RECORDED_WARNING = (
+    "Los apuntes están guardados, pero no se han podido guardar las dudas que ha encontrado el"
+    " editor."
+)
 OPEN_SESSION_WARNING = (
     "Los apuntes están guardados, pero no se han buscado contradicciones entre tus fuentes porque"
     " el tema tiene una sesión sin terminar: termínala y vuelve a preparar el tema."

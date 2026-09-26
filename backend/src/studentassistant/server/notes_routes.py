@@ -33,7 +33,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel
@@ -54,6 +54,9 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.server.workspace import WorkspaceHub
+
+if TYPE_CHECKING:
+    from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, Vault, get_topic
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,9 @@ class NotesGenerator:
         self.transport = transport
         self.workspace = workspace
         """Where a generation that wrote the notes publishes `notes.changed` (None: nowhere)."""
+        self.doubts: DoubtChat | None = None
+        """The app's doubts asker (#325): a generation's doubts go to the live session through
+        it, and it asks the next doubt after a generation that wrote the notes."""
         self._clock = clock
         self._running: dict[tuple[str, str], str] = {}
         self._statuses: dict[tuple[str, str], protocol.NotesGenerationStatus] = {}
@@ -192,6 +198,8 @@ class NotesGenerator:
                 if result.version is not None
                 else "Apuntes preparados.",
             )
+        if self.doubts is not None and not result.draft:
+            self.doubts.schedule(subject_id, topic_id)
         return result
 
     def start_background(
@@ -278,6 +286,8 @@ class NotesGenerator:
             digest=topic_digest,
             on_event=publish,
             confirm_over_cap=confirm_over_cap,
+            host=sessions.host,
+            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
         )
 
     def _now_ms(self) -> int:

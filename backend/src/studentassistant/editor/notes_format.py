@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -60,6 +61,9 @@ _LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 _RULE = re.compile(r"^[ \t]{0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
 _LINK = re.compile(r"^\[([^\]]+)\]\(([^()\s]+)\)[ \t]*$")
 _TIME = r"\d{2}:[0-5]\d:[0-5]\d"
+_DOUBT_MARK = re.compile(r"\[\[\?[^\]]*\]\]")
+"""An uncertain (`[[?palabra]]`) or illegible (`[[?]]`) word: a page transcription's mark, which
+the editor never writes into the notes (#325)."""
 _TARGETS: dict[str, re.Pattern[str]] = {
     "notes": re.compile(r"^sources/notes/page-(?P<page>\d{3,})\.[A-Za-z0-9]+$"),
     "book": re.compile(r"^sources/book/page-(?P<page>\d{3,})\.[A-Za-z0-9]+$"),
@@ -468,10 +472,18 @@ def _continues_list(blocks: list[Block], kind: BlockKind, body: str) -> bool:
 SourceExists = Callable[[str], bool]
 
 
+def has_doubt_mark(text: str) -> bool:
+    """Whether `text` holds a `[[?...]]` mark (an uncertain or illegible word)."""
+    return _DOUBT_MARK.search(text) is not None
+
+
 def validate(
     notes: NotesDocument | str,
     mode: FidelityMode = "estricto",
     source_exists: SourceExists | None = None,
+    *,
+    editor_written: bool = False,
+    previous: NotesDocument | str | None = None,
 ) -> list[str]:
     """Every way `notes` breaks ADR-0005, as Spanish messages suitable for re-asking the editor.
 
@@ -482,9 +494,17 @@ def validate(
     any `[^ia]` in `estricto` mode; a section without anchor, a repeated anchor and a repeated
     footnote definition. An empty list means the notes are valid.
     `source_exists=None` skips only the existence check. The notes are never changed.
+
+    `editor_written=True` (a write of the editor: generation, revision turn, doubt answer,
+    incorporation) also reports a `[[?...]]` mark in every block the write adds or changes:
+    doubts never go into the notes, they are raised as pending doubts instead (#325). A block
+    whose text is exactly one of `previous`'s (the notes before the write) keeps its legacy
+    marks until it is touched. The student's own saves are validated without it.
     """
     document = parse(notes) if isinstance(notes, str) else notes
     errors: list[str] = []
+    if editor_written:
+        errors.extend(_doubt_mark_errors(document, previous))
     definitions: dict[str, FootnoteDefinition] = {}
     for definition in document.footnotes:
         if definition.label in definitions:
@@ -542,6 +562,27 @@ def validate(
         if source_exists is not None and cited is not None and not source_exists(cited):
             errors.append(
                 f"Nota al pie [^{label}]: la fuente {provenance.source_id} no existe en el tema."
+            )
+    return errors
+
+
+def _doubt_mark_errors(document: NotesDocument, previous: NotesDocument | str | None) -> list[str]:
+    """A `[[?...]]` mark in a block that is not, text for text, one of the previous notes'."""
+    before = parse(previous) if isinstance(previous, str) else previous
+    untouched: Counter[str] = Counter(
+        block.text.strip() for _where, block in (_located_blocks(before) if before else [])
+    )
+    errors: list[str] = []
+    for where, block in _located_blocks(document):
+        text = block.text.strip()
+        if untouched[text] > 0:
+            untouched[text] -= 1
+            continue
+        if block.kind != "footnotes" and has_doubt_mark(block.text):
+            errors.append(
+                f"{where}: tiene una marca de duda ([[?…]]). En los apuntes no se escriben"
+                " dudas: escribe la lectura que mejor apoyan tus fuentes (primero los apuntes del"
+                " estudiante) o deja fuera ese fragmento, y comunica la duda en `doubts`."
             )
     return errors
 

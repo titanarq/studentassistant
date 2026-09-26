@@ -34,6 +34,7 @@ from fastapi.testclient import TestClient
 
 from github_fakes import LocalHost, bare_repo
 from studentassistant.config import (
+    EditorSettings,
     ObserverSettings,
     ServerSettings,
     Settings,
@@ -159,7 +160,11 @@ def _build_original(
         stt=SttSettings(mode="client", provider="web-speech", language="es"),
         llm_transport=claude,
         # The request detector (#314) would share the observer fake's script.
-        llm_settings=Settings(observer=ObserverSettings(request_detection="off")),
+        # The doubts chat (#325) is left out: it would review the observer's doubts too.
+        llm_settings=Settings(
+            observer=ObserverSettings(request_detection="off"),
+            editor=EditorSettings(doubts_in_chat=False),
+        ),
     )
     base = f"/api/subjects/{SUBJECT}/topics/{TOPIC}/notes"
 

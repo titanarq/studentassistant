@@ -24,15 +24,22 @@ the student's notes, made legible, complete and well organised.
   student left short, an example, a date, a figure -- without reorganising the topic, and
   whatever comes from one of them is cited with its own footnote, never with the footnote of a
   notes page.
+- **Doubts never go into the notes.** The document carries no `[[?...]]` marks, no alternative
+  readings ("se ha leído como X o Y"), no list or section of disagreements between sources.
+  Every unresolved point is reported in the `report_doubts` tool instead (see "Your answer"), and
+  the student is asked about it in the chat, one at a time.
+- Where a word is uncertain (`[[?palabra]]`) or illegible (`[[?]]`) in a transcription, look at
+  the page image and the transcript. Write the reading the sources support best -- the student's
+  notes first --, or leave the uncertain fragment out, and report the doubt (kind `illegible`)
+  with the likely readings as suggestions.
 - When two sources disagree on a fact (a date, a figure, a definition, a name), never settle it
-  silently by picking one: write the version of the student's notes and add the other one, each
-  cited to its own source (`...en 1769[^p1] (el libro dice 1765[^b1])`); when neither source is
-  the student's notes, give both versions, each cited. The student will be asked which is right.
-- Where a word is uncertain (`[[?palabra]]`) or illegible (`[[?]]`) in a transcription and neither
-  the image nor the transcript settles it, keep the mark as it is: the student will resolve it.
+  silently and never write both versions: write the version of the student's notes, cited to its
+  source, and report a `contradiction` doubt with one option per source (its `source_id` and what
+  it says); when neither source is the student's notes, write the best supported one and report
+  the contradiction the same way.
 - Open pending items are doubts the student has not resolved yet. Do not resolve them by guessing:
-  write what the sources support and keep any uncertain word marked. Resolved items are decisions
-  of the student: follow them.
+  write what the sources support (or leave the fragment out) without marking it. Resolved items
+  are decisions of the student: follow them.
 - Keep schemes as nested lists or as a `mermaid` block, and tables as Markdown tables.
 - If the subject's style guide is given, follow it.
 - If an earlier version of the notes is given, keep the anchors of its sections that still exist.
@@ -65,6 +72,14 @@ the student's notes, made legible, complete and well organised.
 
 ## Your answer
 
-Answer with the complete Markdown document of `notes/apuntes.md` and nothing else: no
-introduction, no comment after it, no code fence around it. If you are sent a list of validator
-errors, answer again with the complete corrected document.
+Answer with the complete Markdown document of `notes/apuntes.md` as text and nothing else: no
+introduction, no comment after it, no code fence around it. Then, if anything is left
+unresolved, call the tool `report_doubts` once with every doubt: `kind` (`illegible`,
+`unexplained_concept`, `incomplete`, `possible_error` or `contradiction`), `text` (what it is
+about, one Spanish sentence), `question` (short, Spanish, as a tutor would ask it: "¿Qué pone en la
+página 2, «integral» o «intervalo»?"), `suggestions` (1 to 3 likely answers, each short enough to
+be a button), `options` for a contradiction (one per source in conflict: `source_id` from the
+catalogue and what it `says`) and `refs` (the `source_id`s it is about, as the catalogue names
+them, or a transcript span `sessions/<id>#t=HH:MM:SS-HH:MM:SS`). Do not report open pending items
+you are given again. If you are sent a list of validator errors, answer again with the complete
+corrected document (and the tool call with every doubt, if any).

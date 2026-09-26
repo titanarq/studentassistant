@@ -45,13 +45,13 @@ from studentassistant.editor.doubts import (
     SourceOption,
     _assemble_with,
     _citable,
+    _commit_events,
     _Conversation,
     _Event,
-    _require_no_open_session,
+    _require_writable,
     _state,
     _Strict,
     _Task,
-    _write,
 )
 from studentassistant.editor.inputs import (
     MAX_ATTACHMENT_BYTES,
@@ -206,7 +206,7 @@ async def detect_contradictions(
             written but the conversation records.
         VaultError, ObserverStateError: the topic cannot be read.
     """
-    await asyncio.to_thread(_require_no_open_session, vault, subject_slug, topic_slug)
+    await asyncio.to_thread(_require_writable, vault, subject_slug, topic_slug, None)
     state = await asyncio.to_thread(_state, vault, subject_slug, topic_slug)
     assembled, prompt_hash = await _assemble_with(
         PROMPT_NAME,
@@ -294,15 +294,13 @@ async def detect_contradictions(
     if events:
         count = len(raised)
         noun = "contradicción nueva" if count == 1 else "contradicciones nuevas"
-        session_id, commit = await asyncio.to_thread(
-            _write,
+        session_id, commit = await _commit_events(
             vault,
             sync,
             subject_slug,
             topic_slug,
             host=host or socket.gethostname(),
             events=events,
-            notes=None,
             message=f"Contradicciones en {subject_slug}/{topic_slug}: {count} {noun} entre fuentes",
         )
     result = ContradictionsResult(

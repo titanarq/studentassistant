@@ -212,7 +212,11 @@ async def produce_case(
         stt=_stt(case, settings),
         sources=settings.sources,
         llm_transport=transport,
-        llm_settings=settings,
+        # The doubts chat (#325) would review the observer's doubts with extra editor calls
+        # after the generation; the eval measures the observer and the notes, not those.
+        llm_settings=settings.model_copy(
+            update={"editor": settings.editor.model_copy(update={"doubts_in_chat": False})}
+        ),
     )
     speed = settings.eval.speed
     async with AsgiTransport(app) as client:

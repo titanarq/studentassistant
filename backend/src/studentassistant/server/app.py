@@ -50,6 +50,7 @@ from studentassistant.server.bus import SessionBus
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
+from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.errors import install_error_handler
 from studentassistant.server.exam_routes import exam_router
@@ -216,6 +217,8 @@ def create_app(
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     # The study workspace's live stream, per topic (`workspace.py`, `workspace_routes.py`).
     app.state.workspace = WorkspaceHub()
+    # Doubts asked in the workspace chat one at a time (#325, `doubt_chat.py`).
+    app.state.doubt_chat = DoubtChat(app.state.sessions, app.state.workspace)
     app.state.assistant_requests = None
     app.state.observer = None
     app.state.requests = None
@@ -235,9 +238,16 @@ def create_app(
             )
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
         app.state.notes = NotesGenerator(llm_settings, llm_transport, workspace=app.state.workspace)
+        app.state.doubt_chat.generator = app.state.notes
+        app.state.doubt_chat.enabled = llm_settings.editor.doubts_in_chat
+        app.state.notes.doubts = app.state.doubt_chat
         # Spoken requests to the assistant -> editor turns, per topic in order (#315).
         app.state.assistant_requests = AssistantRequestConsumer(
-            app.state.bus, app.state.sessions, app.state.notes, app.state.workspace
+            app.state.bus,
+            app.state.sessions,
+            app.state.notes,
+            app.state.workspace,
+            doubts=app.state.doubt_chat,
         )
         # Study materials: the generator role (`generators_routes.py`).
         app.state.materials = MaterialGenerators(llm_settings, llm_transport)
@@ -393,6 +403,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await requests.stop()
         if assistant_requests is not None:
             await assistant_requests.stop()
+        await app.state.doubt_chat.stop()
         app.state.workspace.close()
         notes: NotesGenerator | None = app.state.notes
         if notes is not None:

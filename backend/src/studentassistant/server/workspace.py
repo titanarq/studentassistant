@@ -23,6 +23,10 @@ The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
   same failure over REST; `code` e.g. `cost_cap_reached`).
 - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
   topic's `apuntes.md` changed.
+- `doubt.asked` `{pending_id, question, suggestions, options, refs}`: the chat asks one open doubt
+  (one at a time, `doubt_chat.py`); `doubt.resolved` `{pending_id, status, resolution,
+  notes_changed}`: it was answered or dismissed; `doubts.auto_resolved` `{pending_ids, summary}`:
+  the editor settled those doubts from the sources, reported as one short line.
 
 Delivery never waits for a subscriber: each subscription has a bounded queue, and when it is full
 the oldest `reply.delta` (else the oldest event) is dropped and counted in `dropped`.
@@ -50,6 +54,9 @@ REPLY_RESTART = "reply.restart"
 TURN_RESULT = "turn.result"
 TURN_ERROR = "turn.error"
 NOTES_CHANGED = "notes.changed"
+DOUBT_ASKED = "doubt.asked"
+DOUBT_RESOLVED = "doubt.resolved"
+DOUBTS_AUTO_RESOLVED = "doubts.auto_resolved"
 WORKSPACE_EVENTS: tuple[str, ...] = (
     REQUEST_DETECTED,
     TURN_STARTED,
@@ -58,6 +65,9 @@ WORKSPACE_EVENTS: tuple[str, ...] = (
     TURN_RESULT,
     TURN_ERROR,
     NOTES_CHANGED,
+    DOUBT_ASKED,
+    DOUBT_RESOLVED,
+    DOUBTS_AUTO_RESOLVED,
 )
 """The events the workspace stream carries today (open: later tasks add kinds)."""
 
@@ -274,6 +284,9 @@ class TurnBroadcast:
 
 
 __all__ = [
+    "DOUBTS_AUTO_RESOLVED",
+    "DOUBT_ASKED",
+    "DOUBT_RESOLVED",
     "NOTES_CHANGED",
     "REPLY_DELTA",
     "REPLY_RESTART",
