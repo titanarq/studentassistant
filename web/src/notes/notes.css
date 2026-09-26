@@ -105,6 +105,19 @@
   text-underline-offset: 0.2em;
 }
 
+/* A pasted image (#316), shown from the topic's sources. */
+.notes-image {
+  display: block;
+  max-width: 100%;
+  margin: var(--space-2) 0;
+  border-radius: var(--radius-s);
+}
+
+.notes-image-missing {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
 .notes-table {
   overflow-x: auto;
   margin-bottom: var(--space-4);

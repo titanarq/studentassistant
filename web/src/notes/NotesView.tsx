@@ -30,6 +30,8 @@ export interface NotesViewProps {
   onAskWhy?: (block: Block, section: string | null, number: number) => void;
   /** The "¿Por qué?" buttons are disabled (the editor is busy). */
   askDisabled?: boolean;
+  /** The URL an image's `src` is shown from; `null` (or no resolver) shows its text instead. */
+  resolveImage?: (src: string) => string | null;
 }
 
 const refId = (label: string, n: number) => `fnref-${label}-${n}`;
@@ -75,6 +77,7 @@ export default function NotesView({
   changedSections,
   onAskWhy,
   askDisabled = false,
+  resolveImage,
 }: NotesViewProps) {
   const numbers = numbering(tree);
   const definitions = new Map(tree.footnotes.map((f) => [f.label, f.text]));
@@ -113,6 +116,16 @@ export default function NotesView({
               {node.text}
             </span>
           );
+        case "image": {
+          const src = resolveImage?.(node.src) ?? null;
+          return src === null ? (
+            <span key={k} className="notes-image-missing">
+              [Imagen: {node.alt}]
+            </span>
+          ) : (
+            <img key={k} className="notes-image" src={src} alt={node.alt} />
+          );
+        }
         case "link": {
           const href = safeHref(node.href);
           const children = inline(node.children, `${k}.`);
