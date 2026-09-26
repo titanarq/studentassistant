@@ -368,6 +368,64 @@ async def test_an_answer_without_the_tool_is_reasked_then_dropped(
     assert observer_ops(session) == []
 
 
+async def test_a_repairable_malformed_call_is_applied_without_a_reask(
+    loop: ObserverLoop, bus: SessionBus, session: Session, fake: FakeClaude
+) -> None:
+    # #320: a call written as text (the claude-code backend) missing a `,` between two ops.
+    fake.reply_tool(
+        TOOL_NAME,
+        '{"ops": [\n  {"op": "add_section", "section_id": "sec-1", "title": "Membrana"}\n'
+        '   {"op": "assign_segments", "section_id": "sec-1", "segment_ids": ["seg-1"]},\n]}',
+    )
+    await segment(bus, session, 1, "La membrana rodea la célula.")
+    await segment(bus, session, 2, "Es semipermeable.")
+    await idle(loop, session.id)
+
+    assert len(fake.requests) == 1
+    assert [op["op"] for op in observer_ops(session)] == ["add_section", "assign_segments"]
+
+
+async def test_structured_reasks_sets_how_often_the_observer_reasks(
+    bus: SessionBus, session: Session, fake: FakeClaude, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = Settings(
+        llm=LlmSettings(structured_reasks=2),
+        observer=ObserverSettings(batch_segments=2, batch_speech_seconds=1000),
+    )
+    loop = ObserverLoop(
+        bus,
+        bus.attached,
+        settings=settings.observer,
+        client_factory=default_client_factory(settings, fake),
+    )
+    bad = {"op": "link_capture", "capture_id": "nope", "segment_ids": ["seg-1"]}
+    fake.reply_tool(TOOL_NAME, '{"ops": [{"op": "note", "text": "a"')  # cut off: unusable
+    fake.reply_tool(TOOL_NAME, ops_reply(bad))
+    fake.reply_tool(TOOL_NAME, ops_reply({"op": "note", "text": "uno", "segment_ids": []}))
+    fake.reply_tool(TOOL_NAME, ops_reply(bad))
+    fake.reply_tool(TOOL_NAME, ops_reply(bad))
+    fake.reply_tool(TOOL_NAME, ops_reply(bad))
+    loop.start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="studentassistant.observer.live"):
+            await segment(bus, session, 1, "uno")
+            await segment(bus, session, 2, "dos")
+            await idle(loop, session.id)
+            # The second re-ask is answered correctly: nothing is dropped.
+            assert len(fake.requests) == 3
+            assert "not valid JSON" in json.dumps(fake.requests[1].messages[-1])
+            assert [op["text"] for op in observer_ops(session)] == ["uno"]
+            assert not any("dropped" in record.message for record in caplog.records)
+
+            await segment(bus, session, 3, "tres")
+            await segment(bus, session, 4, "cuatro")
+            await idle(loop, session.id)
+        assert len(fake.requests) == 6
+        assert any("dropped after 2 re-asks" in record.message for record in caplog.records)
+    finally:
+        await asyncio.wait_for(loop.stop(), WAIT)
+
+
 async def test_a_cost_cap_pauses_the_observer_and_keeps_the_batch(
     bus: SessionBus, session: Session, fake: FakeClaude
 ) -> None:

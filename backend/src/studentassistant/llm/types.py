@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from studentassistant.config import Effort
+from studentassistant.llm.json_repair import loads_tolerant
 
 Role = Literal["observer", "transcriber", "editor", "generator"]
 ROLES: tuple[Role, ...] = ("observer", "transcriber", "editor", "generator")
@@ -30,15 +31,16 @@ class Usage(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """One `tool_use` block. `input_json` is the serialized input; parse it with `json`."""
+    """One `tool_use` block. `input_json` is the serialized input; parse it with `parsed_input`."""
 
     id: str
     name: str
     input_json: str
 
     def parsed_input(self) -> Any:
-        """The input as Python data (`json.loads`); raises `json.JSONDecodeError` if malformed."""
-        return json.loads(self.input_json)
+        """The input as Python data (`loads_tolerant`: small defects of a call written as text are
+        repaired, #320); raises `json.JSONDecodeError` if it is still malformed."""
+        return loads_tolerant(self.input_json)
 
 
 class LLMRequest(BaseModel):

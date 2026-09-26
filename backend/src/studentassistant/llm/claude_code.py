@@ -52,7 +52,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from studentassistant.config import ClaudeCodeSettings
+from studentassistant.config import DEFAULT_STRUCTURED_REASKS_CLAUDE_CODE, ClaudeCodeSettings
 from studentassistant.llm.errors import (
     LLMAPIError,
     LLMConnectionError,
@@ -60,6 +60,7 @@ from studentassistant.llm.errors import (
     LLMRateLimitError,
     LLMServerError,
 )
+from studentassistant.llm.json_repair import loads_tolerant
 from studentassistant.llm.transport import TextSink
 from studentassistant.llm.types import Billing, LLMRequest, LLMResponse, Usage
 
@@ -266,8 +267,10 @@ _TOOL_NAME = re.compile(r'"name"\s*:\s*"([^"]+)"')
 def parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]] | None:
     """`(prose before the call, calls)` when `text` is a tool-call reply, else `None`.
 
-    A call whose JSON is malformed keeps its raw input as a string, so the caller reports the
-    exact JSON error (as `structured` does) instead of "you did not call the tool".
+    The call is parsed with `loads_tolerant`, so fences, surrounding prose and small defects (a
+    missing or trailing `,`, an unescaped inner quote) are repaired. A call whose JSON is still
+    malformed keeps its raw input as a string, so the caller reports the exact JSON error (as
+    `structured` does) instead of "you did not call the tool".
     """
     marker = text.find('"tool_calls"')
     if marker < 0:
@@ -279,7 +282,7 @@ def parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]] | None:
     prose = _FENCE_OPENER.sub("", text[:start]).strip()  # a ```json fence around the call
     raw = text[start : end + 1] if end > start else text[start:]  # cut off: no closing brace
     try:
-        data = json.loads(raw)
+        data = loads_tolerant(raw)  # a small defect (a missing `,`, #320) is repaired
     except json.JSONDecodeError:
         names = _TOOL_NAME.findall(raw)
         if not names:
@@ -288,11 +291,21 @@ def parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]] | None:
     if not isinstance(data, dict) or not isinstance(data.get("tool_calls"), list):
         return None
     calls = [
-        {"name": call["name"], "input": call.get("input", {})}
+        {"name": call["name"], "input": _call_input(call.get("input", {}))}
         for call in data["tool_calls"]
         if isinstance(call, dict) and isinstance(call.get("name"), str)
     ]
     return (prose, calls) if calls else None
+
+
+def _call_input(value: Any) -> Any:
+    """A call's input; one written as a JSON string (`"input": "{...}"`) is parsed too."""
+    if isinstance(value, str) and value.lstrip()[:1] in ("{", "["):
+        try:
+            return loads_tolerant(value)
+        except json.JSONDecodeError:
+            return value
+    return value
 
 
 # -- the transport ------------------------------------------------------------------------------
@@ -528,6 +541,9 @@ class ClaudeCodeTransport:
     so conversations are found again across requests. `spawn` replaces
     `asyncio.create_subprocess_exec` and `monotonic` the clock (tests).
     """
+
+    # A tool call written as text is malformed more often than an API one (#320).
+    default_structured_reasks = DEFAULT_STRUCTURED_REASKS_CLAUDE_CODE
 
     def __init__(
         self,

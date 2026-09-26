@@ -7,7 +7,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from studentassistant.config import Effort, LlmRoleSettings, LlmSettings, Settings
+from studentassistant.config import (
+    DEFAULT_STRUCTURED_REASKS_API,
+    Effort,
+    LlmRoleSettings,
+    LlmSettings,
+    Settings,
+)
 from studentassistant.llm.backend import default_transport
 from studentassistant.llm.caching import cache_stable_prefix, system_blocks
 from studentassistant.llm.cost import Clock, LedgerBinding, check_caps, record_call, utc_now
@@ -73,6 +79,15 @@ class LLMClient:
     @property
     def effort(self) -> Effort:
         return self.settings.effort
+
+    @property
+    def structured_reasks(self) -> int:
+        """How many times a failed strict-tool answer is re-asked: `[llm] structured_reasks`, or
+        the transport's `default_structured_reasks` (the claude-code backend's is higher, #320)."""
+        if self.llm_settings.structured_reasks is not None:
+            return self.llm_settings.structured_reasks
+        default = getattr(self.transport, "default_structured_reasks", None)
+        return default if isinstance(default, int) else DEFAULT_STRUCTURED_REASKS_API
 
     def build_request(
         self,

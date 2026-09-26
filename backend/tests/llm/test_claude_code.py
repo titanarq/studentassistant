@@ -194,8 +194,9 @@ def test_structured_goes_through_emulated_tools_with_one_repair(
     assert "not valid JSON" in repair
 
 
-def test_structured_gives_up_after_the_repair(fake: FakeClaudeCli, settings: Settings) -> None:
-    fake.reply("No sé.").reply("Sigo sin saber.")
+def test_structured_gives_up_after_two_repairs(fake: FakeClaudeCli, settings: Settings) -> None:
+    # Two re-asks by default on this backend (#320), then the typed error.
+    fake.reply("No sé.").reply("Sigo sin saber.").reply("Tampoco.")
     transport = ClaudeCodeTransport(fake.settings())
     client = get_client("generator", settings=settings, transport=transport)
 
@@ -209,6 +210,31 @@ def test_structured_gives_up_after_the_repair(fake: FakeClaudeCli, settings: Set
 
     with pytest.raises(StructuredOutputError):
         run(go)
+
+
+def test_structured_repairs_a_call_missing_a_comma(fake: FakeClaudeCli, settings: Settings) -> None:
+    # The case of #320's log (`Expecting ',' delimiter`), fenced and followed by prose.
+    fake.reply(
+        'Aquí va.\n```json\n{"tool_calls": [{"name": "answer", "input": {\n'
+        '  "topic": "Derivadas"\n  "extra": 1\n}}]}\n```\nListo.'
+    )
+    transport = ClaudeCodeTransport(fake.settings())
+    client = get_client("generator", settings=settings, transport=transport)
+    assert client.structured_reasks == 2
+
+    async def go() -> Any:
+        try:
+            return await structured(
+                client, [user("?")], Answer, tool_name="answer", tool_description="The topic"
+            )
+        finally:
+            await transport.aclose()
+
+    result = run(go)
+
+    assert result.value == Answer(topic="Derivadas")
+    assert len(result.responses) == 1
+    assert result.responses[0].content[0] == {"type": "text", "text": "Aquí va."}
 
 
 def test_text_is_streamed_but_a_tool_call_is_not(fake: FakeClaudeCli, settings: Settings) -> None:
@@ -534,6 +560,18 @@ def test_a_bound_call_records_the_reported_cost_as_subscription(
         (
             '{"tool_calls": [{"name": "a", "input": {',
             ("", [{"name": "a", "input": '{"tool_calls": [{"name": "a", "input": {'}]),
+        ),
+        (
+            '{"tool_calls": [{"name": "a", "input": {"x": 1\n "y": [1, 2,]}}]}',
+            ("", [{"name": "a", "input": {"x": 1, "y": [1, 2]}}]),
+        ),
+        (
+            '{"tool_calls": [{"name": "a", "input": {"t": "dijo "hola" y se fue"}}]}\nFin.',
+            ("", [{"name": "a", "input": {"t": 'dijo "hola" y se fue'}}]),
+        ),
+        (
+            '{"tool_calls": [{"name": "a", "input": "{\\"x\\": 1}"}]}',
+            ("", [{"name": "a", "input": {"x": 1}}]),
         ),
         ('{"tool_calls": []}', None),
         ('{"other": 1}', None),

@@ -159,9 +159,11 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
 - **Answer**: the strict tool `apply_state_ops` (`ApplyStateOps`: `ops: list[StateOp]`, each
   op's `op` a required enum; `state_ops_tool()`), `tool_choice: auto`. Each op is parsed and
   validated in order against the current state; valid ones are published as
-  `observer.state_op` (origin `observer`). Malformed or inapplicable ops, or no tool call, are
-  re-asked once (the errors go back as an `is_error` tool result); what is still invalid is
-  logged and dropped. Every `tool_use` gets its `tool_result` at the start of the next user turn.
+  `observer.state_op` (origin `observer`). The tool input is parsed tolerantly
+  (`ToolCall.parsed_input()`, #320), so a call with a small JSON defect is applied as is.
+  Malformed or inapplicable ops, or no tool call, are re-asked `client.structured_reasks` times
+  (once on the API, twice on the claude-code backend, `[llm] structured_reasks`; the errors go
+  back as an `is_error` tool result); what is still invalid is logged and dropped. Every `tool_use` gets its `tool_result` at the start of the next user turn.
 - **Caching**: tools + system are the cached prefix; each request also marks the newest block of
   the conversation, which grows append-only by one user turn and one answer per call.
 - **Conversation file**: `conversations/observer-<session-id>.jsonl` through

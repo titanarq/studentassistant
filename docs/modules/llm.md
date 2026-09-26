@@ -29,6 +29,12 @@ surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant aut
 `studentassistant serve` exports it from the key file `setup` stores (`llm.api_key_file`, see
 `docs/modules/infra.md`) when the environment has none.
 
+`[llm] structured_reasks` (unset by default): how many times an invalid or missing strict-tool
+call is re-asked (by `structured` and the observer) before it is given up. Unset, it is the
+transport's `default_structured_reasks`: 2 for `ClaudeCodeTransport`, 1 for the API (and any
+transport without the attribute, `FakeClaude` included). `LLMClient.structured_reasks` is the
+resolved value.
+
 ### Backend: the API or Claude Code (`[llm] backend`)
 
 `[llm] backend` (`SA_LLM__BACKEND`) is `api`, `claude-code` or `auto` (default).
@@ -64,8 +70,12 @@ subscription, with no polling and no re-sent conversation:
 - Client tools (`structured`'s strict tool, the observer's and the editor's tools) are described
   in the system prompt (name, description, input schema) with the instruction to answer a call as
   one JSON object `{"tool_calls": [{"name", "input"}]}`; such a reply becomes `tool_use` blocks
-  (ids `toolu_cc_...`, `stop_reason: tool_use`, a malformed one keeps its raw input string so
-  `structured` reports the JSON error and re-asks once). `tool_result` blocks go back as text,
+  (ids `toolu_cc_...`, `stop_reason: tool_use`). The call is parsed with
+  `json_repair.loads_tolerant` (#320): fences and prose around it are dropped and small defects
+  are repaired where `json` reports them, one at a time (a missing `,` between members or
+  elements, a trailing `,`, an unescaped `"` inside a string, raw control characters), and an
+  `input` written as a JSON string is parsed too. One that is still malformed (e.g. cut off)
+  keeps its raw input string so `structured` reports the JSON error and re-asks. `tool_result` blocks go back as text,
   images and documents as blocks. Server tools (`web_search_*`, `web_fetch_*`) raise
   `LLMAPIError` before anything starts: web sources need the `api` backend.
 - `on_text` gets the text deltas (`stream_event` `text_delta`); a reply that looks like a tool
@@ -129,7 +139,8 @@ No price or cap lives anywhere but these config defaults.
   never sends `thinking`, and refuses a forced `tool_choice` (`any`/`tool`) with `ValueError`.
   `build_request(...)` returns the `LLMRequest` without sending it.
 - `LLMResponse`: `content` (raw blocks; `assistant_turn()` to append it back), `text`,
-  `tool_calls` (`ToolCall.input_json`, `parsed_input()`), `stop_reason`, `usage`
+  `tool_calls` (`ToolCall.input_json`, `parsed_input()`: tolerant, raises `json.JSONDecodeError`
+  only for unusable JSON), `stop_reason`, `usage`
   (input/output/cache-creation/cache-read tokens), `model`.
 - Caching: with `cache=True` (default) the last system block (or, with no system, the last
   tool) gets `cache_control: ephemeral`, so tools + system form the cached prefix and the messages
@@ -138,8 +149,9 @@ No price or cap lives anywhere but these config defaults.
 - `structured(client, messages, OutputModel, *, tool_name, tool_description, system=None,
   max_tokens=None, prompt_hash=None, confirm_over_cap=False) -> StructuredResult` (`.value`, `.responses`): a strict tool
   (`strict_tool`) with `tool_choice: auto` and the `structured-output` prompt as instruction;
-  the input is parsed with `json` and validated with Pydantic; one re-ask carrying the error,
-  then `StructuredOutputError`. `RefusalError` on `stop_reason: refusal`.
+  the input is parsed with `ToolCall.parsed_input()` (`loads_tolerant`, so a repairable defect
+  is no error) and always validated with Pydantic; `client.structured_reasks` re-asks carrying
+  the error (1 on the API, 2 on claude-code), then `StructuredOutputError`. `RefusalError` on `stop_reason: refusal`.
 - Server-side web tools (`web.py`): `web_search_tool(settings=None, *, max_uses=None,
   allowed_domains=None, blocked_domains=None)` and `web_fetch_tool(settings=None, *, max_uses=None,
   max_content_tokens=None)` are the tool definitions, their `type` from `[llm] web_search_tool` /
