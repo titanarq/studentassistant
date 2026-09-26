@@ -12,11 +12,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from revise_topic import ReviseTopic, make_revise_topic
-from studentassistant.config import LlmSettings, ObserverSettings, ServerSettings, Settings
+from studentassistant.config import (
+    EditorSettings,
+    LlmSettings,
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+)
 from studentassistant.llm import FakeClaude, LLMServerError
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
-from studentassistant.vault import Vault, create_topic, read_notes
+from studentassistant.vault import Vault, create_topic, read_ledger, read_notes
 
 LOCAL_BASE_URL = "http://localhost:8765"
 AppFactory = Callable[..., FastAPI]
@@ -35,7 +41,11 @@ def _base(topic: ReviseTopic) -> str:
 def make_app(
     devices_path: Path, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
 ) -> AppFactory:
-    def make(transport: FakeClaude | None, llm: LlmSettings | None = None) -> FastAPI:
+    def make(
+        transport: FakeClaude | None,
+        llm: LlmSettings | None = None,
+        editor: EditorSettings | None = None,
+    ) -> FastAPI:
         return create_app(
             static_dir=tmp_path / "no-web-build",
             server=ServerSettings(devices_path=devices_path),
@@ -43,7 +53,9 @@ def make_app(
             vault=tmp_vault,
             llm_transport=transport,
             llm_settings=Settings(
-                observer=ObserverSettings(enabled=False), llm=llm or LlmSettings()
+                observer=ObserverSettings(enabled=False),
+                llm=llm or LlmSettings(),
+                editor=editor or EditorSettings(),
             ),
         )
 
@@ -88,11 +100,14 @@ def test_a_question_streams_the_answer_with_its_refs(
     assert [(r["label"], r["kind"], r["text"]) for r in result["refs"]] == [
         ("p1", "notes", "Apuntes, página 1")
     ]
+    assert result["style"] == "spoken" and result["sections"] == []
+    assert fake.requests[0].role == "editor"
     assert read_notes(topic.vault, topic.subject, topic.topic) == topic.notes
 
     history = client.get(_base(topic)).json()
     assert [turn["question"] for turn in history["turns"]] == ["¿Qué es la derivada?"]
     assert history["turns"][0]["refs"][0]["label"] == "p1"
+    assert history["turns"][0]["style"] == "spoken" and history["turns"][0]["sections"] == []
     # The editor chat is not concerned, and the notes lock was never taken.
     chat = client.get(f"/api/subjects/{topic.subject}/topics/{topic.topic}/notes/chat").json()
     assert chat["turns"] == []
@@ -162,3 +177,53 @@ def test_errors_before_the_stream(
     no_claude = TestClient(make_app(None), base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000))
     assert no_claude.post(_base(topic), json={"question": "Hola"}).status_code == 503
     assert no_claude.get(_base(topic)).json()["turns"] == []
+
+
+def test_a_written_question_cites_sections(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    fake.reply_text("La **derivada** es un límite [§definicion].[^p1] Ver [§nada].")
+    response = client.post(
+        _base(topic), json={"question": "¿Qué es la derivada?", "style": "written"}
+    )
+    events = events_of(response)
+    kind, result = events[-1]
+    assert kind == "result"
+    assert {k for k, _ in events[:-1]} == {"reply.delta"}
+    assert result["style"] == "written"
+    assert result["sections"] == [{"anchor": "definicion", "title": "1. Definición"}]
+    assert [r["label"] for r in result["refs"]] == ["p1"]
+    assert "§nada" in result["warning"]
+    [request] = fake.requests
+    assert request.role == "editor"
+    assert any(
+        "Tarea: responder por escrito" in b.get("text", "") for b in request.messages[0]["content"]
+    )
+    assert read_notes(topic.vault, topic.subject, topic.topic) == topic.notes
+
+    [turn] = client.get(_base(topic)).json()["turns"]
+    assert turn["style"] == "written"
+    assert turn["sections"] == [{"anchor": "definicion", "title": "1. Definición"}]
+    assert [entry.role for entry in read_ledger(topic.vault, topic.subject, topic.topic)] == [
+        "editor"
+    ]
+
+
+def test_the_study_chat_role_switch(
+    make_app: AppFactory, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    app = make_app(fake, editor=EditorSettings(study_chat_role="observer"))
+    with TestClient(app, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000)) as client:
+        fake.reply_text("Escrita [§definicion].").reply_text("Hablada.")
+        written = events_of(client.post(_base(topic), json={"question": "¿A?", "style": "written"}))
+        spoken = events_of(client.post(_base(topic), json={"question": "¿B?"}))
+    assert written[-1][0] == "result" and spoken[-1][0] == "result"
+    # The switch concerns only the written chat; the voice tutor stays on the editor role.
+    assert [r.role for r in fake.requests] == ["observer", "editor"]
+    roles = [entry.role for entry in read_ledger(topic.vault, topic.subject, topic.topic)]
+    assert roles == ["observer", "editor"]
+
+
+def test_an_unknown_style_is_refused(client: TestClient, topic: ReviseTopic) -> None:
+    response = client.post(_base(topic), json={"question": "¿Qué?", "style": "cantado"})
+    assert response.status_code == 422

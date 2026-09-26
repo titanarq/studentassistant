@@ -3,13 +3,17 @@
 Thin: the work is `studentassistant.editor.tutor`. The vault is opened through the
 `SessionService`, like the editor chat routes (`revise_routes.py`), whose stream shape it shares:
 
-- `POST /api/subjects/{s}/topics/{t}/tutor` (`TutorRequest`: `question`, `confirm_over_cap`)
-  answers with a Server-Sent Events stream: the answer as it is written (`reply.delta`), then one
-  `result` event with the `TutorAnswer` (`question`, `reply`, `refs`, `warning`) or one `error`
+- `POST /api/subjects/{s}/topics/{t}/tutor` (`TutorRequest`: `question`, `style`,
+  `confirm_over_cap`) answers with a Server-Sent Events stream: the answer as it is written
+  (`reply.delta`), then one `result` event with the `TutorAnswer` (`style`, `question`, `reply`,
+  `refs`, `sections`, `warning`) or one `error`
   event (`status`, `detail`, and `code` when the failure has one and the caller speaks it). The
   question runs as its own task, so a client that goes away does not lose the recorded answer.
   It only reads the notes, so it does not take the notes lock of "prepárame el tema", the chat and
-  the doubts; one question per topic runs at a time (its own lock).
+  the doubts; one question per topic runs at a time (its own lock). `style` `spoken` (the default:
+  the capture page's and the Android app's voice tutor) uses the `editor` role; `written` (the
+  study screen's question chat, #334) the role `[editor] study_chat_role` names (`editor` by
+  default, `observer` to compare), which the ledger records.
 - `GET /api/subjects/{s}/topics/{t}/tutor` -> `TutorHistory`.
 
 Errors before the stream are HTTP errors, `{"detail": "..."}` in Spanish: no `llm_transport` 503,
@@ -34,6 +38,7 @@ from studentassistant.editor.revise import InvalidMessageError, RevisionError
 from studentassistant.editor.tutor import (
     MAX_QUESTION_CHARS,
     TutorHistory,
+    TutorStyle,
     ask_tutor,
     tutor_history,
 )
@@ -80,6 +85,7 @@ class TutorRequest(BaseModel):
     """One question of the student; `confirm_over_cap` proceeds past a reached cost cap."""
 
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    style: TutorStyle = "spoken"
     confirm_over_cap: bool = False
 
 
@@ -150,8 +156,13 @@ def tutor_router() -> APIRouter:
 
         async def run() -> None:
             try:
+                role = (
+                    generator.settings.editor.study_chat_role
+                    if body.style == "written"
+                    else "editor"
+                )
                 client = get_client(
-                    "editor",
+                    role,
                     settings=generator.settings,
                     transport=generator.transport,
                     ledger=LedgerBinding(vault, subject_id, topic_id),
@@ -162,6 +173,7 @@ def tutor_router() -> APIRouter:
                     topic_id,
                     body.question,
                     client=client,
+                    style=body.style,
                     sync=sync,
                     on_reply=on_reply,
                     confirm_over_cap=body.confirm_over_cap,

@@ -543,6 +543,18 @@ class GeneratorsSettings(BaseModel):
         return path.expanduser() if path is not None else None
 
 
+StudyChatRole = Literal["editor", "observer"]
+"""Which Claude role answers the study screen's question chat (`[editor] study_chat_role`)."""
+
+
+class EditorSettings(BaseModel):
+    """The tutor-editor (`[editor]`, `SA_EDITOR__*`)."""
+
+    # The role (`[llm.roles.<role>]`) the study screen's written question chat (#334) uses:
+    # `editor` (Opus, faithful to the notes) by default; `observer` (Sonnet) to compare.
+    study_chat_role: StudyChatRole = "editor"
+
+
 class ObserverSettings(BaseModel):
     """The live observer loop (`[observer]`, `SA_OBSERVER__*`)."""
 
@@ -692,6 +704,7 @@ class Settings(BaseSettings):
     observer: ObserverSettings = Field(default_factory=ObserverSettings)
     eval: EvalSettings = Field(default_factory=EvalSettings)
     generators: GeneratorsSettings = Field(default_factory=GeneratorsSettings)
+    editor: EditorSettings = Field(default_factory=EditorSettings)
 
     @classmethod
     def settings_customise_sources(

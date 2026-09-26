@@ -17,6 +17,16 @@ strip the marks before speaking. Nothing of the notes changes.
 **Conversation** `conversations/tutor.jsonl`, apart from the editor chat (`editor.jsonl`), whose
 history and undo are not concerned: `context` (reason `tutor`), `user`, `assistant`, then one
 `tutor.answer` record (the `TutorAnswer`) per question. `tutor_history` reads those back.
+
+**Styles.** `style="spoken"` (the default) is the voice tutor above: the capture page's and the
+Android app's. `style="written"` is the study screen's question chat (epic #332, #334): the prompt
+`editor_study_chat`, a short answer in light Markdown (paragraphs, lists, bold; no headings) that
+also cites the sections of the current notes it draws on as `[§anchor]`; `sections` are those
+anchors, in order of first citation, that the notes have (`{anchor, title}`), and an anchor the
+notes lack is left out and named in `warning`. Each style is given only its own earlier turns as
+history. Neither style offers a tool nor writes anything under `notes/`: a request to change the
+document is answered with "Eso se cambia en Construir: pídeselo allí al asistente." (a prompt
+rule). Records written before the styles existed read as `spoken` with no `sections`.
 """
 
 from __future__ import annotations
@@ -26,7 +36,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -62,6 +72,7 @@ from studentassistant.vault import (
 logger = logging.getLogger(__name__)
 
 PROMPT_NAME = "editor_tutor"
+WRITTEN_PROMPT_NAME = "editor_study_chat"
 CONVERSATION_NAME = "tutor"
 ANSWER_RECORD = "tutor.answer"
 REPLY_DELTA = "reply.delta"
@@ -71,7 +82,11 @@ HISTORY_TURNS = 6
 
 Clock = Callable[[], datetime]
 
+TutorStyle = Literal["spoken", "written"]
+"""How the tutor answers: read aloud (`spoken`) or in the study screen's chat (`written`)."""
+
 _REFERENCE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
+_SECTION_REFERENCE = re.compile(r"\[§[ \t]*#?([A-Za-z0-9][A-Za-z0-9_-]*)[ \t]*\]")
 
 TUTOR_INSTRUCTION = (
     "## Tarea: responder como tutor a una pregunta del estudiante\n\n"
@@ -79,6 +94,17 @@ TUTOR_INSTRUCTION = (
     " preguntas y respuestas hasta ahora y la nueva pregunta. Contesta en texto plano, breve y"
     " para ser leído en voz alta, apoyándote en los apuntes y las fuentes y citando tras cada"
     " afirmación la nota al pie que usan los apuntes (`[^p4]`). No cambies los apuntes.\n"
+)
+
+WRITTEN_INSTRUCTION = (
+    "## Tarea: responder por escrito a una pregunta del estudiante\n\n"
+    "El estudiante está estudiando este tema con el documento delante y te pregunta por escrito"
+    " en el chat de preguntas. A continuación tienes las preguntas y respuestas de este chat hasta"
+    " ahora y la nueva pregunta. Contesta breve, en Markdown ligero (párrafos, listas, negrita; sin"
+    " encabezados), apoyándote en los apuntes y las fuentes: cita cada sección de los apuntes que"
+    " uses con su ancla (`[§causas]`) y, tras cada afirmación, la nota al pie que usan los apuntes"
+    " (`[^p4]`). No cambies los apuntes: si te pide un cambio, contesta «Eso se cambia en"
+    " Construir: pídeselo allí al asistente.»\n"
 )
 
 
@@ -90,15 +116,26 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SectionRef(_Strict):
+    """A section of the current notes an answer cites (`[§anchor]`)."""
+
+    anchor: str
+    title: str = Field(description="The section heading's title, as written (no `{#anchor}`).")
+
+
 class TutorAnswer(_Strict):
     """One answer of the tutor; recorded as the `tutor.answer` conversation record."""
 
     subject: str
     topic: str
+    style: TutorStyle = "spoken"
     question: str = Field(description="The student's question, as asked (trimmed).")
     reply: str = Field(description="The tutor's answer, Spanish, with the notes' `[^label]` marks.")
     refs: list[ChatRef] = Field(
         default_factory=list, description="The notes' footnotes the answer cites, in order."
+    )
+    sections: list[SectionRef] = Field(
+        default_factory=list, description="The notes' sections the answer cites, in order."
     )
     warning: str | None = None
     model: str | None = None
@@ -108,9 +145,11 @@ class TutorTurn(_Strict):
     """One question and its answer, as a client shows them."""
 
     time: datetime
+    style: TutorStyle = "spoken"
     question: str
     reply: str
     refs: list[ChatRef] = Field(default_factory=list)
+    sections: list[SectionRef] = Field(default_factory=list)
     warning: str | None = None
 
 
@@ -138,9 +177,11 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[TutorT
         turns.append(
             TutorTurn(
                 time=record.time,
+                style=answer.style,
                 question=answer.question,
                 reply=answer.reply,
                 refs=answer.refs,
+                sections=answer.sections,
                 warning=answer.warning,
             )
         )
@@ -209,6 +250,35 @@ def cited_refs(document: NotesDocument, reply: str) -> list[ChatRef]:
     return refs
 
 
+def cited_sections(document: NotesDocument, reply: str) -> tuple[list[SectionRef], list[str]]:
+    """The notes' sections `reply` cites (`[§anchor]`), in order of first citation, and the
+    anchors it cites that the notes lack (in the same order); each anchor counted once."""
+    titles: dict[str, str] = {}
+    for section in document.sections:
+        if section.anchor is not None:
+            titles.setdefault(section.anchor, section.heading.title)
+    sections: list[SectionRef] = []
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for match in _SECTION_REFERENCE.finditer(reply):
+        anchor = match[1]
+        if anchor in seen:
+            continue
+        seen.add(anchor)
+        if anchor in titles:
+            sections.append(SectionRef(anchor=anchor, title=titles[anchor]))
+        else:
+            unknown.append(anchor)
+    return sections, unknown
+
+
+def _unknown_sections_warning(unknown: list[str]) -> str:
+    names = ", ".join(f"§{anchor}" for anchor in unknown)
+    if len(unknown) == 1:
+        return f"La respuesta cita una sección que no está en los apuntes: {names}."
+    return f"La respuesta cita secciones que no están en los apuntes: {names}."
+
+
 # -- the turn -----------------------------------------------------------------------------------
 
 
@@ -223,11 +293,12 @@ def _history_text(turns: list[TutorTurn]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _turn_text(turns: list[TutorTurn], question: str) -> str:
+def _turn_text(turns: list[TutorTurn], question: str, style: TutorStyle) -> str:
+    heard = "escrita" if style == "written" else "reconocimiento de voz"
     return (
         "## Preguntas y respuestas hasta ahora\n\n"
         f"{_history_text(turns)}\n\n"
-        "## Nueva pregunta del estudiante (reconocimiento de voz)\n\n"
+        f"## Nueva pregunta del estudiante ({heard})\n\n"
         f"{question}\n"
     )
 
@@ -239,6 +310,7 @@ async def ask_tutor(
     question: str,
     *,
     client: LLMClient,
+    style: TutorStyle = "spoken",
     sync: GitSync | None = None,
     on_reply: ReplySink | None = None,
     digest: DigestReader | None = None,
@@ -248,7 +320,9 @@ async def ask_tutor(
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
 ) -> TutorAnswer:
     """Answer one question of the student from the topic's notes and sources (see the module
-    docstring). `sync`, when given, is told the conversation changed (the sync loop commits it).
+    docstring), in `style` (`spoken`, read aloud, or `written`, the study chat). `client` is the
+    caller's (role `editor`, or the one `[editor] study_chat_role` names for the written chat).
+    `sync`, when given, is told the conversation changed (the sync loop commits it).
 
     Raises:
         InvalidMessageError: an empty or too long question; nothing sent.
@@ -269,8 +343,13 @@ async def ask_tutor(
         raise NotesMissingError(
             "Todavía no hay apuntes de este tema: prepáralos antes de preguntar por ellos."
         )
-    turns = await asyncio.to_thread(_read_turns, vault, subject_slug, topic_slug)
-    prompt = load_prompt(PROMPT_NAME)
+    turns = [
+        t
+        for t in await asyncio.to_thread(_read_turns, vault, subject_slug, topic_slug)
+        if t.style == style
+    ]
+    written = style == "written"
+    prompt = load_prompt(WRITTEN_PROMPT_NAME if written else PROMPT_NAME)
     assembled: EditorInput = await asyncio.to_thread(
         assemble_input,
         vault,
@@ -280,9 +359,9 @@ async def ask_tutor(
         digest=digest,
         max_page_images=max_page_images,
         max_attachment_bytes=max_attachment_bytes,
-        instruction=TUTOR_INSTRUCTION,
+        instruction=WRITTEN_INSTRUCTION if written else TUTOR_INSTRUCTION,
     )
-    turn = {"type": "text", "text": _turn_text(turns, text)}
+    turn = {"type": "text", "text": _turn_text(turns, text, style)}
 
     async def on_text(delta: str) -> None:
         if on_reply is not None:
@@ -304,7 +383,7 @@ async def ask_tutor(
         "context",
         model=client.model,
         prompt_hash=prompt.hash,
-        detail={"reason": "tutor", **assembled.summary()},
+        detail={"reason": "tutor", "style": style, **assembled.summary()},
     )
     await record(
         "user",
@@ -321,18 +400,26 @@ async def ask_tutor(
     if response.stop_reason == "refusal":
         raise RefusalError("the tutor declined to answer the question")
     reply = response.text.strip()
-    warning = None
+    document = parse(notes)
+    warnings: list[str] = []
     if not reply:
-        warning = "El tutor no ha contestado. Prueba a preguntar otra vez."
+        warnings.append("El tutor no ha contestado. Prueba a preguntar otra vez.")
     elif response.stop_reason == "max_tokens":
-        warning = "La respuesta quedó cortada por el límite de longitud."
+        warnings.append("La respuesta quedó cortada por el límite de longitud.")
+    sections: list[SectionRef] = []
+    if written:
+        sections, unknown = cited_sections(document, reply)
+        if unknown:
+            warnings.append(_unknown_sections_warning(unknown))
     answer = TutorAnswer(
         subject=subject_slug,
         topic=topic_slug,
+        style=style,
         question=text,
         reply=reply,
-        refs=cited_refs(parse(notes), reply),
-        warning=warning,
+        refs=cited_refs(document, reply),
+        sections=sections,
+        warning=" ".join(warnings) or None,
         model=model,
     )
     await record(
@@ -348,10 +435,14 @@ __all__ = [
     "CONVERSATION_NAME",
     "MAX_QUESTION_CHARS",
     "PROMPT_NAME",
+    "WRITTEN_PROMPT_NAME",
+    "SectionRef",
     "TutorAnswer",
     "TutorHistory",
+    "TutorStyle",
     "TutorTurn",
     "ask_tutor",
     "cited_refs",
+    "cited_sections",
     "tutor_history",
 ]
