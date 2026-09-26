@@ -11,6 +11,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from studentassistant.vault.credentials import CredentialHelper
+
 
 def remote_base(root: Path) -> str:
     return f"file://{root}"
@@ -33,10 +35,17 @@ class LocalHost:
 
     name = "local"
 
-    def __init__(self, root: Path, authenticated: bool = True, private: bool | None = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        authenticated: bool = True,
+        private: bool | None = True,
+        helper: CredentialHelper | None = None,
+    ) -> None:
         self.root = root
         self._authenticated = authenticated
         self.private = private
+        self.helper = helper
         self.created: list[str] = []
 
     def authenticated(self) -> bool:
@@ -57,6 +66,9 @@ class LocalHost:
 
     def git_environment(self) -> dict[str, str]:
         return {}
+
+    def credential_helper(self) -> CredentialHelper | None:
+        return self.helper
 
 
 FAKE_GH = """#!/usr/bin/env bash

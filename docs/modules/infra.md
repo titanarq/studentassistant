@@ -33,8 +33,9 @@ the `studentassistant` console script.
   the STT provider (the faster-whisper model download, only when it is selected) and the systemd
   unit (`--service/--no-service`; asked when interactive, installed when unattended). Any step
   that fails makes it exit 1 after the others ran.
-- `studentassistant doctor [--api-call]` -- one line per check, `[ok]`/`[aviso]`/`[FALLO]`,
-  exit 1 on any `FALLO` (list below). `--api-call` is the opt-in free API call.
+- `studentassistant doctor [--api-call] [--fix]` -- one line per check, `[ok]`/`[aviso]`/`[FALLO]`,
+  exit 1 on any `FALLO` (list below). `--api-call` is the opt-in free API call; `--fix` first
+  writes the `gh` credential helper to the vault's `.git/config` (#308).
 - `studentassistant purge [--topic s/t] [--dry-run] [--hard] [--yes]` -- the vault's retention
   policy (`[vault.purge]`) per accepted topic: `--dry-run` lists what would go and the space it
   frees, a plain run commits the purge (recoverable from history), `--hard` also rewrites history
@@ -77,7 +78,7 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, Linux), come with the optional `whisper`
   extra (`uv sync --extra whisper`; CI and `scripts/test.sh` never install it) and are imported
   or loaded lazily; the future faster-whisper provider (stt module) should read the same option keys.
-- `doctor.py` -- `run_doctor(settings, *, api_call=False, probes=None) -> list[Check]`; every
+- `doctor.py` -- `run_doctor(settings, *, api_call=False, probes=None, fix=False) -> list[Check]`; every
   outside reach (GitHub host, the key check, the port, the running backend, the environment) is
   a `DoctorProbes` field. Checks, in order: Python dependencies (the distribution's
   requirements installed); STT mode/provider (server mode: the provider resolves in the
@@ -92,7 +93,10 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   `ant_profile` probe; the line names the source; with `api_call`, `llm.check_api_key` with the
   key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`
   and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
-  means git's own); the vault's size (`check_vault_size`: working tree plus git object store from
+  means git's own); `git ls-remote origin` works the way the service runs git (`Acceso del
+  servicio a GitHub`: `vault.credentials.probe_unattended_access`, no host environment, no prompt
+  or askpass, minimal `PATH`; skipped when `origin` is not `vault.repo`), preceded with `fix` by
+  `Credenciales del vault` (`vault.setup.ensure_credential_helper`; `aviso` without `gh`); the vault's size (`check_vault_size`: working tree plus git object store from
   `vault.stats.vault_stats`; `aviso` over `vault.size_warning_mb`, naming the three largest
   categories and pointing at `studentassistant purge` and the Git LFS question); the server port is free or answered by our `/api/health`; the service is
   `active`; Marp CLI (`check_marp`: `generators.marp_command[0]` found on the `environ` probe's

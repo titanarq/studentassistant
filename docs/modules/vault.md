@@ -306,7 +306,9 @@ the environment, so no git configuration decides it), never prompts (`GIT_TERMIN
 SSH `BatchMode`), is killed after `timeout`, and returns a `GitResult` (`ok`, `describe()`) whose
 output went through `redact` (URL userinfo and the secret-guard patterns become `***`);
 `check(...)` raises `GitCommandError` instead. `environment` adds variables to every command: it
-is how a GitHub credential reaches git (see "GitHub and setup"), never a URL or `.git/config`.
+is how a GitHub credential reaches git during `setup`/`doctor` (see "GitHub and setup"), never a
+URL; `GitSync` passes none and relies on the credential helper `setup` wrote to the vault's own
+`.git/config` (a command, never a secret; "Credential helper" below).
 
 `GitSync(vault, settings=None, clock=None)` drives one vault; `settings` is a `VaultGitSettings`
 (`studentassistant.config`, `[vault.git]` / `SA_VAULT__GIT__*`), `clock` any object with
@@ -413,14 +415,16 @@ it at `file://` bare repositories):
   `gh api repos/<repo>` answers `repo_exists` (a 404 is `False`); `gh repo view <repo> --json
   visibility` answers `repo_is_private`; `gh repo create <repo> --private`
   creates; git borrows `gh`'s credential through `gh auth git-credential` as credential helper,
-  given as `GIT_CONFIG_*` environment variables (other helpers reset first), so nothing is written
-  to any git configuration.
+  given as `GIT_CONFIG_*` environment variables (other helpers reset first).
+  `credential_helper()` returns the same helper with `gh` at the absolute path `shutil.which`
+  resolves now (`None` when `gh` is not found), for `setup` to persist (#308).
 - `TokenHost(token, remote_base, timeout)` -- a fine-grained token from `GH_TOKEN` or
   `GITHUB_TOKEN` (`TOKEN_ENV_VARS`, first non-empty wins, `token_from_environment()`). The token
   reaches git only as the `STUDENTASSISTANT_GIT_TOKEN` (`GIT_TOKEN_ENV_VAR`) variable of the child
   process, which an environment-given credential helper reads: never in a remote URL,
   `.git/config`, the vault, `config.toml` or a message; `repr()` omits it. `repo_exists` is a
-  `git ls-remote`; `repo_is_private` is always `None`. `create_private_repo` always refuses with `NO_GH_CREATE_MESSAGE` (install and
+  `git ls-remote`; `repo_is_private` is always `None`; `credential_helper()` is `None` (the
+  token cannot be persisted: a service that must push with it needs it in its own environment). `create_private_repo` always refuses with `NO_GH_CREATE_MESSAGE` (install and
   log in to `gh`, or create an empty private repository by hand and re-run: creating is a REST call
   and this module has no HTTP client).
 
@@ -444,6 +448,13 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
 - Idempotence: a git repository at `path` whose `origin` is `host.remote_url(repo)` (a trailing
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
   create whose first push never happened is pushed); `post_clone` is not called.
+- Credential helper (#308): every flow (created, cloned, already set up) calls
+  `ensure_credential_helper(path, host, author_email=..., timeout=...) -> bool | None`, which
+  writes `host.credential_helper()` to the vault's own `.git/config` (`None`: the host has none;
+  `True`/`False`: whether it changed; a git failure is a `SetupError`), and then verifies push
+  access *without* the host's environment (`credentials.unattended_runner`) when a helper was
+  written, so setup proves the systemd service -- which has neither the shell's `PATH` nor the
+  host's `GIT_CONFIG_*` -- can push. `doctor --fix` calls it to repair an older vault.
 - `verify_push_access(runner)` -- `git push --dry-run origin main`; failing it is a `SetupError`.
 - `check_remote_access(path, host, repo=None, author_email=..., timeout=...) -> RemoteAccess`
   -- for `studentassistant doctor`: the (redacted) `origin` URL, `repo_matches` (`None` without
@@ -453,6 +464,19 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
 - Both return a `SetupResult` (`vault`, `repo`, `action`: `created`, `cloned` or
   `already-set-up`); every refusal is a `SetupError` (a `VaultError`) with a Spanish message, or
   the host's `GitHubHostError`.
+
+### Credential helper -- `credentials.py`
+Why (#308): `setup` authenticated through the host's environment only, so the systemd service's
+`GitSync` (no `gh` on its `PATH`, no global `credential.helper`) failed every push with `auth`.
+`CredentialHelper(base, command)` (`key` = `helper_key(base)` = `credential.<base>.helper`);
+`install_credential_helper(runner, helper) -> bool` makes the repository's `--local` values for
+that key exactly `""` (resets the helpers of the user's global configuration for that URL) then
+`command`, e.g. `!'/home/linuxbrew/.linuxbrew/bin/gh' auth git-credential`; unchanged when
+already so; `configured_helpers(runner, base)` reads them. No token is ever written.
+`unattended_environment()` / `unattended_runner(root, identity, timeout)` run git as the service
+does: `GIT_CONFIG_COUNT=0`, `GIT_TERMINAL_PROMPT=0`, empty `GIT_ASKPASS`/`SSH_ASKPASS` (no GUI
+prompt) and a `PATH` of git's own directory plus `/usr/local/bin:/usr/bin:/bin`;
+`probe_unattended_access(runner)` is `git ls-remote --heads origin` through it (`doctor`).
 
 The command (`studentassistant.cli`): `studentassistant setup [--vault-repo owner/name] [--path
 PATH] [--create|--clone] [--student NAME]` asks in Spanish for whatever is missing (create or

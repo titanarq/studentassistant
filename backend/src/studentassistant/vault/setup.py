@@ -8,9 +8,12 @@ Both are idempotent: a vault already at `path` whose `origin` is the same reposi
 set up (only the push access is checked again, and a create interrupted before its push is pushed),
 so re-running `setup` with the same answers changes nothing.
 
-GitHub is reached through a `GitHubHost` (`vault/github.py`); the credential a git command needs
-reaches it only through the host's environment. Errors are a `SetupError` with a Spanish message
-the command line shows as it is.
+GitHub is reached through a `GitHubHost` (`vault/github.py`); during setup the credential a git
+command needs reaches it through the host's environment. So that the backend (a systemd service,
+without that environment) can push too, every flow writes the host's credential helper -- a
+command such as `gh auth git-credential` at its absolute path, never a secret -- to the vault's own
+`.git/config` (`vault/credentials.py`, #308) and checks push access without the host's
+environment. Errors are a `SetupError` with a Spanish message the command line shows as it is.
 """
 
 from __future__ import annotations
@@ -22,8 +25,9 @@ from pathlib import Path
 from typing import Literal
 
 from studentassistant.config import DEFAULT_VAULT_AUTHOR_EMAIL, check_repo_name
+from studentassistant.vault.credentials import install_credential_helper, unattended_runner
 from studentassistant.vault.errors import VaultError
-from studentassistant.vault.git import GitIdentity, GitResult, GitRunner
+from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.github import GitHubHost
 from studentassistant.vault.vault import (
     MAIN_BRANCH,
@@ -129,6 +133,44 @@ def verify_push_access(runner: GitRunner) -> None:
         )
 
 
+def ensure_credential_helper(
+    path: Path,
+    host: GitHubHost,
+    author_email: str = DEFAULT_VAULT_AUTHOR_EMAIL,
+    timeout: float = DEFAULT_SETUP_TIMEOUT_SECONDS,
+) -> bool | None:
+    """Write `host`'s credential helper to the vault's `.git/config` at `path` (#308).
+
+    Returns whether the configuration changed, or `None` when the host has no helper to persist
+    (a token host: the token stays in the environment). `setup` calls it; `doctor --fix` repairs
+    a vault set up before it existed with it.
+
+    Raises:
+        SetupError: git could not write the repository's configuration (Spanish message).
+    """
+    helper = host.credential_helper()
+    if helper is None:
+        return None
+    runner = GitRunner(path, _identity("Student Assistant", author_email), timeout=timeout)
+    try:
+        return install_credential_helper(runner, helper)
+    except GitCommandError as error:
+        raise SetupError(
+            f"no se pudo guardar en el vault cómo se conecta git a GitHub: {error}"
+        ) from error
+
+
+def _persist_and_verify(
+    path: Path, host: GitHubHost, identity: GitIdentity, timeout: float
+) -> None:
+    """Persist the host's helper, then check push access the way the backend will push: without
+    the host's environment when a helper was persisted, with it otherwise."""
+    if ensure_credential_helper(path, host, identity.email, timeout) is None:
+        verify_push_access(_runner(path, host, identity, timeout))
+    else:
+        verify_push_access(unattended_runner(path, identity, timeout))
+
+
 def _open(path: Path) -> Vault:
     try:
         return Vault.open(path)
@@ -177,7 +219,7 @@ def create_vault(
         runner = _runner(path, host, identity, timeout)
         if not _remote_has_commits(runner, url):
             _push(runner)
-        verify_push_access(runner)
+        _persist_and_verify(path, host, identity, timeout)
         return SetupResult(vault=vault, repo=repo, action="already-set-up")
 
     _refuse_non_empty(path)
@@ -212,7 +254,7 @@ def create_vault(
     if not result.ok:
         raise _fail("no se pudo registrar el repositorio de GitHub como origin", result)
     _push(runner)
-    verify_push_access(runner)
+    _persist_and_verify(path, host, identity, timeout)
     return SetupResult(vault=vault, repo=repo, action="created")
 
 
@@ -246,7 +288,7 @@ def clone_vault(
 
     if _is_set_up(path, host, repo, identity):
         vault = _open(path)
-        verify_push_access(_runner(path, host, identity, timeout))
+        _persist_and_verify(path, host, identity, timeout)
         return SetupResult(vault=vault, repo=repo, action="already-set-up")
 
     _refuse_non_empty(path)
@@ -259,7 +301,7 @@ def clone_vault(
     if not result.ok:
         raise _fail(f"no se pudo clonar {repo}", result)
     vault = _open(path)
-    verify_push_access(_runner(path, host, identity, timeout))
+    _persist_and_verify(path, host, identity, timeout)
     post_clone(vault)
     return SetupResult(vault=vault, repo=repo, action="cloned")
 

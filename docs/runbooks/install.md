@@ -83,6 +83,7 @@ sudo loginctl enable-linger "$USER"
 ```sh
 uv run studentassistant doctor              # sin gastar nada
 uv run studentassistant doctor --api-call   # además prueba la clave con la API (llamada gratuita)
+uv run studentassistant doctor --fix        # además repara cómo sube el servicio el vault a GitHub
 ```
 
 Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, termina con código 1.
@@ -98,9 +99,36 @@ Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, term
 | Vault | que la carpeta sea un vault | `setup` |
 | Remoto del vault | que `origin` sea el repositorio de `vault.repo` | `setup` |
 | Subida al vault | `git push --dry-run`: que puedas subir cambios | `gh auth login` o un token con escritura |
+| Acceso del servicio a GitHub | `git ls-remote origin` como lo hace el servicio: sin terminal, sin ventana de contraseña, sin el `PATH` de tu shell | `doctor --fix` (con `gh auth login` hecho) |
+| Credenciales del vault | solo con `--fix`: guarda en `.git/config` del vault que git use `gh auth git-credential` con la ruta completa de `gh` | `gh auth login` |
 | Puerto | que `server.port` (8765) esté libre o lo use el propio backend | cambia `server.port` |
 | Servicio | que `studentassistant.service` esté activo | `setup`, o mira `journalctl --user -u studentassistant` |
 | Marp CLI (diapositivas) | que `generators.marp_command` (`marp`) esté en el `PATH` y responda a `--version`; si no, solo es un aviso: las diapositivas se generan pero sin PDF ni PPTX | `npm install -g @marp-team/marp-cli` (necesita Node.js y Chrome o Chromium) |
+
+### El servicio no puede subir el vault
+
+Si `journalctl --user -u studentassistant` muestra `vault push failed (auth)` y la página de
+captura dice que no se pudo conectar a GitHub, el servicio no sabe autenticarse: `setup` usa la
+sesión de `gh` de tu terminal, pero el servicio no tiene tu `PATH` (por ejemplo, `gh` de Homebrew
+en `/home/linuxbrew/.linuxbrew/bin`). Desde hace #308, `setup` guarda en el `.git/config` del
+propio vault (no en tu configuración global) esta línea, que no contiene ningún token:
+
+```ini
+[credential "https://github.com"]
+	helper =
+	helper = !'/ruta/completa/a/gh' auth git-credential
+```
+
+Para un vault preparado antes, o si mueves `gh` de sitio:
+
+```sh
+uv run studentassistant doctor --fix
+GIT_TERMINAL_PROMPT=0 git -C ~/StudentAssistant/vault ls-remote origin   # debe listar ramas
+systemctl --user restart studentassistant
+```
+
+Con un token (`GH_TOKEN`) en lugar de `gh` no se guarda nada: el servicio necesitaría el token
+en su entorno, así que lo recomendable es instalar `gh` y `gh auth login`.
 
 ## Whisper en el PC (opcional)
 

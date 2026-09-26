@@ -26,6 +26,7 @@ import tempfile
 from collections.abc import Mapping
 from typing import Protocol
 
+from studentassistant.vault.credentials import CredentialHelper
 from studentassistant.vault.errors import VaultError
 from studentassistant.vault.git import redact
 
@@ -80,6 +81,12 @@ class GitHubHost(Protocol):
 
     def git_environment(self) -> dict[str, str]:
         """The variables a git child process needs to authenticate against the remote."""
+        ...
+
+    def credential_helper(self) -> CredentialHelper | None:
+        """A helper `setup` may write to the vault's `.git/config` so git authenticates without
+        this host's environment (the systemd service, #308); `None` when there is none that
+        holds no secret."""
         ...
 
 
@@ -189,6 +196,15 @@ class GhCliHost:
         gh = shutil.which(self.gh) or self.gh
         return _credential_helper_environment(f"!{shlex.quote(gh)} auth git-credential")
 
+    def credential_helper(self) -> CredentialHelper | None:
+        """`gh auth git-credential` at `gh`'s absolute path, resolved now: the service's `PATH`
+        need not hold `gh`. `None` when `gh` cannot be found."""
+        found = shutil.which(self.gh)
+        if found is None:
+            return None
+        gh = os.path.abspath(found)
+        return CredentialHelper(self.remote_base, f"!{shlex.quote(gh)} auth git-credential")
+
 
 class TokenHost:
     """GitHub through a fine-grained token and `git` alone: clone and push, but never create."""
@@ -240,6 +256,9 @@ class TokenHost:
             f' echo "password=${GIT_TOKEN_ENV_VAR}"; }}; f'
         )
         return {**_credential_helper_environment(helper), GIT_TOKEN_ENV_VAR: self._token}
+
+    def credential_helper(self) -> None:
+        return None  # the token never leaves the environment, so nothing can be persisted
 
 
 def token_from_environment(environ: Mapping[str, str] | None = None) -> str | None:
