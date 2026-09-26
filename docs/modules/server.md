@@ -49,8 +49,10 @@ is no background loop.
 `app.state` holds `server`, `codes`, `devices` (the `DeviceStore`), `bus` (the app-wide
 `SessionBus`), `sessions` (the `SessionService` over the vault, whose `bus` is `app.state.bus`)
 `gateway` (the `SessionGateway` of the session WebSocket), `recorder` (`None` unless one was
-given), `observer` (the `ObserverLoop`, `None` without an `llm_transport`) and `notes` (the
-`NotesGenerator` of the notes generation route, `None` without an `llm_transport`).
+given), `observer` (the `ObserverLoop`, `None` without an `llm_transport`), `notes` (the
+`NotesGenerator` of the notes generation route, `None` without an `llm_transport`), `workspace`
+(the `WorkspaceHub` of the workspace stream, always) and `assistant_requests` (the
+`AssistantRequestConsumer`, `None` without an `llm_transport`).
 Routes registered today:
 
 - `GET /api/health` -> protocol v1 `rest.health.response`, built with the backend protocol model:
@@ -346,7 +348,9 @@ Routes registered today:
   `GenerationResult` (`docs/modules/editor.md`: valid notes committed and tagged
   `<subject>/<topic>/apuntes-vN`, or a draft with `warning` and `errors`). The `notes.generated`
   event is published on the bus (persisted, origin `editor`) when the topic's session is the
-  active one (else it is only in `conversations/editor.jsonl`). One generation per topic at a
+  active one (else it is only in `conversations/editor.jsonl`); a generation that wrote the
+  notes (not a draft) is also a `notes.changed` (origin `generation`) on the workspace stream,
+  however it was started. One generation per topic at a
   time. Errors, Spanish `detail`: no `llm_transport` 503 (`"La generación de apuntes no está
   disponible: ..."`), an unknown topic 404, a generation of the topic already running 409, a
   reached cost cap 409 `cost_cap_reached` (`"Se ha alcanzado el límite de gasto ... Confirma
@@ -422,6 +426,9 @@ Routes registered today:
       `cost_cap_error`, until the body says `confirm_over_cap`; a Claude refusal or failure 502);
       `code` is gated like a REST error body (`speaks_error_codes`); the stream then ends.
     The turn runs in its own task: a client that disconnects does not cut the change in half.
+    It is also broadcast on the topic's workspace stream (below): `turn.started` (origin
+    `typed`), the reply, `turn.result` or `turn.error` (with `code` always), and `notes.changed`
+    (origin `editor`) when the notes changed; the `result` carries the same `turn_id`.
   - `POST .../notes/why` (#69), body `{"section": "causas", "block": 2, "quote": "Disponibilidad
     de carbón…", "confirm_over_cap": false}` ("¿Por qué pusiste esto?" on one block: `section` the
     anchor, `null` before the first section; `block` its number there, from 1, as the validator
@@ -433,13 +440,18 @@ Routes registered today:
     or `error` as above. Nothing of the notes changes; the answer is appended to the editor
     conversation. Holds the notes lock like a turn. A block that is not in the notes, or a
     title/rule, is 422 before the stream.
-  - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, message, reply, applied,
-    summary, changed_sections, commit, undone, warning, refs, proposed_style_rules}`, oldest
-    first -- `kind` `explain` for a "¿Por qué?" answer, with its `refs`; `can_undo`). Reads only; works without
-    `llm_transport`.
+  - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, turn_id, origin,
+    request_summary, transcript, message, reply, applied, summary, changed_sections, commit,
+    undone, warning, refs, proposed_style_rules}`, oldest first -- `kind` `explain` for a "¿Por
+    qué?" answer, with its `refs`; `origin` `voice` for a turn that answered a spoken request,
+    with `request_summary` (what was asked, one short line) and `transcript` (`{request_id,
+    summary, session_id, segment_ids, t_start_ms, t_end_ms, text}`, the raw span), both `null`
+    for a typed turn; `summary` stays the applied change's; `can_undo`). Reads only; works
+    without `llm_transport`.
   - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
     `notes_changed`, `diff`, `notes`, `paths`, `revision`): reverts the latest applied turn not yet undone
-    (again for the one before). No Claude call.
+    (again for the one before). No Claude call. An undo that changed the notes is a
+    `notes.changed` (origin `editor`, summary `Deshecho: <summary>`) on the workspace stream.
   - Errors before the stream, Spanish `detail`: no `llm_transport` 503 (chat), a vault that cannot
     be opened 503, an unknown topic 404, no notes yet 409 for `why` only (`"Todavía no hay apuntes
     de este tema: ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
@@ -455,7 +467,8 @@ Routes registered today:
     (`Apuntes de <s>/<t> editados por el estudiante`), a `student_edit` record in
     `conversations/editor.jsonl`, and `notes.edited` published on the bus (persisted, origin
     `user`, payload the result without `notes`, plus `origin: "user"`) when the topic's session is
-    the active one. It does not wait for a chat turn (see the editor chat API).
+    the active one. It does not wait for a chat turn (see the editor chat API). A save that
+    changed the notes is a `notes.changed` (origin `user`) on the workspace stream.
   - Errors: a stale `base_revision` 409 `{"detail", "code": "notes_changed", "text", "revision"}`
     with the current notes (`code` gated like any REST error code); `409 notes_busy`
     (`ApiError`) while anything but a chat turn holds the topic's notes lock -- "prepárame el
@@ -470,6 +483,50 @@ Routes registered today:
     then adds the image's footnote). The sync loop commits it (`SessionService.note_change`).
     Errors: too large 413; not such an image, empty, another part or a malformed body 422; an
     unknown topic 404; a vault that cannot be opened 503.
+- **Spoken requests become editor turns** (`server/assistant_requests.py`,
+  `AssistantRequestConsumer`, #315): started in the app's lifespan when the app has an
+  `llm_transport`; it subscribes to `assistant.request` on the bus (`observer.AssistantRequest`,
+  published by the observer's detector or the wake word) and, per topic, runs one request at a
+  time in arrival order. On arrival: `request.detected` on the workspace stream, then the request
+  is queued (in the backend: it survives a client that goes away, and the requests of a session
+  that ended meanwhile are still processed). Its turn takes the topic's notes lock
+  (`NotesGenerator.claim`), waiting while a typed turn, a generation, a restore or the doubts hold
+  it (at most `CLAIM_TIMEOUT_SECONDS`, 600 s, then `turn.error` 409), then dispatches on the kind
+  through `HANDLERS` (a per-kind table later tasks extend):
+  - `edit`, `question`: `editor.revise_notes` on the latest notes with the request's raw `text` as
+    the message and a `ChatRequestRef` as `request` (a voice chat turn in `GET .../notes/chat`);
+    `editor` role bound to the topic's ledger; `notes.edited` on the bus when the session is
+    still active.
+  - `prepare_notes`: "prepárame el tema" through `NotesGenerator.generate`, the same generation
+    as the button, never with `confirm_over_cap`: a reached cap is `turn.error` 409 with code
+    `cost_cap_reached` (the student confirms through `POST .../notes/generate`), never a silent
+    spend.
+  A failure is a `turn.error` with the status the same failure has over REST; the topic's next
+  request runs anyway. Shutdown gives running turns 5 s, then cancels them; still-queued requests
+  are dropped with a log line (they stay in `events.jsonl`).
+- **The workspace stream** (`server/workspace.py` `WorkspaceHub`, `server/workspace_routes.py`,
+  #315), for the study workspace's chat and document:
+  `GET /api/subjects/{subject_id}/topics/{topic_id}/workspace/stream` -> `text/event-stream`
+  (`Cache-Control: no-cache`), read with `fetch` like the chat streams. It starts with a
+  `: connected` comment and sends a `: keep-alive` comment every 15 s without events; it ends when
+  the client goes away or the app shuts down. It works with or without an active session and
+  without `llm_transport`. Fed by an in-memory per-topic hub (`app.state.workspace`) that voice
+  turns, typed turns, student saves, generations, restores and undos publish to; nothing is
+  persisted or replayed (a reconnecting client reloads `GET .../notes/chat` and `GET .../notes`).
+  Each event is `event: <name>` plus one line of JSON (the list is open; later tasks add kinds):
+  - `request.detected` `{request_id, kind, summary, transcript: {session_id, segment_ids,
+    t_start_ms, t_end_ms, text}}`: a spoken request was queued;
+  - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind: revise|prepare_notes}`;
+  - `reply.delta` `{turn_id, text, attempt}`, `reply.restart` `{turn_id, attempt}`;
+  - `turn.result`: the `RevisionResult` (or, for `prepare_notes`, the `GenerationResult`) plus
+    `turn_id`, `request_id` and `kind`;
+  - `turn.error` `{turn_id, request_id, status, detail, code?}`;
+  - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
+    notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that
+    wrote the notes, whichever way it started: `generation`; a restore: `restore`).
+  A slow subscriber never blocks a publisher: past 1024 queued events the oldest `reply.delta`
+  (else the oldest event) is dropped. Errors before the stream: an unknown topic 404, a vault
+  that cannot be opened 503. Needs the bearer check like every non-exempt route.
 - **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over
   `editor.tutor` (`docs/modules/editor.md`), over the vault and `GitSync` of the
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only
@@ -512,7 +569,8 @@ Routes registered today:
     `version` and `tag` of the new `apuntes-vN`, `commit`, `diff`, `notes`, `revision`, `errors`,
     `warning`).
     Holds the topic's notes lock (`NotesGenerator.claim`, when the app has one); `notes.restored`
-    is published on the bus (origin `editor`) when the topic's session is the active one.
+    is published on the bus (origin `editor`) when the topic's session is the active one, and
+    `notes.changed` (origin `restore`) on the workspace stream.
   - Errors, Spanish `detail`: a vault that cannot be opened 503, an unknown topic or version 404,
     a version below 1 or a diff without `from` 422, no current notes to diff with, the current
     notes already being that version, or another notes operation of the topic running 409.

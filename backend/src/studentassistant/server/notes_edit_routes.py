@@ -12,7 +12,8 @@ they work without an `llm_transport`.
   the editor on the new notes. It is refused with `409 notes_busy` while anything else holds the
   topic's notes lock (`NotesGenerator.claim`): "prepárame el tema", a restore, the doubts, an
   undo. `notes.edited` (origin `user`) is published on the bus when the topic's session is the
-  active one.
+  active one, and a save that changed the notes is a `notes.changed` (origin `user`) on the
+  topic's workspace stream (`workspace.py`).
 - `POST /api/subjects/{s}/topics/{t}/sources/images`: `multipart/form-data` with one `file` part,
   a PNG, JPEG or WebP image (told by its bytes, not its name) of at most `[sources]
   max_pasted_image_bytes` -> 201 `PastedImage` (`source_id` `sources/images/img-NNN.<ext>`, the
@@ -49,6 +50,7 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import ApiError, caller_speaks_error_codes
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.workspace import WorkspaceHub
 from studentassistant.vault import (
     GitSync,
     SecretRefused,
@@ -208,6 +210,13 @@ async def _read_image(request: Request, max_bytes: int) -> bytes:
     return bytes(parts[FILE_PART])
 
 
+def _save_summary(sections: list[str]) -> str:
+    """The `notes.changed` summary of a student save, Spanish."""
+    if not sections:
+        return "Has editado los apuntes."
+    return "Has editado los apuntes (" + ", ".join(f"#{anchor}" for anchor in sections) + ")."
+
+
 def notes_edit_router() -> APIRouter:
     """The student's save of the notes and the pasted-image upload."""
     router = APIRouter(prefix="/api")
@@ -262,7 +271,7 @@ def notes_edit_router() -> APIRouter:
         ):
             raise ApiError(409, BUSY_DETAIL, ErrorCode.NOTES_BUSY)
         try:
-            return await save_student_edit(
+            result = await save_student_edit(
                 vault,
                 subject_id,
                 topic_id,
@@ -287,6 +296,16 @@ def notes_edit_router() -> APIRouter:
             )
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, UNKNOWN_TOPIC_DETAIL) from error
+        if result.notes_changed:
+            hub: WorkspaceHub = request.app.state.workspace
+            hub.notes_changed(
+                subject_id,
+                topic_id,
+                revision=result.revision,
+                origin="user",
+                summary=_save_summary(result.changed_sections),
+            )
+        return result
 
     @router.post(
         "/subjects/{subject_id}/topics/{topic_id}/sources/images",

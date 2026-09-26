@@ -42,6 +42,14 @@ so the ledger and conversation lines it also carried stay -- and committed (`Des
 <summary>`). Refused when one of those files changed afterwards (a later turn must be undone
 first; a regeneration cannot be undone this way). Undoing again goes one more turn back.
 
+**Spoken requests**: a turn may come from a request the student said aloud (an `assistant.request`
+of the session, run by the server's `assistant_requests.py`): `request` (`ChatRequestRef`) is then
+the transcript span it came from -- its `request_id`, short `summary`, `session_id`,
+`segment_ids`, times and raw `text`, which is the turn's message --, and the turn's `origin` is
+`voice` (`typed` otherwise). Both are stored in the `revision` record and read back by
+`chat_history` (`origin`, `request_summary`, `transcript`); records written before them read as
+typed. `turn_id` is the id the caller gave the turn (the workspace stream's), stored too.
+
 **Conversation**: every call is recorded in `conversations/editor.jsonl` like the generation's
 (`context` with reason `revise`, `user`, `assistant`, `validation`), each turn as a `revision`
 record (the `RevisionResult`) and each undo as `notes.undone`; `chat_history` reads them back, and
@@ -204,11 +212,32 @@ class EditsOutput(_Strict):
     )
 
 
+TurnOrigin = Literal["typed", "voice"]
+"""How the student asked: typed in the chat, or said aloud (an `assistant.request`)."""
+
+
+class ChatRequestRef(_Strict):
+    """The transcript span a spoken request came from (an `assistant.request` of a session)."""
+
+    request_id: str = Field(description="`req-<n>`, the session's n-th request.")
+    summary: str = Field(description="A short Spanish line of what was asked, for the chat.")
+    session_id: str
+    segment_ids: list[str] = Field(default_factory=list)
+    t_start_ms: int = Field(ge=0)
+    t_end_ms: int = Field(ge=0)
+    text: str = Field(description="The raw transcript of the span (the turn's message).")
+
+
 class RevisionResult(_Strict):
     """What one turn of the conversation did; recorded as the `revision` conversation record."""
 
     subject: str
     topic: str
+    turn_id: str | None = Field(default=None, description="The caller's id of the turn.")
+    origin: TurnOrigin = "typed"
+    request: ChatRequestRef | None = Field(
+        default=None, description="The spoken request the turn answers (`origin` `voice`)."
+    )
     message: str = Field(description="The student's message.")
     reply: str = Field(description="The editor's reply, Spanish.")
     applied: bool = Field(description="True when the turn changed the notes or an instruction.")
@@ -277,10 +306,18 @@ class ChatTurn(_Strict):
     `kind` is `revise` for a revision turn and `explain` for a "¿Por qué pusiste esto?" answer,
     whose `refs` are the sources of the block it explains; `student_edit`, a save of the student's
     own edit of the document (its `summary` holds the diff), is only in the editor's history.
+
+    `origin` is `voice` for a turn that answers a spoken request: `request_summary` is then the
+    short line of what was asked and `transcript` the span it came from (both `None` when typed).
+    `summary` stays the applied change's summary.
     """
 
     time: datetime
     kind: Literal["revise", "explain", "student_edit"] = "revise"
+    turn_id: str | None = None
+    origin: TurnOrigin = "typed"
+    request_summary: str | None = None
+    transcript: ChatRequestRef | None = None
     message: str
     reply: str
     applied: bool = False
@@ -400,6 +437,10 @@ def _read_turns(
         turns.append(
             ChatTurn(
                 time=record.time,
+                turn_id=result.turn_id,
+                origin=result.origin,
+                request_summary=None if result.request is None else result.request.summary,
+                transcript=result.request,
                 message=result.message,
                 reply=result.reply,
                 applied=result.applied,
@@ -477,7 +518,8 @@ def _history_text(turns: list[ChatTurn]) -> str:
             lines.append(diff.rstrip() or "(sin diferencias)")
             lines.append("")
             continue
-        lines.append(f"Estudiante: {turn.message}")
+        said = " (en voz alta, transcrito)" if turn.origin == "voice" else ""
+        lines.append(f"Estudiante{said}: {turn.message}")
         reply = turn.reply or "(sin respuesta)"
         lines.append(f"Editor: {reply}")
         if turn.applied:
@@ -492,13 +534,22 @@ def _history_text(turns: list[ChatTurn]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _turn_text(turns: list[ChatTurn], notes: str, mode: str, message: str) -> str:
+SPOKEN_NOTE = (
+    "(El estudiante lo ha dicho en voz alta mientras estudiaba: es la transcripción literal de lo"
+    " que dijo, con sus posibles errores de reconocimiento.)"
+)
+
+
+def _turn_text(
+    turns: list[ChatTurn], notes: str, mode: str, message: str, *, spoken: bool = False
+) -> str:
+    heading = "## Nuevo mensaje del estudiante\n\n" + (f"{SPOKEN_NOTE}\n\n" if spoken else "")
     return (
         "## Conversación hasta ahora\n\n"
         f"{_history_text(turns)}\n\n"
         f"## Mapa de bloques de los apuntes actuales (modo de fidelidad «{mode}»)\n\n"
         f"{describe_sections(notes)}\n\n"
-        "## Nuevo mensaje del estudiante\n\n"
+        f"{heading}"
         f"{message}\n"
     )
 
@@ -713,8 +764,13 @@ async def revise_notes(
     clock: Clock = _utc_now,
     max_page_images: int = MAX_PAGE_IMAGES,
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
+    request: ChatRequestRef | None = None,
+    turn_id: str | None = None,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
+
+    `request` is the spoken request the turn answers (`message` is then its raw `text`): the turn
+    is stored with `origin` `voice` and that reference. `turn_id` is stored as given.
 
     Raises:
         InvalidMessageError: an empty or too long message; nothing sent.
@@ -746,7 +802,10 @@ async def revise_notes(
         instruction=REVISE_INSTRUCTION,
     )
     notes = _seeded(base, assembled.topic_title)
-    turn = {"type": "text", "text": _turn_text(turns, notes, assembled.fidelity_mode, text)}
+    turn = {
+        "type": "text",
+        "text": _turn_text(turns, notes, assembled.fidelity_mode, text, spoken=request is not None),
+    }
     messages: list[dict[str, Any]] = [{"role": "user", "content": [*assembled.content, turn]}]
     tool = strict_tool(
         EDIT_TOOL,
@@ -844,6 +903,9 @@ async def revise_notes(
     result = RevisionResult(
         subject=subject_slug,
         topic=topic_slug,
+        turn_id=turn_id,
+        origin="typed" if request is None else "voice",
+        request=request,
         message=text,
         reply=reply,
         applied=False,
@@ -980,6 +1042,7 @@ __all__ = [
     "STUDENT_EDIT_RECORD",
     "ChatHistory",
     "ChatRef",
+    "ChatRequestRef",
     "ChatTurn",
     "EditsOutput",
     "InvalidMessageError",
@@ -987,6 +1050,7 @@ __all__ = [
     "NothingToUndoError",
     "RevisionError",
     "RevisionResult",
+    "TurnOrigin",
     "UndoConflictError",
     "UndoResult",
     "chat_history",
