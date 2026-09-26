@@ -66,6 +66,56 @@ Everything below is importable from `studentassistant.stt` (the fakes from
   `SessionService.end` awaits `drain()` (a before-close end hook the app adds) after publishing
   `session.ended` and before the vault ends the session, so every final published before the end
   is written.
+- Voice-command grammar (`stt/commands.py`, ADR-0006, #47):
+  `load_grammar`, `CommandGrammar`, `CommandSpec`, `GrammarError`, `CommandMatcher`,
+  `FiredCommand` and `CommandDetector` are exported from `studentassistant.stt`; `normalise`,
+  `voice_command_payload`, `DEFAULT_GRAMMAR_PATH` and the `*_COMMANDS` constants are importable
+  from `studentassistant.stt.commands`.
+  - Grammar file: a YAML mapping of command name (`^[a-z][a-z0-9_]*$`) -> `phrases` (a non-empty
+    list; any of them fires the command) and optional `exclude` (a list; a matching exclude phrase
+    suppresses the command); no other keys. The default is the packaged `stt/commands.yaml`
+    (`DEFAULT_GRAMMAR_PATH`): `capture` ("mira aquí", "mira esto", "captura", "haz foto", excluding
+    "mira, aquí no"), `next_page`, `important`, `source_book`, `source_notes`, `source_pdf`,
+    `pause`, `resume`, `end_and_prepare`, `web_search` ("busca en internet" + the query).
+    `[stt] commands_path` replaces the whole file (no merging).
+  - `load_grammar(path | None) -> CommandGrammar` (`None` = the packaged file; `~` expanded).
+    An unreadable file, invalid YAML, a non-mapping, an unknown key, an empty `phrases` or a phrase
+    with no words raises `GrammarError` (a `ValueError`) naming the file. `create_app` loads it, so
+    a bad grammar fails when the app is built, never at the first utterance.
+    `CommandGrammar.commands: dict[str, CommandSpec]` (file order), `CommandSpec(phrases,
+    exclude)`; both frozen.
+  - `normalise(text)` -- how phrases and transcripts are compared: case-folded, accents stripped
+    (NFKD, combining marks dropped), punctuation and `_` turned into word breaks, whitespace
+    collapsed ("¡Mira, AQUÍ!" -> "mira aqui").
+  - `CommandMatcher(grammar)` -- pure, one per session. `match(segment_id, text, is_final) ->
+    list[FiredCommand]`, called with every partial and the final of each utterance in arrival
+    order, returns what fires now, in grammar order: a phrase matches only as a whole-word
+    sequence ("importantes" does not match "importante"); a matching `exclude` phrase of the same
+    command suppresses it; on a partial, a match in the tail that could still grow into one of that
+    command's exclude phrases ("mira aquí" -> "mira aquí no") is deferred to the next partial or
+    the final; each command fires at most once per `segment_id`, at the first text that matches;
+    `QUERY_COMMANDS` (`web_search`) fire only on the final, with `query` = the original text after
+    the earliest phrase occurrence, trimmed (leading `,.;:-` too), and not when it is empty.
+    `forget(segment_id)` drops a segment's debounce state. `FiredCommand(command, segment_id,
+    text, query=None)` (frozen; `text` is the partial or final as received).
+  - `CommandDetector(bus, grammar, *, queue_size=1024)` -- subscribes (`stt:commands`) to
+    `transcript.partial`, `transcript.final` and `session.ended`; runs one `CommandMatcher` per
+    session and drops it on `session.ended`. `start()` / `await stop()` / `await drain()` behave as
+    `TranscriptPipeline`'s; the app's lifespan starts and stops it on `app.state.commands`, next to
+    `app.state.transcripts`. `bus` needs the `EventBus` protocol's `subscribe` and `publish`. A
+    malformed segment payload is logged and skipped; a failure on one event is logged and the
+    detector carries on. Each fired command publishes a persisted `voice.command` (origin `stt`,
+    `t` = the segment's `session_start_ms`) with payload (`voice_command_payload(fired)`):
+    ```json
+    {"command": "source_book", "segment_id": "s-12", "text": "Ahora el libro", "source": "book"}
+    ```
+    `source` (`book | notes | pdf`, `SOURCE_COMMANDS`) only on `source_book` / `source_notes` /
+    `source_pdf`, `query` only on `web_search`. `capture` and `next_page` (`CAPTURE_COMMANDS`)
+    also publish a persisted `command` (origin `stt`) `{"command_id": "voice-<seq of that
+    voice.command>", "command": "capture_now", "voice_command", "segment_id"}`, which the WebSocket
+    gateway forwards to the capture client as the protocol v1 `command` message. Acting on the
+    other commands (pause, end and prepare, source switch, web search) is left to consumers of
+    `voice.command`.
 - Vocabulary hints (`stt/vocabulary.py`, pure logic, #54):
   `vocabulary_hints(*, subject, topic, concepts, max_terms, max_chars) -> list[str]` -- the
   subject's name, the topic's name, then `concepts` (given oldest first) newest first; whitespace
@@ -152,6 +202,7 @@ language = "es"
 max_backlog_seconds = 10.0  # server mode: queued audio past which superseded partials drop
 vocabulary_max_terms = 30   # vocabulary hints: most terms (0 = off; at most 50)
 vocabulary_max_chars = 500  # vocabulary hints: most characters, joined with ", "
+# commands_path = "~/.config/studentassistant/commands.yaml"  # voice-command grammar; unset: the packaged stt/commands.yaml
 
 [stt.options.faster-whisper]  # free-form table per provider name, passed to its constructor
 model = "large-v3-turbo"        # the default
@@ -178,7 +229,8 @@ model = "latest_long"           # the default
 # finish_timeout_seconds = 10.0
 ```
 Env overrides: `SA_STT__MODE`, `SA_STT__PROVIDER`, `SA_STT__LANGUAGE`,
-`SA_STT__MAX_BACKLOG_SECONDS`, `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`.
+`SA_STT__MAX_BACKLOG_SECONDS`, `SA_STT__VOCABULARY_MAX_TERMS`, `SA_STT__VOCABULARY_MAX_CHARS`,
+`SA_STT__COMMANDS_PATH`.
 
 ## How to add a server-side provider
 1. One module, e.g. `studentassistant/stt/faster_whisper.py`, with a subclass of
@@ -202,7 +254,10 @@ stamped on every segment by the `TranscriptSink`.
 
 ## Tests
 Pipeline and grammar tested with `FakeProvider` and scripted segments; hint assembly in
-`test_stt_vocabulary.py`, the gateway's hints (hello.ack, notice, provider) in
+`test_stt_vocabulary.py`; the voice-command grammar in `test_stt_command_grammar.py`
+(loading, errors, normalisation), `test_stt_command_matcher.py` (table-driven partial/final
+sequences), `test_stt_command_detector.py` (a real `SessionBus` over `tmp_vault`) and
+`tests/server/test_ws_voice_commands.py` (a client-mode session receives one `capture_now`); the gateway's hints (hello.ack, notice, provider) in
 `tests/server/test_ws_vocabulary_hints.py`; `FasterWhisperProvider`
 with a scripted `WhisperBackend` and a stand-in `faster_whisper` module. `GoogleCloudSpeechProvider`
 with a scripted `SpeechStreamClient` and a stand-in `google.cloud.speech` module. Real-model tests are
