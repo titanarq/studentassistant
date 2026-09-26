@@ -18,9 +18,10 @@ FORBIDDEN_MODULES = (
     "subprocess",
     "shutil",
 )
-# The live loop is the observer role's Claude client (ADR-0004), so it alone may use the llm module.
+# The live loop and the request detector are the observer role's Claude clients (ADR-0004), so
+# only they may use the llm module.
 LLM_MODULE = "studentassistant.llm"
-LLM_ALLOWED_FILES = frozenset({"live.py"})
+LLM_ALLOWED_FILES = frozenset({"live.py", "requests.py"})
 # The vault is reached through its public root only, never one of its submodules.
 VAULT_PACKAGE = "studentassistant.vault"
 FORBIDDEN_CALLS = ("open", "write_text", "write_bytes", "mkdir", "unlink", "rename", "replace")

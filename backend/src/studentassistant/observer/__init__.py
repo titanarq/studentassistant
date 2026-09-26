@@ -1,5 +1,11 @@
 """Sonnet observer: event-sourced session state, pending-review queue, topic digest."""
 
+from studentassistant.observer.assistant_request import (
+    ASSISTANT_REQUEST_KIND,
+    REQUEST_KINDS,
+    AssistantRequest,
+    RequestKind,
+)
 from studentassistant.observer.digest import (
     DigestOnEnd,
     digest_excerpt,
@@ -71,6 +77,8 @@ from studentassistant.observer.state import (
 )
 
 __all__ = [
+    "ASSISTANT_REQUEST_KIND",
+    "REQUEST_KINDS",
     "CAPTURE_EVENT_KIND",
     "CAPTURE_ID_KEY",
     "COMPACTED_EVENT_KIND",
@@ -84,6 +92,7 @@ __all__ = [
     "AddPending",
     "AddSection",
     "AssignSegments",
+    "AssistantRequest",
     "Concept",
     "DigestOnEnd",
     "DuplicateIdError",
@@ -103,6 +112,7 @@ __all__ = [
     "PendingReview",
     "PendingStatus",
     "RenameSection",
+    "RequestKind",
     "ResolvePending",
     "Section",
     "SetSourceContext",

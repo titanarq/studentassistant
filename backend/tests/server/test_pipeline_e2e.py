@@ -134,7 +134,8 @@ def test_a_replayed_session_becomes_pushed_master_notes(
         sync=GitSync(tmp_vault, VaultGitSettings()),
         stt=SttSettings(mode="client", provider="web-speech", language="es"),
         llm_transport=claude,
-        llm_settings=Settings(observer=ObserverSettings()),
+        # The request detector (#314) would share the observer fake's script.
+        llm_settings=Settings(observer=ObserverSettings(request_detection="off")),
     )
 
     async def main() -> tuple[ReplayResult, int, dict[str, object]]:
