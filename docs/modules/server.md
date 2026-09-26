@@ -475,17 +475,24 @@ Routes registered today:
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only
   reads the notes, so it does **not** take the notes lock (it answers while "prepárame el tema" or
   a chat turn runs); one question per topic runs at a time (its own lock). Used by the web capture
-  page's tutor and the Android app's (#248).
+  page's tutor and the Android app's (#248) with the default `style: "spoken"` (role `editor`),
+  and by the study screen's question chat (#336) with `style: "written"` (#334), whose role is
+  `[editor] study_chat_role` (`SA_EDITOR__STUDY_CHAT_ROLE`: `editor`, Opus, by default, or
+  `observer`, Sonnet, to compare; the ledger records the role used).
   - `POST /api/subjects/{subject_id}/topics/{topic_id}/tutor`, body `{"question": "¿Qué era la
-    derivada?", "confirm_over_cap": false}` (`question` 1-1000 characters) -> the same
+    derivada?", "style": "spoken", "confirm_over_cap": false}` (`question` 1-1000 characters;
+    `style` `spoken` | `written`, default `spoken`, anything else 422) -> the same
     Server-Sent Events stream as `notes/why`: `reply.delta` `{"text", "attempt": 1}`, then
-    `result` -- the `TutorAnswer`: `question`, `reply` (with the notes' `[^label]` marks),
-    `refs` (`{label, kind, text, source_id, path}` per notes footnote the answer cites, in
-    order), `warning`, `model` -- or `error` `{"status", "detail", "code"?}` (a reached cost cap
+    `result` -- the `TutorAnswer`: `style`, `question`, `reply` (with the notes' `[^label]` marks
+    and, written, `[§anchor]` marks), `refs` (`{label, kind, text, source_id, path}` per notes
+    footnote the answer cites, in order), `sections` (`{anchor, title}` per section of the current
+    notes a written answer cites, in order; always empty when spoken), `warning` (also naming cited
+    anchors the notes lack), `model` -- or `error` `{"status", "detail", "code"?}` (a reached cost cap
     409 `cost_cap_reached` until `confirm_over_cap`; a Claude refusal or failure 502). The
     question runs in its own task; the answer is appended to `conversations/tutor.jsonl`.
-  - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, question, reply, refs, warning}`, oldest
-    first). Reads only; works without `llm_transport`.
+  - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, style, question, reply, refs, sections,
+    warning}`, oldest first, both styles; turns recorded before #334 are `spoken` with no
+    `sections`). Reads only; works without `llm_transport`.
   - Errors before the stream, Spanish `detail`: no `llm_transport` 503, a vault that cannot be
     opened 503, an unknown topic 404, no notes yet 409, another question of the topic running
     409, an empty or too long question 422. Needs the bearer check like every non-exempt route.

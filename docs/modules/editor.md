@@ -15,7 +15,7 @@
 - "¿Por qué pusiste esto?": explain a paragraph from its cited sources.
 - Style guide learning per subject; notes versions (git tags) and diffs.
 - Voice tutor (study mode): answer the student's questions about a topic from its notes and
-  sources, with the refs.
+  sources, with the refs; in writing too, for the study screen's question chat, citing sections.
 
 ## Public surface
 What exists today, after issues #30, #61, #68, #63, #64, #69, #70, #65 and #313: the master notes format
@@ -30,8 +30,8 @@ ops in `studentassistant.editor.edits`, the doubts resolution in
 (with the shared write lock of `studentassistant.editor.notes_lock`), the notes versions in
 `studentassistant.editor.versions`,
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
-`studentassistant.editor.style_guide` and the voice tutor in `studentassistant.editor.tutor`
-(#82).
+`studentassistant.editor.style_guide` and the voice tutor and the study screen's question chat in
+`studentassistant.editor.tutor` (#82, #334).
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -542,12 +542,12 @@ through `vault.set_style_guide` and is committed at once.
   /api/subjects/{s}/style-guide/rules` (`docs/modules/server.md`); a confirmation said in the chat
   goes through `revise_notes` instead.
 
-### The voice tutor -- `tutor.py`
+### The voice tutor and the study chat -- `tutor.py`
 Study mode (#82): the student asks about a topic out loud -- "¿qué era la derivada?", "ponme un
 ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic already has; role
 `editor`, prompt `editor_tutor`, no tool, nothing of the notes changed.
-- `await ask_tutor(vault, subject, topic, question, *, client, sync=None, on_reply=None,
-  digest=None, confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB)
+- `await ask_tutor(vault, subject, topic, question, *, client, style="spoken", sync=None,
+  on_reply=None, digest=None, confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB)
   -> TutorAnswer`. The input is `assemble_input` (catalogue, sources, transcript, doubts'
   decisions, current notes: the cached prefix of the revision chat) with `TUTOR_INSTRUCTION`,
   then, uncached, the last `HISTORY_TURNS` (6) questions and answers and the question (spaces
@@ -556,11 +556,28 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   notes' footnote labels (`[^p4]`) after what it takes from them, says so when something is not in
   the notes nor the sources, and adds outside knowledge only in `ampliado`, saying it is not from
   the sources.
-- `TutorAnswer`: `subject`, `topic`, `question`, `reply` (with the `[^label]` marks), `refs`
-  (`ChatRef` per label the reply cites that the notes define with a usable provenance, in order
-  of first citation: `cited_refs(document, reply)`), `warning` (empty or cut answer), `model`.
+- **Written style** (`style="written"`, #334): the study screen's question chat (epic #332). Prompt
+  `editor_study_chat` (its own file, not a section of `editor_tutor`) and `WRITTEN_INSTRUCTION`;
+  the question is marked as typed, not recognised. The answer is Spanish, short, light Markdown
+  (paragraphs, lists, bold; no headings, tables or code blocks), cites the footnote labels as the
+  spoken style does and each section of the current `apuntes.md` it draws on as `[§anchor]` (a
+  heading's `{#anchor}`; `[§ #anchor]` is read too). A request to change the document ("cámbiame
+  esta definición") is answered "Eso se cambia en Construir: pídeselo allí al asistente." (prompt
+  rule): no tool is offered, nothing under `notes/` is written, no notes commit or tag. The client
+  is the caller's: the server passes the role `[editor] study_chat_role` names (`editor`, Opus, by
+  default; `observer`, Sonnet, to compare), and the ledger records it. Each style is given only its
+  own earlier turns as history (the voice tutor and the study chat are two conversations in one
+  file); the `context` record carries `style`.
+- `TutorAnswer`: `subject`, `topic`, `style` (`spoken` | `written`), `question`, `reply` (with the
+  `[^label]` and `[§anchor]` marks), `refs` (`ChatRef` per label the reply cites that the notes
+  define with a usable provenance, in order of first citation: `cited_refs(document, reply)`),
+  `sections` (written style only: `SectionRef` `{anchor, title}` per `[§anchor]` the reply cites
+  that the current notes have, in order of first citation, `title` the heading's title as written:
+  `cited_sections(document, reply) -> (sections, unknown)`), `warning` (empty or cut answer, and in
+  the written style the cited anchors the notes lack, `§a, §b`; warnings are joined), `model`.
 - `tutor_history(vault, subject, topic) -> TutorHistory` (blocking, reads only): `turns`
-  (`TutorTurn`: `time`, `question`, `reply`, `refs`, `warning`), oldest first.
+  (`TutorTurn`: `time`, `style`, `question`, `reply`, `refs`, `sections`, `warning`), oldest first,
+  both styles. Records written before #334 read as `style: "spoken"`, `sections: []`.
 - **Conversation** `conversations/tutor.jsonl`, apart from `editor.jsonl` (the editor chat's
   history and undo never see the tutor): `context` (reason `tutor` plus the input summary),
   `user`, `assistant`, then one `tutor.answer` record (the `TutorAnswer`); `sync.note_change()`
