@@ -143,7 +143,9 @@ max_attachment_bytes=24 MiB) -> GenerationResult` writes the topic's notes with 
 server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink for the `notes.generated` event.
 
 - **Input** (`assemble_input(vault, subject, topic, *, prompt, digest=None, max_page_images,
-  max_attachment_bytes) -> EditorInput`, blocking), stable parts first for caching. System: the
+  max_attachment_bytes) -> EditorInput`, blocking), stable parts first for caching. Captures set aside
+  by triage (`sources.set_aside_ids`, #324) are left out of the catalogue and the sources, and so
+  are the open pending items whose page refs are all set-aside captures (flagged ones stay in). System: the
   `editor_generate` prompt, then the topic block (subject, title, fidelity mode from `topic.yaml`
   -- anything but `ampliado` is `estricto` --, the subject's `style_guide`), cached by the llm
   client. First user message: the **catalogue** of citable sources with the exact footnote

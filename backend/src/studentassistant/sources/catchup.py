@@ -29,12 +29,14 @@ from studentassistant.observer import (
     EventRef,
     TopicEvent,
 )
+from studentassistant.sources.triage import set_aside_ids
 from studentassistant.vault import (
     SourceError,
     SourceNotFoundError,
     Vault,
     read_source,
     read_topic_events,
+    topic_directory,
 )
 
 PAGE_TRANSCRIBED_KIND = "page.transcribed"
@@ -91,13 +93,15 @@ def owed_pages(
     *,
     before: EventRef | None = None,
     sessions: Collection[str] | None = None,
+    set_aside: Collection[str] = (),
 ) -> tuple[list[PageRef], set[str]]:
     """The captures of the topic without a recorded transcription, and the topic's pending ids.
 
     Captures are those of `sessions` (every session when `None`) stored before `before` (the
     event that opened the session: what comes after it reaches the transcriber on the bus); a
     repeated `capture_id` in one session counts once. Recorded transcriptions count wherever they
-    are in the log.
+    are in the log. A capture whose `source_path` is in `set_aside` (set aside by triage, #324) is
+    never owed.
     """
     captures: dict[tuple[str, str], PageRef] = {}
     recorded: set[tuple[str, str]] = set()
@@ -136,7 +140,12 @@ def owed_pages(
             t=event.t,
             source_kind=kind if isinstance(kind, str) else None,
         )
-    owed = [page for key, page in captures.items() if key not in recorded]
+    excluded = set(set_aside)
+    owed = [
+        page
+        for key, page in captures.items()
+        if key not in recorded and page.source_path not in excluded
+    ]
     return owed, pending_ids
 
 
@@ -149,11 +158,17 @@ def read_owed(
     sessions: Collection[str] | None = None,
 ) -> Owed:
     """`owed_pages` of the topic's log, split by whether `page-NNN.md` is stored (blocking).
+    Set-aside captures (their sidecar's `triage`) are left out.
 
     Raises what `read_topic_events` raises for a topic or a session it cannot read.
     """
+    prefix = topic_directory(vault, subject_slug, topic_slug).relative_to(vault.path).as_posix()
+    excluded = {f"{prefix}/{sid}" for sid in set_aside_ids(vault, subject_slug, topic_slug)}
     pages, pending_ids = owed_pages(
-        read_topic_events(vault, subject_slug, topic_slug), before=before, sessions=sessions
+        read_topic_events(vault, subject_slug, topic_slug),
+        before=before,
+        sessions=sessions,
+        set_aside=excluded,
     )
     owed = Owed(pending_ids=pending_ids)
     for page in pages:

@@ -225,8 +225,14 @@ def create_app(
     app.state.generators = default_registry
     app.state.materials = None
     app.state.web_searcher = None
+    app.state.triage_client_factory = None
     if llm_transport is not None:
         llm_settings = llm_settings or Settings()
+        if sources.triage_llm_check:
+            # The optional Sonnet stage of capture triage (#324, `sources/triage_llm.py`).
+            app.state.triage_client_factory = transcriber_client_factory(
+                llm_settings, llm_transport
+            )
         # "Prepárame el tema": the editor role writes the notes (`notes_routes.py`).
         app.state.notes = NotesGenerator(llm_settings, llm_transport, workspace=app.state.workspace)
         # Spoken requests to the assistant -> editor turns, per topic in order (#315).

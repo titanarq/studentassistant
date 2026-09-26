@@ -257,6 +257,8 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
     sidecar = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
     sharpness = sidecar.pop("sharpness")
     assert len(sharpness) == 2 and sharpness[0] > sharpness[1]
+    triage = sidecar.pop("triage")  # its decision: `test_capture_triage_route.py`
+    assert triage["decided_by"] == "auto"
     started = app.state.sessions.get_active(session_id).started_at_ms
     session_t_ms = max(0, 1_790_000_000_000 - started)
     assert sidecar == {
@@ -755,3 +757,107 @@ def test_a_foreign_host_header_is_refused(
     response = upload(client_with_host(app, "evil.example"), session_id)
     assert response.status_code in (400, 403, 421)
     assert_nothing_stored(tmp_vault, session_id)
+
+
+# -- capture triage (#324) -------------------------------------------------------------------------
+
+
+C1 = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a61"
+C2 = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a62"
+
+
+def _page_burst(image: np.ndarray, capture_id: str) -> list[Part]:
+    meta = metadata(capture_id=capture_id)
+    meta["images"] = meta["images"][:1]
+    return burst(meta, [("image_0", "image/jpeg", _encode(image, ".jpg"))])
+
+
+def _events(vault: Vault, session_id: str) -> list[Event]:
+    path = vault.path / "subjects/fisica/topics/cinematica/sessions" / session_id / "events.jsonl"
+    return list(read_jsonl(path, Event))
+
+
+def test_each_capture_is_followed_by_its_triage_event(
+    client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    from triage_images import framed, paper, written
+
+    assert upload(client, session_id, _page_burst(framed(written(3)), C1)).status_code == 201
+    assert upload(client, session_id, _page_burst(paper(), C2)).status_code == 201
+
+    events = [e for e in _events(tmp_vault, session_id) if e.kind.startswith("capture.")]
+    assert [e.kind for e in events] == [
+        "capture.stored",
+        "capture.triaged",
+        "capture.stored",
+        "capture.triaged",
+    ]
+    kept, blank = events[1], events[3]
+    assert kept.origin == "observer"
+    assert kept.payload == {
+        "capture_id": C1,
+        "source_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.jpg",
+        "source_id": "sources/notes/page-001.jpg",
+        "status": "kept",
+        "reasons": [],
+        "duplicate_of": None,
+        "decided_by": "auto",
+        "capture_session_id": session_id,
+    }
+    assert blank.payload["status"] == "set_aside"
+    assert blank.payload["reasons"] == ["blank"]
+    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-002.yaml").read_text(encoding="utf-8"))
+    assert sidecar["triage"]["status"] == "set_aside"
+    assert (notes_dir(tmp_vault) / "page-002.jpg").is_file()  # set aside, never deleted
+
+
+def test_a_sharper_repeat_publishes_the_older_capture_set_aside(
+    client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    from triage_images import framed, written
+
+    soft = framed(written(3), blur=5)
+    response = upload(client, session_id, _page_burst(soft, C1))
+    assert response.status_code == 201, response.text
+    assert upload(client, session_id, _page_burst(framed(written(3)), C2)).status_code == 201
+
+    triaged = [e.payload for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    assert [(p["capture_id"], p["status"]) for p in triaged] == [
+        (C1, "kept"),
+        (C2, "kept"),
+        (C1, "set_aside"),
+    ]
+    assert triaged[2]["reasons"] == ["duplicate"]
+    assert triaged[2]["duplicate_of"] == "sources/notes/page-002.jpg"
+
+
+def test_with_the_sonnet_stage_an_ambiguous_check_is_asked_before_storing(
+    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+) -> None:
+    from studentassistant.config import SourcesSettings
+    from studentassistant.llm import FakeClaude, get_client
+    from triage_images import framed, written
+
+    fake = FakeClaude()
+    fake.reply_tool(
+        "triage_verdict", {"blank": False, "blurry": False, "partial": False, "reason": "Se lee."}
+    )
+    app.state.sources = SourcesSettings(triage_llm_check=True, triage_llm_margin=0.5)
+    bindings: list[Any] = []
+
+    def factory(binding: Any) -> Any:
+        bindings.append(binding)
+        return get_client("transcriber", settings=Settings(), transport=fake)
+
+    app.state.triage_client_factory = factory
+    soft = framed(written(3), blur=9)  # sharpness just under the threshold
+    response = upload(client, session_id, _page_burst(soft, C1))
+    assert response.status_code == 201, response.text
+
+    assert len(fake.requests) == 1
+    assert bindings[0].session == session_id
+    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    assert sidecar["triage"]["status"] == "kept"
+    assert sidecar["triage"]["metrics"]["llm_verdict"] == {"blurry": False}
+    [triaged] = [e.payload for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    assert triaged["status"] == "kept"

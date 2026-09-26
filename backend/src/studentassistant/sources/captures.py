@@ -85,7 +85,8 @@ class ProcessedBurst:
 
     `selected` is the 0-based index of the kept still, `sharpness` the score of each still
     (`None` when it could not be decoded), `still` and `page` JPEG bytes, `width_px`/`height_px`
-    the size of `still`.
+    the size of `still`, `page_corners` the detected page's corners in `still` pixels (top-left,
+    top-right, bottom-right, bottom-left; `None` when no page was found).
     """
 
     selected: int
@@ -95,15 +96,23 @@ class ProcessedBurst:
     page_detected: bool
     width_px: int
     height_px: int
+    page_corners: tuple[tuple[float, float], ...] | None = None
 
 
 @dataclass(frozen=True)
 class StoredCapture:
-    """What `store_capture` wrote: the still's path, the page image's path and the processing."""
+    """What `store_capture` wrote: the still's path, the page image's path and the processing.
+
+    `triage` is the capture's triage (`triage.py`; `None` with `[sources] triage_enabled` off) and
+    `triage_changes` the decisions it changed about other captures (an older duplicate it
+    displaced), both to publish as `capture.triaged`.
+    """
 
     path: Path
     page_path: Path
     processed: ProcessedBurst
+    triage: Any = None
+    triage_changes: tuple[Any, ...] = ()
 
 
 def decode_image(data: bytes) -> np.ndarray | None:
@@ -286,6 +295,9 @@ def process_burst(stills: Sequence[bytes], settings: SourcesSettings) -> Process
         page_detected=corners is not None,
         width_px=int(still.shape[1]),
         height_px=int(still.shape[0]),
+        page_corners=None
+        if corners is None
+        else tuple((float(x), float(y)) for x, y in corners.tolist()),
     )
 
 
@@ -305,17 +317,32 @@ def store_capture(
     meta: Mapping[str, Any],
     session_t_ms: int,
     settings: SourcesSettings,
+    *,
+    processed: ProcessedBurst | None = None,
+    triage: Any = None,
 ) -> StoredCapture:
     """Process a burst and store it as one page of the topic's `kind` sources (see the module
     docstring for the files and the sidecar). `meta` is what the caller records about the capture;
     the processing record and the transcript window are added to it.
+
+    The capture is triaged (`triage.prepare_triage`, unless `[sources] triage_enabled` is off)
+    and the decision written to the sidecar's `triage` block in the same `put_source` call; an
+    older duplicate it displaces is set aside after (`triage.apply_swap`). A caller that already
+    processed the burst, or refined its triage (the optional Sonnet stage), passes `processed`
+    and `triage` (a `TriageResult`).
 
     Raises:
         CaptureImageError: when no still of the burst can be decoded; nothing is written.
         Whatever `vault.put_source` raises (a refused secret, an unknown topic...); nothing is
             written.
     """
-    processed = process_burst([still.data for still in stills], settings)
+    # Imported here: `triage` builds on this module's image helpers.
+    from studentassistant.sources.triage import TRIAGE_KEY, apply_swap, prepare_triage
+
+    if processed is None:
+        processed = process_burst([still.data for still in stills], settings)
+    if triage is None and settings.triage_enabled and kind in ("notes", "book"):
+        triage = prepare_triage(vault, subject_slug, topic_slug, kind, processed, settings)
     derived: dict[str, bytes] = {PAGE_SUFFIX: processed.page}
     for index, still in enumerate(stills):
         if index != processed.selected:
@@ -331,12 +358,23 @@ def store_capture(
         "sharpness": [None if s is None else round(s, 3) for s in processed.sharpness],
         "page_detected": processed.page_detected,
     }
+    if triage is not None:
+        sidecar[TRIAGE_KEY] = triage.sidecar()
     path = put_source(
         vault, subject_slug, topic_slug, kind, STILL_NAME, processed.still, sidecar, derived
     )
+    changes: tuple[Any, ...] = ()
+    if triage is not None and triage.replaces is not None:
+        source_id = f"sources/{kind}/{path.name}"
+        swapped = apply_swap(vault, subject_slug, topic_slug, source_id, triage)
+        changes = (swapped,) if swapped is not None else ()
     stem = path.name.split(".", 1)[0]
     return StoredCapture(
-        path=path, page_path=path.with_name(f"{stem}.{PAGE_SUFFIX}"), processed=processed
+        path=path,
+        page_path=path.with_name(f"{stem}.{PAGE_SUFFIX}"),
+        processed=processed,
+        triage=triage,
+        triage_changes=changes,
     )
 
 

@@ -118,7 +118,9 @@ async def capture(
         [BurstStill(encode(desk_still()), "image/jpeg")],
         {"capture_id": capture_id, "source_context": "notes"},
         t_ms,
-        sources,
+        # Every capture here is the same drawn page: triage would set the repeats aside
+        # (`test_triage_pipeline.py` covers that).
+        sources.model_copy(update={"triage_enabled": False}),
     )
     root = session.vault.path
     source_path = stored.path.relative_to(root).as_posix()
