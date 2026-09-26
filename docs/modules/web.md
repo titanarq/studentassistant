@@ -111,10 +111,25 @@
     back to the list.
   - Left, bottom: the chat slot `WorkspaceChatSlot` -- today the existing `EditorChat` with
     `useEditorChat`, unchanged; #317 replaces this component.
-  - Right: the document, `NotesView` read-only (no "¿Por qué?" here), with the sections the last
-    applied turn changed highlighted. A provenance footnote (in the document or in a chat answer)
-    switches the left column to **Recursos** and opens that source there. Without notes (404) it
-    says "Todavía no hay apuntes: pídeselos al asistente en el chat."
+  - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
+    **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
+    changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
+    the document or in a chat answer) switches the left column to **Recursos** and opens that
+    source there. Without notes (404) it says "Todavía no hay apuntes: pídeselos al asistente en el
+    chat." and **Editar** starts a document from `# <topic name>` (saved with `base_revision:
+    null`).
+  - **Editar** replaces the document with the notes editor (`NoteEditor`, below), headed
+    "Editando sobre vN" with **Cancelar** (asks before discarding unsaved changes) and **Guardar**:
+    `PUT .../notes {text, base_revision}` with the revision the edit started from; on success the
+    workspace re-reads the notes (the saved sections highlighted) and the panel leaves edit mode.
+    `409 notes_changed`: "Los apuntes han cambiado mientras editabas" with "Tu versión" and
+    "Versión actual" side by side and **Descartar mis cambios** (leave edit mode, re-read) or
+    **Reintentar sobre la versión actual** (the student's text stays in the editor, the base
+    becomes the current revision; they review and save again -- nothing is overwritten silently).
+    `409 notes_busy`: "Se están preparando los apuntes; espera a que terminen." `422`: the Spanish
+    `errors` listed. While editing, a newer revision in the workspace state (the assistant changed
+    the notes) shows the non-blocking "El asistente ha cambiado los apuntes. Tu texto sigue como lo
+    dejaste; al guardar se comprobará." and never replaces the student's text.
   - Below 900 px (56.25rem) the columns become one and a switch **Documento** |
     **Captura/Recursos** | **Chat** (`aria-pressed` buttons, the root's `data-view`) shows one
     part; the others are `display: none`, never unmounted. A footnote switches to
@@ -126,6 +141,46 @@
     send it, before #313); `WorkspaceContext` / `useWorkspace()` give it to the page's children.
     The chat slot calls `reloadNotes(sections)` after an applied turn or an undo. #316 and #317
     build on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.
+- **Notes editor** (`src/noteEditor/`, #316): `NoteEditor({initialText, initialMode?, uploadImage,
+  resolveImage?, renderPreview, onChange?, leading?, actions?})` with a ref handle `getText()`.
+  A **Visual** | **Markdown** switch (the text carries over both ways). Visual is Milkdown
+  (`visualEditor.ts`, loaded on demand as its own ~450 kB / 136 kB gzip chunk):
+  `createVisualEditor(root, markdown, {onChange, resolveImage}) -> VisualEditor {getMarkdown,
+  insertMarkdown, setBlock, toggleStrong, toggleEmphasis, bulletList, orderedList, rule,
+  insertTable, addRow, addColumn, focus, view, destroy}`. Provenance references are atomic chips
+  (`[^p3]` "p3", `[^ia]` "IA" highlighted, `[^est]` "tú" in green; moved or deleted whole, never
+  typed into); a heading's `{#anchor}` is hidden by a decoration but stays in the text and the
+  saved Markdown. Markdown is a `textarea` beside a live `NotesView` preview. The toolbar has block
+  type (Párrafo / Título 2 / Título 3), Negrita, Cursiva, Lista, **Tabla** (visual: a 3x2 table,
+  plus "+fila"/"+col"; Markdown: a table skeleton at the cursor) and **Imagen** (a file picker).
+  Pasting or dropping a PNG/JPEG/WebP image anywhere in the editor uploads it
+  (`POST .../sources/images`, `notes/api.ts` `uploadPastedImage`) and inserts the answered
+  `markdown` at the cursor; meanwhile a "Subiendo imagen pegada…" card shows, and a failure shows
+  "No se pudo subir la imagen: <detail>" and inserts nothing; other files are refused in Spanish.
+  - **Source preservation** (`preserve.ts`): remark re-serialises every block in its own style, so
+    the editor keeps each top-level block's source text (from the mdast offsets) and on save writes
+    a block still equal to the loaded one (ProseMirror equality, heading ids aside) as that text,
+    joined by the original separators; only changed or new blocks are serialised, in the notes'
+    style (`-` bullets, `---` rules and table delimiters, unpadded tables, no escapes in `{#anchor}`
+    or `[[?word]]`: `tidyBlock`). Milkdown 7.22 drops title-less images (a `null` title fails the
+    schema); the editor's image schema fixes that.
+  - **Spike** (#316; corpus `src/noteEditor/fixtures/*.md`: the example of `editor.md`, anchors
+    with `_`/`-`, `[^p4]`/`[^ia]`/`[^est]` in paragraphs, list items and table cells, the final run
+    of definitions of every source kind, nested lists, a table, a pasted image, `[[?soberanía]]`,
+    `---`). Criterion: load + save with no edit gives the same text, and a one-word edit changes
+    only its block. Out of the box, every candidate fails every case:
+
+    | candidate (version, licence) | round trip | one-word edit | why |
+    |---|---|---|---|
+    | MDXEditor 4.3 (MIT, Lexical; largest) | 0/9 | -- | escapes `[^p2]` as `\[^p2]`, `*` bullets, padded tables, `\_` in anchors |
+    | Milkdown 7.22 (MIT, ProseMirror + remark) | 0/9 | 0/9 | `*` bullets, `***` rules, padded tables, blank lines inside the footnote run, `\_` in anchors, `\[\[?`, drops title-less images |
+    | TipTap 3.31 + `@tiptap/markdown` (MIT) | 0/9 | 0/9 | no footnotes (`\[^p2\]`), padded tables, `\_` in anchors |
+    | Toast UI Editor 3.2 (MIT, unmaintained since 2022) | 0/9 | 0/9 | escapes `1\.` and `\{\#anchor\}`, `*` bullets, `\[^ia\]` definitions |
+
+    Milkdown is the only one that parses GFM footnotes into nodes (so references can be chips) and
+    tables; with the preservation layer, its stringify options and `tidyBlock` it passes 9/9 and
+    9/9 (`roundTrip.test.ts`, plus an edited heading keeping `{#funciones_del_lenguaje}`), so it
+    is the visual editor; the raw Markdown mode stays for anything it cannot show.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -421,7 +476,15 @@ token):
     the chat is the sticky column beside them.
   - `api.ts`: `fetchNotes`, `fetchSourceMeta`, `fetchSourceText`, `fetchTranscript` (all
     `ReadResult`), `sourceUrl(vaultId)`. Images load by plain `<img src>`, so they rely on the same
-    localhost trust as every other request of the web app.
+    localhost trust as every other request of the web app. The student's edits (#316):
+    `saveNotes(s, t, text, baseRevision) -> SaveNotesResult` (`saved {text, revision,
+    changedSections, notesChanged}` | `changed {text, revision}` (409 `notes_changed`, also told by
+    the body's `text` when the code is missing) | `busy` (409 `notes_busy`) | `invalid {errors}`
+    (422; a request-validation 422 gives one generic Spanish error) | `failed {message}`),
+    `uploadPastedImage(s, t, file) -> ok {sourceId, markdown} | failed {message}` (multipart `file`
+    part; the server's Spanish `detail`) and `notesImageUrl(s, t, src)` (a `../sources/<kind>/<file>`
+    link through the read API, else `null`). `parseInline` reads `![alt](src)` as an `image` node;
+    `NotesView` shows it through its optional `resolveImage` (without one, "[Imagen: alt]").
   - Beside the notes (a sticky column from 80rem, below them otherwise) `NotesPage` shows the
     editor chat (`src/chat/`, #71). After a turn or an undo that changed the notes it reads them
     again (only the latest read is shown) and `NotesView` highlights (`notes-changed`) every

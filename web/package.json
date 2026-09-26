@@ -24,6 +24,14 @@
     "vitest": "^5.0.1"
   },
   "dependencies": {
+    "@milkdown/core": "^7.22.2",
+    "@milkdown/ctx": "^7.22.2",
+    "@milkdown/plugin-history": "^7.22.2",
+    "@milkdown/preset-commonmark": "^7.22.2",
+    "@milkdown/preset-gfm": "^7.22.2",
+    "@milkdown/prose": "^7.22.2",
+    "@milkdown/transformer": "^7.22.2",
+    "@milkdown/utils": "^7.22.2",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
