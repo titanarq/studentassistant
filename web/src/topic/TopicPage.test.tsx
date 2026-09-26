@@ -139,3 +139,14 @@ it("shows the study materials and reloads the card after generating one", async 
   fireEvent.click(await screen.findByRole("button", { name: "Generar" }));
   await vi.waitFor(() => expect(summaries).toBe(2));
 });
+
+it("links to the topic's study workspace", () => {
+  stubApi({});
+
+  renderPage();
+
+  expect(screen.getByRole("link", { name: "Abrir espacio de estudio" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/workspace",
+  );
+});

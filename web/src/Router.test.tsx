@@ -64,6 +64,15 @@ it("renders the notes viewer at the topic's /notes path", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar los apuntes");
 });
 
+it("renders the study workspace at the topic's /workspace path", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />);
+
+  expect(screen.getByRole("heading", { name: "Espacio de estudio" })).toBeInTheDocument();
+  expect(screen.getByRole("tablist", { name: "Captura o recursos" })).toBeInTheDocument();
+});
+
 it("renders the pending-doubts panel at the topic's /pending path", async () => {
   stubFetch();
 
