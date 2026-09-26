@@ -29,7 +29,7 @@ export class FakeWebSocket extends FakeEventTarget {
   readonly requestedProtocols: string | string[] | undefined;
   binaryType: BinaryType = "blob";
   readyState: number = FakeWebSocket.CONNECTING;
-  /** Every frame sent, in order, including the ones buffered while connecting. */
+  /** Every frame sent, in order. */
   readonly sent: SentMessage[] = [];
   /** Every `close()` the code under test called, in order. */
   readonly closeCalls: Array<{ code: number | undefined; reason: string | undefined }> = [];
@@ -37,7 +37,6 @@ export class FakeWebSocket extends FakeEventTarget {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
-  private readonly buffered: SentMessage[] = [];
   private selectedProtocol = "";
 
   constructor(url: string | URL, protocols?: string | string[]) {
@@ -65,13 +64,14 @@ export class FakeWebSocket extends FakeEventTarget {
   }
 
   send(data: string | ArrayBuffer | ArrayBufferView | Blob): void {
+    // Like a browser (WHATWG WebSockets): a connecting socket buffers nothing, it throws (#298).
+    if (this.readyState === FakeWebSocket.CONNECTING) {
+      throw new DOMException("FakeWebSocket: still in CONNECTING state", "InvalidStateError");
+    }
     if (this.readyState >= FakeWebSocket.CLOSING) {
       throw new DOMException("FakeWebSocket: the socket is already closing or closed", "InvalidStateError");
     }
-    const message = toSentMessage(data);
-    // A real socket buffers what it is given before `open` and sends it once the handshake ends.
-    if (this.readyState === FakeWebSocket.CONNECTING) this.buffered.push(message);
-    else this.sent.push(message);
+    this.sent.push(toSentMessage(data));
   }
 
   /**
@@ -90,7 +90,6 @@ export class FakeWebSocket extends FakeEventTarget {
     if (this.readyState !== FakeWebSocket.CONNECTING) return;
     this.selectedProtocol = protocol;
     this.readyState = FakeWebSocket.OPEN;
-    this.sent.push(...this.buffered.splice(0));
     this.emit("open");
   }
 

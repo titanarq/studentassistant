@@ -382,6 +382,20 @@ describe("the session socket", () => {
     expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
   });
 
+  it("says in Spanish when the backend connection fails before it opens (#298)", async () => {
+    renderScreen();
+
+    await act(async () => {
+      socket().serverError();
+      socket().serverClose(1006);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "El servidor ha cerrado la conexión antes de aceptar esta página.",
+    );
+    expect(socket().sent).toEqual([]);
+  });
+
   it("cannot open a session at all from an address the browser does not trust", async () => {
     restores.push(swapGlobal("isSecureContext", false));
 

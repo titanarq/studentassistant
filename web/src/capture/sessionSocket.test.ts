@@ -179,6 +179,60 @@ describe("hello", () => {
   });
 });
 
+describe("before the connection opens (#298)", () => {
+  it("sends nothing on a connecting socket, which throws like a browser's, and flushes in order on open", () => {
+    const { socket, fake } = openSession();
+
+    socket.sendTranscript(FINAL, "final");
+    socket.sendAudio(AUDIO_FRAME);
+    expect(fake.sent).toEqual([]);
+
+    fake.serverOpen();
+
+    expect(fake.sent.map((message) => message.kind)).toEqual(["text", "text", "binary"]);
+    expect(sentEvent(fake, 0).type).toBe("hello");
+    expect(sentEvent(fake, 1).type).toBe("transcript.client.final");
+    expect([...fake.sentBinary[0]]).toEqual([...AUDIO_FRAME]);
+  });
+
+  it("reports a socket that closes before opening and sends nothing after it", async () => {
+    const harness = openSession();
+    harness.socket.sendButton("important", CLIENT_TIME_MS);
+
+    harness.fake.serverClose(1006);
+
+    expect(await harness.socket.handshake).toEqual({
+      kind: "disconnected",
+      problem: "the session socket closed with code 1006",
+    });
+    expect(harness.events).toEqual([{ kind: "closed", code: 1006, reason: "", wasClean: false }]);
+    harness.socket.sendButton("important", CLIENT_TIME_MS);
+    expect(harness.fake.sent).toEqual([]);
+  });
+
+  it("reports a socket that fails before opening", async () => {
+    const harness = openSession();
+
+    harness.fake.serverError("refused");
+    harness.fake.serverClose(1006);
+
+    expect(await harness.socket.handshake).toEqual({ kind: "disconnected", problem: "refused" });
+    expect(harness.events[0]).toEqual({ kind: "failed", problem: "refused" });
+    expect(harness.fake.sent).toEqual([]);
+  });
+
+  it("drops the queue when the page closes the socket before it opens", () => {
+    const harness = openSession();
+    harness.socket.sendButton("important", CLIENT_TIME_MS);
+
+    harness.socket.close();
+    harness.fake.serverOpen();
+
+    expect(harness.fake.closeCalls).toEqual([{ code: 1000, reason: undefined }]);
+    expect(harness.fake.sent).toEqual([]);
+  });
+});
+
 describe("the handshake", () => {
   it("keeps the clock offset and the STT mode hello.ack chose", async () => {
     const harness = openSession();
