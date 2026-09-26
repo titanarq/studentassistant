@@ -4,7 +4,7 @@ import { installCaptureFakes, swapProperty, type CaptureFakes } from "../capture
 import { revision } from "../chat/testChat";
 import { NOTES } from "../notes/testNotes";
 import { PROTOCOL_VERSION } from "../protocol";
-import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
+import { jsonResponse, sseResponse, streamResponse, stubApi } from "../test/mockApi";
 import { resourceList } from "./resources";
 import WorkspacePage, { EMPTY_NOTES } from "./WorkspacePage";
 import { parseNotes } from "../notes/markdown";
@@ -60,6 +60,7 @@ const ROUTES = {
   [`${SOURCES}/notes/page-001.jpg/meta`]: meta(`${TOPIC}/sources/notes/page-001.jpg`, "notes", {}, "Gran Bretaña, s. XVIII"),
   [`${SOURCES}/notes/page-002.jpg/meta`]: meta(`${TOPIC}/sources/notes/page-002.jpg`, "notes", {}, "Carbón y hierro"),
   "POST /api/sessions": jsonResponse(SESSION),
+  [`${BASE}/workspace/stream`]: () => streamResponse().response,
 };
 
 let fakes: CaptureFakes;
@@ -95,7 +96,7 @@ it("shows the two columns: tabs above the chat, the notes on the right, and the 
   expect(screen.getByRole("heading", { name: "Espacio de estudio" })).toBeInTheDocument();
   expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "false");
-  expect(within(screen.getByRole("region", { name: "Chat" })).getByRole("heading", { name: "Hablar con el editor" })).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Chat" })).getByRole("heading", { name: "Chat con el asistente" })).toBeInTheDocument();
   const doc = screen.getByRole("region", { name: "Documento" });
   expect(await within(doc).findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
   expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toHaveAttribute(
@@ -216,7 +217,7 @@ it("refreshes the document after the chat applied a change", async () => {
   await screen.findByRole("heading", { name: /Contexto/ });
 
   const chat = screen.getByRole("region", { name: "Chat" });
-  fireEvent.change(within(chat).getByLabelText("Mensaje para el editor"), { target: { value: "Amplía" } });
+  fireEvent.change(within(chat).getByLabelText("Mensaje para el asistente"), { target: { value: "Amplía" } });
   fireEvent.click(within(chat).getByRole("button", { name: "Enviar" }));
 
   expect(await screen.findByText(/dicen, empezó/)).toBeInTheDocument();

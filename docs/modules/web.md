@@ -109,8 +109,53 @@
     counted ("Hay N webs guardadas que los apuntes todavía no citan."). Choosing one shows it in
     the existing `SourcePanel` in place of the list (static there, not floating); "Cerrar" goes
     back to the list.
-  - Left, bottom: the chat slot `WorkspaceChatSlot` -- today the existing `EditorChat` with
-    `useEditorChat`, unchanged; #317 replaces this component.
+  - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
+    #317; the notes page keeps `EditorChat`). "Chat con el asistente": an `aria-live="polite"`
+    `role="log"` list of turns, oldest first. A spoken request shows "Por voz · HH:MM" and
+    "Pediste: <request_summary>" (the short line of what was asked; `summary` stays the applied
+    change's) with a **…** button (`aria-expanded`, `aria-controls`; "Ver lo que dijiste" /
+    "Ocultar lo que dijiste") that shows the raw `transcript.text` and its session time range
+    (`00:02:34–00:03:10`) and hides it again; a typed turn shows "Escribiste" and the message.
+    Then "Asistente" and the reply: "En cola…" for a `request.detected` whose turn has not
+    started (several keep their order), "El asistente está pensando…" once it started, the text
+    streamed from `reply.delta` (dropped on `reply.restart`; deltas of an older attempt ignored),
+    replaced by the authoritative `turn.result`; "Cambio aplicado: <summary>" with **Ver los
+    cambios** (`aria-expanded`, shows the existing `DiffView`) for a change seen live, or **Ver las
+    versiones** (the topic's versions page) for one read from the history, which has no diffs; a
+    `turn.error` shows "No se pudo completar: <detail>" (`role="alert"`), and a
+    `cost_cap_reached` one **Continuar igualmente**, which repeats it with `confirm_over_cap`
+    (a spoken edit or question is re-sent as a typed message with its raw text; "prepárame el
+    tema" through `POST .../notes/generate`). Below, a textarea "Mensaje para el asistente"
+    (Enter sends, Shift+Enter is a new line) with **Enviar** (disabled while empty or while this
+    page's send or undo runs) and **Deshacer el último cambio** (`POST .../notes/chat/undo`, as
+    the notes page's chat). While the stream is down: "Sin conexión en directo con el asistente;
+    reintentando…" (`role="status"`).
+    - `chat/api.ts`: `fetchWorkspaceHistory` (`GET .../notes/chat` read with `turn_id`,
+      `origin`, `request_summary`, `transcript`), `readWorkspaceEvent(event, data)` (the stream's
+      events decoded; unknown ones are `null`, the list is open), `readOutcome` (a
+      `RevisionResult`, or a `prepare_notes` `GenerationResult`, as one `TurnOutcome`), and
+      `sendTyped(s, t, message, {confirmOverCap, onDelta, onRestart})`, the one place typed
+      messages go out (today `POST .../notes/chat` through `src/chat/api.ts`'s `streamTurn`;
+      #329 moves it).
+    - `chat/stream.ts`: `connectWorkspaceStream(s, t, {onEvent, onOpen(reconnected), onDown,
+      retryDelays?}) -> close()`: `GET .../workspace/stream` read with `fetch` + `readSse`; a
+      failed attempt or a drop is retried after 1 s, 2 s, 5 s, 10 s, then every 30 s
+      (`RETRY_DELAYS_MS`, reset by each successful open).
+    - `chat/turns.ts`: `reduceChat`, the pure merge of the history, the stream's events and this
+      page's sends. Turns are keyed by `turn_id`; a queued request by `request_id` until its
+      `turn.started`. A typed send starts as a local entry fed by its own POST stream; the typed
+      `turn.started` the workspace stream broadcasts meanwhile is adopted by it, and from then on
+      only the workspace stream writes the reply (so nothing shows twice); the POST's `result`
+      carries the real `turn_id`, and a wrongly adopted turn (another tab's) is split off again.
+      A history read replaces the entries it has (keeping a live entry's diff) and keeps, after
+      it, the live ones it does not have yet.
+    - `chat/useWorkspaceChat.ts`: the hook. Every (re)open of the stream re-reads the history;
+      a reopen also reloads the notes, so a turn or a change that happened while disconnected is
+      neither missed nor duplicated. Every `notes.changed` calls the workspace state's
+      `reloadNotes` (with the sections the turn changed when its `turn.result` was seen, else
+      none), and so does a typed turn's own result that changed the notes.
+    - The request's rendering is one switch on the entry's origin/kind (`Request` in
+      `ChatPanel.tsx`), so later turn kinds (#329) add a case.
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
     **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
@@ -139,8 +184,9 @@
     {kind: "ready", text, revision, version} | {kind: "empty"} | {kind: "failed", message}` from
     `GET .../notes` (only the latest read is kept; `revision` is null while the backend does not
     send it, before #313); `WorkspaceContext` / `useWorkspace()` give it to the page's children.
-    The chat slot calls `reloadNotes(sections)` after an applied turn or an undo. #316 and #317
-    build on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.
+    The chat panel calls `reloadNotes(sections)` on every `notes.changed` of the workspace stream,
+    after an applied typed turn or an undo, and after the stream reconnects. #316 and #317 build
+    on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.
 - **Notes editor** (`src/noteEditor/`, #316): `NoteEditor({initialText, initialMode?, uploadImage,
   resolveImage?, renderPreview, onChange?, leading?, actions?})` with a ref handle `getText()`.
   A **Visual** | **Markdown** switch (the text carries over both ways). Visual is Milkdown
