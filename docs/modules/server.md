@@ -241,6 +241,12 @@ Routes registered today:
     and `generated` (`list_generated`: vault-relative paths; empty until a generator exists),
     `digest_excerpt` (the topic digest's summary paragraph, `observer.digest_excerpt`, `null`
     before the topic's first session end).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/sources` -> `TopicSources` (#323):
+    `subject_id`, `topic_id` and `sources`, one `{vault_id, kind, title}` per stored source in
+    `vault.list_sources` order (by kind, then number): `vault_id` is the vault-relative path the
+    source routes below take, `kind` one of `notes`, `book`, `pdf`, `web`, `images`, and `title`
+    comes from the sidecar (`title`, as a web snapshot has, else `original_name`, as a PDF has;
+    `null` without either). An empty topic lists `[]`; reads only.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above, `revision`: the content
     revision token, `editor.notes_revision(text)`, SHA-256 hex, that a student save names as its

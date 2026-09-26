@@ -102,12 +102,16 @@
     curso". **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
     **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
     "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by
-    `resourceList(counts, tree)` (`resources.ts`) from the summary counts (`GET .../summary`, read
-    again each time the tab is shown) and the notes' provenance footnotes: the read API lists no
-    source files, so handwritten/book pages and PDFs are numbered `page-001…` up to the count, and
-    webs (named after their title) are openable only when the notes cite them; the rest are
-    counted ("Hay N webs guardadas que los apuntes todavía no citan."); images pasted into the
-    notes (`sources/images/img-NNN.<ext>`, #316) are listed when the notes cite them. Each stored
+    `resourceList(sources, tree)` (`resources.ts`) from the topic's source list
+    (`fetchTopicSources`, `GET .../sources`, #323, read again each time the tab is shown) and the
+    notes' provenance footnotes: every stored `notes`/`book`/`pdf`/`web`/`images` source by its
+    real file, in the backend's order, uncited webs included, then the cited sources the list
+    lacks (PDF pages, transcript spans). When that request does not answer a list (a backend older
+    than #323, any failure) it falls back to the summary counts (`GET .../summary`; a failure of
+    that read is the tab's error): handwritten/book pages and PDFs are numbered `page-001…` up to
+    the count, webs (named after their title) are openable only when the notes cite them, the
+    rest counted ("Hay N webs guardadas que los apuntes todavía no citan."), and images pasted
+    into the notes (`sources/images/img-NNN.<ext>`, #316) are listed when the notes cite them. Each stored
     source is one card (thumbnail -- the flattened `page-NNN.page.jpg`, else the capture; a PDF's
     first page image; the pasted image -- its name, "Página 3 · apuntes", "Libro, página 83",
     "PDF «nombre»", "Web: …", "Imagen pegada 1", and a state chip), derived by

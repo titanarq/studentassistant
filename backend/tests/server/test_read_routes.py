@@ -14,7 +14,7 @@ from studentassistant.config import ServerSettings, VaultSettings
 from studentassistant.server.app import create_app
 from studentassistant.server.auth import EXEMPT_ROUTES
 from studentassistant.server.read_routes import parse_span
-from studentassistant.vault import list_sessions, list_sources, read_session_transcript
+from studentassistant.vault import list_sessions, list_sources, put_source, read_session_transcript
 
 
 def test_fixture_vault(read_vault: ReadVault, reader: TestClient) -> None:
@@ -73,6 +73,64 @@ def test_a_path_id_outside_the_protocol_pattern_is_422(
 ) -> None:
     response = reader.get(f"/api/subjects/{read_vault.subject}/topics/.hidden/sessions")
     assert response.status_code == 422
+
+
+# -- source list --------------------------------------------------------------------------------
+
+
+def test_sources_lists_the_topics_sources_in_list_sources_order(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    rv = read_vault
+    put_source(
+        rv.vault,
+        rv.subject,
+        rv.topic,
+        "pdf",
+        "tema1.pdf",
+        b"%PDF-1.4",
+        {"original_name": "Tema 1.pdf"},
+    )
+    put_source(rv.vault, rv.subject, rv.topic, "book", "p83.jpg", b"jpeg", {"book_page": 83})
+    web = put_source(
+        rv.vault,
+        rv.subject,
+        rv.topic,
+        "web",
+        "Caída libre",
+        "# Caída libre\n",
+        {"title": "Caída libre"},
+    )
+
+    response = reader.get(f"/api/subjects/{rv.subject}/topics/{rv.topic}/sources")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["subject_id"], body["topic_id"]) == (rv.subject, rv.topic)
+    expected = [s.path for s in list_sources(rv.vault, rv.subject, rv.topic)]
+    assert [item["vault_id"] for item in body["sources"]] == expected
+    assert [(item["kind"], item["title"]) for item in body["sources"]] == [
+        ("notes", None),
+        ("book", None),
+        ("pdf", "Tema 1.pdf"),
+        ("web", None),
+        ("web", "Caída libre"),
+    ]
+    assert body["sources"][-1]["vault_id"] == web.relative_to(rv.vault.path).as_posix()
+    assert reader.get(f"/api/sources/{body['sources'][0]['vault_id']}").status_code == 200
+
+
+def test_sources_of_an_empty_topic_is_empty_and_of_an_unknown_one_404(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    empty = reader.get(
+        f"/api/subjects/{read_vault.subject}/topics/{read_vault.empty_topic}/sources"
+    )
+    assert empty.status_code == 200 and empty.json()["sources"] == []
+    unknown = reader.get(f"/api/subjects/{read_vault.subject}/topics/optica/sources")
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "No existe ese tema en la bóveda."
+    assert reader.get("/api/subjects/quimica/topics/optica/sources").status_code == 404
 
 
 # -- pending review -----------------------------------------------------------------------------
@@ -220,6 +278,7 @@ def test_a_lan_client_without_a_token_gets_401(
     for path in (
         f"/api/subjects/{rv.subject}/topics/{rv.topic}/sessions",
         f"/api/subjects/{rv.subject}/topics/{rv.topic}/summary",
+        f"/api/subjects/{rv.subject}/topics/{rv.topic}/sources",
         f"/api/subjects/{rv.subject}/topics/{rv.topic}/notes",
         f"/api/sessions/{rv.ended_session}/transcript?subject={rv.subject}&topic={rv.topic}&t=00:00:00-00:00:01",
         f"/api/sources/{rv.notes_page}",
@@ -253,6 +312,7 @@ def test_every_read_route_is_503_when_the_vault_cannot_be_opened(
     for path in (
         "/api/subjects/fisica/topics/cinematica/sessions",
         "/api/subjects/fisica/topics/cinematica/summary",
+        "/api/subjects/fisica/topics/cinematica/sources",
         "/api/subjects/fisica/topics/cinematica/notes",
         "/api/subjects/fisica/topics/cinematica/pending",
         "/api/sessions/20260924-100000/transcript?subject=fisica&topic=cinematica&t=00:00:00-00:00:01",

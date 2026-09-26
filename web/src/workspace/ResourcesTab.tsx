@@ -3,7 +3,7 @@ import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary 
 import type { NotesTree } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
 import { sourceUrl } from "../notes/api";
-import { GROUP_TITLES, resourceList } from "./resources";
+import { fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
 import { countsText, resourceStates, STATE_LABELS, type SourceEntry, thumbnailOf } from "./resources/state";
 import { useSourceMetas } from "./resources/useSourceMetas";
 
@@ -22,6 +22,16 @@ export interface ResourcesTabProps {
   open: OpenResource | null;
   onOpen: (resource: OpenResource) => void;
   onClose: () => void;
+}
+
+/** What the tab read: the topic's source list, or the summary when the backend has no list. */
+type Loaded = { kind: "listed"; value: TopicSources } | ReadResult<TopicSummary>;
+
+/** `GET .../sources`, falling back to `GET .../summary` when it does not answer a list (#323). */
+async function loadSources(subjectId: string, topicId: string): Promise<Loaded> {
+  const listed = await fetchTopicSources(subjectId, topicId);
+  if (listed.kind === "ok") return { kind: "listed", value: listed.value };
+  return fetchTopicSummary(subjectId, topicId);
 }
 
 export const RESOURCES_HINT =
@@ -69,7 +79,8 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
 }
 
 /**
- * The **Recursos** tab (#312, #328): every source of the topic with its state -- **Pendiente**,
+ * The **Recursos** tab (#312, #328, #323): every source of the topic (`GET .../sources`, or the
+ * summary's counts on an older backend) with its state -- **Pendiente**,
  * **Incorporada** (cited by the current notes) or **Apartada** (set aside by the capture triage
  * or by the student, with the reason) -- kept ones first in source order, then a collapsed
  * "Apartadas (N)" group. There are no action buttons: incorporating, setting aside and restoring
@@ -78,12 +89,12 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
  * sources' metadata is read again each time the tab is shown and after each change of the notes.
  */
 export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, open, onOpen, onClose }: ResourcesTabProps) {
-  const [summary, setSummary] = useState<ReadResult<TopicSummary> | null>(null);
+  const [summary, setSummary] = useState<Loaded | null>(null);
   const [showSetAside, setShowSetAside] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void fetchTopicSummary(subjectId, topicId).then((result) => {
+    void loadSources(subjectId, topicId).then((result) => {
       if (!cancelled) setSummary(result);
     });
     return () => {
@@ -91,8 +102,9 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
     };
   }, [subjectId, topicId, refreshKey]);
 
-  const counts = summary?.kind === "ok" ? summary.value.sources : null;
-  const list = useMemo(() => resourceList(counts, tree), [counts, tree]);
+  const sources =
+    summary?.kind === "listed" ? summary.value.sources : summary?.kind === "ok" ? summary.value.sources : null;
+  const list = useMemo(() => resourceList(sources, tree), [sources, tree]);
   const items = useMemo(() => list.groups.flatMap((group) => group.items), [list]);
   // A new object whenever the tab is shown or the notes change: every source is read again.
   const reloadKey = useMemo(() => ({ refreshKey, tree }), [refreshKey, tree]);
@@ -115,7 +127,7 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
   return (
     <div className="workspace-resources">
       {summary === null && <p>Cargando las fuentes…</p>}
-      {summary !== null && summary.kind !== "ok" && (
+      {summary !== null && summary.kind !== "ok" && summary.kind !== "listed" && (
         <p role="alert">No se pudieron cargar las fuentes del tema: {describeFailure(summary)}</p>
       )}
       {summary !== null && total === 0 && states.others.length === 0 && list.uncitedWebs === 0 && (

@@ -249,6 +249,79 @@ it("switches the single column between document, capture/resources and chat", as
   expect(document.getElementById("workspace-panel-capture")).not.toBeNull();
 });
 
+it("lists every stored source from the topic's source list, uncited webs included (#323)", async () => {
+  const fetchMock = renderPage({
+    ...ROUTES,
+    [`${BASE}/sources`]: jsonResponse({
+      subject_id: "historia",
+      topic_id: "revolucion-industrial",
+      sources: [
+        { vault_id: `${TOPIC}/sources/notes/page-001.jpg`, kind: "notes", title: null },
+        { vault_id: `${TOPIC}/sources/notes/page-003.jpg`, kind: "notes", title: null },
+        { vault_id: `${TOPIC}/sources/web/001-maquina-de-vapor.md`, kind: "web", title: "La máquina de vapor" },
+        { vault_id: `${TOPIC}/sources/web/002-telar.md`, kind: "web", title: "El telar mecánico" },
+      ],
+    }),
+    [`${SOURCES}/web/002-telar.md`]: new Response("# El telar\n\nTexto de la web.", {
+      status: 200,
+      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+    }),
+    [`${SOURCES}/web/002-telar.md/meta`]: jsonResponse({
+      vault_id: `${TOPIC}/sources/web/002-telar.md`,
+      kind: "web",
+      media_type: "text/markdown; charset=utf-8",
+      size: 10,
+      meta: { title: "El telar mecánico", url: "https://example.org/telar" },
+      transcription: null,
+    }),
+  });
+  await screen.findByRole("heading", { name: /Contexto/ });
+
+  fireEvent.click(tab("Recursos"));
+
+  const resources = document.getElementById("workspace-panel-resources")!;
+  const cards = await within(resources).findByRole("list", { name: "Fuentes del tema" });
+  // By kind: the real files (page 3, not a guessed page 2) before what only the notes cite, and
+  // the uncited web too.
+  expect(within(cards).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+    "Página 1 · apuntes",
+    "Página 3 · apuntes",
+    "Página 2 · apuntes",
+    "Libro, página 1",
+    "PDF",
+    "Web: La máquina de vapor",
+    "Web: El telar mecánico",
+  ]);
+  expect(within(resources).queryByText(/todavía no citan/)).toBeNull();
+  expect(fetchMock.mock.calls.some(([path]) => path === `${BASE}/summary`)).toBe(false);
+
+  fireEvent.click(within(cards).getByRole("button", { name: /El telar mecánico/ }));
+  const dialog = within(resources).getByRole("dialog", { name: "Web: El telar mecánico" });
+  expect(await within(dialog).findByText(/Texto de la web/)).toBeInTheDocument();
+});
+
+it("builds the resource list from the listed sources and the notes' citations", () => {
+  const list = resourceList(
+    [
+      { vault_id: `${TOPIC}/sources/book/page-083.jpg`, kind: "book" },
+      { vault_id: `${TOPIC}/sources/pdf/page-001.pdf`, kind: "pdf", title: "Tema 1.pdf" },
+      { vault_id: `${TOPIC}/sources/pdf/page-002.pdf`, kind: "pdf", title: null },
+      { vault_id: `${TOPIC}/sources/images/img-001.png`, kind: "images" },
+      { vault_id: `${TOPIC}/sources/other/x.bin`, kind: "other" },
+    ],
+    parseNotes(NOTES),
+  );
+  const byKind = Object.fromEntries(list.groups.map((g) => [g.kind, g.items.map((i) => i.title)]));
+  expect(byKind.book).toEqual(["Libro, página 83", "Libro, página 1"]);
+  expect(byKind.pdf).toEqual(["Tema 1.pdf", "PDF 2", "PDF, página 3"]);
+  expect(byKind.web).toEqual(["Web: 001-maquina-de-vapor.md"]);
+  expect(byKind.images).toEqual(["Imagen pegada 1"]);
+  expect(Object.keys(byKind)).not.toContain("other");
+  expect(list.groups.find((g) => g.kind === "pdf")!.items[0].definition).toBe("[Tema 1.pdf](../sources/pdf/page-001.pdf)");
+  expect(list.uncitedWebs).toBe(0);
+  expect(resourceList([], null)).toEqual({ groups: [], uncitedWebs: 0 });
+});
+
 it("builds the resource list from the counts and the notes' citations", () => {
   const list = resourceList({ notes: 1, book: 1, pdf: 1, web: 1 }, parseNotes(NOTES));
   const byKind = Object.fromEntries(list.groups.map((g) => [g.kind, g.items.map((i) => i.title)]));
