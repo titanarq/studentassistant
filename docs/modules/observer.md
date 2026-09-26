@@ -13,6 +13,8 @@
 - Topic digest at session end, used to resume a topic and as editor input.
 - Context purge: roll the live conversation over to snapshot + digest + tail past a token
   threshold and at session end (#60); context is always one topic only (ADR-0003).
+- Requests to the assistant detected in the raw transcript (#314): `assistant.request` events
+  for the editor's chat turns (#315).
 
 ## Public surface
 What exists today, after issues #29, #31, #51, #55, #176, #56 and #60: the knowledge-state model,
@@ -125,8 +127,8 @@ another PC with an earlier id, or events appended before the cursor). An op that
 folded raises and nothing is written. The vault purge reads the snapshot it compacts to with
 `write_back=False`. Nothing in `studentassistant.observer` opens a file, runs
 git, imports `anthropic`, `studentassistant.server` or a vault submodule (only the
-`studentassistant.vault` root), and only `live.py` imports `studentassistant.llm` (checked by
-`tests/observer/test_boundaries.py`).
+`studentassistant.vault` root), and only `live.py` and `requests.py` import
+`studentassistant.llm` (checked by `tests/observer/test_boundaries.py`).
 
 ### Live loop -- `live.py`, `context.py`
 `ObserverLoop(bus, lookup, *, settings=ObserverSettings(), client_factory=None, digest=..., clock=...)`
@@ -228,6 +230,59 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
   returns what is owed, on this PC or any other, and a purged topic is still acknowledged, so no
   baseline ack is written that could skip it. A topic whose acks name no event (none yet, or only
   a `through: null` baseline) is not compacted.
+
+### Requests to the assistant -- `requests.py`, `assistant_request.py` (#314)
+During a session Sonnet (role `observer`) reads the raw transcript and detects when the student is
+addressing the assistant and what they want (epic #311). `RequestDetector(bus, lookup, *,
+settings, client_factory=None, clock=SystemClock())` (`start()`/`stop()`/`flush(session_id)`/
+`wait_idle`/`status`) lives in `studentassistant.observer.requests` (it imports the llm module, so
+it is not re-exported); the event model is re-exported by `studentassistant.observer`.
+
+- **Mode** (`[observer] request_detection`, `SA_OBSERVER__REQUEST_DETECTION`): `observer`
+  (default: this detector), `wake_word` (the deterministic "anel" of `stt`, #318; this detector is
+  inactive) or `off`. Anything but `observer` makes `start()` a no-op, so no call is ever made. The
+  server builds it next to the observer loop (an `llm_transport`, `[observer] enabled` and
+  `request_detection = "observer"`), starts/stops it in the lifespan and registers `flush` with
+  `add_before_ended` after the observer loop's.
+- **Input**: `transcript.final` (`segment_id`, `text`, `session_start_ms`, `session_end_ms`) and
+  the lifecycle events. It keeps the newest `request_window_segments` finals (default 12) of each
+  session and which of them it has examined; a final repeating an id, or empty, is ignored.
+- **Trigger**, independent of the batch loop: `request_debounce_seconds` (default 1.5) with no
+  new final, or `request_max_wait_seconds` (default 8) after the first final not examined yet,
+  whenever at least one final is unexamined. One call per session is in flight; finals that arrive
+  meanwhile coalesce into the next call (sent at once when its deadline already passed). `clock`
+  gives `now()` (records), `monotonic()` and `sleep()` (the triggers), so tests drive it.
+- **Call**: self-contained (no growing conversation): system = the `observer_requests` prompt +
+  the topic block (`render_topic`, no digest), the cached prefix with the tool; one user turn = the
+  window, one line per final `<id> [<start>s-<end>s] <mark> <text>`, `<mark>` being `new`, `seen`
+  or the `req-N` it already belongs to. The strict tool `report_requests`
+  (`ReportRequests`: `{requests: [{kind: edit|question|prepare_notes, summary, segment_ids}]}`,
+  `tool_choice: auto`). Plain dictation must yield an empty list. A request is refused when its
+  `summary` is empty or over 140 characters, or its `segment_ids` are empty, outside the window,
+  repeated, not consecutive in window order, or already part of a request (earlier or in the same
+  answer). Valid ones are published at once; the refused ones are re-asked once (the first turn,
+  the answer, then an `is_error` tool result with the reasons), and what is still invalid is
+  logged and dropped. Once answered, the finals that were `new` are examined, whatever the answer.
+  `flush` sends the last window with a line saying the session is ending.
+- **Output**: one persisted `assistant.request` event (`ASSISTANT_REQUEST_KIND`, origin
+  `observer`) per request, payload `AssistantRequest` (frozen, `extra="forbid"`):
+  `request_id` (`req-<n>`, the session's n-th request), `kind` (`RequestKind`, `REQUEST_KINDS`),
+  `summary` (Spanish, <= 140 characters), `text` (the span's finals joined with a space),
+  `segment_ids`, `t_start_ms`/`t_end_ms` (the span's session times) and `detector`
+  (`observer`; the wake word, #318, writes `wake_word` with origin `stt`). Consumers (#315)
+  validate it with `AssistantRequest`. The fold ignores the kind. When a session is first seen
+  (a start, a resume, a restart) the session's earlier `assistant.request` events are read back,
+  so numbering goes on and their segments stay assigned.
+- **Cost caps**: calls are bound to the session's ledger (`default_client_factory`). A reached cap
+  keeps the finals unexamined and publishes one `observer.status` (`status: paused`, `reason`,
+  `cap`, `limit_usd`, `total_usd`, `detector: "requests"`); the next new final tries again and a
+  successful call publishes `status: running` (`detector: "requests"`). Any other Claude failure
+  does the same with `status: error` plus an `observer.call_failed` notice (`detector:
+  "requests"`). A failed call is never retried until a new final arrives.
+- **Conversation file**: `conversations/observer-requests-<session-id>.jsonl`, the live loop's
+  record shapes: a `context` record when the session is first seen (`reason` `start`/`resume`,
+  `requests` read back, `window_segments`), each `user` turn and `assistant` answer (model, prompt
+  hash, usage) and `status` changes (with `detector`).
 
 ### Topic digest -- `digest.py` (#56)
 `state/digest.md` (Spanish Markdown) is how a topic is resumed another day ("continúa el tema")

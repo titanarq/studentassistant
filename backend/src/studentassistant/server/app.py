@@ -40,6 +40,7 @@ from studentassistant.generators import default_registry
 from studentassistant.llm import Transport
 from studentassistant.observer import DigestOnEnd, topic_digest
 from studentassistant.observer.live import ObserverLoop, default_client_factory
+from studentassistant.observer.requests import RequestDetector
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.auth import BearerAuthMiddleware
@@ -210,6 +211,7 @@ def create_app(
     digest_zone = (llm_settings or Settings()).observer.digest_zone()
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     app.state.observer = None
+    app.state.requests = None
     app.state.transcriber = None
     app.state.pdf_transcriber = None
     app.state.notes = None
@@ -261,6 +263,15 @@ def create_app(
             )
             # Registered after the gateway's STT flush, so the observer sees the last finals.
             app.state.sessions.add_before_ended(app.state.observer.flush)
+            if observer_settings.request_detection == "observer":
+                # Requests to the assistant in the transcript (#314), after the STT flush too.
+                app.state.requests = RequestDetector(
+                    app.state.bus,
+                    app.state.bus.attached,
+                    settings=observer_settings,
+                    client_factory=default_client_factory(llm_settings, llm_transport),
+                )
+                app.state.sessions.add_before_ended(app.state.requests.flush)
     if recorder is not None:
         app.state.sessions.add_before_close(
             lambda session_id: asyncio.to_thread(recorder.close, session_id)
@@ -334,6 +345,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     commands.start()
     if observer is not None:
         observer.start()
+    requests: RequestDetector | None = app.state.requests
+    if requests is not None:
+        requests.start()
     if transcriber is not None:
         transcriber.start()
     if web_searcher is not None:
@@ -353,6 +367,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await web_searcher.stop()
         if observer is not None:
             await observer.stop()
+        if requests is not None:
+            await requests.stop()
         notes: NotesGenerator | None = app.state.notes
         if notes is not None:
             # Background "prepárame el tema" of an ended session (#258): finish or cancel it.

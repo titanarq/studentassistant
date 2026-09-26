@@ -23,6 +23,7 @@ from studentassistant.config import (
 from studentassistant.llm import FakeClaude
 from studentassistant.observer import STATE_OP_EVENT_KIND
 from studentassistant.observer.live import TOOL_NAME
+from studentassistant.observer.requests import RequestDetector
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.recording import read_recording
@@ -84,6 +85,26 @@ def test_a_disabled_observer_is_not_built(
     assert app.state.observer is None
 
 
+def test_the_request_detector_is_built_only_in_observer_mode(
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+) -> None:
+    def build(**observer: object) -> FastAPI:
+        return _app(
+            server,
+            codes,
+            tmp_path,
+            tmp_vault,
+            llm_transport=FakeClaude(),
+            llm_settings=Settings(observer=ObserverSettings(**observer)),  # type: ignore[arg-type]
+        )
+
+    assert isinstance(build().state.requests, RequestDetector)
+    assert build(request_detection="wake_word").state.requests is None
+    assert build(request_detection="off").state.requests is None
+    assert build(enabled=False).state.requests is None
+    assert _app(server, codes, tmp_path, tmp_vault).state.requests is None
+
+
 def test_the_replayed_sample_yields_observer_ops_in_the_vault(
     server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
 ) -> None:
@@ -100,7 +121,8 @@ def test_the_replayed_sample_yields_observer_ops_in_the_vault(
         tmp_path,
         tmp_vault,
         llm_transport=fake,
-        llm_settings=Settings(observer=ObserverSettings()),
+        # The request detector (#314) would share the fake's script; `test_requests.py` has it.
+        llm_settings=Settings(observer=ObserverSettings(request_detection="off")),
         # The page transcriber would share the fake's script; `test_transcriber_wiring.py` has it.
         sources=SourcesSettings(transcription_enabled=False),
     )

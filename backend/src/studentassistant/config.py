@@ -505,6 +505,12 @@ DEFAULT_OBSERVER_BATCH_SPEECH_SECONDS = 30.0
 DEFAULT_OBSERVER_CATCH_UP_MAX_ITEMS = 200
 DEFAULT_OBSERVER_CONTEXT_MAX_TOKENS = 80_000
 DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
+DEFAULT_OBSERVER_REQUEST_DEBOUNCE_SECONDS = 1.5
+DEFAULT_OBSERVER_REQUEST_MAX_WAIT_SECONDS = 8.0
+DEFAULT_OBSERVER_REQUEST_WINDOW_SEGMENTS = 12
+
+RequestDetection = Literal["observer", "wake_word", "off"]
+"""Who detects requests to the assistant in the transcript (`[observer] request_detection`)."""
 
 
 DEFAULT_MARP_COMMAND = ["marp"]
@@ -551,6 +557,15 @@ class ObserverSettings(BaseModel):
     # The IANA zone (`Europe/Madrid`) the topic digest dates its sessions in; unset (or empty),
     # the PC's local zone.
     digest_timezone: str | None = None
+    # Requests to the assistant (#314): `observer` (Sonnet reads the raw transcript,
+    # `observer/requests.py`), `wake_word` (the deterministic "anel", #318) or `off`.
+    request_detection: RequestDetection = "observer"
+    # The request detector calls once no new final arrived for `request_debounce_seconds`, or
+    # `request_max_wait_seconds` after the first final it has not examined yet.
+    request_debounce_seconds: float = Field(default=DEFAULT_OBSERVER_REQUEST_DEBOUNCE_SECONDS, gt=0)
+    request_max_wait_seconds: float = Field(default=DEFAULT_OBSERVER_REQUEST_MAX_WAIT_SECONDS, gt=0)
+    # How many of the newest finals each request-detection call shows.
+    request_window_segments: int = Field(default=DEFAULT_OBSERVER_REQUEST_WINDOW_SEGMENTS, ge=1)
 
     @field_validator("digest_timezone")
     @classmethod
