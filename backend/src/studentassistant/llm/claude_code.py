@@ -342,12 +342,12 @@ class _Conversation:
         )
         stdin = self.process.stdin
         if stdin is None or stdin.is_closing():
-            raise LLMConnectionError("the claude process is not accepting input")
+            raise await self._exit_error("before reading its input")
         try:
             stdin.write(line.encode("utf-8") + b"\n")
             await stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as error:
-            raise LLMConnectionError(f"the claude process closed its input: {error}") from error
+            raise await self._exit_error("before reading its input") from error
 
     async def turn(
         self, content: list[dict[str, Any]], on_text: TextSink | None, expect_tools: bool
@@ -365,11 +365,7 @@ class _Conversation:
             except (ValueError, asyncio.LimitOverrunError) as error:
                 raise LLMConnectionError(f"unreadable claude output: {error}") from error
             if not raw:
-                await self._wait_exit()
-                raise LLMConnectionError(
-                    f"the claude process exited (code {self.process.returncode}) before "
-                    f"answering: {self.stderr_summary() or 'no error output'}"
-                )
+                raise await self._exit_error("before answering")
             try:
                 event = json.loads(raw)
             except json.JSONDecodeError:
@@ -402,6 +398,17 @@ class _Conversation:
     async def _wait_exit(self) -> None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(self.process.wait(), CLOSE_GRACE_SECONDS)
+
+    async def _exit_error(self, when: str) -> LLMConnectionError:
+        """The error for a process that went away: its exit code and the tail of its stderr
+        (e.g. the CLI's own "System prompt file not found"), read to its end first."""
+        await self._wait_exit()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(self.stderr_task), CLOSE_GRACE_SECONDS)
+        return LLMConnectionError(
+            f"the claude process exited (code {self.process.returncode}) {when}: "
+            f"{self.stderr_summary() or 'no error output'}"
+        )
 
     def cancel_idle(self) -> None:
         if self.idle_handle is not None:
@@ -651,7 +658,9 @@ class ClaudeCodeTransport:
         return None
 
     async def _start(self, request: LLMRequest, key: str, system: str) -> _Conversation:
-        workdir = self.settings.workdir
+        # Absolute once, here: the CLI runs with this as its cwd and gets the system prompt file
+        # by path, so a relative (or unexpanded `~`) dir would be resolved twice (issue #307).
+        workdir = self.settings.workdir.expanduser().absolute()
         try:
             workdir.mkdir(parents=True, exist_ok=True, mode=0o700)
             system_file = workdir / f"system-{key[:16]}-{uuid.uuid4().hex[:8]}.md"
