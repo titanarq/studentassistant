@@ -90,6 +90,7 @@ def test_a_ready_pc_passes_every_check(vault_ready: Path, host: LocalHost) -> No
         "Vault",
         "Remoto del vault",
         "Subida al vault",
+        "Acceso del servicio a GitHub",
         "Tamaño del vault",
         "Puerto",
         "Servicio",
@@ -476,3 +477,42 @@ def test_auto_with_a_key_keeps_the_api_key_check(vault_ready: Path, host: LocalH
 
     assert checks["Clave de la API de Anthropic"].status == "ok"
     assert "Claude Code" not in checks
+
+
+def test_the_service_access_check_fails_with_the_fix_and_fix_repairs(
+    vault_ready: Path, env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from studentassistant.vault.credentials import CredentialHelper
+
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(env / "gitconfig"))
+    monkeypatch.delenv("SA_VAULT__REPO")
+    subprocess.run(
+        ["git", "-C", str(vault_ready), "remote", "set-url", "origin", f"file://{env}/gone.git"],
+        check=True,
+    )
+    helper = CredentialHelper("https://github.com", "!/opt/gh auth git-credential")
+    host = LocalHost(env / "github", helper=helper)
+
+    checks = by_name(run_doctor(Settings(), probes=probes(host)))
+    access = checks["Acceso del servicio a GitHub"]
+    assert access.failed
+    assert "studentassistant doctor --fix" in access.detail
+    assert "Credenciales del vault" not in checks
+
+    fixed = by_name(run_doctor(Settings(), probes=probes(host), fix=True))
+    assert fixed["Credenciales del vault"].status == "ok"
+    assert "reparadas" in fixed["Credenciales del vault"].detail
+    config = (vault_ready / ".git" / "config").read_text(encoding="utf-8")
+    assert "helper = !/opt/gh auth git-credential" in config
+    again = by_name(run_doctor(Settings(), probes=probes(host), fix=True))
+    assert again["Credenciales del vault"].detail == "ya estaban bien"
+
+
+def test_fix_without_gh_only_warns(vault_ready: Path, host: LocalHost) -> None:
+    checks = by_name(run_doctor(Settings(), probes=probes(host), fix=True))
+
+    assert checks["Credenciales del vault"].status == "aviso"
+    assert checks["Acceso del servicio a GitHub"].status == "ok"

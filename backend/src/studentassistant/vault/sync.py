@@ -477,7 +477,12 @@ class GitSync:
                 consecutive_push_failures=failures,
                 pending_commits=pending,
             )
-        logger.warning("vault push failed (%s), retrying in %.0f s", kind, delay)
+        logger.warning(
+            "vault push failed (%s), retrying in %.0f s%s",
+            kind,
+            delay,
+            "; run `studentassistant doctor --fix`" if kind == "auth" else "",
+        )
         return False
 
     def request_push(self) -> None:

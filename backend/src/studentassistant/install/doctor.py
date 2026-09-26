@@ -5,7 +5,9 @@ when faster-whisper is selected, faster-whisper itself, CUDA and the downloaded 
 Anthropic API key (present; with `api_call` also accepted by the API, through one free call) or,
 when `[llm] backend` resolves to `claude-code`, the Claude Code CLI (on PATH and signed in,
 through one `claude auth status`, never a model call),
-the vault (opens, has an `origin`, may be pushed to, stays under `vault.size_warning_mb`), the
+the vault (opens, has an `origin`, may be pushed to, answers `git ls-remote` the way the systemd
+service reaches it -- no terminal, no askpass, no `gh` environment -- (#308; with `fix`, the
+vault's credential helper is written first), stays under `vault.size_warning_mb`), the
 server port, the systemd service, and
 Marp CLI (the slides generator's PDF/PPTX export; missing is only an `aviso`).
 A check is `ok`, `aviso` (works, but worse than it could) or `fallo`; any `fallo` makes the
@@ -48,9 +50,11 @@ from studentassistant.llm import (
 )
 from studentassistant.stt.registry import UnknownProviderError, provider_class
 from studentassistant.vault import Vault, VaultError
+from studentassistant.vault.credentials import probe_unattended_access, unattended_runner
+from studentassistant.vault.git import GitIdentity
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
 from studentassistant.vault.purge import format_size
-from studentassistant.vault.setup import SetupError, check_remote_access
+from studentassistant.vault.setup import SetupError, check_remote_access, ensure_credential_helper
 from studentassistant.vault.stats import vault_stats
 
 Status = Literal["ok", "aviso", "fallo"]
@@ -254,14 +258,17 @@ def check_llm_access(settings: Settings, api_call: bool, probes: DoctorProbes) -
     return check_api_key_setting(settings, api_call, probes)
 
 
-def check_vault(settings: Settings, probes: DoctorProbes) -> list[Check]:
+def check_vault(settings: Settings, probes: DoctorProbes, fix: bool = False) -> list[Check]:
     path = settings.vault.path
     try:
         vault = Vault.open(path)
     except VaultError as error:
         return [Check("Vault", "fallo", f"no se puede abrir {path}: {error}")]
     checks = [Check("Vault", "ok", f"{vault.path} (de {vault.meta.student})")]
-    checks.extend(_check_vault_remote(vault, settings, probes))
+    remote = _check_vault_remote(vault, settings, probes)
+    checks.extend(remote)
+    if not any(check.name == "Remoto del vault" and check.failed for check in remote):
+        checks.extend(check_unattended_access(vault, settings, probes, fix))
     checks.append(check_vault_size(vault, settings.vault.size_warning_mb))
     return checks
 
@@ -324,6 +331,68 @@ def _check_vault_remote(vault: Vault, settings: Settings, probes: DoctorProbes) 
     return checks
 
 
+UNATTENDED_NAME = "Acceso del servicio a GitHub"
+CREDENTIALS_NAME = "Credenciales del vault"
+
+
+def check_unattended_access(
+    vault: Vault, settings: Settings, probes: DoctorProbes, fix: bool = False
+) -> list[Check]:
+    """`git ls-remote origin` as the systemd service runs git (#308); with `fix`, first write the
+    `gh` credential helper to the vault's `.git/config` (`setup.ensure_credential_helper`)."""
+    git = settings.vault.git
+    checks: list[Check] = []
+    try:
+        host: GitHubHost | None = probes.github_host()
+    except GitHubHostError:
+        host = None
+    if fix:
+        if host is None or host.credential_helper() is None:
+            checks.append(
+                Check(
+                    CREDENTIALS_NAME,
+                    "aviso",
+                    "no se puede reparar sin `gh` con la sesión iniciada (`gh auth login`)",
+                )
+            )
+        else:
+            try:
+                changed = ensure_credential_helper(
+                    vault.path, host, git.author_email, git.timeout_seconds
+                )
+            except SetupError as error:
+                checks.append(Check(CREDENTIALS_NAME, "fallo", str(error)))
+            else:
+                detail = (
+                    "reparadas: git usará `gh auth git-credential` desde el .git/config del vault"
+                    if changed
+                    else "ya estaban bien"
+                )
+                checks.append(Check(CREDENTIALS_NAME, "ok", detail))
+    identity = GitIdentity(name="Student Assistant", email=git.author_email)
+    result = probe_unattended_access(unattended_runner(vault.path, identity, git.timeout_seconds))
+    if result.ok:
+        checks.append(Check(UNATTENDED_NAME, "ok", "git llega al remoto sin terminal"))
+        return checks
+    if host is not None and host.credential_helper() is not None:
+        hint = "lanza `studentassistant doctor --fix` para guardar en el vault cómo usar `gh`"
+    elif host is not None:
+        hint = (
+            "con un token, el servicio necesita GH_TOKEN en su entorno; o inicia sesión con"
+            " `gh auth login` y lanza `studentassistant doctor --fix`"
+        )
+    else:
+        hint = "inicia sesión con `gh auth login` y lanza `studentassistant doctor --fix`"
+    checks.append(
+        Check(
+            UNATTENDED_NAME,
+            "fallo",
+            f"el servicio no podrá subir el vault ({result.describe()}): {hint}",
+        )
+    )
+    return checks
+
+
 def check_port(server: ServerSettings, probes: DoctorProbes) -> Check:
     name = "Puerto"
     where = f"{server.host}:{server.port}"
@@ -378,15 +447,20 @@ def check_marp(generators: GeneratorsSettings, probes: DoctorProbes) -> Check:
 
 
 def run_doctor(
-    settings: Settings, *, api_call: bool = False, probes: DoctorProbes | None = None
+    settings: Settings,
+    *,
+    api_call: bool = False,
+    probes: DoctorProbes | None = None,
+    fix: bool = False,
 ) -> list[Check]:
-    """Every check, in the order the report prints them."""
+    """Every check, in the order the report prints them; `fix` repairs what it safely can (the
+    vault's credential helper)."""
     probes = probes or DoctorProbes()
     return [
         check_python_dependencies(),
         *check_stt(settings.stt),
         check_llm_access(settings, api_call, probes),
-        *check_vault(settings, probes),
+        *check_vault(settings, probes, fix),
         check_port(settings.server, probes),
         check_service(),
         check_marp(settings.generators, probes),

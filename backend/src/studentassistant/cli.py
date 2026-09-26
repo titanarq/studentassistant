@@ -821,6 +821,13 @@ def doctor(
             help="Probar la clave con una llamada gratuita a la API de Anthropic.",
         ),
     ] = False,
+    fix: Annotated[
+        bool,
+        typer.Option(
+            "--fix",
+            help="Reparar lo que se pueda: guardar en el vault cómo usa git la sesión de `gh`.",
+        ),
+    ] = False,
 ) -> None:
     """Check that this PC is ready: one line per check, exit status 1 when any fails."""
     try:
@@ -831,7 +838,9 @@ def doctor(
     source = config_toml_path()
     shown = str(source) if source.exists() else f"{source} no existe: valores por defecto"
     typer.echo(f"[ok] Configuración: {shown}")
-    checks = run_doctor(settings, api_call=api_call, probes=_doctor_probes(settings.server))
+    checks = run_doctor(
+        settings, api_call=api_call, probes=_doctor_probes(settings.server), fix=fix
+    )
     for check in checks:
         typer.echo(check.line())
     if any(check.failed for check in checks):
