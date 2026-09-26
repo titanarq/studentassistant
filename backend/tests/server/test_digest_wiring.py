@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from generate_topic import make_topic, valid_notes
-from studentassistant.config import ObserverSettings, ServerSettings, Settings
+from studentassistant.config import EditorSettings, ObserverSettings, ServerSettings, Settings
 from studentassistant.llm import FakeClaude
 from studentassistant.observer import DigestOnEnd, topic_digest
 from studentassistant.observer.digest import session_date
@@ -145,7 +145,9 @@ def test_the_editor_gets_the_stored_digest(
         codes=codes,
         vault=tmp_vault,
         llm_transport=fake,
-        llm_settings=Settings(observer=ObserverSettings(enabled=False)),
+        llm_settings=Settings(
+            observer=ObserverSettings(enabled=False), editor=EditorSettings(prepare_mode="single")
+        ),
     )
     with TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 50000)) as client:
         response = client.post(f"/api/subjects/{topic.subject}/topics/{topic.topic}/notes/generate")

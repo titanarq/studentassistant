@@ -163,7 +163,7 @@ def _build_original(
         # The doubts chat (#325) is left out: it would review the observer's doubts too.
         llm_settings=Settings(
             observer=ObserverSettings(request_detection="off"),
-            editor=EditorSettings(doubts_in_chat=False),
+            editor=EditorSettings(doubts_in_chat=False, prepare_mode="single"),
         ),
     )
     base = f"/api/subjects/{SUBJECT}/topics/{TOPIC}/notes"

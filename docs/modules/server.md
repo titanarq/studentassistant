@@ -248,6 +248,14 @@ Routes registered today:
     source routes below take, `kind` one of `notes`, `book`, `pdf`, `web`, `images`, and `title`
     comes from the sidecar (`title`, as a web snapshot has, else `original_name`, as a PDF has;
     `null` without either). An empty topic lists `[]`; reads only.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/sources/status` -> `TopicSourcesStatus`
+    (#326): `subject_id`, `topic_id` and `sources`, one `SourceStatus` per stored source
+    (`editor.incorporate.source_status`, `docs/modules/editor.md`): `source_id` (topic-relative,
+    `sources/notes/page-003.jpg`), `kind`, `number`, `label` («la página 3»), `state`
+    (`pendiente` | `incorporada` -- the current notes cite it -- | `apartada` -- set aside by
+    capture triage) and `reason` (Spanish, only `apartada`: «borrosa», «repetida de la página
+    1»), in catalogue order (notes pages, book pages, PDFs, web pages, pasted images). Unknown
+    topic 404; reads only. It is what the chat router (#327) resolves "la página 3" against.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
     `topic_id`, `text` of `notes/apuntes.md`, `version` as above, `revision`: the content
     revision token, `editor.notes_revision(text)`, SHA-256 hex, that a student save names as its
@@ -376,6 +384,30 @@ Routes registered today:
   ..."`) until the body
   says `confirm_over_cap`, a Claude refusal or failure 502, a vault that cannot be opened 503.
   Needs the bearer check like every non-exempt route.
+  **Batched mode** (#326, `[editor] prepare_mode = "batched"`, the default; `single` keeps the
+  one-call `generate_notes` above): the generation is `editor.incorporate.incorporate_pending` --
+  the topic's `pendiente` sources (notes pages first, then book, PDF, web) incorporated in
+  sequential small batches of `[editor] incorporate_batch_size` (default 2, never more than
+  `incorporate_max_sources`), each one Opus call on the current notes plus only those sources,
+  its own commit and chat entry. On the workspace stream each batch is a turn of kind
+  `incorporate` (`turn.started`, `reply.delta`, `turn.result` with the `IncorporationResult`,
+  `notes.changed` origin `editor`, or `turn.error`), followed by `incorporation.progress`
+  `{done, total, source_ids}`; when something changed, the next notes version is tagged, the
+  contradictions searched, and `notes.changed` origin `generation` closes the run. Its answer is
+  still a `GenerationResult` (never a draft; `version`/`tag` only when the notes changed; the
+  `warning` says what stopped it). A cost cap, a refusal or a failed batch stops the run with the
+  done batches kept (calling again continues with what is pending); on the very first batch it is
+  the error above (a cap 409 `cost_cap_reached`, a refusal or failure 502). Nothing pending: no
+  call, `version` `null` and a `warning`. The topic digest is not part of an incorporation.
+- **`NotesGenerator.incorporate(sessions, subject, topic, source_ids, *, on_reply=None,
+  request=None, turn_id=None, confirm_over_cap=False) -> IncorporationResult`** (#326): one
+  incorporation of a few sources ("incorpora la página 3") for the chat router (#327), which
+  claims the topic's notes lock first (`TURN_HOLDER`) and publishes the turn itself (a
+  `TurnBroadcast` of kind `incorporate`). It passes `[editor] incorporate_max_sources`, the bus
+  publisher (`notes.incorporated`, origin `editor`, when the topic's session is active) and the
+  live-session sink for the doubts; a refused request is an `IncorporationError` with the Spanish
+  message to show (more than the limit, a set-aside source: «La página N está apartada
+  (<motivo>); recupérala antes si quieres incorporarla.»).
 - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` (`notes_routes.py`,
   protocol 1.6 `rest.topics.notes.generation.response`, #258): the topic's latest notes
   generation since the backend started, background (an end with `prepare_notes`) or through
@@ -542,10 +574,12 @@ Routes registered today:
   Each event is `event: <name>` plus one line of JSON (the list is open; later tasks add kinds):
   - `request.detected` `{request_id, kind, summary, transcript: {session_id, segment_ids,
     t_start_ms, t_end_ms, text}}`: a spoken request was queued;
-  - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind: revise|prepare_notes}`;
+  - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind:
+    revise|prepare_notes|incorporate}` (`incorporate`: one incorporation, e.g. each batch of a
+    batched "prepárame el tema", #326);
   - `reply.delta` `{turn_id, text, attempt}`, `reply.restart` `{turn_id, attempt}`;
-  - `turn.result`: the `RevisionResult` (or, for `prepare_notes`, the `GenerationResult`) plus
-    `turn_id`, `request_id` and `kind`;
+  - `turn.result`: the `RevisionResult` (for `prepare_notes` the `GenerationResult`, for
+    `incorporate` the `IncorporationResult`) plus `turn_id`, `request_id` and `kind`;
   - `turn.error` `{turn_id, request_id, status, detail, code?}`;
   - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
     notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that
@@ -556,7 +590,9 @@ Routes registered today:
   - `doubt.resolved` `{pending_id, status: resolved|dismissed, resolution, notes_changed}`: a doubt
     was answered or dismissed (`POST .../doubts/{id}/answer|dismiss`);
   - `doubts.auto_resolved` `{pending_ids, summary}`: the editor settled those doubts from the
-    sources itself; `summary` is the one short chat line.
+    sources itself; `summary` is the one short chat line;
+  - `incorporation.progress` `{done, total, source_ids}`: a batched "prepárame el tema" finished
+    the batch `source_ids`; `done` of the `total` pending sources are incorporated (#326).
   A slow subscriber never blocks a publisher: past 1024 queued events the oldest `reply.delta`
   (else the oldest event) is dropped. Errors before the stream: an unknown topic 404, a vault
   that cannot be opened 503. Needs the bearer check like every non-exempt route.
@@ -577,7 +613,8 @@ Routes registered today:
   Its events go to the topic's live session when it is active (`DoubtChat.live`, a `LiveSink`
   publishing on the bus with the given origin), else to a review session. The chat's history
   (`GET .../notes/chat`) shows the asked doubts as turns of kind `doubt` and the auto-resolutions
-  as `doubts_resolved`. `[editor] doubts_in_chat = false` turns the asking off (the doubts API and
+  as `doubts_resolved`, and incorporations as turns of kind `incorporate` (`source_ids`, `diff`).
+  `[editor] doubts_in_chat = false` turns the asking off (the doubts API and
   the announcements of its routes stay). Routing a chat message ("la segunda", "pone «escrita»")
   to the asked doubt is #327; the web renders the turns in #329.
 - **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over

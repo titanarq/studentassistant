@@ -146,6 +146,9 @@ STUDENT_EDIT_DIFF_CHARS = 3000
 NOTES_CHANGED_NOTE = "el estudiante ha cambiado los apuntes mientras respondías"
 EXPLANATION_RECORD = "explanation"
 """The conversation record of a "¿Por qué pusiste esto?" answer (`explain.py`)."""
+INCORPORATION_RECORD = "incorporation"
+"""The conversation record of an incorporation of a few sources (`incorporate.py`, #326): a chat
+turn of kind `incorporate`, undone like a revision turn."""
 MAX_REASKS = 2
 """How many times a change that fails the checks is sent back to the editor."""
 MAX_MESSAGE_CHARS = 4000
@@ -331,6 +334,9 @@ class ChatTurn(_Strict):
     short line of what was asked and `transcript` the span it came from (both `None` when typed).
     `summary` stays the applied change's summary.
 
+    `incorporate` is an incorporation of a few sources (`incorporate.py`, #326): `source_ids`
+    (what was incorporated), `summary`, `reply`, `diff` and `commit`; undone like a `revise` turn.
+
     `doubt` is a doubt the chat asked (#325): `pending_id`, `question` (also the `reply`),
     `suggestions`, `options`, `refs` (the sources it is about), `status` (`open` until answered)
     and, once closed, `resolution` and `answer`. `doubts_resolved` is the short line reporting
@@ -339,7 +345,9 @@ class ChatTurn(_Strict):
     """
 
     time: datetime
-    kind: Literal["revise", "explain", "student_edit", "doubt", "doubts_resolved"] = "revise"
+    kind: Literal[
+        "revise", "explain", "student_edit", "doubt", "doubts_resolved", "incorporate"
+    ] = "revise"
     turn_id: str | None = None
     origin: TurnOrigin = "typed"
     request_summary: str | None = None
@@ -370,6 +378,10 @@ class ChatTurn(_Strict):
     resolution: str | None = None
     answer: str | None = Field(default=None, description="`doubt`: what the student answered.")
     pending_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(
+        default_factory=list, description="`incorporate`: the sources incorporated."
+    )
+    diff: str = Field(default="", description="`incorporate`: unified diff of `apuntes.md`.")
 
 
 class _ExplanationView(BaseModel):
@@ -379,6 +391,32 @@ class _ExplanationView(BaseModel):
     reply: str
     refs: list[ChatRef] = Field(default_factory=list)
     warning: str | None = None
+
+
+class _IncorporationView(BaseModel):
+    """What the chat and the undo read of an `incorporation` record (`IncorporationResult`)."""
+
+    turn_id: str | None = None
+    origin: TurnOrigin = "typed"
+    request: ChatRequestRef | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    message: str = ""
+    reply: str = ""
+    applied: bool = False
+    summary: str | None = None
+    changed_sections: list[str] = Field(default_factory=list)
+    diff: str = ""
+    paths: list[str] = Field(default_factory=list)
+    commit: str | None = None
+    warning: str | None = None
+
+
+class _UndoTarget(BaseModel):
+    """The turn an undo reverts: a revision or an incorporation."""
+
+    commit: str
+    paths: list[str]
+    summary: str | None = None
 
 
 class ChatHistory(_Strict):
@@ -478,6 +516,34 @@ def _read_turns(
                     )
                 )
             continue
+        if record.kind == INCORPORATION_RECORD and record.detail:
+            try:
+                view = _IncorporationView.model_validate(record.detail)
+            except ValidationError:
+                logger.warning(
+                    "ignoring a malformed incorporation record of %s/%s", subject_slug, topic_slug
+                )
+                continue
+            turns.append(
+                ChatTurn(
+                    time=record.time,
+                    kind="incorporate",
+                    turn_id=view.turn_id,
+                    origin=view.origin,
+                    request_summary=None if view.request is None else view.request.summary,
+                    transcript=view.request,
+                    message=view.message,
+                    reply=view.reply,
+                    applied=view.applied,
+                    summary=view.summary,
+                    changed_sections=view.changed_sections,
+                    commit=view.commit,
+                    warning=view.warning,
+                    source_ids=view.source_ids,
+                    diff=view.diff,
+                )
+            )
+            continue
         if record.kind != REVISION_RECORD or not record.detail:
             continue
         try:
@@ -510,22 +576,25 @@ def _read_turns(
     ]
 
 
-def _undo_target(vault: Vault, subject_slug: str, topic_slug: str) -> RevisionResult | None:
-    """The latest applied, committed turn not undone yet."""
+def _undo_target(vault: Vault, subject_slug: str, topic_slug: str) -> _UndoTarget | None:
+    """The latest applied, committed turn (a revision or an incorporation) not undone yet."""
     undone: set[str] = set()
-    candidates: list[RevisionResult] = []
+    candidates: list[_UndoTarget] = []
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
         if record.kind == NOTES_UNDONE_KIND and record.detail:
             commit = record.detail.get("undone_commit")
             if isinstance(commit, str):
                 undone.add(commit)
-        elif record.kind == REVISION_RECORD and record.detail:
+        elif record.kind in (REVISION_RECORD, INCORPORATION_RECORD) and record.detail:
+            model = RevisionResult if record.kind == REVISION_RECORD else _IncorporationView
             try:
-                result = RevisionResult.model_validate(record.detail)
+                result = model.model_validate(record.detail)
             except ValidationError:
                 continue
             if result.applied and result.commit and result.paths:
-                candidates.append(result)
+                candidates.append(
+                    _UndoTarget(commit=result.commit, paths=result.paths, summary=result.summary)
+                )
     remaining = [result for result in candidates if result.commit not in undone]
     return remaining[-1] if remaining else None
 
@@ -596,13 +665,16 @@ def _history_text(turns: list[ChatTurn]) -> str:
             lines.append("")
             continue
         said = " (en voz alta, transcrito)" if turn.origin == "voice" else ""
+        if turn.kind == "incorporate":
+            sources = ", ".join(turn.source_ids) or "(ninguna)"
+            lines.append(f"[Incorporación de fuentes: {sources}]")
         lines.append(f"Estudiante{said}: {turn.message}")
         reply = turn.reply or "(sin respuesta)"
         lines.append(f"Editor: {reply}")
         if turn.applied:
             state = " (el estudiante lo deshizo)" if turn.undone else ""
             lines.append(f"[Cambio aplicado: {turn.summary or 'sin resumen'}{state}]")
-        elif turn.warning and turn.kind == "revise":
+        elif turn.warning and turn.kind in ("revise", "incorporate"):
             lines.append("[No se aplicó ningún cambio: no pasó la validación.]")
         if turn.proposed_style_rules:
             rules = "; ".join(f"«{rule}»" for rule in turn.proposed_style_rules)
@@ -1089,7 +1161,7 @@ async def undo_last_revision(
         UndoConflictError: a file the turn changed was changed again afterwards; nothing written.
     """
     target = await asyncio.to_thread(_undo_target, vault, subject_slug, topic_slug)
-    if target is None or target.commit is None:
+    if target is None:
         raise NothingToUndoError("No hay ningún cambio de la conversación que deshacer.")
     before = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
     message = f"Deshecho en {subject_slug}/{topic_slug}: {_short(target.summary or '')}"
@@ -1131,6 +1203,7 @@ def _short(text: str, width: int = 72) -> str:
 __all__ = [
     "EDIT_TOOL",
     "EXPLANATION_RECORD",
+    "INCORPORATION_RECORD",
     "MAX_REASKS",
     "NOTES_EDITED_KIND",
     "NOTES_UNDONE_KIND",
