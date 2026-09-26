@@ -15,10 +15,12 @@ import studentassistant.cli as cli_module
 from github_fakes import LocalHost
 from marp_fakes import fake_marp_path
 from studentassistant.cli import cli
+from studentassistant.config import ClaudeCodeSettings
 from studentassistant.install import service
 from studentassistant.install.apikey import API_KEY_ENV_VAR, read_api_key, store_api_key
 from studentassistant.install.doctor import DoctorProbes
 from studentassistant.install.service import SystemctlResult
+from studentassistant.llm import ClaudeCodeStatus, LLMAPIError
 from whisper_fakes import hide_faster_whisper, install_fakes
 
 KEY = "sk-" + "ant-" + "api03-" + "z" * 40
@@ -145,6 +147,27 @@ def test_a_systemd_failure_fails_setup(
     )
 
 
+def test_setup_asks_for_no_key_with_the_claude_code_backend(
+    runner: CliRunner, env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SA_LLM__BACKEND", "claude-code")
+
+    result = runner.invoke(cli, unattended(env, "--no-service"))
+
+    assert result.exit_code == 0, result.output
+    assert "Claude se usa con Claude Code (tu suscripción)" in result.output
+    assert read_api_key(key_path(env)) is None
+
+
+def test_setup_without_a_key_under_auto_says_claude_code_is_used(
+    runner: CliRunner, env: Path, host: LocalHost
+) -> None:
+    result = runner.invoke(cli, unattended(env, "--no-service"))
+
+    assert result.exit_code == 0, result.output
+    assert "se usará Claude Code con tu suscripción" in result.output
+
+
 def test_setup_downloads_the_whisper_model_when_selected(
     runner: CliRunner, env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -170,6 +193,7 @@ def fake_probes(host: LocalHost, **overrides: Any) -> DoctorProbes:
         api_key_check=lambda key: None,
         port_free=lambda h, p: True,
         backend_answers=lambda: False,
+        claude_code=lambda settings: ClaudeCodeStatus(executable="claude", logged_in=True),
         environ={},
     )
     for name, value in overrides.items():
@@ -199,6 +223,7 @@ def test_doctor_reports_one_line_per_check_and_exits_0(
 def test_doctor_exits_1_when_a_check_fails(
     runner: CliRunner, env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("SA_LLM__BACKEND", "api")
     monkeypatch.setattr(cli_module, "_doctor_probes", lambda server: fake_probes(host))
 
     result = runner.invoke(cli, ["doctor"])
@@ -206,6 +231,23 @@ def test_doctor_exits_1_when_a_check_fails(
     assert result.exit_code == 1
     assert "[FALLO] Vault: " in result.output
     assert "[FALLO] Clave de la API de Anthropic: no hay clave" in result.output
+
+
+def test_doctor_without_a_key_checks_claude_code_under_auto(
+    runner: CliRunner, env: Path, host: LocalHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(settings: ClaudeCodeSettings) -> ClaudeCodeStatus:
+        raise LLMAPIError("'claude' is not on PATH")
+
+    monkeypatch.setattr(
+        cli_module, "_doctor_probes", lambda server: fake_probes(host, claude_code=missing)
+    )
+
+    result = runner.invoke(cli, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "[FALLO] Claude Code: no se puede usar `claude`" in result.output
+    assert "Clave de la API de Anthropic" not in result.output
 
 
 def test_doctor_reports_an_invalid_configuration(runner: CliRunner, env: Path) -> None:

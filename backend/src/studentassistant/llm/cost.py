@@ -183,6 +183,12 @@ def record_call(
     """Append the ledger entry of one successful call and return it."""
     model = response.model or request.model
     usage = response.usage
+    # A backend that reports the call's cost itself (Claude Code) is recorded as reported.
+    usd = response.reported_usd
+    if usd is None:
+        usd = estimate_usd(
+            usage, model, prices, web_search_usd_per_thousand=web_search_usd_per_thousand
+        )
     entry = LedgerEntry(
         time=now,
         role=request.role,
@@ -192,9 +198,8 @@ def record_call(
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_input_tokens,
         cache_write_tokens=usage.cache_creation_input_tokens,
-        estimated_usd=estimate_usd(
-            usage, model, prices, web_search_usd_per_thousand=web_search_usd_per_thousand
-        ),
+        estimated_usd=usd,
+        billing=None if response.billing == "api" else response.billing,
         subject=binding.subject,
         topic=binding.topic,
         session=binding.session,

@@ -64,13 +64,14 @@ from studentassistant.install.apikey import (
 )
 from studentassistant.install.doctor import DoctorProbes, run_doctor
 from studentassistant.llm import (
-    AnthropicTransport,
     CostConfirmationRequiredError,
     LedgerBinding,
     LLMError,
     RefusalError,
     Transport,
+    default_transport,
     get_client,
+    resolve_backend,
 )
 from studentassistant.llm.cost import day_usd, utc_now
 from studentassistant.observer import (
@@ -153,11 +154,12 @@ def serve(
     recorder = SessionRecorder(server.recordings_dir) if record else None
     try:
         # The live observer calls Claude through the real transport ([observer] enabled = false
-        # turns it off).
+        # turns it off): the API, or the headless Claude Code CLI ([llm] backend).
+        typer.echo(f"Claude backend: {resolve_backend(settings)}")
         app = create_app(
             server=server,
             recorder=recorder,
-            llm_transport=AnthropicTransport(),
+            llm_transport=default_transport(settings),
             llm_settings=settings,
         )
     except ValueError as error:
@@ -697,8 +699,18 @@ def setup(
 
 
 def _setup_api_key(settings: Settings, *, unattended: bool, from_stdin: bool) -> bool:
-    """Store the Anthropic API key on this PC; never echo it. Returns False on failure."""
+    """Store the Anthropic API key on this PC; never echo it. Returns False on failure.
+
+    With `[llm] backend = "claude-code"` no key is needed (Claude Code runs on the student's
+    subscription), so none is asked for; with `auto`, skipping the key selects Claude Code.
+    """
     path = settings.llm.api_key_path()
+    if settings.llm.backend == "claude-code" and not from_stdin:
+        typer.echo(
+            "Claude se usa con Claude Code (tu suscripción): no hace falta clave de la API."
+            " Comprueba que `claude` tiene la sesión iniciada con `studentassistant doctor`."
+        )
+        return True
     if from_stdin:
         key = sys.stdin.readline().strip()
     elif read_api_key(path) is not None:
@@ -711,15 +723,27 @@ def _setup_api_key(settings: Settings, *, unattended: bool, from_stdin: bool) ->
         key = ""
     else:
         key = typer.prompt(
-            "Clave de la API de Anthropic (no se verá; Enter para dejarlo para luego)",
+            "Clave de la API de Anthropic (no se verá; Enter para "
+            + (
+                "dejarlo para luego)"
+                if settings.llm.backend == "api"
+                else "usar Claude Code con tu suscripción)"
+            ),
             default="",
             hide_input=True,
             show_default=False,
         ).strip()
-    if not key:
+    if not key and settings.llm.backend == "api":
         typer.echo(
             "Sin clave de la API de Anthropic: guárdala luego con"
             " `studentassistant setup --api-key-stdin`."
+        )
+        return True
+    if not key:
+        typer.echo(
+            "Sin clave de la API de Anthropic: se usará Claude Code con tu suscripción"
+            " (comprueba `claude` con `studentassistant doctor`). Si prefieres la API, guarda la"
+            " clave luego con `studentassistant setup --api-key-stdin`."
         )
         return True
     try:
@@ -1009,7 +1033,7 @@ def _option_value(text: str) -> Any:
 
 def _generator_transport() -> Transport:
     """The transport `generate` calls Claude through; tests replace this function."""
-    return AnthropicTransport()
+    return default_transport()
 
 
 @cli.command("generate")

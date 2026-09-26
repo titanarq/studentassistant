@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from studentassistant.config import Effort, LlmRoleSettings, LlmSettings, Settings
+from studentassistant.llm.backend import default_transport
 from studentassistant.llm.caching import cache_stable_prefix, system_blocks
 from studentassistant.llm.cost import Clock, LedgerBinding, check_caps, record_call, utc_now
 from studentassistant.llm.errors import (
@@ -15,7 +16,7 @@ from studentassistant.llm.errors import (
     LLMTransientError,
     UnknownRoleError,
 )
-from studentassistant.llm.transport import AnthropicTransport, TextSink, Transport
+from studentassistant.llm.transport import TextSink, Transport
 from studentassistant.llm.types import ROLES, LLMRequest, LLMResponse
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -199,8 +200,9 @@ def get_client(
 ) -> LLMClient:
     """The client for `role`, configured from `[llm.roles.<role>]`.
 
-    Tests pass `transport=FakeClaude(...)`; without one the real, streaming Anthropic transport is
-    used. With `ledger`, calls are capped and recorded (see `LLMClient`); `clock` gives the UTC
+    Tests pass `transport=FakeClaude(...)`; without one the real transport of `[llm] backend` is
+    used (`default_transport`: the streaming Anthropic API, or the headless Claude Code CLI).
+    With `ledger`, calls are capped and recorded (see `LLMClient`); `clock` gives the UTC
     time of each entry and of the day cap. Raises `UnknownRoleError` for a role outside `ROLES`.
     """
     if role not in ROLES:
@@ -210,7 +212,7 @@ def get_client(
     return LLMClient(
         role,
         role_settings,
-        transport=transport or AnthropicTransport(),
+        transport=transport or default_transport(settings),
         max_attempts=settings.llm.max_attempts,
         sleep=sleep,
         ledger=ledger,

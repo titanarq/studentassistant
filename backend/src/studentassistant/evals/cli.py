@@ -24,14 +24,14 @@ from studentassistant.evals.compare import (
 from studentassistant.evals.estimate import CaseEstimate, estimate_case
 from studentassistant.evals.run import CaseResult, run_directory, run_eval, write_report
 from studentassistant.install.apikey import export_api_key
-from studentassistant.llm import AnthropicTransport, Transport
+from studentassistant.llm import Transport, default_transport
 
 eval_cli = typer.Typer(help="The eval set from real sessions (`[eval] path`).")
 
 
 def _eval_transport() -> Transport:
     """The transport the eval calls Claude through; tests replace this function."""
-    return AnthropicTransport()
+    return default_transport()
 
 
 def _code_checkout() -> Path | None:

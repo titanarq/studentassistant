@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from github_fakes import LocalHost
 from marp_fakes import MARP_VERSION, fake_marp_path
-from studentassistant.config import Settings
+from studentassistant.config import ClaudeCodeSettings, LlmSettings, Settings
 from studentassistant.install.apikey import API_KEY_ENV_VAR, store_api_key
 from studentassistant.install.doctor import Check, DoctorProbes, run_doctor
 from studentassistant.install.service import SystemctlResult
-from studentassistant.llm import LLMAPIError, LLMConnectionError
+from studentassistant.llm import ClaudeCodeStatus, LLMAPIError, LLMConnectionError
 from studentassistant.vault.setup import create_vault
 from whisper_fakes import hide_faster_whisper, install_fakes
 
@@ -57,6 +58,7 @@ def probes(host: LocalHost, **overrides) -> DoctorProbes:
         port_free=lambda host_, port: True,
         backend_answers=lambda: False,
         ant_profile=lambda: None,
+        claude_code=lambda settings: ClaudeCodeStatus(executable="claude", logged_in=True),
         environ={},
     )
     for name, value in overrides.items():
@@ -139,7 +141,7 @@ def test_a_key_that_does_not_work_fails(
 
 
 def test_no_key_and_an_open_key_file_fail(vault_ready: Path, host: LocalHost) -> None:
-    settings = Settings()
+    settings = Settings(llm=LlmSettings(backend="api"))
     check = by_name(run_doctor(settings, probes=probes(host)))["Clave de la API de Anthropic"]
     assert check.failed and "no hay clave" in check.detail
 
@@ -421,3 +423,56 @@ def test_a_vault_over_the_size_threshold_warns_naming_what_weighs_most(
     assert "imágenes de fuentes 1.5 MB, PDF 2.0 KB" in check.detail
     assert "studentassistant purge" in check.detail
     assert "Git LFS" in check.detail
+
+
+def _status(**fields: object) -> Callable[[ClaudeCodeSettings], ClaudeCodeStatus]:
+    def check(settings: ClaudeCodeSettings) -> ClaudeCodeStatus:
+        return ClaudeCodeStatus(executable="/usr/local/bin/claude", **fields)  # type: ignore[arg-type]
+
+    return check
+
+
+def test_auto_without_a_key_checks_claude_code(vault_ready: Path, host: LocalHost) -> None:
+    signed_in = _status(logged_in=True, auth_method="claude.ai", subscription_type="pro")
+
+    checks = by_name(run_doctor(Settings(), probes=probes(host, claude_code=signed_in)))
+
+    assert "Clave de la API de Anthropic" not in checks
+    check = checks["Claude Code"]
+    assert check.status == "ok"
+    assert "/usr/local/bin/claude" in check.detail and "plan pro" in check.detail
+
+
+def test_claude_code_not_signed_in_or_missing_fails(vault_ready: Path, host: LocalHost) -> None:
+    settings = Settings(llm=LlmSettings(backend="claude-code"))
+    signed_out = probes(host, claude_code=_status(logged_in=False))
+    check = by_name(run_doctor(settings, probes=signed_out))["Claude Code"]
+    assert check.failed and "claude auth login" in check.detail
+
+    def missing(settings: ClaudeCodeSettings) -> ClaudeCodeStatus:
+        raise LLMAPIError("'claude' is not on PATH")
+
+    check = by_name(run_doctor(settings, probes=probes(host, claude_code=missing)))["Claude Code"]
+    assert check.failed and "not on PATH" in check.detail
+
+
+def test_claude_code_backend_ignores_an_api_key(vault_ready: Path, host: LocalHost) -> None:
+    settings = Settings(llm=LlmSettings(backend="claude-code"))
+    with_key = probes(host, claude_code=_status(logged_in=True), environ={API_KEY_ENV_VAR: KEY})
+
+    checks = by_name(run_doctor(settings, probes=with_key))
+
+    assert checks["Claude Code"].status == "ok"
+    assert "Clave de la API de Anthropic" not in checks
+
+
+def test_auto_with_a_key_keeps_the_api_key_check(vault_ready: Path, host: LocalHost) -> None:
+    def unexpected(settings: ClaudeCodeSettings) -> ClaudeCodeStatus:
+        raise AssertionError("claude must not be checked when a key is there")
+
+    with_key = probes(host, claude_code=unexpected, environ={API_KEY_ENV_VAR: KEY})
+
+    checks = by_name(run_doctor(Settings(), probes=with_key))
+
+    assert checks["Clave de la API de Anthropic"].status == "ok"
+    assert "Claude Code" not in checks

@@ -10,7 +10,11 @@ lo deja todo como estaba.
 - Una cuenta de GitHub. Lo más cómodo es tener [`gh`](https://cli.github.com/) con la sesión
   iniciada (`gh auth login`); si no, un token en `GH_TOKEN` (o `GITHUB_TOKEN`) con permiso de
   escritura en el repositorio del vault.
-- Una clave de la API de Anthropic (`sk-ant-...`), de <https://console.anthropic.com/>.
+- Para hablar con Claude, una de las dos:
+  - [Claude Code](https://docs.claude.com/en/docs/claude-code) instalado (`claude` en el `PATH`)
+    y con la sesión iniciada con tu suscripción (`claude auth login`). Es lo que se usa si no hay
+    clave de la API en el PC.
+  - Una clave de la API de Anthropic (`sk-ant-...`), de <https://console.anthropic.com/>.
 - Solo si quieres transcribir la voz en el PC (Whisper) en lugar de en el móvil o el navegador:
   una GPU NVIDIA con su controlador instalado. No hace falta instalar CUDA en el sistema: el
   extra `whisper` trae cuBLAS y cuDNN como paquetes de Python.
@@ -48,7 +52,9 @@ Te pregunta, en este orden:
 2. **Clave de la API de Anthropic**: no se ve mientras la escribes. Se guarda en
    `~/.config/studentassistant/secrets.env`, un archivo que solo puede leer tu usuario
    (permisos `600`). Nunca va al vault ni a `config.toml`. Pulsa Enter para dejarlo para luego.
-   Si ya tienes `ANTHROPIC_API_KEY` en el entorno, no se pregunta ni se guarda nada.
+   Si ya tienes `ANTHROPIC_API_KEY` en el entorno, no se pregunta ni se guarda nada. Sin clave,
+   Claude se usa a través de Claude Code con tu suscripción (`[llm] backend = "auto"`, el valor
+   por defecto); con `[llm] backend = "claude-code"` en `config.toml` ni siquiera se pregunta.
 3. **Voz**: con la configuración por defecto (modo `client`) transcribe el móvil o el navegador y
    no hay nada que descargar. Si has elegido Whisper en el PC (ver más abajo), descarga el modelo
    aquí; la primera vez tarda un rato.
@@ -87,7 +93,8 @@ Una línea por comprobación, `[ok]`, `[aviso]` o `[FALLO]`; si algo falla, term
 | Dependencias de Python | que estén instaladas | `uv sync` en `backend/` (con Whisper, `uv sync --extra whisper`) |
 | Voz (STT) | modo y proveedor configurados | revisa `[stt]` en `config.toml` |
 | faster-whisper, CUDA, Modelo de Whisper | solo con `faster-whisper`: instalado, GPU visible y cuBLAS/cuDNN funcionando en ella, modelo descargado | ver "Whisper en el PC" |
-| Clave de la API de Anthropic | que haya clave (y, con `--api-call`, que Anthropic la acepte) | `setup --api-key-stdin`; `chmod 600` si lo pide |
+| Clave de la API de Anthropic | con el backend `api`: que haya clave (y, con `--api-call`, que Anthropic la acepte) | `setup --api-key-stdin`; `chmod 600` si lo pide |
+| Claude Code | con el backend `claude-code` (o `auto` sin clave): que `claude` esté en el `PATH` y con la sesión iniciada (`claude auth status`, sin gastar nada) | instala Claude Code; `claude auth login` |
 | Vault | que la carpeta sea un vault | `setup` |
 | Remoto del vault | que `origin` sea el repositorio de `vault.repo` | `setup` |
 | Subida al vault | `git push --dry-run`: que puedas subir cambios | `gh auth login` o un token con escritura |
