@@ -56,7 +56,13 @@ if args[:2] == ["auth", "status"]:
 
 system = ""
 if "--system-prompt-file" in args:
-    system = open(args[args.index("--system-prompt-file") + 1], encoding="utf-8").read()
+    # Like the real CLI: a missing prompt file is a startup error on stderr, before any input
+    # is read. Paths must also be absolute (the backend passes them so; issue #307).
+    prompt_file = args[args.index("--system-prompt-file") + 1]
+    if not os.path.isabs(prompt_file) or not os.path.isfile(prompt_file):
+        sys.stderr.write("Error: System prompt file not found: %s\n" % os.path.abspath(prompt_file))
+        sys.exit(1)
+    system = open(prompt_file, encoding="utf-8").read()
 model = args[args.index("--model") + 1] if "--model" in args else "claude-default"
 log("runs.jsonl", {{"pid": os.getpid(), "argv": args, "system": system,
                    "max_tokens": os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"),

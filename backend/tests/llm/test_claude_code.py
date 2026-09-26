@@ -14,7 +14,7 @@ from fake_claude_cli import FakeClaudeCli, install_fake_claude
 from ledger_helpers import binding, capped_settings, make_topic
 from pydantic import BaseModel
 
-from studentassistant.config import Settings
+from studentassistant.config import ClaudeCodeSettings, Settings
 from studentassistant.llm import (
     ClaudeCodeTransport,
     CostConfirmationRequiredError,
@@ -287,6 +287,92 @@ def test_a_dead_process_is_a_connection_error_retried_on_a_fresh_one(
 
     assert run(go).text == "Ya"
     assert len(fake.runs) == 2
+
+
+@pytest.mark.parametrize("configured", ["default", "tilde", "relative"])
+def test_the_workdir_and_prompt_file_reach_the_cli_as_absolute_paths(
+    fake: FakeClaudeCli,
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+) -> None:
+    # Issue #307: the default `~/...` workdir was never expanded, so the CLI ran in `./~/...` and
+    # resolved the relative prompt path against it a second time ("System prompt file not found").
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "service-cwd"
+    elsewhere.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(elsewhere)
+    workdir = {"tilde": "~/.cache/sa/claude-code", "relative": "rel/claude-code"}
+    cc_settings = ClaudeCodeSettings(
+        executable=str(fake.executable),
+        **({"workdir": workdir[configured]} if configured in workdir else {}),
+    )
+    expected = {
+        "default": home / ".cache/studentassistant/claude-code",
+        "tilde": home / ".cache/sa/claude-code",
+        "relative": elsewhere / "rel/claude-code",
+    }[configured]
+    fake.reply("Hola")
+    transport = ClaudeCodeTransport(cc_settings)
+    client = get_client("observer", settings=settings, transport=transport)
+
+    async def go() -> Any:
+        try:
+            return await client.create([user("Saluda")], system="Eres un observador.")
+        finally:
+            await transport.aclose()
+
+    assert run(go).text == "Hola"
+    [started] = fake.runs
+    prompt_file = Path(started["argv"][started["argv"].index("--system-prompt-file") + 1])
+    assert prompt_file.is_absolute() and prompt_file.parent == expected
+    assert Path(started["cwd"]) == expected
+    assert started["system"] == "Eres un observador."
+    assert not (elsewhere / "~").exists()
+
+
+def test_a_process_that_dies_at_startup_surfaces_its_stderr(
+    fake: FakeClaudeCli, settings: Settings, tmp_path: Path
+) -> None:
+    # A CLI that fails before reading stdin (as the real one does on a bad flag or a missing
+    # prompt file) must report why, not a bare "Broken pipe".
+    script = tmp_path / "dying-claude"
+    script.write_text(
+        "#!/bin/sh\necho 'Error: System prompt file not found: /nowhere.md' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+    async def spawn_and_let_it_die(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        process = await asyncio.create_subprocess_exec(*args, **kwargs)
+        await asyncio.wait_for(process.wait(), TEST_TIMEOUT_SECONDS)  # gone before the write
+        return process
+
+    transport = ClaudeCodeTransport(
+        fake.settings(executable=str(script)), spawn=spawn_and_let_it_die
+    )
+    request = get_client("editor", settings=settings, transport=transport).build_request(
+        [user("x")]
+    )
+
+    async def go() -> None:
+        try:
+            await transport.send(request)
+        finally:
+            await transport.aclose()
+
+    with pytest.raises(LLMConnectionError, match=r"code 1\).*System prompt file not found"):
+        run(go)
+
+
+def test_a_tilde_executable_is_expanded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert ClaudeCodeSettings(executable="~/bin/claude").executable == str(tmp_path / "bin/claude")
+    assert ClaudeCodeSettings().executable == "claude"
 
 
 def test_a_turn_over_the_timeout_kills_the_process(fake: FakeClaudeCli, settings: Settings) -> None:

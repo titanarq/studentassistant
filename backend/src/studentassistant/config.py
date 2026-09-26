@@ -289,6 +289,9 @@ DEFAULT_CLAUDE_CODE_WORKDIR = Path("~/.cache/studentassistant/claude-code")
 class ClaudeCodeSettings(BaseModel):
     """`[llm.claude_code]`: the headless Claude Code CLI backend (`llm/claude_code.py`)."""
 
+    # The default `workdir` is `~/...`: validate it too, so `expand_user` runs on it (#307).
+    model_config = ConfigDict(validate_default=True)
+
     executable: str = DEFAULT_CLAUDE_CODE_EXECUTABLE
     # Appended to every `claude` command line (after the flags this backend always passes).
     extra_args: list[str] = Field(default_factory=list)
@@ -304,6 +307,12 @@ class ClaudeCodeSettings(BaseModel):
     @classmethod
     def expand_user(cls, path: Path) -> Path:
         return path.expanduser()
+
+    @field_validator("executable")
+    @classmethod
+    def expand_executable(cls, executable: str) -> str:
+        # `~/.local/bin/claude` works too; a bare `claude` is looked up on PATH as before.
+        return os.path.expanduser(executable)
 
 
 class LlmSettings(BaseModel):
@@ -518,6 +527,11 @@ class GeneratorsSettings(BaseModel):
     # A generated item (a quiz answer, a flashcard's back...) whose share of content words found
     # in the note sections it cites is under this is reported as not grounded (never dropped).
     grounding_min_support: float = Field(default=DEFAULT_GROUNDING_MIN_SUPPORT, ge=0, le=1)
+
+    @field_validator("marp_browser_path")
+    @classmethod
+    def expand_browser_path(cls, path: Path | None) -> Path | None:
+        return path.expanduser() if path is not None else None
 
 
 class ObserverSettings(BaseModel):
