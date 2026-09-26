@@ -79,6 +79,11 @@ class GenerateNotesRequest(BaseModel):
     confirm_over_cap: bool = False
 
 
+TURN_HOLDER = "turn"
+"""The notes-lock holder of an editor chat turn or "¿por qué?": it applies its change under the
+short write lock and re-reads the notes, so a student save does not have to wait for it."""
+
+
 class NotesGenerator:
     """What the notes routes need to call the editor: settings, transport, one lock per topic.
 
@@ -92,19 +97,25 @@ class NotesGenerator:
         self.settings = settings
         self.transport = transport
         self._clock = clock
-        self._running: set[tuple[str, str]] = set()
+        self._running: dict[tuple[str, str], str] = {}
         self._statuses: dict[tuple[str, str], protocol.NotesGenerationStatus] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def claim(self, subject_id: str, topic_id: str) -> bool:
+    def claim(self, subject_id: str, topic_id: str, holder: str = "editor") -> bool:
+        """Take the topic's notes lock for `holder` (`TURN_HOLDER` for an editor chat turn, which
+        a student save may interleave with); `False` when something already holds it."""
         key = (subject_id, topic_id)
         if key in self._running:
             return False
-        self._running.add(key)
+        self._running[key] = holder
         return True
 
     def release(self, subject_id: str, topic_id: str) -> None:
-        self._running.discard((subject_id, topic_id))
+        self._running.pop((subject_id, topic_id), None)
+
+    def holder(self, subject_id: str, topic_id: str) -> str | None:
+        """Who holds the topic's notes lock now, `None` when nothing does."""
+        return self._running.get((subject_id, topic_id))
 
     def status(self, subject_id: str, topic_id: str) -> protocol.NotesGenerationStatus:
         """The topic's latest generation; `idle` when none ran since the backend started."""

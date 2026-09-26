@@ -46,13 +46,14 @@ from studentassistant.editor.inputs import (
     EditorInput,
     assemble_input,
 )
-from studentassistant.editor.notes_format import topic_source_resolver, validate
+from studentassistant.editor.notes_format import notes_revision, topic_source_resolver, validate
 from studentassistant.llm import LLMClient, LLMResponse, RefusalError, load_prompt
 from studentassistant.vault import (
     ConversationRecord,
     GitSync,
     Vault,
     append_conversation_record,
+    read_notes,
     write_notes,
     write_notes_draft,
 )
@@ -95,6 +96,11 @@ class GenerationResult(BaseModel):
         description="Ids of the `contradiction` pending doubts raised after writing the notes.",
     )
     model: str
+    revision: str | None = Field(
+        default=None,
+        description="The revision (`notes_revision`) of `apuntes.md` after the generation; for a"
+        " draft, of the notes left as they were (`None` when there are none).",
+    )
 
 
 def _utc_now() -> datetime:
@@ -334,8 +340,10 @@ def _save(
             commit=tag.commit,
             attempts=0,
             model="",
+            revision=notes_revision(text),
         )
     path = write_notes_draft(vault, subject_slug, topic_slug, text)
+    current = read_notes(vault, subject_slug, topic_slug)
     sync.note_change()
     commit = sync.checkpoint(
         f"Borrador de apuntes de {subject_slug}/{topic_slug} (no pasa la validación)"
@@ -353,4 +361,5 @@ def _save(
             " como borrador en notes/borrador.md, con los avisos del validador para revisarlos."
         ),
         model="",
+        revision=None if current is None else notes_revision(current),
     )

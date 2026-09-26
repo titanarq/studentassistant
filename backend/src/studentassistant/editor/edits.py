@@ -17,7 +17,13 @@ Ops (`EditOp`, a flat model so it can be a strict tool input):
 - `move_section` (`section`, `after`): the section, with its subsections (the deeper headings
   that follow it), goes after the section `after` and its subsections; `after` empty or null puts
   it first, before every other section. Moves apply in the order given, after the block ops, and
-  keep the run of footnote definitions at the end of the document.
+  keep the run of footnote definitions at the end of the document;
+- `add_section` (`after`, `level`, `title`, `anchor`, `text`): a new section `## title {#anchor}`
+  (`level` 2-6 hashes) with `text` as its blocks (none when empty) goes after the section `after`
+  and its subsections, or first when `after` is empty or null; `section` is not used. `after` may
+  name a section an earlier `add_section` of the same edit added. New sections are added after the
+  block ops and before the moves (a move may name a new section), and the run of footnote
+  definitions stays last. This is how a document grows from nothing but its `# Tema` title.
 
 Blocks are numbered from 1 within their section, as the validator's messages number them ("Sección
 #causas, bloque 2"), and every number of one edit refers to the notes as they were before any op
@@ -40,10 +46,22 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from studentassistant.editor.notes_format import Block, NotesDocument, Section, parse, serialize
+from studentassistant.editor.notes_format import (
+    Block,
+    Heading,
+    NotesDocument,
+    Section,
+    parse,
+    serialize,
+)
 
 EditOpName = Literal[
-    "replace_block", "insert_after", "delete_block", "replace_section", "move_section"
+    "replace_block",
+    "insert_after",
+    "delete_block",
+    "replace_section",
+    "move_section",
+    "add_section",
 ]
 EDIT_OP_NAMES: tuple[str, ...] = (
     "replace_block",
@@ -51,9 +69,11 @@ EDIT_OP_NAMES: tuple[str, ...] = (
     "delete_block",
     "replace_section",
     "move_section",
+    "add_section",
 )
 
 _LABEL = re.compile(r"^[A-Za-z0-9_-]+$")
+_ANCHOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _DEFINITION_LINE = re.compile(r"^\[\^([^\]\s]+)\]:")
 
 
@@ -63,7 +83,10 @@ class EditOp(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     op: EditOpName
-    section: str = Field(description="The anchor of the section, without `#`.")
+    section: str = Field(
+        default="",
+        description="The anchor of the section, without `#` (empty for add_section).",
+    )
     block: int | None = Field(
         default=None,
         description="The block number within the section, from 1 (0 = before the first block,"
@@ -75,8 +98,20 @@ class EditOp(BaseModel):
     )
     after: str | None = Field(
         default=None,
-        description="move_section only: the anchor (without `#`) of the section it goes after;"
-        " empty or null = first, before every other section.",
+        description="move_section and add_section: the anchor (without `#`) of the section it"
+        " goes after (with its subsections); empty or null = first, before every other section.",
+    )
+    level: int | None = Field(
+        default=None,
+        description="add_section only: the heading level, 2 (`##`) to 6.",
+    )
+    title: str | None = Field(
+        default=None, description="add_section only: the heading's title, without the anchor."
+    )
+    anchor: str | None = Field(
+        default=None,
+        description="add_section only: the new section's stable anchor, without `#`: letters,"
+        " digits, `-` and `_`, unique in the notes.",
     )
 
 
@@ -298,7 +333,10 @@ def _move_sections(
             errors.append(f"{name}: hay más de una operación move_section que la mueve.")
             continue
         moved.add(anchor)
-        index = next(i for i, section in enumerate(result) if section.anchor == anchor)
+        index = next((i for i, section in enumerate(result) if section.anchor == anchor), None)
+        if index is None:  # a section an add_section of the same edit failed to add
+            errors.append(f"No hay ninguna sección con el ancla #{anchor}.")
+            continue
         end = _subtree_end(result, index)
         subtree = result[index:end]
         rest = result[:index] + result[end:]
@@ -377,6 +415,80 @@ def _prune_orphans(before: NotesDocument, after: NotesDocument) -> NotesDocument
     )
 
 
+def _new_section(op: EditOp, taken: set[str], errors: list[str]) -> Section | None:
+    """The section an `add_section` op adds, or `None` (with its errors)."""
+    anchor = (op.anchor or "").strip().removeprefix("#")
+    name = f"Nueva sección #{anchor}" if anchor else "Nueva sección"
+    count = len(errors)
+    if not _ANCHOR_ID.match(anchor):
+        errors.append(
+            f"{name}: add_section necesita un ancla (`anchor`) de letras, dígitos, «-» o «_»."
+        )
+    elif anchor in taken:
+        errors.append(f"{name}: ya hay una sección con el ancla #{anchor}; usa otra.")
+    title = " ".join((op.title or "").split())
+    if not title or "{#" in title:
+        errors.append(f"{name}: add_section necesita un título (`title`), sin el ancla.")
+    if op.level is None or not 2 <= op.level <= 6:
+        errors.append(f"{name}: el nivel (`level`) debe ser de 2 a 6.")
+    blocks = _new_blocks(op.text, name, errors) if op.text and op.text.strip() else []
+    if len(errors) > count:
+        return None
+    taken.add(anchor)
+    level = op.level or 2
+    heading = Heading(
+        raw=f"{'#' * level} {title} {{#{anchor}}}", level=level, title=title, anchor=anchor
+    )
+    if blocks:
+        blocks[-1] = blocks[-1].model_copy(update={"trailing": "\n"})
+    return Section(heading=heading, heading_trailing="\n\n" if blocks else "\n", blocks=blocks)
+
+
+def _add_sections(
+    document: NotesDocument, adds: Sequence[EditOp], anchors: set[str], errors: list[str]
+) -> NotesDocument:
+    """`document` with the `add_section` ops applied in order; the footnotes run stays last."""
+    preamble = list(document.preamble)
+    result = list(document.sections)
+    run: Block | None = None
+    if result and result[-1].blocks and result[-1].blocks[-1].kind == "footnotes":
+        run = result[-1].blocks[-1]
+        result[-1] = result[-1].model_copy(update={"blocks": result[-1].blocks[:-1]})
+    elif not result and preamble and preamble[-1].kind == "footnotes":
+        run = preamble.pop()
+    taken = set(anchors)
+    count = len(errors)
+    for op in adds:
+        section = _new_section(op, taken, errors)
+        if section is None:
+            continue
+        after = (op.after or "").strip().removeprefix("#") or None
+        if after is None:
+            result.insert(0, section)
+            continue
+        target = next((i for i, other in enumerate(result) if other.anchor == after), None)
+        if target is None:
+            errors.append(
+                f"Nueva sección #{section.anchor}: no hay ninguna sección con el ancla #{after}"
+                " para ponerla detrás."
+            )
+            continue
+        position = _subtree_end(result, target)
+        result.insert(position, section)
+    if len(errors) > count or not result:
+        return document
+    if preamble:
+        preamble[-1] = _with_blank(preamble[-1])
+    result = [_ends_with_blank(section) for section in result[:-1]] + [result[-1]]
+    final = result[-1]
+    if run is not None:
+        final = _ends_with_blank(final)
+        final = final.model_copy(update={"blocks": [*final.blocks, run]})
+    else:
+        final = _ends_with_newline(final)
+    return document.model_copy(update={"preamble": preamble, "sections": [*result[:-1], final]})
+
+
 def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootnote] = ()) -> str:
     """The text of `notes` after `ops` and the new `footnotes`; nothing else changes.
 
@@ -388,10 +500,17 @@ def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootno
     document = parse(notes)
     errors: list[str] = []
     anchors = {section.anchor for section in document.sections if section.anchor}
+    adds = [op for op in ops if op.op == "add_section"]
+    added = {(op.anchor or "").strip().removeprefix("#") for op in adds} - {""}
     by_section: dict[str, list[EditOp]] = {}
     moves: list[EditOp] = []
     for op in ops:
+        if op.op == "add_section":
+            continue
         anchor = op.section.strip().removeprefix("#")
+        if op.op == "move_section" and anchor in added:
+            moves.append(op)
+            continue
         if anchor not in anchors:
             errors.append(f"No hay ninguna sección con el ancla #{anchor}.")
             continue
@@ -422,9 +541,13 @@ def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootno
         sections.append(
             section.model_copy(update={"blocks": blocks, "heading_trailing": heading_trailing})
         )
+    edited = document.model_copy(update={"sections": sections})
+    if adds:
+        edited = _add_sections(edited, adds, anchors, errors)
+        sections = list(edited.sections)
     if moves:
         sections = _move_sections(sections, moves, errors)
-    edited = document.model_copy(update={"sections": sections})
+    edited = edited.model_copy(update={"sections": sections})
     edited = _add_footnotes(edited, footnotes, errors)
     edited = _prune_orphans(document, edited)
     if errors:
@@ -436,6 +559,8 @@ def describe_sections(notes: str) -> str:
     """A numbered map of the notes' blocks, for the editor to address them: one line per block."""
     document = parse(notes)
     lines: list[str] = []
+    if not document.sections:
+        return "(Los apuntes todavía no tienen secciones: créalas con `add_section`.)"
     for section in document.sections:
         lines.append(f"#{section.anchor} -- {section.heading.raw.strip()}")
         for number, block in enumerate(section.blocks, start=1):

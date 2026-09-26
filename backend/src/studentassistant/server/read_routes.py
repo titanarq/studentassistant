@@ -25,6 +25,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.notes_format import notes_revision
 from studentassistant.observer import (
     PendingItem,
     digest_excerpt,
@@ -105,6 +106,7 @@ class SourceCounts(BaseModel):
     book: int = 0
     pdf: int = 0
     web: int = 0
+    images: int = 0
 
 
 class TopicSummary(BaseModel):
@@ -139,6 +141,10 @@ class TopicNotes(BaseModel):
     topic_id: str
     text: str = Field(description="`notes/apuntes.md` as Markdown.")
     version: int | None = Field(description="The notes version, `null` when none is tagged.")
+    revision: str = Field(
+        description="The content revision (`editor.notes_revision`, SHA-256 hex of `text`) a"
+        " student save names as its `base_revision`."
+    )
 
 
 class TopicPending(BaseModel):
@@ -354,7 +360,13 @@ def read_router() -> APIRouter:
         if text is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, NO_NOTES_DETAIL)
         version = await _read(_notes_version, sync, subject_id, topic_id)
-        return TopicNotes(subject_id=subject_id, topic_id=topic_id, text=text, version=version)
+        return TopicNotes(
+            subject_id=subject_id,
+            topic_id=topic_id,
+            text=text,
+            version=version,
+            revision=notes_revision(text),
+        )
 
     @router.get(
         "/subjects/{subject_id}/topics/{topic_id}/pending",

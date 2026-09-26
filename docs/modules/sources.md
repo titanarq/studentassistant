@@ -317,6 +317,7 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `max_pdf_bytes` | 200 MiB | the PDF is refused before it is opened (the CLI checks the file size before reading it) |
 | `max_pdf_pages` | 100 | a range with more pages is refused, never truncated: choose a shorter range |
 | `max_stored_pdf_bytes` | 20 MiB | the kept pages as a PDF are refused: choose a shorter range |
+| `max_pasted_image_bytes` | 10 MiB | an image pasted into the notes (`POST .../sources/images`, server) is refused with 413 |
 | `pdf_thumbnail_long_edge` | 1200 px | -- |
 | `pdf_thumbnail_quality` | 85 | -- |
 | `pdf_transcription_long_edge` | 1568 px | a scanned PDF page is rendered at it for its vision transcription (Claude downscales larger images) |

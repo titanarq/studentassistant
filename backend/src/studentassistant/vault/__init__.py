@@ -69,6 +69,7 @@ from studentassistant.vault.sessions import (
     start_session,
 )
 from studentassistant.vault.sources import (
+    IMAGE_EXTENSIONS,
     SOURCE_KINDS,
     Book,
     SourceContent,
@@ -82,6 +83,7 @@ from studentassistant.vault.sources import (
     get_book,
     list_sources,
     put_page_transcription,
+    put_pasted_image,
     put_source,
     read_source,
     set_book,
@@ -154,6 +156,7 @@ __all__ = [
     "conversations_directory",
     "read_conversation",
     "EVENT_SCHEMA_VERSION",
+    "IMAGE_EXTENSIONS",
     "SOURCE_KINDS",
     "ActiveHost",
     "ActiveHostWarning",
@@ -241,6 +244,7 @@ __all__ = [
     "pending_review_path",
     "topic_digest_path",
     "put_page_transcription",
+    "put_pasted_image",
     "put_source",
     "read_active_host",
     "read_all_ledgers",

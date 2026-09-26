@@ -417,6 +417,7 @@ class SttSettings(BaseModel):
 # PDF import (`studentassistant.sources.pdf`). The stored PDF goes to Claude base64-encoded (4/3 of
 # its size) inside a request capped at 32 MB, and into plain git (no LFS, ADR-0002), hence 20 MB.
 DEFAULT_MAX_PDF_BYTES = 200 * 1024 * 1024
+DEFAULT_MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 100
 DEFAULT_MAX_STORED_PDF_BYTES = 20 * 1024 * 1024
 DEFAULT_PDF_THUMBNAIL_LONG_EDGE = 1200
@@ -452,6 +453,8 @@ class SourcesSettings(BaseModel):
     max_pdf_pages: int = Field(default=DEFAULT_MAX_PDF_PAGES, ge=1)
     # The largest PDF (the kept pages only) stored in the vault; beyond it the import is refused.
     max_stored_pdf_bytes: int = Field(default=DEFAULT_MAX_STORED_PDF_BYTES, ge=1)
+    # The largest image the student may paste into the notes (`POST .../sources/images`).
+    max_pasted_image_bytes: int = Field(default=DEFAULT_MAX_PASTED_IMAGE_BYTES, ge=1)
     # Page thumbnails: long edge in pixels and JPEG quality.
     pdf_thumbnail_long_edge: int = Field(default=DEFAULT_PDF_THUMBNAIL_LONG_EDGE, ge=16)
     pdf_thumbnail_quality: int = Field(default=DEFAULT_PDF_THUMBNAIL_QUALITY, ge=1, le=100)

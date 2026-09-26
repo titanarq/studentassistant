@@ -106,6 +106,8 @@ refusals a client branches on also carry `code`, so no client matches the Spanis
 | `cost_cap_reached` | 409 | the session's or the day's cost cap is reached; the same request with `confirm_over_cap: true` goes past it |
 | `doubt_closed` | 409 | the doubt was already answered, auto-resolved or dismissed |
 | `session_open` | 409 | an unended session is in the way: another session when starting or resuming one (its id also in the `X-Open-Session-Id` header), or the topic's own session when resolving its doubts |
+| `notes_changed` | 409 | a student save of the notes (`PUT .../notes`) named a `base_revision` that is no longer the notes' revision; the body also carries the current `text` and `revision` |
+| `notes_busy` | 409 | "prepárame el tema", a restore or another rewrite holds the topic's notes; save again once it ends |
 
 `code` is optional: other errors have none, a client must treat a missing or unknown code as "no
 code" (and fall back on the status), and new codes may be added in later MINOR versions. Like

@@ -228,8 +228,9 @@ Routes registered today:
     `digest_excerpt` (the topic digest's summary paragraph, `observer.digest_excerpt`, `null`
     before the topic's first session end).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/notes` -> `TopicNotes` (`subject_id`,
-    `topic_id`, `text` of `notes/apuntes.md`, `version` as above); notes not written yet are 404
-    (`"Todavía no hay apuntes de este tema."`).
+    `topic_id`, `text` of `notes/apuntes.md`, `version` as above, `revision`: the content
+    revision token, `editor.notes_revision(text)`, SHA-256 hex, that a student save names as its
+    `base_revision`); notes not written yet are 404 (`"Todavía no hay apuntes de este tema."`).
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/pending?status=all|open|closed` ->
     `TopicPending`: `open_count` (of the whole queue) and `items`, the observer's `PendingItem`s
     (`id`, `kind`, `text`, `refs` {`pages`, `segments`, `sources`}, `created_by`, `status`,
@@ -399,7 +400,10 @@ Routes registered today:
   protocol, for the chat beside the notes (the web client is #71): thin over `editor.revise`
   (`docs/modules/editor.md`), over the vault and `GitSync` of the `SessionService`. A turn and an
   undo hold the topic's notes lock with "prepárame el tema" and the doubts
-  (`NotesGenerator.claim`); a turn calls the `editor` role through `llm_transport`, bound to the
+  (`NotesGenerator.claim`; a turn and a "¿por qué?" as `TURN_HOLDER`, so turns of one topic run
+  one at a time but a student save does not wait for them: the turn applies its ops under the
+  short write lock of `editor.notes_lock` and, when the student saved meanwhile, re-asks the editor
+  on the new notes); a turn on a topic without notes starts them from `# <topic title>`; a turn calls the `editor` role through `llm_transport`, bound to the
   topic's ledger. `notes.edited` / `notes.undone` are published on the bus (persisted, origin
   `editor`) when the topic's session is the active one.
   - `POST /api/subjects/{subject_id}/topics/{topic_id}/notes/chat`, body `{"message": "Esto está
@@ -412,7 +416,8 @@ Routes registered today:
     - then exactly one of `result` -- the `RevisionResult`: `reply` (authoritative; replaces the
       streamed text), `applied`, `summary`, `changed_sections`, `diff` (unified diff of
       `apuntes.md`), `notes` (the new text when changed), `fidelity_mode`, `style_rules`,
-      `proposed_style_rules` (to confirm with the style guide API below), `commit`, `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
+      `proposed_style_rules` (to confirm with the style guide API below), `commit`, `revision`
+      (of the notes after the turn), `warning`, `errors`, ... -- or `error` `{"status": 409|502|500, "detail":
       "...", "code"?: "..."}` (a reached cost cap 409 `cost_cap_reached`, built with
       `cost_cap_error`, until the body says `confirm_over_cap`; a Claude refusal or failure 502);
       `code` is gated like a REST error body (`speaks_error_codes`); the stream then ends.
@@ -433,13 +438,38 @@ Routes registered today:
     first -- `kind` `explain` for a "¿Por qué?" answer, with its `refs`; `can_undo`). Reads only; works without
     `llm_transport`.
   - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
-    `notes_changed`, `diff`, `notes`, `paths`): reverts the latest applied turn not yet undone
+    `notes_changed`, `diff`, `notes`, `paths`, `revision`): reverts the latest applied turn not yet undone
     (again for the one before). No Claude call.
   - Errors before the stream, Spanish `detail`: no `llm_transport` 503 (chat), a vault that cannot
-    be opened 503, an unknown topic 404, no notes yet 409 (`"Todavía no hay apuntes de este tema:
-    ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
+    be opened 503, an unknown topic 404, no notes yet 409 for `why` only (`"Todavía no hay apuntes
+    de este tema: ..."`), another notes or doubts operation of the topic running 409, an invalid body 422; undo:
     nothing to undo or a file changed after that turn 409. Needs the bearer check like every
     non-exempt route.
+- **The student's document edits** (`server/notes_edit_routes.py`, `notes_edit_router()`, #313),
+  web-only, thin over `editor.direct_edit` and `vault.put_pasted_image`; no Claude call, so they
+  work without `llm_transport`.
+  - `PUT /api/subjects/{subject_id}/topics/{topic_id}/notes`, body `{"text": "<the whole
+    apuntes.md>", "base_revision": "<revision of GET .../notes>" | null}` (`null`: the topic had no
+    notes) -> `StudentEditResult` (`revision`, `commit`, `diff`, `notes` -- the text as saved,
+    normalised --, `changed_sections`, `normalised`, `notes_changed`). One commit per save
+    (`Apuntes de <s>/<t> editados por el estudiante`), a `student_edit` record in
+    `conversations/editor.jsonl`, and `notes.edited` published on the bus (persisted, origin
+    `user`, payload the result without `notes`, plus `origin: "user"`) when the topic's session is
+    the active one. It does not wait for a chat turn (see the editor chat API).
+  - Errors: a stale `base_revision` 409 `{"detail", "code": "notes_changed", "text", "revision"}`
+    with the current notes (`code` gated like any REST error code); `409 notes_busy`
+    (`ApiError`) while anything but a chat turn holds the topic's notes lock -- "prepárame el
+    tema", a restore, the doubts, an undo; text that breaks the format even after normalising 422
+    `{"detail", "errors": [...]}` (Spanish validator messages); an unknown topic 404; a vault that
+    cannot be opened 503.
+  - `POST /api/subjects/{subject_id}/topics/{topic_id}/sources/images`: `multipart/form-data`
+    with one `file` part, a PNG, JPEG or WebP image told by its bytes (not its name or part type),
+    read as it streams under `[sources] max_pasted_image_bytes` (default 10 MiB) -> 201
+    `PastedImage` (`source_id` `sources/images/img-NNN.<ext>`, vault-relative `path`, `markdown`
+    `![Imagen pegada N](../sources/images/img-NNN.<ext>)` to insert in the notes; saving them
+    then adds the image's footnote). The sync loop commits it (`SessionService.note_change`).
+    Errors: too large 413; not such an image, empty, another part or a malformed body 422; an
+    unknown topic 404; a vault that cannot be opened 503.
 - **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over
   `editor.tutor` (`docs/modules/editor.md`), over the vault and `GitSync` of the
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only
@@ -472,7 +502,8 @@ Routes registered today:
     current `apuntes.md` (`to_version: null`).
   - `GET .../notes/versions/{version}` -> `VersionText` (`text` as tagged).
   - `POST .../notes/versions/{version}/restore`, no body -> `RestoreResult` (`restored_version`,
-    `version` and `tag` of the new `apuntes-vN`, `commit`, `diff`, `notes`, `errors`, `warning`).
+    `version` and `tag` of the new `apuntes-vN`, `commit`, `diff`, `notes`, `revision`, `errors`,
+    `warning`).
     Holds the topic's notes lock (`NotesGenerator.claim`, when the app has one); `notes.restored`
     is published on the bus (origin `editor`) when the topic's session is the active one.
   - Errors, Spanish `detail`: a vault that cannot be opened 503, an unknown topic or version 404,

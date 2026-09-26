@@ -8,13 +8,13 @@ resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro" -- a
    `LLMClient.create(on_text=...)`).
 2. **The change**: then, when something must change, it calls the strict tool `apply_edits`
    (`EditsOutput`) once: the edit ops of `edits.py` (`replace_block`, `insert_after`,
-   `delete_block`, `replace_section`, `move_section`) and the footnotes they need, a one-sentence
-   `summary`, and the standing instructions the student gave -- the topic's `fidelity_mode` ("no
-   inventes nada" -> `estricto`) --, plus `proposed_style_rules` when an instruction looks general
-   ("me gustan las tablas para comparar", "siempre un ejemplo": a rule for the subject's style
-   guide, `style_guide.py`, written only once the student confirms it) and
-   `confirmed_style_rules` when the student confirms in the chat a rule proposed in an earlier
-   turn. A turn with no tool call is a chat-only answer.
+   `delete_block`, `replace_section`, `move_section`, `add_section`) and the footnotes they need, a
+   one-sentence `summary`, and the standing instructions the student gave -- the topic's
+   `fidelity_mode` ("no inventes nada" -> `estricto`) --, plus `proposed_style_rules` when an
+   instruction looks general ("me gustan las tablas para comparar", "siempre un ejemplo": a rule for
+   the subject's style guide, `style_guide.py`, written only once the student confirms it) and
+   `confirmed_style_rules` when the student confirms in the chat a rule proposed in an earlier turn.
+   A turn with no tool call is a chat-only answer.
 
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
@@ -26,6 +26,16 @@ Spanish message (`Apuntes de <s>/<t> revisados: <summary>`); the result carries 
 `apuntes.md`, the sections touched and the paths the commit changed, and a `notes.edited` event
 goes to `on_event` (the server publishes it on the bus).
 
+**The latest version**: no lock is held across the Claude call, so the student may save the notes
+(`direct_edit.save_student_edit`) while the editor answers. The turn remembers the notes its block
+map was built from and applies its change under the topic's short write lock (`notes_lock`), which
+the student's save takes too; when the notes changed meanwhile, the ops (numbered against the old
+notes) are not applied: the editor is re-asked with the new block map and a Spanish note ("el
+estudiante ha cambiado los apuntes mientras respondías"), which counts against `MAX_REASKS`.
+
+**A growing document**: a topic with no `apuntes.md` yet is revised from `# <topic title>`, so the
+first turn can create the notes (with `add_section`).
+
 **Undo** (`undo_last_revision`): the latest applied turn not yet undone is reverted with
 `GitSync.revert_paths` -- a `git revert` of that commit restricted to the files the turn changed,
 so the ledger and conversation lines it also carried stay -- and committed (`Deshecho en <s>/<t>:
@@ -35,7 +45,8 @@ first; a regeneration cannot be undone this way). Undoing again goes one more tu
 **Conversation**: every call is recorded in `conversations/editor.jsonl` like the generation's
 (`context` with reason `revise`, `user`, `assistant`, `validation`), each turn as a `revision`
 record (the `RevisionResult`) and each undo as `notes.undone`; `chat_history` reads them back, and
-the last `HISTORY_TURNS` turns are given to the editor as the conversation so far.
+the last `HISTORY_TURNS` turns -- with the student's own edits of the document (`student_edit`
+records of `direct_edit.py`) among them -- are given to the editor as the conversation so far.
 """
 
 from __future__ import annotations
@@ -46,6 +57,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -64,7 +76,13 @@ from studentassistant.editor.inputs import (
     EditorInput,
     assemble_input,
 )
-from studentassistant.editor.notes_format import FidelityMode, topic_source_resolver, validate
+from studentassistant.editor.notes_format import (
+    FidelityMode,
+    notes_revision,
+    topic_source_resolver,
+    validate,
+)
+from studentassistant.editor.notes_lock import holding_notes
 from studentassistant.editor.style_guide import (
     append_rules,
     new_rules,
@@ -104,6 +122,11 @@ EDIT_TOOL = "apply_edits"
 NOTES_EDITED_KIND = "notes.edited"
 NOTES_UNDONE_KIND = "notes.undone"
 REVISION_RECORD = "revision"
+STUDENT_EDIT_RECORD = "student_edit"
+"""The conversation record of a save of the student's own edit (`direct_edit.py`)."""
+STUDENT_EDIT_DIFF_CHARS = 3000
+"""How much of a student edit's diff the editor is shown in the conversation."""
+NOTES_CHANGED_NOTE = "el estudiante ha cambiado los apuntes mientras respondías"
 EXPLANATION_RECORD = "explanation"
 """The conversation record of a "¿Por qué pusiste esto?" answer (`explain.py`)."""
 MAX_REASKS = 2
@@ -139,7 +162,8 @@ class InvalidMessageError(RevisionError):
 
 
 class NotesMissingError(RevisionError):
-    """The topic has no `notes/apuntes.md` to revise yet."""
+    """The topic has no `notes/apuntes.md` yet (for the callers that need one; a revision turn
+    starts the notes instead)."""
 
 
 class NothingToUndoError(RevisionError):
@@ -209,6 +233,11 @@ class RevisionResult(_Strict):
     notes: str | None = Field(default=None, description="The new notes, when they changed.")
     paths: list[str] = Field(default_factory=list, description="Vault paths the commit changed.")
     commit: str | None = None
+    revision: str | None = Field(
+        default=None,
+        description="The revision (`notes_revision`) of `apuntes.md` after the turn; `None` while"
+        " the topic has no notes.",
+    )
     attempts: int = 0
     errors: list[str] = Field(default_factory=list, description="The last check's errors.")
     warning: str | None = None
@@ -227,6 +256,9 @@ class UndoResult(_Strict):
     diff: str = ""
     notes: str | None = None
     paths: list[str] = Field(default_factory=list)
+    revision: str | None = Field(
+        default=None, description="The revision of `apuntes.md` after the undo."
+    )
 
 
 class ChatRef(_Strict):
@@ -243,11 +275,12 @@ class ChatTurn(_Strict):
     """One turn of the conversation as the web chat shows it.
 
     `kind` is `revise` for a revision turn and `explain` for a "¿Por qué pusiste esto?" answer,
-    whose `refs` are the sources of the block it explains.
+    whose `refs` are the sources of the block it explains; `student_edit`, a save of the student's
+    own edit of the document (its `summary` holds the diff), is only in the editor's history.
     """
 
     time: datetime
-    kind: Literal["revise", "explain"] = "revise"
+    kind: Literal["revise", "explain", "student_edit"] = "revise"
     message: str
     reply: str
     applied: bool = False
@@ -305,7 +338,9 @@ class _Conversation:
             )
 
 
-def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[ChatTurn]:
+def _read_turns(
+    vault: Vault, subject_slug: str, topic_slug: str, *, student_edits: bool = False
+) -> list[ChatTurn]:
     turns: list[ChatTurn] = []
     undone: set[str] = set()
     guide = read_style_guide(vault, subject_slug).rules
@@ -314,6 +349,26 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[ChatTu
             commit = record.detail.get("undone_commit")
             if isinstance(commit, str):
                 undone.add(commit)
+        if student_edits and record.kind == STUDENT_EDIT_RECORD and record.detail:
+            sections = record.detail.get("changed_sections")
+            diff = record.detail.get("diff")
+            turns.append(
+                ChatTurn(
+                    time=record.time,
+                    kind="student_edit",
+                    message="",
+                    reply="",
+                    applied=True,
+                    summary=diff if isinstance(diff, str) else None,
+                    changed_sections=[str(a) for a in sections]
+                    if isinstance(sections, list)
+                    else [],
+                    commit=record.detail.get("commit")
+                    if isinstance(record.detail.get("commit"), str)
+                    else None,
+                )
+            )
+            continue
         if record.kind == EXPLANATION_RECORD and record.detail:
             try:
                 view = _ExplanationView.model_validate(record.detail)
@@ -413,6 +468,15 @@ def _history_text(turns: list[ChatTurn]) -> str:
         return "(Es el primer mensaje de la conversación.)"
     lines: list[str] = []
     for turn in turns[-HISTORY_TURNS:]:
+        if turn.kind == "student_edit":
+            where = ", ".join(f"#{anchor}" for anchor in turn.changed_sections) or "el documento"
+            lines.append(f"[El estudiante editó él mismo los apuntes ({where}). Cambios:]")
+            diff = turn.summary or ""
+            if len(diff) > STUDENT_EDIT_DIFF_CHARS:
+                diff = diff[:STUDENT_EDIT_DIFF_CHARS].rstrip() + "\n…"
+            lines.append(diff.rstrip() or "(sin diferencias)")
+            lines.append("")
+            continue
         lines.append(f"Estudiante: {turn.message}")
         reply = turn.reply or "(sin respuesta)"
         lines.append(f"Editor: {reply}")
@@ -437,6 +501,28 @@ def _turn_text(turns: list[ChatTurn], notes: str, mode: str, message: str) -> st
         "## Nuevo mensaje del estudiante\n\n"
         f"{message}\n"
     )
+
+
+def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
+    """The re-ask after the notes changed under the turn: the new block map, apply again."""
+    reason = (
+        f"No se ha aplicado el cambio: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
+        " corresponden."
+    )
+    content: list[dict[str, Any]] = [
+        {"type": "tool_result", "tool_use_id": call.id, "is_error": True, "content": reason}
+        for call in response.tool_calls
+    ]
+    content.append(
+        {
+            "type": "text",
+            "text": f"{reason}\n\n## Mapa de bloques de los apuntes actuales (modo de fidelidad"
+            f" «{mode}»)\n\n{describe_sections(notes)}\n\nRespeta lo que ha escrito el"
+            " estudiante: escribe otra vez una respuesta breve y llama a"
+            f" `{EDIT_TOOL}` con el cambio completo sobre estos apuntes.",
+        }
+    )
+    return {"role": "user", "content": content}
 
 
 def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
@@ -528,7 +614,8 @@ def _diff(before: str, after: str) -> str:
 
 
 def _changed_sections(ops: list[EditOp]) -> list[str]:
-    return list(dict.fromkeys(op.section.strip().removeprefix("#") for op in ops))
+    anchors = (op.anchor if op.op == "add_section" else op.section for op in ops)
+    return list(dict.fromkeys((anchor or "").strip().removeprefix("#") for anchor in anchors))
 
 
 def _apply(
@@ -567,6 +654,50 @@ def _apply(
     return paths, commit, new_mode, added
 
 
+_Applied = tuple[list[str], str | None, str | None, list[str]]
+
+
+def _apply_if_current(
+    vault: Vault,
+    sync: GitSync,
+    subject_slug: str,
+    topic_slug: str,
+    *,
+    base: str | None,
+    notes: str,
+    edited: str,
+    value: EditsOutput,
+    current_mode: str,
+) -> tuple[_Applied | None, str | None]:
+    """Apply the change under the write lock when the notes are still `base`; blocking.
+
+    `(applied, current)`: `applied` is `_apply`'s result, or `None` when the stored notes are no
+    longer `base` (nothing written); `current` is the stored notes read under the lock.
+    """
+    with holding_notes(vault, subject_slug, topic_slug):
+        current = read_notes(vault, subject_slug, topic_slug)
+        if current != base:
+            return None, current
+        applied = _apply(
+            vault,
+            sync,
+            subject_slug,
+            topic_slug,
+            notes=notes,
+            edited=edited,
+            value=value,
+            current_mode=current_mode,
+        )
+        return applied, current
+
+
+def _seeded(stored: str | None, title: str) -> str:
+    """The notes a turn works on: the stored ones, or `# <title>` when there are none yet."""
+    if stored is not None and stored.strip():
+        return stored
+    return f"# {' '.join(title.split()) or 'Apuntes'}\n"
+
+
 async def revise_notes(
     vault: Vault,
     subject_slug: str,
@@ -587,7 +718,6 @@ async def revise_notes(
 
     Raises:
         InvalidMessageError: an empty or too long message; nothing sent.
-        NotesMissingError: the topic has no notes yet; nothing sent.
         CostConfirmationRequiredError, RefusalError, LLMError: as `generate_notes`; nothing
             written but the conversation records of the calls made.
         VaultError, ObserverStateError: the topic cannot be read.
@@ -599,12 +729,10 @@ async def revise_notes(
         raise InvalidMessageError(
             f"El mensaje es demasiado largo (más de {MAX_MESSAGE_CHARS} caracteres)."
         )
-    notes = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug)
-    if not notes or not notes.strip():
-        raise NotesMissingError(
-            "Todavía no hay apuntes de este tema: prepáralos antes de revisarlos."
-        )
-    turns = await asyncio.to_thread(_read_turns, vault, subject_slug, topic_slug)
+    base = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug)
+    turns = await asyncio.to_thread(
+        lambda: _read_turns(vault, subject_slug, topic_slug, student_edits=True)
+    )
     prompt = load_prompt(PROMPT_NAME)
     assembled: EditorInput = await asyncio.to_thread(
         assemble_input,
@@ -617,6 +745,7 @@ async def revise_notes(
         max_attachment_bytes=max_attachment_bytes,
         instruction=REVISE_INSTRUCTION,
     )
+    notes = _seeded(base, assembled.topic_title)
     turn = {"type": "text", "text": _turn_text(turns, notes, assembled.fidelity_mode, text)}
     messages: list[dict[str, Any]] = [{"role": "user", "content": [*assembled.content, turn]}]
     tool = strict_tool(
@@ -630,6 +759,8 @@ async def revise_notes(
     model = client.model
     value: EditsOutput | None = None
     edited: str | None = None
+    applied: _Applied | None = None
+    stale = False
     errors: list[str] = []
     reply = ""
     attempts = 0
@@ -675,14 +806,38 @@ async def revise_notes(
             raise RefusalError("the editor declined to revise the notes")
         reply = response.text.strip()
         value, errors = _parse_call(response)
+        stale = False
         if value is not None:
             errors, edited = await asyncio.to_thread(
                 _check, value, notes, assembled, vault, _pending_rules(turns)
             )
+        if value is not None and edited is not None and not errors:
+            applied, current = await asyncio.to_thread(
+                partial(
+                    _apply_if_current,
+                    vault,
+                    sync,
+                    subject_slug,
+                    topic_slug,
+                    base=base,
+                    notes=notes,
+                    edited=edited,
+                    value=value,
+                    current_mode=assembled.fidelity_mode,
+                )
+            )
+            if applied is None:
+                stale = True
+                base, notes = current, _seeded(current, assembled.topic_title)
+                errors = [f"No se ha aplicado: {NOTES_CHANGED_NOTE}."]
         await conversation.record("validation", detail={"attempt": attempt, "errors": errors})
         if not errors or attempt > MAX_REASKS:
             break
-        reask = _reask_turn(response, errors)
+        reask = (
+            _stale_turn(response, notes, assembled.fidelity_mode)
+            if stale
+            else _reask_turn(response, errors)
+        )
         messages = [*messages, response.assistant_turn(), reask]
         await conversation.record("user", message=reask, model=model)
 
@@ -696,25 +851,16 @@ async def revise_notes(
         model=model,
     )
     if errors:
-        result = result.model_copy(
-            update={
-                "errors": errors,
-                "warning": "El editor no ha podido aplicar el cambio cumpliendo las reglas de"
-                " procedencia; los apuntes no han cambiado. Prueba a pedirlo de otra forma.",
-            }
+        warning = (
+            "El editor no ha podido aplicar el cambio porque has cambiado los apuntes mientras"
+            " respondía; los apuntes se quedan como los dejaste. Vuelve a pedírselo."
+            if stale
+            else "El editor no ha podido aplicar el cambio cumpliendo las reglas de"
+            " procedencia; los apuntes no han cambiado. Prueba a pedirlo de otra forma."
         )
-    elif value is not None and edited is not None:
-        paths, commit, new_mode, added = await asyncio.to_thread(
-            _apply,
-            vault,
-            sync,
-            subject_slug,
-            topic_slug,
-            notes=notes,
-            edited=edited,
-            value=value,
-            current_mode=assembled.fidelity_mode,
-        )
+        result = result.model_copy(update={"errors": errors, "warning": warning})
+    elif value is not None and edited is not None and applied is not None:
+        paths, commit, new_mode, added = applied
         changed = edited != notes
         guide = await asyncio.to_thread(read_style_guide, vault, subject_slug)
         result = result.model_copy(
@@ -735,6 +881,12 @@ async def revise_notes(
                 "commit": commit,
             }
         )
+    if result.notes_changed and result.notes is not None:
+        revision: str | None = notes_revision(result.notes)
+    else:
+        stored = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug)
+        revision = None if stored is None else notes_revision(stored)
+    result = result.model_copy(update={"revision": revision})
     payload = result.model_dump(mode="json")
     await conversation.record(REVISION_RECORD, model=model, prompt_hash=prompt.hash, detail=payload)
     sync.note_change()  # the conversation's last lines, committed by the sync loop
@@ -801,6 +953,7 @@ async def undo_last_revision(
         diff=_diff(before, after) if changed else "",
         notes=after if changed else None,
         paths=target.paths,
+        revision=notes_revision(after),
     )
     payload = result.model_dump(mode="json")
     await _Conversation(vault, subject_slug, topic_slug, clock).record(
@@ -824,6 +977,7 @@ __all__ = [
     "NOTES_UNDONE_KIND",
     "REPLY_DELTA",
     "REPLY_RESTART",
+    "STUDENT_EDIT_RECORD",
     "ChatHistory",
     "ChatRef",
     "ChatTurn",

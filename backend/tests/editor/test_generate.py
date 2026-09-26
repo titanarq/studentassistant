@@ -27,6 +27,7 @@ from studentassistant.editor.generate import (
     notes_text,
 )
 from studentassistant.editor.inputs import assemble_input, needs_image
+from studentassistant.editor.notes_format import notes_revision
 from studentassistant.llm import (
     CostConfirmationRequiredError,
     FakeClaude,
@@ -114,6 +115,7 @@ def test_valid_notes_are_written_committed_and_tagged_v1(
     assert result.version == 1
     assert result.tag == f"{topic.subject}/{topic.topic}/apuntes-v1"
     assert result.path.endswith("/notes/apuntes.md")
+    assert result.revision == notes_revision(valid_notes(topic.session))
     assert read_notes(topic.vault, topic.subject, topic.topic) == valid_notes(topic.session)
     tags = sync.list_notes_tags(topic.subject, topic.topic)
     assert [t.name for t in tags] == [result.tag] and tags[0].commit == result.commit
@@ -302,6 +304,7 @@ def test_a_document_still_failing_after_the_re_asks_is_kept_as_a_draft(
 
     assert len(fake.requests) == 3 and result.attempts == 3
     assert result.draft and result.version is None and result.tag is None
+    assert result.revision is None  # no notes before the draft
     assert result.errors and "no tiene nota al pie" in result.errors[0]
     assert result.warning is not None and "borrador" in result.warning
     assert result.path.endswith("/notes/borrador.md")

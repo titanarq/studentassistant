@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from read_api_fixtures import ReadVault
 
+from studentassistant.editor.notes_format import notes_revision
 from studentassistant.vault import GitSync, create_subject, create_topic, notes_path
 from studentassistant.vault.files import write_text_atomic
 
@@ -30,7 +31,7 @@ def test_the_summary_counts_sources_sessions_and_open_pending(
     body = summary_of(reader, read_vault)
 
     assert (body["subject_id"], body["topic_id"]) == (read_vault.subject, read_vault.topic)
-    assert body["sources"] == {"notes": 1, "book": 0, "pdf": 0, "web": 1}
+    assert body["sources"] == {"notes": 1, "book": 0, "pdf": 0, "web": 1, "images": 0}
     assert body["sessions"] == 2
     # The ended session is 30 minutes; the unended one counts up to now (a moment ago).
     assert 30.0 <= body["session_minutes"] < 31.0
@@ -42,7 +43,7 @@ def test_the_summary_counts_sources_sessions_and_open_pending(
 def test_an_empty_topic_summarises_as_zeros(read_vault: ReadVault, reader: TestClient) -> None:
     body = summary_of(reader, read_vault, read_vault.empty_topic)
 
-    assert body["sources"] == {"notes": 0, "book": 0, "pdf": 0, "web": 0}
+    assert body["sources"] == {"notes": 0, "book": 0, "pdf": 0, "web": 0, "images": 0}
     assert (body["sessions"], body["session_minutes"], body["open_pending"]) == (0, 0.0, 0)
     assert body["notes_version"] is None
     assert body["generated"] == []
@@ -102,6 +103,7 @@ def test_notes_return_the_text_and_version(read_vault: ReadVault, reader: TestCl
         "topic_id": read_vault.topic,
         "text": NOTES,
         "version": None,
+        "revision": notes_revision(NOTES),
     }
 
     GitSync(read_vault.vault).create_notes_tag(read_vault.subject, read_vault.topic)

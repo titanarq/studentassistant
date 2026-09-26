@@ -1,9 +1,10 @@
-"""Sources: what a topic's notes were built from, stored under `sources/{notes,book,pdf,web}/`.
+"""Sources: what a topic's notes were built from, stored under `sources/<kind>/`.
 
 Each stored source is two files: the content exactly as it was handed over, and a `.yaml` sidecar
 holding its metadata (for a note page: capture id, session, capture time, transcript span; for a
 web page: url, fetch time). Pages of `notes`, `book` and `pdf` are numbered `page-NNN.<ext>` in
-the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the name it was given.
+the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the name it was given;
+an image the student pasted into the notes is `images/img-NNN.<png|jpg|webp>`.
 The next number is found by scanning the directory, so numbering resumes after whatever is there
 already, including the derived files the `sources` module adds next to a page (`page-NNN.md`,
 `page-NNN.page.jpg`). Allocating a number and writing the files under it happen under one lock per
@@ -24,10 +25,12 @@ there once symlinks are followed. Nothing that reads writes a file or runs git.
 
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, get_args
 
@@ -54,12 +57,20 @@ SOURCES_DIRNAME = "sources"
 SIDECAR_SUFFIX = ".yaml"
 WEB_SUFFIX = ".md"
 
-SourceKind = Literal["notes", "book", "pdf", "web"]
+SourceKind = Literal["notes", "book", "pdf", "web", "images"]
 SOURCE_KINDS: tuple[str, ...] = get_args(SourceKind)
 PAGED_KINDS: tuple[str, ...] = ("notes", "book", "pdf")
+IMAGES_KIND = "images"
+IMAGE_EXTENSIONS: dict[str, str] = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+"""The media types a pasted image may have, and the extension each is stored with."""
 
 _PAGE_NUMBER = re.compile(r"^page-(\d{3,})\.")
 _WEB_NUMBER = re.compile(r"^(\d{3,})-")
+_IMAGE_NUMBER = re.compile(r"^img-(\d{3,})\.")
 _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
 _DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
@@ -74,7 +85,7 @@ class SourceError(VaultError):
 
 
 class UnknownSourceKindError(SourceError):
-    """The `kind` is not one of `notes`, `book`, `pdf`, `web`."""
+    """The `kind` is not one of `notes`, `book`, `pdf`, `web`, `images`."""
 
 
 class SourcePathError(SourceError):
@@ -129,10 +140,12 @@ def put_source(
 ) -> Path:
     """Store one source of a topic with its `.yaml` metadata sidecar and return the content's path.
 
-    For `notes`, `book` and `pdf`, `name` is the file the content came as, and only its extension
-    is kept (`foto.JPG` -> `page-004.jpg`). For `web`, `name` is the page's title and becomes the
-    slug of `NNN-<slug>.md`. `content` is written as it is: bytes untouched, text as UTF-8. `meta`
-    is dumped with the same deterministic YAML as every vault file; datetimes become ISO 8601.
+    For `notes`, `book` and `pdf`, `name` is the file the content came as, and only its extension is
+    kept (`foto.JPG` -> `page-004.jpg`); for `images` the same gives `img-NNN.<ext>`, the extension
+    one of `.png`, `.jpg` (`.jpeg` too) or `.webp`. For `web`, `name` is the page's title and
+    becomes the slug of `NNN-<slug>.md`. `content` is written as it is: bytes untouched, text as
+    UTF-8. `meta` is dumped with the same deterministic YAML as every vault file; datetimes become
+    ISO 8601.
 
     `derived` (paged kinds only) maps name suffixes to files `sources` derived from the content,
     written next to it as `page-NNN.<suffix>` in the same call: `{"p003.txt": ..., "p003.jpg":
@@ -176,6 +189,8 @@ def put_source(
 
     if kind in PAGED_KINDS:
         pattern, stem_template, content_suffix = _PAGE_NUMBER, "page-{:03d}", _extension_of(name)
+    elif kind == IMAGES_KIND:
+        pattern, stem_template, content_suffix = _IMAGE_NUMBER, "img-{:03d}", _image_extension(name)
     else:
         pattern, stem_template, content_suffix = (
             _WEB_NUMBER,
@@ -233,6 +248,48 @@ def _extension_of(name: str) -> str:
             " (page-NNN.<ext> needs one, e.g. .jpg)"
         )
     return extension
+
+
+def _image_extension(name: str) -> str:
+    extension = Path(name).suffix.lower()
+    extension = ".jpg" if extension == ".jpeg" else extension
+    if extension not in IMAGE_EXTENSIONS.values():
+        raise SourceError(
+            f"cannot store {name!r} as an image: only .png, .jpg and .webp images are kept"
+        )
+    return extension
+
+
+def put_pasted_image(
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    content: bytes,
+    content_type: str,
+    *,
+    added_at: datetime | None = None,
+) -> Path:
+    """Store an image the student pasted into the notes as `sources/images/img-NNN.<ext>`.
+
+    The extension follows `content_type` (`IMAGE_EXTENSIONS`); the sidecar records `origin:
+    pasted`, the `content_type`, the content's `sha256` and `added_at` (now, UTC, by default).
+    Returns the content's path. Raises what `put_source` raises, and `SourceError` for a media
+    type that is not a PNG, JPEG or WebP image or an empty content; nothing is written then.
+    """
+    extension = IMAGE_EXTENSIONS.get(content_type)
+    if extension is None:
+        raise SourceError(f"{content_type!r} is not an image type this vault keeps")
+    if not content:
+        raise SourceError("an empty image is not stored")
+    meta = {
+        "origin": "pasted",
+        "content_type": content_type,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "added_at": added_at or datetime.now(UTC),
+    }
+    return put_source(
+        vault, subject_slug, topic_slug, IMAGES_KIND, f"pasted{extension}", content, meta
+    )
 
 
 def _next_number(directory: Path, pattern: re.Pattern[str]) -> int:
@@ -393,6 +450,7 @@ def set_book(vault: Vault, subject_slug: str, topic_slug: str, title: str) -> Bo
 
 _PAGE_SOURCE = re.compile(r"^page-(\d{3,})\.([A-Za-z0-9]+)$")
 _WEB_SOURCE = re.compile(r"^(\d{3,})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
+_IMAGE_SOURCE = re.compile(r"^img-(\d{3,})\.(?:png|jpg|webp)$")
 _DERIVED_TRANSCRIPTION = "md"
 _MEDIA_TYPES = mimetypes.MimeTypes()  # built-in table only: no host file makes it differ
 _MEDIA_TYPE_OVERRIDES = {".md": "text/markdown", ".yaml": "application/yaml"}
@@ -405,10 +463,10 @@ def list_sources(vault: Vault, subject_slug: str, topic_slug: str) -> list[Store
     """Every stored source of the topic, ordered by kind (`SOURCE_KINDS` order) then number.
 
     A source is the content `put_source` stored: `page-NNN.<ext>` under `notes`, `book` and `pdf`,
-    `NNN-<slug>.md` under `web`. Sidecars (`.yaml`) and the derived files `sources` adds next to a
-    page (`page-NNN.md`, `page-NNN.page.jpg`) are not sources of their own; a `page-NNN.md` counts
-    as the source only when no other `page-NNN.<ext>` is there. Symlinks are never listed. A topic
-    without `sources/` lists as empty. Nothing is written.
+    `NNN-<slug>.md` under `web`, `img-NNN.<png|jpg|webp>` under `images`. Sidecars (`.yaml`) and the
+    derived files `sources` adds next to a page (`page-NNN.md`, `page-NNN.page.jpg`) are not sources
+    of their own; a `page-NNN.md` counts as the source only when no other `page-NNN.<ext>` is there.
+    Symlinks are never listed. A topic without `sources/` lists as empty. Nothing is written.
 
     Raises:
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
@@ -480,10 +538,11 @@ def _source_entries(directory: Path, kind: str) -> list[tuple[int, Path]]:
     """`(number, path)` of each source content file in one kind's directory."""
     entries = [entry for entry in directory.iterdir() if not entry.is_symlink() and entry.is_file()]
     if kind not in PAGED_KINDS:
+        pattern = _IMAGE_SOURCE if kind == IMAGES_KIND else _WEB_SOURCE
         return [
             (int(match.group(1)), entry)
             for entry in entries
-            if (match := _WEB_SOURCE.match(entry.name)) is not None
+            if (match := pattern.match(entry.name)) is not None
         ]
     by_number: dict[int, list[tuple[str, Path]]] = {}
     for entry in entries:
