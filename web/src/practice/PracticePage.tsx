@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchTopics, topicPath } from "../desk/api";
 import { type ActionResult, describeActionFailure } from "../pending/doubts";
 import { normalizeAnswer } from "../quiz/api";
@@ -59,8 +59,34 @@ export function checkAnswer(item: PracticeItem, given: string): boolean | null {
   return null;
 }
 
-function SourceLinks({ anchors, notesHref }: { anchors: string[]; notesHref: string }) {
+/** How the study screen (#333) shows the "En los apuntes:" links: source chips that highlight. */
+interface Chips {
+  onFocusAnchors: (anchors: string[]) => void;
+  anchorLabel?: (anchor: string) => string;
+}
+
+function SourceLinks({ anchors, notesHref, chips }: { anchors: string[]; notesHref: string; chips?: Chips }) {
   if (anchors.length === 0) return null;
+  if (chips !== undefined) {
+    return (
+      <p className="practice-sources practice-chips">
+        En los apuntes:{" "}
+        {anchors.map((anchor) => (
+          <a
+            key={anchor}
+            className="practice-chip"
+            href={`${notesHref}#${encodeURIComponent(anchor)}`}
+            onClick={(event) => {
+              event.preventDefault();
+              chips.onFocusAnchors([anchor]);
+            }}
+          >
+            § {chips.anchorLabel?.(anchor) ?? anchor}
+          </a>
+        ))}
+      </p>
+    );
+  }
   return (
     <p className="practice-sources">
       En los apuntes:{" "}
@@ -97,12 +123,14 @@ function RatingButtons({
 function ItemCard({
   queued,
   notesHref,
+  chips,
   sending,
   onReview,
   onSuspend,
 }: {
   queued: QueuedItem;
   notesHref: string;
+  chips?: Chips;
   sending: boolean;
   onReview: (answer: Omit<PracticeAnswer, "item">) => void;
   onSuspend: () => void;
@@ -138,7 +166,7 @@ function ItemCard({
         (revealed ? (
           <>
             <p className="practice-answer">{item.answer}</p>
-            <SourceLinks anchors={item.anchors} notesHref={notesHref} />
+            <SourceLinks anchors={item.anchors} notesHref={notesHref} chips={chips} />
             <RatingButtons
               ratings={["again", "hard", "good", "easy"]}
               disabled={sending}
@@ -199,7 +227,7 @@ function ItemCard({
             </p>
           )}
           {item.explanation !== "" && <p>{item.explanation}</p>}
-          <SourceLinks anchors={item.anchors} notesHref={notesHref} />
+          <SourceLinks anchors={item.anchors} notesHref={notesHref} chips={chips} />
           {verdict === true && (
             <RatingButtons ratings={["hard", "good", "easy"]} disabled={sending} onRate={quizReview} />
           )}
@@ -252,7 +280,27 @@ function SuspendedList({
   );
 }
 
-export default function PracticePage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
+export interface PracticePageProps {
+  subjectId: string;
+  topicId: string;
+  /** Shown inside another page (the study screen, #333): no crumbs, no heading, no quiz link. */
+  embedded?: boolean;
+  /**
+   * The anchors of the item shown now (`[]` when none is left); with it the "En los apuntes:"
+   * links are source chips that report their one anchor instead of leaving the page.
+   */
+  onFocusAnchors?: (anchors: string[]) => void;
+  /** The text of a chip for an anchor (the section's title), else the anchor itself. */
+  anchorLabel?: (anchor: string) => string;
+}
+
+export default function PracticePage({
+  subjectId,
+  topicId,
+  embedded = false,
+  onFocusAnchors,
+  anchorLabel,
+}: PracticePageProps) {
   const [topicName, setTopicName] = useState(topicId);
   const [loaded, setLoaded] = useState<ActionResult<PracticeQueue> | null>(null);
   const [queue, setQueue] = useState<QueuedItem[]>([]);
@@ -288,6 +336,17 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
   const base = topicPath(subjectId, topicId);
   const practice = loaded?.kind === "ok" ? loaded.value : null;
   const current = queue[0];
+  const focusRef = useRef(onFocusAnchors);
+  focusRef.current = onFocusAnchors;
+  const currentAnchors = current?.item.anchors.join("\n") ?? null;
+  useEffect(() => {
+    if (loaded === null) return;
+    focusRef.current?.(currentAnchors === null || currentAnchors === "" ? [] : currentAnchors.split("\n"));
+  }, [loaded, currentAnchors, turn]);
+  const chips = useMemo(
+    () => (onFocusAnchors === undefined ? undefined : { onFocusAnchors, anchorLabel }),
+    [onFocusAnchors, anchorLabel],
+  );
 
   async function review(answer: Omit<PracticeAnswer, "item">) {
     if (current === undefined) return;
@@ -347,15 +406,20 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
     setSuspended((previous) => previous.filter((entry) => entry.key !== item.key));
   }
 
+  const Root = embedded ? "div" : "main";
   return (
-    <main className="practice-page">
-      <p className="crumbs">
-        <a href={base}>← Tema {topicName}</a>
-        <a className="crumbs-home" href="/">
-          Mesa de estudio
-        </a>
-      </p>
-      <h1>Practicar {topicName}</h1>
+    <Root className="practice-page">
+      {!embedded && (
+        <>
+          <p className="crumbs">
+            <a href={base}>← Tema {topicName}</a>
+            <a className="crumbs-home" href="/">
+              Mesa de estudio
+            </a>
+          </p>
+          <h1>Practicar {topicName}</h1>
+        </>
+      )}
       {loaded === null && <p>Cargando la práctica…</p>}
       {loaded !== null && loaded.kind !== "ok" && <p role="alert">{describeActionFailure(loaded)}</p>}
       {practice !== null && (
@@ -384,6 +448,7 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
                 key={`${current.item.key}-${turn}`}
                 queued={current}
                 notesHref={`${base}/notes`}
+                chips={chips}
                 sending={sending}
                 onReview={(answer) => void review(answer)}
                 onSuspend={() => void suspendCurrent()}
@@ -410,9 +475,11 @@ export default function PracticePage({ subjectId, topicId }: { subjectId: string
           <SuspendedList items={suspended} busy={sending} onRestore={(item) => void restore(item)} />
         </>
       )}
-      <p className="practice-links">
-        <a href={`${base}/quiz`}>Ir al quiz completo</a>
-      </p>
-    </main>
+      {!embedded && (
+        <p className="practice-links">
+          <a href={`${base}/quiz`}>Ir al quiz completo</a>
+        </p>
+      )}
+    </Root>
   );
 }

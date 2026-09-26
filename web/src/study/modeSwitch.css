@@ -1,0 +1,38 @@
+/* The header switch Construir · Estudiar (#333): two links in a pill, the current one raised. */
+
+.mode-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.mode-switch a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0 var(--space-4);
+  border-radius: 999px;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.mode-switch a:hover {
+  color: var(--accent);
+}
+
+.mode-switch a[aria-current="page"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(29 34 48 / 12%);
+}
+
+@media (max-width: 48rem) {
+  .mode-switch a {
+    min-height: var(--target-phone);
+  }
+}

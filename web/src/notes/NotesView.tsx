@@ -9,7 +9,8 @@ import { parseProvenance } from "./provenance";
  * content the AI added. The definitions are listed at the end under "Fuentes".
  *
  * With `changedSections`, every top-level block inside one of those sections (or a subsection of
- * one) is highlighted as changed by the editor's last turn; with `onAskWhy`, every top-level block
+ * one) is highlighted as changed by the editor's last turn, and with `focusSections` every one inside
+ * those sections is highlighted as what the current study item is about; with `onAskWhy`, every top-level block
  * with text gets a "¿Por qué pusiste esto?" button that hands the block and its section's anchor
  * to the caller.
  */
@@ -22,6 +23,11 @@ export interface NotesViewProps {
   activeLabel?: string | null;
   /** Anchors of the sections the editor's last turn changed, highlighted. */
   changedSections?: ReadonlySet<string>;
+  /**
+   * Anchors of the sections the item studied now is about (the study screen, #333): highlighted
+   * apart from `changedSections`. An anchor the notes lack highlights nothing.
+   */
+  focusSections?: ReadonlySet<string>;
   /**
    * "¿Por qué pusiste esto?" on a block: the block, the anchor of its section, if any, and its
    * number in that section as the backend counts blocks (from 1, after the section heading; before
@@ -75,6 +81,7 @@ export default function NotesView({
   onOpenSource,
   activeLabel = null,
   changedSections,
+  focusSections,
   onAskWhy,
   askDisabled = false,
   resolveImage,
@@ -247,7 +254,7 @@ export default function NotesView({
     }
   };
 
-  const wrap = changedSections !== undefined || onAskWhy !== undefined;
+  const wrap = changedSections !== undefined || focusSections !== undefined || onAskWhy !== undefined;
   const headings: { level: number; anchor: string | null }[] = [];
   let number = 0;
   const body = tree.blocks.map((b, index) => {
@@ -262,12 +269,22 @@ export default function NotesView({
     }
     const section = [...headings].reverse().find((h) => h.anchor !== null)?.anchor ?? null;
     const changed = headings.some((h) => h.anchor !== null && changedSections?.has(h.anchor));
+    const focused = headings.some((h) => h.anchor !== null && focusSections?.has(h.anchor));
     const askable = onAskWhy !== undefined && b.type !== "heading" && b.type !== "rule";
+    const classes = ["notes-block", changed && "notes-changed", focused && "notes-focus"].filter(Boolean).join(" ");
     return (
       <div
         key={key}
-        className={changed ? "notes-block notes-changed" : "notes-block"}
-        aria-description={changed && b.type !== "heading" ? "Cambiado por el editor en el último mensaje" : undefined}
+        className={classes}
+        aria-description={
+          b.type === "heading"
+            ? undefined
+            : changed
+              ? "Cambiado por el editor en el último mensaje"
+              : focused
+                ? "De aquí sale lo que estás estudiando"
+                : undefined
+        }
       >
         {block(b, key)}
         {askable && (

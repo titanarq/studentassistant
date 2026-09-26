@@ -124,6 +124,7 @@ function QuestionCard({
   notesHref,
   onAnswer,
   onAssess,
+  onFocusAnchors,
 }: {
   number: number;
   question: QuizQuestion;
@@ -133,13 +134,14 @@ function QuestionCard({
   notesHref: string;
   onAnswer: (value: string) => void;
   onAssess: (value: boolean) => void;
+  onFocusAnchors?: (anchors: string[]) => void;
 }) {
   const corrected = phase === "corrected";
   const auto = autoVerdict(question, given);
   const verdict = auto ?? assessed ?? null;
   const name = `pregunta-${question.id}`;
   return (
-    <li className="quiz-question">
+    <li className="quiz-question" onFocus={onFocusAnchors && (() => onFocusAnchors(question.anchors))}>
       <fieldset aria-label={`Pregunta ${number}`}>
         <legend>
           Pregunta {number} <span className="quiz-difficulty">· {DIFFICULTY_LABELS[question.difficulty]}</span>
@@ -201,7 +203,18 @@ function QuestionCard({
                 {question.anchors.map((anchor, index) => (
                   <span key={anchor}>
                     {index > 0 && ", "}
-                    <a href={`${notesHref}#${encodeURIComponent(anchor)}`}>#{anchor}</a>
+                    <a
+                      href={`${notesHref}#${encodeURIComponent(anchor)}`}
+                      onClick={
+                        onFocusAnchors &&
+                        ((event) => {
+                          event.preventDefault();
+                          onFocusAnchors([anchor]);
+                        })
+                      }
+                    >
+                      #{anchor}
+                    </a>
                   </span>
                 ))}
               </p>
@@ -213,7 +226,19 @@ function QuestionCard({
   );
 }
 
-export default function QuizPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
+export interface QuizPageProps {
+  subjectId: string;
+  topicId: string;
+  /**
+   * Shown inside another page (the study screen, #333): no crumbs, no page heading, no stale
+   * note (the host says it) and no generate form (there the student asks the chat for one).
+   */
+  embedded?: boolean;
+  /** The anchors of the question the student is on (focus inside it, or one of its links). */
+  onFocusAnchors?: (anchors: string[]) => void;
+}
+
+export default function QuizPage({ subjectId, topicId, embedded = false, onFocusAnchors }: QuizPageProps) {
   const [topicName, setTopicName] = useState(topicId);
   const [quiz, setQuiz] = useState<ActionResult<StoredQuiz> | null>(null);
   const [history, setHistory] = useState<QuizResult[]>([]);
@@ -290,15 +315,20 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
     if (result.kind === "ok") setHistory((previous) => [...previous, result.value]);
   }
 
+  const Root = embedded ? "div" : "main";
   return (
-    <main className="quiz-page">
-      <p className="crumbs">
-        <a href={base}>← Tema {topicName}</a>
-        <a className="crumbs-home" href="/">
-          Mesa de estudio
-        </a>
-      </p>
-      <h1>Quiz de {topicName}</h1>
+    <Root className="quiz-page">
+      {!embedded && (
+        <>
+          <p className="crumbs">
+            <a href={base}>← Tema {topicName}</a>
+            <a className="crumbs-home" href="/">
+              Mesa de estudio
+            </a>
+          </p>
+          <h1>Quiz de {topicName}</h1>
+        </>
+      )}
       {quiz === null && <p>Cargando el quiz…</p>}
       {quiz !== null && quiz.kind !== "ok" && <p>{describeActionFailure(quiz)}</p>}
       {stored !== null && (
@@ -308,7 +338,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
             {questions.length} preguntas · dificultad {DIFFICULTY_LABELS[stored.difficulty].toLowerCase()}
             {stored.notes_version !== null && ` · de los apuntes v${stored.notes_version}`}
           </p>
-          {stored.stale && (
+          {stored.stale && !embedded && (
             <p className="quiz-warning" role="note">
               {stored.stale_reason ?? "Los apuntes han cambiado desde que se generó este quiz."} Puedes generar
               uno nuevo abajo.
@@ -326,6 +356,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
                 notesHref={`${base}/notes`}
                 onAnswer={(value) => setAnswers((previous) => ({ ...previous, [question.id]: value }))}
                 onAssess={(value) => setAssessed((previous) => ({ ...previous, [question.id]: value }))}
+                onFocusAnchors={onFocusAnchors}
               />
             ))}
           </ol>
@@ -380,7 +411,7 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
           </ul>
         </section>
       )}
-      {quiz !== null && (
+      {quiz !== null && !embedded && (
         <GenerateForm
           subjectId={subjectId}
           topicId={topicId}
@@ -388,6 +419,6 @@ export default function QuizPage({ subjectId, topicId }: { subjectId: string; to
           onGenerated={() => void load()}
         />
       )}
-    </main>
+    </Root>
   );
 }

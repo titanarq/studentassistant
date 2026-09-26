@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import Router from "./Router";
 
@@ -155,4 +155,27 @@ it("renders the practice page at <topic>/practice", () => {
   render(<Router pathname="/subjects/historia/topics/revolucion-industrial/practice" />);
 
   expect(screen.getByRole("heading", { name: "Practicar revolucion-industrial" })).toBeInTheDocument();
+});
+
+it("renders the study screen at <topic>/study", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/study" />);
+
+  expect(screen.getByRole("heading", { name: "Estudiar" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Estudiar" })).toHaveAttribute("aria-current", "page");
+});
+
+it("mounts the Construir · Estudiar switch in the study workspace header", () => {
+  stubFetch();
+
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />);
+
+  const modes = screen.getByRole("navigation", { name: "Modo del tema" });
+  const build = within(modes).getByRole("link", { name: "Construir" });
+  const study = within(modes).getByRole("link", { name: "Estudiar" });
+  expect(build).toHaveAttribute("aria-current", "page");
+  expect(build).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/workspace");
+  expect(study).not.toHaveAttribute("aria-current");
+  expect(study).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/study");
 });

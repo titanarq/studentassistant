@@ -21,10 +21,16 @@ export default function MaterialPreviewPage({
   subjectId,
   topicId,
   name,
+  embedded = false,
 }: {
   subjectId: string;
   topicId: string;
   name: string;
+  /**
+   * Shown inside another page (the study screen, #333): no crumbs, no heading and no stale note
+   * (the host says it).
+   */
+  embedded?: boolean;
 }) {
   const [topicName, setTopicName] = useState(topicId);
   const [text, setText] = useState<ReadResult<string> | null>(null);
@@ -55,24 +61,29 @@ export default function MaterialPreviewPage({
   // "Ejercicios y examen (examen-soluciones)": a kind with several Markdown files names the file too.
   const title = artifact?.title == null ? stem : stem === artifact.kind ? artifact.title : `${artifact.title} (${stem})`;
 
+  const Root = embedded ? "div" : "main";
   return (
-    <main className="material-preview">
-      <p className="crumbs">
-        <a href={topicPath(subjectId, topicId)}>← Tema {topicName}</a>
-        <a className="crumbs-home" href="/">
-          Mesa de estudio
-        </a>
-      </p>
-      <h1>
-        {title} de {topicName}
-      </h1>
+    <Root className="material-preview">
+      {!embedded && (
+        <>
+          <p className="crumbs">
+            <a href={topicPath(subjectId, topicId)}>← Tema {topicName}</a>
+            <a className="crumbs-home" href="/">
+              Mesa de estudio
+            </a>
+          </p>
+          <h1>
+            {title} de {topicName}
+          </h1>
+        </>
+      )}
       <p className="material-description">
         {artifact?.notesVersion != null && `De los apuntes v${artifact.notesVersion} · `}
         <a href={fileUrl(subjectId, topicId, name)} download>
           Descargar {name}
         </a>
       </p>
-      {artifact?.stale && (
+      {!embedded && artifact?.stale && (
         <p role="note" className="material-stale-reason">
           <span className="material-stale">Desactualizado</span>{" "}
           {artifact.staleReason ?? "Los apuntes han cambiado desde que se generó."}
@@ -83,6 +94,6 @@ export default function MaterialPreviewPage({
         <p role="alert">No se pudo cargar el material: {describeFailure(text)}</p>
       )}
       {tree !== null && <NotesView tree={tree} onOpenSource={noSource} />}
-    </main>
+    </Root>
   );
 }
