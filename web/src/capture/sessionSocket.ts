@@ -122,9 +122,11 @@ export interface SessionSocketOptions {
 }
 
 /**
- * One session's socket. Creating it sends `hello` at once: the browser buffers what a connecting
- * socket is given and flushes it in order once the connection opens, which is what makes `hello`
- * the first frame the backend reads. `handshake` says how the negotiation ended and the accessors
+ * One session's socket. Creating it asks for `hello` at once, but a browser socket throws
+ * `InvalidStateError` on a `send()` while it is still connecting (#298), so every frame asked for
+ * before `open` waits in a queue that is flushed, in order, when the connection opens: `hello` is
+ * therefore the first frame the backend reads. A socket that ends before opening drops the queue
+ * and reports the failure through `handshake`. `handshake` says how the negotiation ended and the accessors
  * keep what `hello.ack` fixed; `onEvent` reports the session from then on, and `close()` ends it.
  */
 export class SessionSocket {
@@ -135,6 +137,8 @@ export class SessionSocket {
 
   private readonly socket: WebSocket;
   private readonly onEvent: ((event: SessionSocketEvent) => void) | undefined;
+  /** Frames asked for while the socket was connecting, sent in order on `open`. */
+  private readonly pending: Array<string | Uint8Array<ArrayBuffer>> = [];
   private ack: HelloAck | null = null;
   private version: string | null = null;
   private settled = false;
@@ -150,6 +154,7 @@ export class SessionSocket {
     // v1 server events are all text, so bytes can only be a mistake; asking for an ArrayBuffer
     // keeps that mistake a synchronous report instead of a Blob nobody reads.
     this.socket.binaryType = "arraybuffer";
+    this.socket.addEventListener("open", () => this.onOpen());
     this.socket.addEventListener("message", (event) => this.onMessage(event));
     this.socket.addEventListener("error", (event) => this.onFailure(event));
     this.socket.addEventListener("close", (event) => this.onClosed(event));
@@ -213,8 +218,7 @@ export class SessionSocket {
    * builds them), which only the backend's server STT mode uses.
    */
   sendAudio(frame: Uint8Array<ArrayBuffer>): void {
-    if (!this.canSend()) return;
-    this.socket.send(frame);
+    this.transmit(frame);
   }
 
   /**
@@ -223,6 +227,10 @@ export class SessionSocket {
    */
   close(): void {
     this.shut(NORMAL_CLOSURE);
+  }
+
+  private onOpen(): void {
+    for (const frame of this.pending.splice(0)) this.transmit(frame);
   }
 
   private onMessage(event: MessageEvent): void {
@@ -291,11 +299,13 @@ export class SessionSocket {
       event instanceof ErrorEvent && event.message !== ""
         ? event.message
         : "the session socket failed";
+    this.pending.length = 0;
     this.settle({ kind: "disconnected", problem });
     this.notify({ kind: "failed", problem });
   }
 
   private onClosed(event: CloseEvent): void {
+    this.pending.length = 0;
     this.settle({
       kind: "disconnected",
       problem: `the session socket closed with code ${event.code}`,
@@ -326,18 +336,22 @@ export class SessionSocket {
     this.resolveHandshake(result);
   }
 
-  /** Frames go out while the socket is connecting (buffered) or open, and never after. */
-  private canSend(): boolean {
-    const { readyState } = this.socket;
-    return readyState === this.socket.CONNECTING || readyState === this.socket.OPEN;
+  private send(message: ClientEvent): void {
+    this.transmit(JSON.stringify(message));
   }
 
-  private send(message: ClientEvent): void {
-    if (!this.canSend()) return;
-    this.socket.send(JSON.stringify(message));
+  /**
+   * A frame goes out while the socket is open, waits in `pending` while it connects, and is
+   * dropped once the socket is closing or closed.
+   */
+  private transmit(frame: string | Uint8Array<ArrayBuffer>): void {
+    const { readyState } = this.socket;
+    if (readyState === this.socket.OPEN) this.socket.send(frame);
+    else if (readyState === this.socket.CONNECTING) this.pending.push(frame);
   }
 
   private shut(code: number): void {
+    this.pending.length = 0;
     if (this.socket.readyState === this.socket.CLOSED) return;
     this.socket.close(code);
   }

@@ -329,10 +329,12 @@ describe("WebSocket fake", () => {
     expect(socket).toBe(sockets.sockets[0] as unknown as WebSocket);
   });
 
-  it("buffers what is sent before the handshake and flushes it when the server opens", () => {
+  it("throws on a send before the handshake, like a browser, and opens when the server does", () => {
     const sockets = track(installWebSocketFake());
     const socket = new WebSocket("/ws/sessions/42", "capture.v1");
-    socket.send("early");
+    expect(() => socket.send("early")).toThrow(
+      expect.objectContaining({ name: "InvalidStateError" }) as unknown as Error,
+    );
     expect(sockets.sockets[0].sent).toEqual([]);
 
     let opened = false;
@@ -345,7 +347,8 @@ describe("WebSocket fake", () => {
     expect(sockets.sockets[0].readyState).toBe(FakeWebSocket.OPEN);
     expect(sockets.sockets[0].requestedProtocols).toBe("capture.v1");
     expect(sockets.sockets[0].protocol).toBe("capture.v1");
-    expect(sockets.sockets[0].sentText).toEqual(["early"]);
+    socket.send("late");
+    expect(sockets.sockets[0].sentText).toEqual(["late"]);
 
     sockets.sockets[0].serverOpen();
     expect(sockets.sockets[0].readyState).toBe(FakeWebSocket.OPEN);
