@@ -86,7 +86,12 @@ from studentassistant.sources.web_searcher import WebSearcher
 from studentassistant.sources.web_searcher import (
     default_client_factory as web_search_client_factory,
 )
-from studentassistant.stt import TranscriptPipeline, buffered_provider_from_settings
+from studentassistant.stt import (
+    CommandDetector,
+    TranscriptPipeline,
+    buffered_provider_from_settings,
+    load_grammar,
+)
 from studentassistant.vault import GitSync, Vault
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -130,8 +135,9 @@ def create_app(
     the vault at `vault_settings.path` (default: the configured `[vault]` section) is opened on the
     first request that needs it, so creating an app never touches a vault. `sync` defaults to a
     `GitSync` of that vault. `stt` is the `[stt]` section the session WebSocket follows (default:
-    the configured one). `sources` is the `[sources]` section the PDF upload follows (default: the
-    configured one).
+    the configured one); its voice-command grammar (`commands_path`) is loaded here, so an
+    unreadable or invalid one raises `GrammarError` naming the file before the app serves.
+    `sources` is the `[sources]` section the PDF upload follows (default: the configured one).
 
     The app's lifespan drives that sync: while the app serves, an open vault gets the background
     commit/push loop (`SessionService.startup`), and shutdown stops it and flushes what is pending
@@ -170,6 +176,9 @@ def create_app(
             raise ValueError(
                 f"the recordings directory {recorder.root} is inside the vault {vault_root}"
             )
+    assert stt is not None
+    # The voice-command grammar is loaded here so a bad `[stt] commands_path` fails the build.
+    grammar = load_grammar(stt.commands_path)
     devices = DeviceStore(server.devices_path)
     app = FastAPI(title="Student Assistant", version=__version__, lifespan=_lifespan)
     app.state.server = server
@@ -182,7 +191,6 @@ def create_app(
     app.state.sessions = SessionService(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )
-    assert stt is not None
     app.state.recorder = recorder
     app.state.gateway = SessionGateway(
         app.state.bus,
@@ -195,6 +203,8 @@ def create_app(
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
     # Ending a session waits for the pipeline to write every final published before the end.
     app.state.sessions.add_before_close(lambda _session_id: app.state.transcripts.drain())
+    # Bus transcript events -> `voice.command` / `command` `capture_now` (ADR-0006; the lifespan).
+    app.state.commands = CommandDetector(app.state.bus, grammar)
     # Then the topic digest (`state/digest.md`) is regenerated from the log, `session.ended` in it,
     # its dates in `[observer] digest_timezone`.
     digest_zone = (llm_settings or Settings()).observer.digest_zone()
@@ -319,7 +329,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     observer: ObserverLoop | None = app.state.observer
     transcriber: PageTranscriber | None = app.state.transcriber
     web_searcher: WebSearcher | None = app.state.web_searcher
+    commands: CommandDetector = app.state.commands
     transcripts.start()
+    commands.start()
     if observer is not None:
         observer.start()
     if transcriber is not None:
@@ -331,6 +343,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await transcripts.stop()
+        await commands.stop()
         if transcriber is not None:
             await transcriber.stop()
         pdf_transcriber: ScannedPdfTranscriber | None = app.state.pdf_transcriber
