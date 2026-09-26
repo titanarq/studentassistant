@@ -5,7 +5,16 @@ Thin: the work is `studentassistant.editor.doubts`. Every route opens the vault 
 operation of a topic at a time. Reviewing and answering call the `editor` role through the app's
 `llm_transport`, bound to the topic's cost ledger, and hold the topic's notes lock with "prepárame
 el tema" (`NotesGenerator.claim`), since both write the notes; without a transport they are 503.
-Listing and dismissing never call Claude.
+Listing and dismissing never call Claude. Reviewing and answering hold the lock as a
+`TURN_HOLDER`, since they apply their edits under the short write lock on the latest notes (#325):
+a student save interleaves with them and the editor is re-asked on the new notes.
+
+With an unended session of the topic (#325) the doubts' events go to that live session through
+the bus (`DoubtChat.live`), so the routes work during a session too; an unended session this
+backend does not have active is still `session_open`. An answer or a dismissal is announced on
+the topic's workspace stream (`doubt.resolved`, and `notes.changed` origin `editor` when the notes
+changed), a review's auto-resolutions as `doubts.auto_resolved`; then the chat asks the next doubt
+(`DoubtChat.schedule`).
 
 Errors, as `{"detail": "...", "code"?: "..."}` in Spanish (`server.errors`): an unknown topic or
 doubt 404; a doubt already closed (`doubt_closed`), a topic with an unended session
@@ -50,8 +59,9 @@ from studentassistant.llm import (
 )
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import ApiError, cost_cap_error
-from studentassistant.server.notes_routes import NotesGenerator
+from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
     GitSync,
@@ -136,7 +146,11 @@ def doubts_router() -> APIRouter:
         key = (subject_id, topic_id)
         if key in running:
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
-        if editor and generator is not None and not generator.claim(subject_id, topic_id):
+        if (
+            editor
+            and generator is not None
+            and not generator.claim(subject_id, topic_id, TURN_HOLDER)
+        ):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         running.add(key)
         try:
@@ -157,6 +171,13 @@ def doubts_router() -> APIRouter:
             running.discard(key)
             if editor and generator is not None:
                 generator.release(subject_id, topic_id)
+
+    def doubt_chat(request: Request) -> DoubtChat:
+        chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
+        if chat is None:  # pragma: no cover - the app always has one
+            chat = DoubtChat(request.app.state.sessions, request.app.state.workspace)
+            request.app.state.doubt_chat = chat
+        return chat
 
     def editor_client(generator: NotesGenerator, vault: Vault, s: str, t: str) -> LLMClient:
         return get_client(
@@ -180,9 +201,10 @@ def doubts_router() -> APIRouter:
     ) -> ReviewResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
+        chat = doubt_chat(request)
         async with exclusive(request, subject_id, topic_id, editor=True) as generator:
             assert generator is not None
-            return await review_doubts(
+            result = await review_doubts(
                 vault,
                 subject_id,
                 topic_id,
@@ -190,7 +212,11 @@ def doubts_router() -> APIRouter:
                 sync=sync,
                 host=sessions.host,
                 confirm_over_cap=bool(body and body.confirm_over_cap),
+                live=chat.live(subject_id, topic_id),
             )
+        chat.reviewed(subject_id, topic_id, result)
+        chat.schedule(subject_id, topic_id)
+        return result
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/{pending_id}/answer")
     async def answer(
@@ -202,9 +228,10 @@ def doubts_router() -> APIRouter:
     ) -> ResolutionResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
+        chat = doubt_chat(request)
         async with exclusive(request, subject_id, topic_id, editor=True) as generator:
             assert generator is not None
-            return await answer_doubt(
+            result = await answer_doubt(
                 vault,
                 subject_id,
                 topic_id,
@@ -214,7 +241,11 @@ def doubts_router() -> APIRouter:
                 sync=sync,
                 host=sessions.host,
                 confirm_over_cap=body.confirm_over_cap,
+                live=chat.live(subject_id, topic_id),
             )
+        chat.resolved(subject_id, topic_id, result)
+        chat.schedule(subject_id, topic_id)
+        return result
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/{pending_id}/dismiss")
     async def dismiss(
@@ -222,9 +253,19 @@ def doubts_router() -> APIRouter:
     ) -> ResolutionResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
+        chat = doubt_chat(request)
         async with exclusive(request, subject_id, topic_id, editor=False):
-            return await dismiss_doubt(
-                vault, subject_id, topic_id, pending_id, sync=sync, host=sessions.host
+            result = await dismiss_doubt(
+                vault,
+                subject_id,
+                topic_id,
+                pending_id,
+                sync=sync,
+                host=sessions.host,
+                live=chat.live(subject_id, topic_id),
             )
+        chat.resolved(subject_id, topic_id, result)
+        chat.schedule(subject_id, topic_id)
+        return result
 
     return router

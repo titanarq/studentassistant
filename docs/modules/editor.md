@@ -10,15 +10,15 @@
   subject style guide.
 - Edit loop: chat reply + section-level edit ops, validated, applied, committed with a summary;
   conversation persisted.
-- Doubts resolution: auto-resolve pending items with cited evidence, ask the rest one by one,
-  record decisions.
+- Doubts resolution: auto-resolve pending items with cited evidence, ask the rest one by one
+  (in the workspace chat, #325), record decisions. Doubts never go into the notes.
 - "¿Por qué pusiste esto?": explain a paragraph from its cited sources.
 - Style guide learning per subject; notes versions (git tags) and diffs.
 - Voice tutor (study mode): answer the student's questions about a topic from its notes and
   sources, with the refs; in writing too, for the study screen's question chat, citing sections.
 
 ## Public surface
-What exists today, after issues #30, #61, #68, #63, #64, #69, #70, #65 and #313: the master notes format
+What exists today, after issues #30, #61, #68, #63, #64, #69, #70, #65, #313 and #325: the master notes format
 of ADR-0005, in
 `studentassistant.editor.notes_format` (never calls Claude, never writes or reads the vault
 itself), "prepárame el tema", the first version of the notes, in
@@ -99,6 +99,13 @@ ops in `studentassistant.editor.edits`, the doubts resolution in
   section without anchor, a repeated anchor and a repeated definition. Each message names the
   section anchor and the block (number and opening words) so it can be sent back to the model as
   is. It never patches the notes: the editor is re-asked (ADR-0005).
+- `validate(..., editor_written=True, previous=None)` (#325): a write of the editor (generation,
+  revision turn, doubt answer, a review's auto-resolution; incorporation, #326, reuses it) also
+  reports a `[[?...]]` mark (`has_doubt_mark`) in every block the write adds or changes --
+  **doubts never go into the notes** --, naming the section and block in Spanish. A block whose
+  text is exactly one of `previous`'s (the notes before the write; a multiset, block for block)
+  keeps its legacy marks until it is touched, so old notes stay editable. The student's saves
+  (`direct_edit.py`) are validated without it.
 - `topic_source_resolver(vault, subject_slug, topic_slug) -> SourceExists` -- the
   `source_exists` for a topic, locating `sources/<kind>/<file>` through
   `vault.sources_directory` and `sessions/<id>/transcript.jsonl` through
@@ -159,17 +166,21 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   give the notes their structure and emphasis; the transcript is the student's too) and
   `### Fuentes complementarias` (book, PDF, web: they complement, each cited with its own
   footnote), followed by `DISAGREEMENT_RULE` (a disagreement between sources is never settled
-  silently); the **sources**, each labelled the same way (`STUDENT_LABEL` under the notes pages'
+  silently nor written as both versions: the notes carry the student's notes version and the
+  disagreement is a `contradiction` doubt with the sides as options; no marks, alternative
+  readings or disagreement lists in the notes, #325); the **sources**, each labelled the same way (`STUDENT_LABEL` under the notes pages'
   heading, `SUPPLEMENTARY_LABEL` under the book's and in each PDF and web source) -- each notes and book page as its
   transcription (`sources/<kind>/page-NNN.md`, #50, or a sidecar `transcription` string) plus its
   image (the cropped `page-NNN.page.jpg`, else the still) when `needs_image(transcription, meta)`:
   no transcription, a scheme (mermaid block, nested list, arrow), an uncertain word `[[?...]]` or a
-  sidecar `transcription_confidence` below 0.8; each stored PDF as `sources.pdf_document_block`;
+  sidecar `transcription_confidence` below 0.8 (a source may keep marks; only the notes may not);
+  each stored PDF as `sources.pdf_document_block`;
   each web snapshot as text -- ending in a cache breakpoint; then the **transcript** from the
   `transcript.final` events grouped by the observer's outline (`load_observer_snapshot(...,
   write_back=False)`: sections in outline order with their linked pages and concepts, unassigned
   segments last, each line `[<session> t=HH:MM:SS-HH:MM:SS] text`), the observer's notes, the
-  **pending items** (`kind`, `text`, refs; open ones as doubts not to be resolved by guessing,
+  **pending items** (`kind`, `text`, refs; open ones as doubts not to be resolved by guessing
+  nor marked in the notes,
   closed ones labelled by `status` -- resolved by the student, auto-resolved by the observer or
   dismissed, which is no decision -- with their `resolution` when there is one), the digest, the current `apuntes.md` (keep its anchors) and the
   instruction, ending in a second breakpoint so re-asks read it all from the cache. At most
@@ -181,9 +192,16 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   `record_content` is the message with every image/document replaced by
   `{"type": "image_ref"|"document_ref", "source_id": ...}`.
 - **Answer**: plain text, the whole of `notes/apuntes.md` (`notes_text` drops a code fence around
-  it). It is validated (`validate(text, mode, topic_source_resolver(...))`); a `max_tokens` stop or
-  an empty answer is an error too. Failures are re-asked with the Spanish error list, at most
-  `MAX_REASKS` (2) times, the conversation growing by the answer and the re-ask.
+  it), then optionally one call of the strict tool `report_doubts` (`DOUBTS_TOOL`, `DoubtsReport`:
+  `doubts`, a list of `EditorDoubt`, below), offered with `tool_choice: auto`. It is validated
+  (`validate(text, mode, topic_source_resolver(...), editor_written=True, previous=<the notes
+  before>)`, plus `editor_doubt_errors`); a `max_tokens` stop or an empty answer is an error too.
+  Failures are re-asked with the Spanish error list (as the `tool_result` of a tool call, when
+  there was one), at most `MAX_REASKS` (2) times, the conversation growing by the answer and the
+  re-ask.
+- **Doubts** (#325): with a valid version, the reported doubts become pending items with their
+  questions (`doubts.raise_doubts`, below; `live` is the server's sink into the topic's live
+  session); their ids are the result's `doubts`. Failing to record them is only a `warning`.
 - **Valid**: `vault.write_notes` (removing any draft), `GitSync.checkpoint("Apuntes vN de
   <subject>/<topic>: <title>")` and `GitSync.create_notes_tag` -- `<subject>/<topic>/apuntes-vN`,
   `N` one past the highest, so a regeneration is the next version.
@@ -197,7 +215,7 @@ server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink 
   it is the result's `warning`. A draft is not searched.
 - `GenerationResult` (also the `notes.generated` payload): `subject`, `topic`, `draft`, `path`
   (vault-relative), `version`, `tag`, `commit`, `attempts`, `errors`, `warning`, `contradictions`,
-  `model`, `revision` (of `apuntes.md` after it; for a draft, of the notes left as they were).
+  `doubts`, `model`, `revision` (of `apuntes.md` after it; for a draft, of the notes left as they were).
 - **Conversation** `conversations/editor.jsonl`: `context` (model, prompt hash, `detail`: reason
   `generate`, fidelity mode, cited-source ids, sessions, images, documents, omitted, whether a
   previous version and a digest were given), each `user` turn (record form), each `assistant`
@@ -257,7 +275,8 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
 `conversations/editor.jsonl` (`context` with `reason` `doubts_review`/`doubt_answer`, `user`,
 `assistant`, `validation`, then `pending.reviewed` or `pending.resolved`).
 - `await review_doubts(vault, subject, topic, *, client, sync, host=None, digest=None,
-  confirm_over_cap=False, ...) -> ReviewResult` (tool `resolve_doubts`, `DoubtsReviewOutput`: one
+  confirm_over_cap=False, ..., pending_ids=None, live=None) -> ReviewResult` (`pending_ids`: only
+  those open doubts, as the chat reviews the ones it is about to ask) (tool `resolve_doubts`, `DoubtsReviewOutput`: one
   `DoubtDecision` per open doubt plus `footnotes`). `auto_resolve` needs a `resolution` and at
   least one `Evidence` (`source_id` from the catalogue, or `sessions/<id>#t=HH:MM:SS-HH:MM:SS` of a
   topic session, and a `quote`) and may carry `edits`; `ask` needs a `question` and 1-3
@@ -267,8 +286,10 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   sent back (a `tool_result` error with the Spanish list) at most `MAX_REASKS` (2) times; past that
   nothing is auto-resolved, every doubt becomes a question (the editor's own question when it was
   a valid one) and the result has a Spanish `warning`. No open doubt: no call. No notes yet:
-  `NotesMissingError`. `ReviewResult`: `auto_resolved`, `asked` (ids), `notes_changed`,
-  `session_id`, `commit`, `attempts`, `warning`, `model`.
+  `NotesMissingError`. `ReviewResult`: `auto_resolved`, `asked` (ids), `notes_changed`, `summary`
+  (one Spanish line reporting the auto-resolutions, "He resuelto con tus fuentes 2 dudas: ...",
+  for the chat), `revision`, `session_id`, `commit`, `attempts`, `warning`, `model`. The edits are
+  applied under the topic's write lock on the latest notes, as the answer's are (below).
 - `await answer_doubt(vault, subject, topic, pending_id, answer, *, client, sync, ...) ->
   ResolutionResult` (tool `apply_decision`, `DecisionOutput`: `resolution`, `edits`,
   `footnotes`). `DoubtAnswer`: `suggestion` (1-based, into the latest question's suggestions),
@@ -279,8 +300,12 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   `InvalidAnswerError` before any call. The edits are checked like the review's and re-asked; past
   the re-asks the decision is still recorded (resolution = the student's decision), the notes
   untouched, with a `warning`. Without notes yet no call is made. The item's `resolution` is the
-  editor's one-sentence summary.
-- `await dismiss_doubt(vault, subject, topic, pending_id, *, sync, host=None) ->
+  editor's one-sentence summary. **On the latest notes** (#325): no lock is held across the call;
+  the edits are applied under the short per-topic write lock (`notes_lock`) only when the notes
+  are still those the block map was built from, else the editor is re-asked with the new block
+  map (`NOTES_CHANGED_NOTE`, counting against `MAX_REASKS`), like a revision turn. `live=None` as
+  for the review. `ResolutionResult` carries the notes' `revision`.
+- `await dismiss_doubt(vault, subject, topic, pending_id, *, sync, host=None, live=None) ->
   ResolutionResult`: closed as `dismissed`, no call.
 - `list_doubts(vault, subject, topic) -> DoubtsQueue` (blocking, reads only): `open_count`,
   `current` (the first open doubt: the one to ask next, one at a time) and `items`, each a `Doubt`
@@ -293,12 +318,18 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   whose payload is the `DoubtOutcome` (`pending_id`, `status`, `resolution`, `evidence`, `answer`,
   `suggestion`, `chosen_source`, `discarded`, `keep_discarded`, `notes_changed`, `warning`); a
   question is `PENDING_QUESTION_KIND = "pending.question"` (origin `editor`, payload the
-  `DoubtQuestion`). They go to a **review session**: a session of the topic started and ended at
-  once for them (`vault.start_session(..., kind="review")`/`end_session`, no transcript, no
-  lifecycle events), so they fold after every study session before it; its `kind` keeps it out
-  of the topic's study sessions (#191): the session list labels it «Revisión de dudas», and the
-  topic list's `last_session_at_ms` and the topic card's counts leave it out. While the topic has an unended session nothing is sent or written
-  (`OpenSessionError`), since that session's later events would fold before the review's. Then
+  `DoubtQuestion`; `in_chat: true` when it is the question asked in the workspace chat). Without
+  an unended session of the topic they go to a **review session**: a session of the topic started
+  and ended at once for them (`vault.start_session(..., kind="review")`/`end_session`, no
+  transcript, no lifecycle events), so they fold after every study session before it; its `kind`
+  keeps it out of the topic's study sessions (#191): the session list labels it «Revisión de
+  dudas», and the topic list's `last_session_at_ms` and the topic card's counts leave it out.
+  **With an unended session** (#325) they go to **that live session** through `live`
+  (`LiveSink`: `async (kind, origin, payload) -> session_id`, the server's publish on the session
+  bus, so the live observer folds them too and their `seq` follows the session's); a review
+  session there would fold before the session's later events. Without `live`, or when it cannot
+  reach the session (not active on this backend), it is `OpenSessionError` as before, checked
+  before any call; a session that ended in between gets a review session. Then
   `review/pending.yaml` and the snapshot are regenerated (`load_observer_snapshot`), and the notes
   (`vault.write_notes`, when edited) and the events are committed with a Spanish summary
   (`Dudas de <s>/<t> revisadas: ...`, `Duda resuelta en ...`, `Duda descartada en ...`); no notes
@@ -306,6 +337,32 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
 - Errors (`DoubtError`, Spanish messages): `UnknownDoubtError`, `DoubtClosedError`,
   `InvalidAnswerError`, `OpenSessionError`, `NotesMissingError`; plus the llm errors as in
   `generate_notes`, with nothing written.
+- **Doubts out of an editor write** (#325): `EditorDoubt` (`kind` -- a `PendingKind` --, `text`,
+  `question`, `suggestions` 1-3, `options` (`SourceOption`s; a `contradiction` needs two distinct
+  citable sources), `refs` (catalogue ids or transcript spans)) is what a revision turn
+  (`EditsOutput.doubts`) and a generation (`report_doubts`) report instead of writing a doubt into
+  the notes; `editor_doubt_errors(doubts, assembled)` checks them (Spanish, re-asked; at most
+  `MAX_EDITOR_DOUBTS` = 10). `await raise_doubts(vault, subject, topic, doubts, *, sync, host=None,
+  live=None) -> ids` writes each as an `observer.state_op` `add_pending` (origin `editor`,
+  `pending_id` `duda-<hex>` or `contradiccion-<hex>`, `source_refs` its refs and options; the fold
+  merges one that duplicates an open item into it, `observer.pending`) plus a `pending.question`
+  not asked yet, in the live session or a review session, with one commit.
+- **One at a time in the chat** (#325): `ask_plan(vault, subject, topic) -> AskPlan` (blocking,
+  reads only): `asked` (an open doubt asked in the chat, `in_chat`, not answered yet: nothing else
+  is asked meanwhile), `to_review` (relevant open doubts with no question yet) and `to_ask`
+  (relevant open doubts with a question, not asked), in the queue's order. Relevant: the item's
+  refs (its captures' pages -- `inputs.capture_pages` --, its sources, its segments' sessions)
+  overlap the sources the current notes cite, or it has none; an item whose pages and sources are
+  all set aside by capture triage (#324) is never asked; without notes nothing is asked. `await
+  ask_in_chat(vault, subject, topic, pending_id, *, sync, host=None, live=None) -> AskedDoubt`
+  writes the item's latest question again with `in_chat: true` (a generic one when it has none);
+  `AskedDoubt` (`pending_id`, `question`, `suggestions`, `options`, `refs`, `session_id`,
+  `commit`) is the `doubt.asked` payload. The server's `doubt_chat.py` drives it.
+- `doubt_chat_turns(vault, subject, topic) -> [DoubtChatTurn]` (blocking, reads only): every
+  doubt asked in the chat, oldest first (`time` from its session's start plus the event's `t`),
+  with `pending_id`, `kind`, `question`, `suggestions`, `options`, `refs`, `status`, `resolution`,
+  `answer` (the suggestion, source or words the student gave), `notes_changed`, `resolved_time`;
+  `chat_history` shows them as turns of kind `doubt`.
 - Limitation: a student's answer is not a source of the catalogue, so the edits it leads to cite
   the sources the doubt is about (the page with the illegible word); an explanation found in no
   source needs `[^ia]` in `ampliado` or stays out of the notes in `estricto`.
@@ -315,8 +372,9 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
 ### Contradictions between sources -- `contradictions.py`
 The editor never chooses silently between two sources that disagree (1769 in the notes, 1765 in
 the book): the `editor_generate` and `editor_revise` prompts tell it to write the version of the
-student's notes and the other one, each cited, and the disagreement is raised as a
-`contradiction` pending doubt the student settles through the doubts flow.
+student's notes (never both versions, #325) and to report the disagreement as a `contradiction`
+doubt with the sides as options (`EditorDoubt`), which the student settles in the chat. This
+module's separate search after a generation still runs as below.
 - `await detect_contradictions(vault, subject, topic, *, client, sync, host=None, digest=None,
   confirm_over_cap=False, clock=..., max_page_images=20, max_attachment_bytes=24 MiB) ->
   ContradictionsResult`: role `editor`, prompt `editor_contradictions`, over `assemble_input` with
@@ -377,8 +435,12 @@ mode, and the student's message.
   an instruction looks general -- "me gustan las tablas para comparar", "siempre un ejemplo" --:
   rules proposed for the subject's style guide, **not written**; the reply asks the student) and
   `confirmed_style_rules` (a rule proposed in an earlier turn and still pending that the student
-  confirms in the chat: appended with `style_guide.append_rules`)). No tool call: a chat-only
-  turn, nothing written but the conversation.
+  confirms in the chat: appended with `style_guide.append_rules`), `doubts` (#325: the
+  `EditorDoubt`s the change leaves unresolved, never written into the notes)). No tool call: a
+  chat-only turn, nothing written but the conversation. After an applied change its doubts are
+  recorded with `doubts.raise_doubts` (`live`, `host`: `revise_notes`' parameters; the server
+  passes its sink into the topic's live session); their ids are the result's `doubts`, and a
+  failure to record them is a `warning`, the change kept.
 - **Spoken requests** (#315): `request` (`ChatRequestRef`: `request_id`, `summary`, `session_id`,
   `segment_ids`, `t_start_ms`, `t_end_ms`, `text`) is the `assistant.request` the turn answers
   (the server's `assistant_requests.py` passes it, with the raw `text` as `message`). The turn is
@@ -387,7 +449,8 @@ mode, and the student's message.
   "Estudiante (en voz alta, transcrito): ...". `turn_id` is the caller's id of the turn (the
   workspace stream's), stored as given.
 - **Checks**: the ops must apply (`apply_edits`) and the edited notes must pass `validate` in the
-  mode the turn leaves (so "no inventes" must also remove every `[^ia]` block); a `summary` is
+  mode the turn leaves, with `editor_written=True` against the notes before (no `[[?...]]` in a
+  block it changes), the `doubts` must pass `editor_doubt_errors` (so "no inventes" must also remove every `[^ia]` block); a `summary` is
   required when something is applied, at most 5 proposed and 5 confirmed style rules of 300
   characters, and a confirmed rule must be a pending proposal of an earlier turn. A failure is sent back as a `tool_result`
   error with the Spanish list, at most `MAX_REASKS` (2) times, and `on_reply("reply.restart",
@@ -400,6 +463,7 @@ mode, and the student's message.
   `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`, `summary`, `ops`,
   `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added to the guide:
   the confirmed ones), `proposed_style_rules` (proposed, minus those the guide has), `notes_changed`,
+  `doubts` (pending ids raised),
   `changed_sections` (anchors the ops touched; a new section's `anchor`), `diff` (unified diff of
   `apuntes.md`), `notes` (the new text when changed), `paths` (vault-relative files the commit
   changed), `commit`, `revision` (of the notes after the turn, `None` while there are none),
@@ -417,7 +481,11 @@ mode, and the student's message.
   typed), `transcript` (its `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`,
   `summary` (the applied change's), `changed_sections`, `commit`, `undone`, `warning`, `refs`,
   `proposed_style_rules` -- the turn's proposals the subject's guide does not have yet, also shown
-  to the editor in the conversation so far) and `can_undo`. The explanations are also in the
+  to the editor in the conversation so far) and `can_undo`. Since #325 also, in time order, turns
+  of kind `doubt` (a doubt asked in the chat, `doubt_chat_turns`: `pending_id`, `question` --
+  also the `reply` --, `suggestions`, `options`, `doubt_refs`, `status`, `resolution`, `answer`;
+  `applied` when its answer changed the notes) and `doubts_resolved` (a review's short line of
+  auto-resolved doubts, from its `pending.reviewed` record's `summary`: `reply`, `pending_ids`). The explanations are also in the
   conversation the editor is given on a turn, and so are the student's own edits (the
   `student_edit` records of `direct_edit.py`, as "El estudiante editó él mismo los apuntes
   (#anchors)" plus the diff, cut at `STUDENT_EDIT_DIFF_CHARS`); `chat_history` leaves those out.

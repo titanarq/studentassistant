@@ -196,9 +196,11 @@ def test_the_prompts_say_the_students_notes_lead_and_no_disagreement_is_settled_
     generate = load_prompt("editor_generate").content
     assert "give\n  the structure and the emphasis" in generate
     assert "cited with its own footnote" in generate
-    assert "never settle it\n  silently" in generate
+    assert "never settle it\n  silently and never write both versions" in generate
+    assert "report a `contradiction` doubt" in generate
     revise = load_prompt("editor_revise").content
-    assert "supplementary" in revise and "never settle it silently" in revise
+    assert "supplementary" in revise and "never\n  settle it silently" in revise
+    assert "report a `contradiction` doubt" in revise
 
 
 # -- detection --------------------------------------------------------------------------------

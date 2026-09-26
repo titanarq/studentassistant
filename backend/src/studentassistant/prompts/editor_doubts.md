@@ -55,7 +55,9 @@ table cites its source with a footnote reference, and every footnote is defined.
 the notes already define; for a source they do not cite yet, add a footnote in `footnotes`
 (`label`, `definition` copied from the catalogue, e.g. `[Apuntes, página 2](../sources/notes/page-002.jpg)`).
 Follow the fidelity mode: in `estricto` never use `[^ia]`. Keep the student's wording elsewhere:
-change only what the decision requires.
+change only what the decision requires. Doubts never go into the notes: a text you write carries
+no `[[?...]]` mark, no alternative readings and no list of disagreements (remove the mark of a
+block you change); the validator rejects them.
 
 Write every text the student reads (resolutions, questions, suggestions, notes) in Spanish. If a
 tool call is sent back with errors, call the tool again with the whole corrected answer.

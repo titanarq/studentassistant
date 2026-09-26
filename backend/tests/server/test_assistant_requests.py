@@ -19,7 +19,13 @@ from fastapi.testclient import TestClient
 
 from generate_topic import valid_notes
 from revise_topic import BOOK_FOOTNOTE, ReviseTopic, make_revise_topic
-from studentassistant.config import LlmSettings, ObserverSettings, ServerSettings, Settings
+from studentassistant.config import (
+    EditorSettings,
+    LlmSettings,
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+)
 from studentassistant.editor.notes_format import notes_revision
 from studentassistant.editor.revise import EDIT_TOOL
 from studentassistant.llm import FakeClaude
@@ -51,9 +57,12 @@ def make_app(
             codes=codes,
             vault=tmp_vault,
             llm_transport=transport,
-            # The observer stays off, so every scripted reply is the editor's.
+            # The observer stays off, so every scripted reply is the editor's; so does the
+            # doubts chat (#325, `test_doubt_chat.py`), which would review the topic's doubts.
             llm_settings=Settings(
-                observer=ObserverSettings(enabled=False), llm=llm or LlmSettings()
+                observer=ObserverSettings(enabled=False),
+                llm=llm or LlmSettings(),
+                editor=EditorSettings(doubts_in_chat=False),
             ),
         )
 

@@ -91,9 +91,12 @@ SUPPLEMENTARY_LABEL = (
     " salga de aquí se cita con su propia nota al pie."
 )
 DISAGREEMENT_RULE = (
-    "Si dos fuentes no coinciden en un dato (una fecha, una cifra, una definición), no elijas una"
-    " en silencio: escribe la versión de los apuntes del estudiante y la de la otra fuente, cada"
-    " una citada a la suya."
+    "Si dos fuentes no coinciden en un dato (una fecha, una cifra, una definición), no escribas"
+    " las dos versiones ni elijas en silencio: escribe la de los apuntes del estudiante, citada a"
+    " la suya, y comunícalo como duda de tipo `contradiction` con una opción por fuente (lo que"
+    " dice cada una); si ninguna es de los apuntes del estudiante, escribe la mejor apoyada. En"
+    " los apuntes nunca van dudas: ni marcas `[[?…]]`, ni lecturas alternativas, ni listas de"
+    " discrepancias."
 )
 
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
@@ -216,6 +219,12 @@ def _read_log(vault: Vault, subject_slug: str, topic_slug: str) -> _Log:
     return log
 
 
+def capture_pages(vault: Vault, subject_slug: str, topic_slug: str) -> dict[str, str]:
+    """Each stored capture's page, as a topic-relative source id (`capture_id` ->
+    `sources/notes/page-003.jpg`), from the topic's `capture.stored` events; blocking."""
+    return dict(_read_log(vault, subject_slug, topic_slug).capture_pages)
+
+
 def _render_transcript(state: TopicState, log: _Log) -> str:
     """The transcript grouped by the observer's outline, unassigned segments last."""
     by_section: dict[str | None, list[_Segment]] = {}
@@ -299,7 +308,10 @@ def _render_pending(state: TopicState, log: _Log, set_aside: frozenset[str] = fr
     if not open_items and not closed:
         lines.append("(No hay dudas registradas.)")
     if open_items:
-        lines.append("Abiertas (no las resuelvas tú; conserva lo que no esté claro marcado):")
+        lines.append(
+            "Abiertas (no las resuelvas adivinando: escribe lo que apoyan las fuentes, sin marcas"
+            " de duda, o deja fuera lo que no esté claro; ya se le preguntarán al estudiante):"
+        )
         lines.extend(f"- {item.id} [{item.kind}] {item.text}{refs(item)}" for item in open_items)
         lines.append("")
     if closed:

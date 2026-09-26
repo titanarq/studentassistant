@@ -70,6 +70,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from studentassistant.editor.doubts import (
+    PENDING_REVIEWED_RECORD,
+    EditorDoubt,
+    LiveSink,
+    SourceOption,
+    doubt_chat_turns,
+    editor_doubt_errors,
+    raise_doubts,
+)
 from studentassistant.editor.edits import (
     EditError,
     EditOp,
@@ -152,6 +161,9 @@ ReplySink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 REPLY_DELTA = "reply.delta"
 REPLY_RESTART = "reply.restart"
+DOUBTS_NOT_RECORDED = (
+    "El cambio está aplicado, pero no se han podido guardar las dudas que ha encontrado el editor."
+)
 
 
 def _utc_now() -> datetime:
@@ -210,6 +222,11 @@ class EditsOutput(_Strict):
         description="Rules proposed in an earlier turn that the student now confirms, copied"
         " exactly.",
     )
+    doubts: list[EditorDoubt] = Field(
+        default_factory=list,
+        description="Every point this change leaves unresolved (an illegible word, sources that"
+        " disagree, something missing): never written into the notes, asked in the chat.",
+    )
 
 
 TurnOrigin = Literal["typed", "voice"]
@@ -257,6 +274,9 @@ class RevisionResult(_Strict):
         " the student confirms them.",
     )
     notes_changed: bool = False
+    doubts: list[str] = Field(
+        default_factory=list, description="The pending ids of the doubts the turn raised."
+    )
     changed_sections: list[str] = Field(default_factory=list)
     diff: str = Field(default="", description="Unified diff of notes/apuntes.md.")
     notes: str | None = Field(default=None, description="The new notes, when they changed.")
@@ -310,10 +330,16 @@ class ChatTurn(_Strict):
     `origin` is `voice` for a turn that answers a spoken request: `request_summary` is then the
     short line of what was asked and `transcript` the span it came from (both `None` when typed).
     `summary` stays the applied change's summary.
+
+    `doubt` is a doubt the chat asked (#325): `pending_id`, `question` (also the `reply`),
+    `suggestions`, `options`, `refs` (the sources it is about), `status` (`open` until answered)
+    and, once closed, `resolution` and `answer`. `doubts_resolved` is the short line reporting
+    the doubts the editor settled from the sources itself (its `reply`), with their ids in
+    `pending_ids`.
     """
 
     time: datetime
-    kind: Literal["revise", "explain", "student_edit"] = "revise"
+    kind: Literal["revise", "explain", "student_edit", "doubt", "doubts_resolved"] = "revise"
     turn_id: str | None = None
     origin: TurnOrigin = "typed"
     request_summary: str | None = None
@@ -331,6 +357,19 @@ class ChatTurn(_Strict):
         default_factory=list,
         description="The turn's proposed style rules the subject's guide does not have yet.",
     )
+    pending_id: str | None = None
+    question: str | None = None
+    suggestions: list[str] = Field(default_factory=list)
+    options: list[SourceOption] = Field(default_factory=list)
+    doubt_refs: list[str] = Field(
+        default_factory=list, description="`doubt`: the sources the doubt is about."
+    )
+    status: str | None = Field(
+        default=None, description="`doubt`: open, resolved, auto_resolved or dismissed."
+    )
+    resolution: str | None = None
+    answer: str | None = Field(default=None, description="`doubt`: what the student answered.")
+    pending_ids: list[str] = Field(default_factory=list)
 
 
 class _ExplanationView(BaseModel):
@@ -425,6 +464,20 @@ def _read_turns(
                 )
             )
             continue
+        if record.kind == PENDING_REVIEWED_RECORD and record.detail:
+            line = record.detail.get("summary")
+            ids = record.detail.get("auto_resolved")
+            if isinstance(line, str) and line and isinstance(ids, list) and ids:
+                turns.append(
+                    ChatTurn(
+                        time=record.time,
+                        kind="doubts_resolved",
+                        message="",
+                        reply=line,
+                        pending_ids=[str(i) for i in ids],
+                    )
+                )
+            continue
         if record.kind != REVISION_RECORD or not record.detail:
             continue
         try:
@@ -484,6 +537,26 @@ def chat_history(vault: Vault, subject_slug: str, topic_slug: str) -> ChatHistor
         SubjectNotFoundError, TopicNotFoundError, ...: the vault's errors for an unknown topic.
     """
     turns = _read_turns(vault, subject_slug, topic_slug)
+    doubts = [
+        ChatTurn(
+            time=turn.time,
+            kind="doubt",
+            message="",
+            reply=turn.question,
+            pending_id=turn.pending_id,
+            question=turn.question,
+            suggestions=turn.suggestions,
+            options=turn.options,
+            doubt_refs=turn.refs,
+            status=turn.status,
+            resolution=turn.resolution,
+            answer=turn.answer,
+            applied=turn.notes_changed,
+        )
+        for turn in doubt_chat_turns(vault, subject_slug, topic_slug)
+    ]
+    if doubts:
+        turns = sorted([*turns, *doubts], key=lambda turn: turn.time)
     return ChatHistory(
         subject=subject_slug,
         topic=topic_slug,
@@ -516,6 +589,10 @@ def _history_text(turns: list[ChatTurn]) -> str:
             if len(diff) > STUDENT_EDIT_DIFF_CHARS:
                 diff = diff[:STUDENT_EDIT_DIFF_CHARS].rstrip() + "\n…"
             lines.append(diff.rstrip() or "(sin diferencias)")
+            lines.append("")
+            continue
+        if turn.kind == "doubts_resolved":
+            lines.append(f"[{turn.reply}]")
             lines.append("")
             continue
         said = " (en voz alta, transcrito)" if turn.origin == "voice" else ""
@@ -643,13 +720,14 @@ def _check(
                 " `confirmed_style_rules` copia exactamente una regla que propusiste en un turno"
                 " anterior; una regla nueva va en `proposed_style_rules`."
             )
+    errors.extend(editor_doubt_errors(value.doubts, assembled))
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
         return [*errors, *error.errors], None
     mode: FidelityMode = value.fidelity_mode or assembled.fidelity_mode
     resolver = topic_source_resolver(vault, assembled.subject_slug, assembled.topic_slug)
-    errors.extend(validate(edited, mode, resolver))
+    errors.extend(validate(edited, mode, resolver, editor_written=True, previous=notes))
     return errors, edited
 
 
@@ -766,11 +844,18 @@ async def revise_notes(
     max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
     request: ChatRequestRef | None = None,
     turn_id: str | None = None,
+    live: LiveSink | None = None,
+    host: str | None = None,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
 
     `request` is the spoken request the turn answers (`message` is then its raw `text`): the turn
     is stored with `origin` `voice` and that reference. `turn_id` is stored as given.
+
+    The `doubts` the applied change reports become pending items with their questions
+    (`doubts.raise_doubts`: in the topic's live session through `live` when it has an unended
+    one, else a review session); their ids are the result's `doubts`. A failure to record them
+    never loses the applied change: it is logged and the result's `warning` says so.
 
     Raises:
         InvalidMessageError: an empty or too long message; nothing sent.
@@ -943,6 +1028,18 @@ async def revise_notes(
                 "commit": commit,
             }
         )
+    if value is not None and not errors and value.doubts:
+        try:
+            raised = await raise_doubts(
+                vault, subject_slug, topic_slug, value.doubts, sync=sync, host=host, live=live
+            )
+        except Exception:
+            logger.exception(
+                "could not record the doubts of a turn of %s/%s", subject_slug, topic_slug
+            )
+            result = result.model_copy(update={"warning": DOUBTS_NOT_RECORDED})
+        else:
+            result = result.model_copy(update={"doubts": raised})
     if result.notes_changed and result.notes is not None:
         revision: str | None = notes_revision(result.notes)
     else:

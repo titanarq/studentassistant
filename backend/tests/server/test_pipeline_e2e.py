@@ -22,6 +22,7 @@ import yaml
 from fastapi import FastAPI
 
 from studentassistant.config import (
+    EditorSettings,
     ObserverSettings,
     ServerSettings,
     Settings,
@@ -135,7 +136,11 @@ def test_a_replayed_session_becomes_pushed_master_notes(
         stt=SttSettings(mode="client", provider="web-speech", language="es"),
         llm_transport=claude,
         # The request detector (#314) would share the observer fake's script.
-        llm_settings=Settings(observer=ObserverSettings(request_detection="off")),
+        # The doubts chat (#325) is left out: it would review the observer's doubts too.
+        llm_settings=Settings(
+            observer=ObserverSettings(request_detection="off"),
+            editor=EditorSettings(doubts_in_chat=False),
+        ),
     )
 
     async def main() -> tuple[ReplayResult, int, dict[str, object]]:

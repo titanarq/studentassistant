@@ -598,6 +598,10 @@ class EditorSettings(BaseModel):
     # The role (`[llm.roles.<role>]`) the study screen's written question chat (#334) uses:
     # `editor` (Opus, faithful to the notes) by default; `observer` (Sonnet) to compare.
     study_chat_role: StudyChatRole = "editor"
+    # Doubts asked in the workspace chat one at a time (#325, `server/doubt_chat.py`): after each
+    # editor write the next open doubt is asked (the unreviewed ones first reviewed by the editor,
+    # an Opus call). Off: nothing is asked in the chat; the doubts API still works.
+    doubts_in_chat: bool = True
 
 
 class ObserverSettings(BaseModel):
