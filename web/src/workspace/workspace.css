@@ -272,6 +272,17 @@
   padding: 0;
 }
 
+/* #461: the Captura tab already names it; the start step's «Capturar» heading stays for screen
+   readers only. */
+.workspace .capture-start h2 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .workspace .capture-header h1 {
   font-size: var(--step-1);
 }
