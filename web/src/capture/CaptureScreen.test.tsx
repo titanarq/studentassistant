@@ -572,44 +572,95 @@ describe("a long session on a laptop", () => {
     expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
   });
 
-  it("says transcription may have paused while the tab was hidden, until the next final", async () => {
+});
+
+describe("a hidden tab pauses the capture (#425)", () => {
+  function buttons(): string[] {
+    return frames()
+      .filter((frame) => frame.type === "button")
+      .map((frame) => String(frame.button));
+  }
+
+  it("stops the camera and the recognizer, says pause and shows the paused state", async () => {
     renderScreen();
     await open();
-    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
+    expect(screen.queryByRole("status", { name: "Captura en pausa" })).toBeNull();
+    const recognition = fakes.recognitions[0];
 
     await act(async () => {
       restores.push(setVisibility("hidden"));
     });
-    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
+
+    expect(buttons()).toEqual(["pause"]);
+    expect(fakes.videoTrack.readyState).toBe("ended");
+    expect(recognition.abortCount + recognition.stopCount).toBeGreaterThan(0);
+    expect(screen.getByRole("status", { name: "Captura en pausa" })).toHaveTextContent(
+      "Captura en pausa: la pestaña está oculta",
+    );
+    expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent(
+      "La cámara no está en marcha.",
+    );
+    // The socket stays open: the reconnect logic of #411 is not disturbed.
+    expect(socket().closeCalls).toEqual([]);
+  });
+
+  it("says resume and starts the camera and the recognizer again when the tab is back", async () => {
+    renderScreen();
+    await open();
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+
     await act(async () => {
       restores.push(setVisibility("visible"));
     });
 
-    expect(screen.getByRole("status", { name: "Aviso de pestaña oculta" })).toHaveTextContent(
-      "la transcripción puede haberse pausado",
+    expect(buttons()).toEqual(["pause", "resume"]);
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent(
+        "La cámara está en marcha.",
+      ),
     );
-
-    await push({
-      type: "transcript.partial",
-      segment_id: "seg-1",
-      session_start_ms: 1000,
-      session_end_ms: 2500,
-      language: "es",
-      text: "la clorofila",
-    });
-    expect(screen.getByRole("status", { name: "Aviso de pestaña oculta" })).toBeInTheDocument();
-
-    await push({
-      type: "transcript.final",
-      segment_id: "seg-1",
-      session_start_ms: 1000,
-      session_end_ms: 2500,
-      language: "es",
-      text: "la clorofila absorbe luz",
-    });
-    expect(screen.queryByRole("status", { name: "Aviso de pestaña oculta" })).toBeNull();
-    // The session itself was never touched.
+    expect(fakes.devices.getUserMediaCalls.filter((call) => call.video)).toHaveLength(2);
+    await waitFor(() => expect(fakes.recognitions).toHaveLength(2));
+    expect(fakes.recognitions[1].startCount).toBe(1);
+    expect(screen.queryByRole("status", { name: "Captura en pausa" })).toBeNull();
     expect(socket().closeCalls).toEqual([]);
+  });
+
+  it("stops the audio stream in server mode and starts it again", async () => {
+    renderScreen();
+    await open("server");
+    expect(fakes.workletNodes).toHaveLength(1);
+
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+    expect(buttons()).toEqual(["pause"]);
+    expect(fakes.audioTrack.readyState).toBe("ended");
+
+    await act(async () => {
+      restores.push(setVisibility("visible"));
+    });
+    expect(buttons()).toEqual(["pause", "resume"]);
+    await waitFor(() => expect(fakes.workletNodes).toHaveLength(2));
+    expect(fakes.recognitions).toHaveLength(0);
+  });
+
+  it("says the session ended for inactivity when the backend ended it while nobody sent", async () => {
+    renderScreen();
+    await open();
+
+    await act(async () => {
+      socket().serverClose(4404, "session s ended: no capture client was sending (idle)");
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "La sesión terminó por inactividad",
+    );
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "La sesión ha terminado",
+    );
   });
 });
 
@@ -1336,6 +1387,26 @@ describe("a dropped connection (#411)", () => {
     expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
       "Conectado con el servidor",
     );
+  });
+
+  it("says pause again on a new connection while the tab is hidden (#425)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    const next = await reconnect();
+
+    const sentFrames = next.sentText.map((text) => JSON.parse(text) as SentFrame);
+    expect(sentFrames[0].type).toBe("hello");
+    expect(sentFrames.filter((frame) => frame.type === "button").at(-1)).toMatchObject({
+      button: "pause",
+    });
   });
 
   it("clears the long-outage message once the connection comes back", async () => {

@@ -34,11 +34,16 @@
   browser without the API, or a refusal, is silent); a camera track that ends mid-session (lid
   closed, unplugged, another app took it) shows the "Cámara desconectada" alert ("La cámara se ha
   desconectado…") with **Reactivar cámara**, which requests the camera again on the same preview
-  (a refusal keeps the alert with its own sentence) while **Capturar** stays disabled; and coming
-  back to a tab that was hidden mid-session shows a discreet status line, "Aviso de pestaña
-  oculta", that transcription may have paused (Chrome throttles background tabs), cleared by the
-  next `transcript.final`. None of the three touches the socket, the transcript or the uploaded
-  bursts. Failures behind the scenes (#262) show as a discreet status list,
+  (a refusal keeps the alert with its own sentence) while **Capturar** stays disabled; and none of them touches the socket, the transcript or the uploaded bursts. The capture runs
+  only while the tab is visible (#425, replacing #256's "Aviso de pestaña oculta"): when
+  `document.visibilityState` turns `hidden` the screen stops the camera and the recognizer (or the
+  audio stream), sends `button: pause` over the still-open socket and shows the status line
+  "Captura en pausa" («Captura en pausa: la pestaña está oculta»); visible again it sends
+  `resume` and starts the camera and the microphone again in the connection's STT mode. A screen
+  opened in a hidden tab says `pause` right after `hello`, and a reconnect while hidden says it
+  again after the new `hello.ack`. When nothing sends for `[server] capture_idle_end_seconds` the
+  backend ends the session itself; its 4404 close reason ends with `(idle)` and the page says «La
+  sesión terminó por inactividad…». Failures behind the scenes (#262) show as a discreet status list,
   "Estado del servidor", one Spanish line per problem ("El observador ha fallado 3 veces: …",
   "El observador está en pausa: …", "No se han podido transcribir N páginas: …", "La bóveda no se
   ha podido subir a GitHub (N veces): …"), nothing while the session is healthy and never a

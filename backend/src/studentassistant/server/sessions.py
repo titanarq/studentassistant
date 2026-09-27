@@ -122,6 +122,10 @@ DEFAULT_END_HOOK_TIMEOUT_SECONDS = 10.0
 EndHook = Callable[[str], Awaitable[object]]
 """An end hook: awaited with the id of the session being ended."""
 
+EndReason = Literal["button", "command", "idle"]
+"""Why a session ended: `button`/`command` come from a client's end request; `idle` is the
+backend's own end of a capture session no client was sending to (`capture_liveness.py`, #425)."""
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,6 +224,7 @@ class SessionService:
         self._before_ended: list[EndHook] = []
         self._before_close: list[EndHook] = []
         self._on_open: list[Callable[[Vault], object]] = []
+        self._on_attached: list[Callable[[str], object]] = []
         self._index: VaultIndex | None = None
         self._index_interval = index_interval
         self._index_runner: asyncio.Task[None] | None = None
@@ -303,6 +308,16 @@ class SessionService:
         catch-up, #181). It must not block: schedule a task. A failure is logged.
         """
         self._on_open.append(hook)
+
+    def add_on_attached(self, hook: Callable[[str], object]) -> None:
+        """Call `hook(session_id)` whenever a session becomes (or is confirmed) the active one.
+
+        Called on `start` and `resume`, right before `session.started` / `session.resumed` is
+        published, on the event loop and under the lifecycle lock: it must not block nor call back
+        into the service. The capture liveness watchdog starts a session's grace period here
+        (#425). A failure is logged.
+        """
+        self._on_attached.append(hook)
 
     async def _run_end_hooks(self, hooks: list[EndHook], session_id: str, stage: str) -> None:
         for hook in hooks:
@@ -514,10 +529,14 @@ class SessionService:
         session_id: str,
         *,
         client_time_ms: int,
-        reason: Literal["button", "command"],
+        reason: EndReason,
         principal: Principal | None = None,
+        idle_seconds: float | None = None,
     ) -> protocol.SessionEndResponse:
         """Publish `session.ended`, end the session, then checkpoint and push the vault.
+
+        `reason` `idle` is the backend's own end (`capture_liveness.py`); its `idle_seconds`, how
+        long no capture client was sending, is added to the `session.ended` payload.
 
         In order: the `add_before_ended` hooks, `session.ended` is published, the
         `add_before_close` hooks, `end_session`, the bus detach, the checkpoint and push.
@@ -537,16 +556,14 @@ class SessionService:
                 self.bus.attach(session)
             try:
                 await self._run_end_hooks(self._before_ended, session.id, "before ended")
-                await self.bus.publish(
-                    session.id,
-                    SESSION_ENDED,
-                    "user",
-                    {
-                        "client_time_ms": client_time_ms,
-                        "reason": reason,
-                        "device_id": _device(principal),
-                    },
-                )
+                payload: dict[str, Any] = {
+                    "client_time_ms": client_time_ms,
+                    "reason": reason,
+                    "device_id": _device(principal),
+                }
+                if idle_seconds is not None:
+                    payload["idle_seconds"] = round(idle_seconds, 3)
+                await self.bus.publish(session.id, SESSION_ENDED, "user", payload)
                 await self._run_end_hooks(self._before_close, session.id, "before close")
                 meta = await asyncio.to_thread(end_session, session)
                 await asyncio.to_thread(release_active_host, session.vault, self.host, session.id)
@@ -634,6 +651,11 @@ class SessionService:
     def _attach(self, session: Session) -> None:
         self._active = session
         self.bus.attach(session)
+        for hook in self._on_attached:
+            try:
+                hook(session.id)
+            except Exception:
+                logger.exception("session attached hook %r failed", hook)
 
     async def _load_open(self, session_id: str) -> Session:
         """The handle of an unended session: the attached one, or reopened from the vault."""
@@ -905,6 +927,7 @@ __all__ = [
     "SESSION_STARTED",
     "ActiveSessionExistsError",
     "EndHook",
+    "EndReason",
     "LifecycleError",
     "OpenSession",
     "SessionAlreadyEndedError",

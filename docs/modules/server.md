@@ -1102,6 +1102,12 @@ another PC left open is seen.
 - `add_on_open(hook)`: `hook(vault)` is called (synchronously, on the event loop; it must only
   schedule work) once the vault is first opened, pulled and scanned. The app registers the page
   transcriber's `catch_up_vault` there (server-start catch-up, #181, `docs/modules/sources.md`).
+- `add_on_attached(hook)` (#425): `hook(session_id)` is called synchronously, under the lifecycle
+  lock, whenever `start` or `resume` makes a session the active one (before `session.started` /
+  `session.resumed` is published); a failure is logged. The capture liveness watchdog starts the
+  grace period there. `end(..., reason, idle_seconds=None)`: `reason` is `EndReason`
+  (`button | command | idle`); `idle` is only the watchdog's, and its `idle_seconds` goes into the
+  `session.ended` payload.
 - For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
   (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
   `get_active(session_id)`, the active session only when it is that one.
@@ -1115,6 +1121,42 @@ another PC left open is seen.
   `ActiveSessionExistsError`, `SessionAlreadyEndedError` and `VaultSyncConflictError` under it) and
   `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
   `TopicNotFoundError`.
+
+### Capture liveness and idle auto-end -- `server/capture_liveness.py` (#425)
+
+A capture session stays alive only while a capture client (the web `/capture` page, the workspace
+Captura tab, the Android app) is connected and sending. `CaptureLiveness(sessions, *,
+grace_seconds, clock=time.monotonic, wall_clock_ms=..., interval=5.0)` (on `app.state.liveness`,
+`grace_seconds` = `[server] capture_idle_end_seconds`, default 300 s) watches the session
+`SessionService` last attached (`add_on_attached`, called on `start` and `resume`):
+
+- **Sending** means at least one of the session's capture WebSockets has said `hello` (it counts
+  from its `hello.ack`) and has not declared itself paused; each socket's latest `button` `pause` /
+  `resume` sets its own flag, and a closed socket stops counting. The gateway reports it:
+  `connected(session_id) -> token`, `set_paused(token, paused)`, `disconnected(token)`;
+  `is_sending(session_id)`, `idle_seconds(session_id)` read it.
+- **Idle clock**: starts when the session stops sending, is reset as soon as a socket connects or
+  resumes. A session just started or resumed with no socket counts as not sending, so the grace
+  starts at `session.started` / `session.resumed` (a reconnect's resume restarts it too). The
+  default is longer than the web's 2-minute reconnect window (`LONG_OUTAGE_MS`, #411), so a
+  dropped socket that reconnects never ends the session. The pause flag is per socket: a client
+  that reconnects while paused says `pause` again right after the new `hello.ack` (the web page
+  and the Android app do).
+- **Auto-end**: once the idle time reaches the grace, `tick()` ends the session through the normal
+  `SessionService.end(..., reason="idle", idle_seconds=...)` path (end hooks, `session.ended`,
+  `end_session`, active host released, checkpoint and push). It never runs `prepare_notes` or any
+  generation. `session.ended` carries `reason: "idle"` and `idle_seconds`; its origin stays `user`
+  (ADR-0003's origin list is unchanged). The REST end request does not accept `idle`. The next
+  `POST /api/sessions` on the topic succeeds.
+- A socket still open when the session auto-ended is closed as not active (4404) on its next
+  message, like after an explicit end, and a socket of that session dialling afterwards is refused
+  the same way; both close reasons end with `(idle)` (`IDLE_CLOSE_MARK`, `ended_idle(session_id)`)
+  so the client can say why.
+- A failed auto-end is logged, never raised: a concurrent end (`SessionConflictError`) just drops
+  the watch; any other failure restarts the grace period. `start()` / `stop(timeout=15.0)` run the
+  loop with the app's lifespan (stopped first at shutdown; an end in progress gets the timeout,
+  then is cancelled). Only sessions `SessionService` starts or resumes are watched: review
+  sessions (typed requests, #423) are opened by the vault directly and never attached.
 
 ### Session WebSocket -- `server/ws.py`
 
@@ -1408,4 +1450,5 @@ WebSocket gateway publish and subscribe here.
 | `max_capture_image_bytes` | `15728640` (15 MiB) | largest image part a capture burst may carry (413 beyond) |
 | `max_capture_images` | `5` | most images one capture burst may hold (413 beyond) |
 | `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
+| `capture_idle_end_seconds` | `300` | a capture session with no capture client connected and sending for this long is ended by the backend (`reason: "idle"`, nothing generated, #425); `> 0` |
 | `recordings_dir` | `~/.cache/studentassistant/recordings` | where `serve --record` writes one recording directory per session id (`~` expanded); must not be inside the vault |

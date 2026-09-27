@@ -46,6 +46,8 @@ CAPABLE_MODEL = "claude-opus-5-5"
 
 DEFAULT_MAX_CAPTURE_IMAGE_BYTES = 15 * 1024 * 1024
 DEFAULT_MAX_CAPTURE_IMAGES = 5
+# `[server] capture_idle_end_seconds` (#425): 5 minutes.
+DEFAULT_CAPTURE_IDLE_END_SECONDS = 300.0
 
 
 class ServerSettings(BaseModel):
@@ -73,6 +75,10 @@ class ServerSettings(BaseModel):
     # Where `studentassistant serve --record` writes each session's recording (what `replay`
     # reads back), one directory per session id; it must not be inside the vault.
     recordings_dir: Path = DEFAULT_RECORDINGS_DIR
+    # A capture session with no capture client connected and sending (a closed socket, a hidden
+    # tab or a backgrounded app that said `pause`) for this long is ended by the backend on its
+    # own, with nothing generated (#425). Longer than the web's 2-minute reconnect window.
+    capture_idle_end_seconds: float = Field(default=DEFAULT_CAPTURE_IDLE_END_SECONDS, gt=0)
 
     @field_validator("devices_path", "recordings_dir")
     @classmethod
