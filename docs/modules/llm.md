@@ -23,9 +23,33 @@ Decision: ADR-0004.
 | `model` | `claude-sonnet-5` | `claude-opus-5-5` |
 | `effort` (`low`..`max`, always sent) | `medium` | `high` |
 | `max_tokens` | `16000` | `64000` |
+| `turn_timeout_seconds` | observer `90`, transcriber unset | unset |
+| `max_attempts` | observer `2`, transcriber unset | unset |
 
 `[llm] max_attempts = 4`: attempts per call (first one included) before a 429/5xx/connection error
-surfaces. The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile);
+surfaces. A role's own `max_attempts` wins over it (`get_client` resolves it).
+
+Per-role turn timeout and attempts (#409): a hung or very slow call must not stall a live session
+(the request detector allows one call per session in flight and keeps only a short window of
+finals; an editor turn holds the notes lock), so the observer role (live observer and request
+detection) defaults to `turn_timeout_seconds = 90` and `max_attempts = 2`. An unset
+`turn_timeout_seconds` keeps the backend's own: `[llm.claude_code] turn_timeout_seconds` (600)
+on Claude Code, none of ours on the API (only the SDK's). The client copies the role's value into
+`LLMRequest.turn_timeout_seconds` (bookkeeping, never sent); `ClaudeCodeTransport` bounds the turn
+with it (killing the process) and `AnthropicTransport` bounds the whole streamed answer with it.
+A call past it raises `LLMConnectionError` ("did not answer a <role> ... within N s"), retried by
+`LLMClient` up to the role's attempts and then `LLMRetriesExhaustedError`; each failed attempt is
+logged with the role (`studentassistant.llm.client`), and a failed call records nothing in the
+cost ledger, as before. Example (commented out, the defaults):
+
+```toml
+# [llm.roles.observer]
+# turn_timeout_seconds = 90
+# max_attempts = 2
+# [llm.roles.editor]
+# turn_timeout_seconds = 600   # unset: [llm.claude_code] turn_timeout_seconds
+# max_attempts = 4             # unset: [llm] max_attempts
+``` The API key comes from the machine (`ANTHROPIC_API_KEY` or an `ant auth` profile);
 `studentassistant serve` exports it from the key file `setup` stores (`llm.api_key_file`, see
 `docs/modules/infra.md`) when the environment has none.
 
@@ -67,7 +91,8 @@ subscription, with no polling and no re-sent conversation:
   Anything else starts a new process; an earlier history is rendered as a transcript into its
   first turn. After `idle_timeout_seconds` without a turn a timer closes the process; at most
   `max_processes` live (the least recently used idle one is closed first); a turn longer than
-  `turn_timeout_seconds` kills its process. `aclose()` closes them all.
+  the request's role `turn_timeout_seconds` (else `[llm.claude_code] turn_timeout_seconds`) kills
+  its process. `aclose()` closes them all.
 - Client tools (`structured`'s strict tool, the observer's and the editor's tools) are described
   in the system prompt (name, description, input schema) with the instruction to answer a call as
   one JSON object `{"tool_calls": [{"name", "input"}]}`; such a reply becomes `tool_use` blocks

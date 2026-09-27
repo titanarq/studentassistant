@@ -23,6 +23,7 @@ from studentassistant.llm import (
     LLMAPIError,
     LLMConnectionError,
     LLMRateLimitError,
+    LLMRetriesExhaustedError,
     LLMServerError,
     StructuredOutputError,
     WebToolsUnavailableError,
@@ -420,6 +421,47 @@ def test_a_turn_over_the_timeout_kills_the_process(fake: FakeClaudeCli, settings
 
     with pytest.raises(LLMConnectionError, match="did not answer"):
         run(go)
+
+
+def test_a_hung_observer_turn_times_out_per_role_and_is_retried_its_attempts(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    fake.reply(hang=True).reply(hang=True).reply("nunca")
+    settings.llm.roles.observer.turn_timeout_seconds = 0.5
+    transport = ClaudeCodeTransport(fake.settings(turn_timeout_seconds=10.0))
+    client = get_client("observer", settings=settings, transport=transport, sleep=no_sleep)
+
+    async def go() -> None:
+        try:
+            await client.create([user("x")])
+        finally:
+            assert transport.process_count == 0
+            await transport.aclose()
+
+    with pytest.raises(LLMRetriesExhaustedError) as info:
+        run(go)
+
+    assert info.value.attempts == 2
+    assert isinstance(info.value.last_error, LLMConnectionError)
+    assert "observer turn within 0.5 s" in str(info.value.last_error)
+    assert len(fake.turns) == 2
+
+
+def test_a_role_without_its_own_timeout_keeps_the_backends(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    fake.reply("Hola")
+    settings.llm.roles.observer.turn_timeout_seconds = 0.01
+    transport = ClaudeCodeTransport(fake.settings(turn_timeout_seconds=10.0))
+    client = get_client("editor", settings=settings, transport=transport)
+
+    async def go() -> str:
+        try:
+            return (await client.create([user("x")])).text
+        finally:
+            await transport.aclose()
+
+    assert run(go) == "Hola"
 
 
 def test_an_idle_process_is_closed_by_its_timer(fake: FakeClaudeCli, settings: Settings) -> None:

@@ -20,6 +20,10 @@ def config_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SA_LLM__ROLES__EDITOR__EFFORT",
         "SA_LLM__ROLES__OBSERVER__MAX_TOKENS",
         "SA_LLM__MAX_ATTEMPTS",
+        "SA_LLM__ROLES__OBSERVER__TURN_TIMEOUT_SECONDS",
+        "SA_LLM__ROLES__OBSERVER__MAX_ATTEMPTS",
+        "SA_LLM__ROLES__EDITOR__TURN_TIMEOUT_SECONDS",
+        "SA_LLM__ROLES__EDITOR__MAX_ATTEMPTS",
     ]:
         monkeypatch.delenv(name, raising=False)
     return path
@@ -70,6 +74,60 @@ def test_env_vars_set_effort_and_max_tokens(
 
 def test_an_unknown_effort_is_rejected(config_toml: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SA_LLM__ROLES__EDITOR__EFFORT", "turbo")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_turn_timeout_and_attempts_defaults_per_role(config_toml: Path) -> None:
+    roles = Settings().llm.roles
+
+    assert (roles.observer.turn_timeout_seconds, roles.observer.max_attempts) == (90.0, 2)
+    for role in (roles.transcriber, roles.editor, roles.generator):
+        assert (role.turn_timeout_seconds, role.max_attempts) == (None, None)
+
+
+def test_turn_timeout_and_attempts_from_toml(config_toml: Path) -> None:
+    config_toml.write_text(
+        textwrap.dedent(
+            """
+            [llm.roles.observer]
+            turn_timeout_seconds = 45
+            max_attempts = 3
+
+            [llm.roles.editor]
+            turn_timeout_seconds = 900
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    roles = Settings().llm.roles
+
+    assert (roles.observer.turn_timeout_seconds, roles.observer.max_attempts) == (45.0, 3)
+    assert roles.observer.model == "claude-sonnet-5"
+    assert (roles.editor.turn_timeout_seconds, roles.editor.max_attempts) == (900.0, None)
+    assert roles.generator.turn_timeout_seconds is None
+
+
+def test_turn_timeout_and_attempts_from_env(
+    config_toml: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SA_LLM__ROLES__OBSERVER__TURN_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("SA_LLM__ROLES__EDITOR__MAX_ATTEMPTS", "1")
+
+    roles = Settings().llm.roles
+
+    assert roles.observer.turn_timeout_seconds == 30.0
+    assert roles.observer.max_attempts == 2
+    assert roles.editor.max_attempts == 1
+
+
+@pytest.mark.parametrize(("key", "value"), [("TURN_TIMEOUT_SECONDS", "0"), ("MAX_ATTEMPTS", "0")])
+def test_a_non_positive_timeout_or_attempts_is_rejected(
+    config_toml: Path, monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    monkeypatch.setenv(f"SA_LLM__ROLES__OBSERVER__{key}", value)
 
     with pytest.raises(ValidationError):
         Settings()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -108,13 +109,26 @@ class AnthropicTransport:
         return self._sdk
 
     async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
+        # The role's turn timeout (#409) bounds the whole streamed answer; unset, only the SDK's
+        # own timeouts apply.
+        timeout = request.turn_timeout_seconds
         try:
-            client = self._client().with_options(max_retries=0)
-            async with client.messages.stream(**request.api_params()) as stream:
-                if on_text is not None:
-                    async for text in stream.text_stream:
-                        await on_text(text)
-                message = await stream.get_final_message()
+            async with asyncio.timeout(timeout) as scope:
+                message = await self._stream(request, on_text)
+        except TimeoutError as error:
+            if timeout is None or not scope.expired():
+                raise map_sdk_error(error) from error
+            raise LLMConnectionError(
+                f"the API did not answer a {request.role} call within {timeout:g} s"
+            ) from error
         except Exception as error:  # every SDK failure becomes one of ours
             raise map_sdk_error(error) from error
         return response_from_message(message)
+
+    async def _stream(self, request: LLMRequest, on_text: TextSink | None) -> Any:
+        client = self._client().with_options(max_retries=0)
+        async with client.messages.stream(**request.api_params()) as stream:
+            if on_text is not None:
+                async for text in stream.text_stream:
+                    await on_text(text)
+            return await stream.get_final_message()

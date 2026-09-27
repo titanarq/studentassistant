@@ -193,14 +193,26 @@ DEFAULT_LLM_MAX_ATTEMPTS = 4
 # call written as text (the claude-code backend) fails more often than an API one.
 DEFAULT_STRUCTURED_REASKS_API = 1
 DEFAULT_STRUCTURED_REASKS_CLAUDE_CODE = 2
+# The observer role (live observer and request detection, #409): a hung call must not stall the
+# live session, so its turns are short and retried once. Every other role falls back to the global
+# `[llm] max_attempts` and to the backend's own turn timeout (`[llm.claude_code]
+# turn_timeout_seconds`; none of our own on the API).
+DEFAULT_OBSERVER_TURN_TIMEOUT_SECONDS = 90.0
+DEFAULT_OBSERVER_MAX_ATTEMPTS = 2
 
 
 class LlmRoleSettings(BaseModel):
-    """One Claude role: the model that answers it, its effort and its output ceiling."""
+    """One Claude role: the model that answers it, its effort, its output ceiling and how long and
+    how many times one of its calls may run (#409)."""
 
     model: str
     effort: Effort = CAPABLE_EFFORT
     max_tokens: int = Field(default=CAPABLE_MAX_TOKENS, gt=0)
+    # Unset: the backend's own turn timeout (`[llm.claude_code] turn_timeout_seconds`; the API
+    # has none of ours). A turn past it fails as an `LLMConnectionError`, retried like any other.
+    turn_timeout_seconds: float | None = Field(default=None, gt=0)
+    # Unset: `[llm] max_attempts`.
+    max_attempts: int | None = Field(default=None, ge=1)
 
 
 # One subclass per role, so a partial `[llm.roles.<role>]` table (or `SA_LLM__ROLES__...` variable)
@@ -209,6 +221,8 @@ class ObserverRoleSettings(LlmRoleSettings):
     model: str = FAST_MODEL
     effort: Effort = FAST_EFFORT
     max_tokens: int = Field(default=FAST_MAX_TOKENS, gt=0)
+    turn_timeout_seconds: float | None = Field(default=DEFAULT_OBSERVER_TURN_TIMEOUT_SECONDS, gt=0)
+    max_attempts: int | None = Field(default=DEFAULT_OBSERVER_MAX_ATTEMPTS, ge=1)
 
 
 class TranscriberRoleSettings(LlmRoleSettings):
