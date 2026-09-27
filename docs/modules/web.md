@@ -133,10 +133,13 @@
     `voiceQuestionSupported()`; the recognition constructor comes from
     `capture/webSpeechTranscriber.ts`.
   - `VoiceInputButton.tsx` (#428): the chats' microphone button on top of `listenForQuestion`
-    (props `value`, `onChange`, `onFinal`, `disabled`, and the seams `listen` / `voiceSupported`),
-    used by the Estudiar chat and the idle Construir chat. Idle it reads **Hablar**
-    (`aria-label` "Dictar el mensaje por voz"); listening "Escuchando… (pulsa para parar)" with
-    `aria-pressed="true"`, and a press calls `stop()` (what was said so far is kept). The interim
+    (props `value`, `onChange`, `onFinal`, `disabled`, `icon`, and the seams `listen` /
+    `voiceSupported`), used by the Estudiar chat and the idle Construir chat. Idle it reads
+    **Hablar** (`aria-label` "Dictar el mensaje por voz"); listening "Escuchando… (pulsa para
+    parar)" with `aria-pressed="true"`. With `icon` (#458, the workspace chat) it shows a
+    microphone icon instead of the text, with the same accessible names and a `title` ("Hablar:
+    dictar el mensaje por voz", "Escuchando… (pulsa para parar)" while listening). A press while
+    listening calls `stop()` (what was said so far is kept). The interim
     text goes into the chat's input; the final text is handed to `onFinal`, which each chat sends
     through its typed path (no voice mark). No result puts back the text from before and shows one
     line of `CHAT_VOICE_PROBLEMS` (the tutor's `VOICE_PROBLEMS` reworded for a message, e.g. "No te
@@ -170,7 +173,7 @@
     the camera and microphone start again ("Captura en curso"). The session is not ended, but the
     backend's idle auto-end (#425, `[server] capture_idle_end_seconds`, 5 min by default) ends a
     session left paused that long. While paused the chat is told no capture runs, so it offers
-    its own **Hablar**. **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
+    its own microphone button. **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
     **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
     "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by
     `resourceList(sources, tree)` (`resources.ts`) from the topic's source list
@@ -243,7 +246,8 @@
     server error stays in the open form, in Spanish as the form shows it (a web page the topic
     already had keeps the panel open with the form's notice).
   - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
-    #317; the notes page keeps `EditorChat`). "Chat con el asistente": a `role="log"` list
+    #317; the notes page keeps `EditorChat`). A section named "Chat con el asistente" (its
+    `aria-label`; no visible heading since #458, to save height): a `role="log"` list
     of turns, oldest first (not itself a live region since #412, see below). A spoken request shows "Por voz · HH:MM" and
     "Pediste: <request_summary>" (the short line of what was asked; `summary` stays the applied
     change's) with a **…** button (`aria-expanded`, `aria-controls`; "Ver lo que dijiste" /
@@ -262,13 +266,15 @@
     request as it was classified, whatever its kind (`edit`, `question`, "prepárame el tema",
     `incorporate`, `doubt_answer`; never a batch of a run), goes back to "En cola…" and its new
     turn (same `request_id`) streams into the same entry; a refused confirmation (404: it no
-    longer waits, e.g. after a restart) shows its detail. Below, a textarea
-    "Mensaje para el asistente" (Enter sends, Shift+Enter is a new line; above it, since #432,
+    longer waits, e.g. after a restart) shows its detail. Below, a textarea labelled
+    "Mensaje para el asistente" (the label visually hidden in the one-viewport layout since #458;
+    placeholder "Chatea con el asistente…") (Enter sends, Shift+Enter is a new line; above it, since #432,
     one chip per source selected in **Recursos** -- its short title and × «Quitar <title> de la
     selección», the first five and «+N» past six, and **Quitar selección**; shown in the narrow
-    layout's Chat view too) with **Enviar**
-    (disabled while empty or while this page's post or undo runs) and **Deshacer el último
-    cambio** (`POST .../notes/chat/undo`, as the notes page's chat). While the stream is down:
+    layout's Chat view too) and, in one row under it, **Enviar**
+    (disabled while empty or while this page's post or undo runs), the microphone icon button
+    (see below) and an undo icon button (`aria-label` and `title` "Deshacer el último cambio",
+    #458; `POST .../notes/chat/undo`, as the notes page's chat). While the stream is down:
     "Sin conexión en directo con el asistente; reintentando…" (`role="status"`).
     Since #329 the panel is where the student drives the work (epic #311), with no buttons to
     incorporate or answer:
@@ -306,7 +312,7 @@
       "pone «escrita»", "descártala"), which becomes a `doubt_answer` turn (its reply is the
       resolution); `doubt.resolved` marks the doubt "Duda resuelta" / "Duda descartada" with
       "Respondida: <resolution>" (and "Respondiste: «…»" when the history knows the answer).
-      While one is asked, the input's placeholder is "Responde a la duda o escribe otra cosa…".
+      While one is asked, the input's placeholder asks to answer it (see below).
       `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
     - **"Ya está, quiero estudiar"** (a `study` request, #335, #337): "Pasando a Estudiar…"
       while it runs, then the backend's one line («He cerrado la captura y marcado los apuntes v5
@@ -368,9 +374,12 @@
       shrinks linearly to 25 % at 1200 px and wider (`clamp(max(18rem, 25%), calc(50% - (100vw -
       56.25rem) * 0.97), 50%)`), the document takes the rest. On the left the tabs' list stays put
       and only the active panel (`.workspace-tabpanel`: camera preview, controls, transcript,
-      photos, resources) scrolls (the list is also `position: sticky` outside this layout), and
-      the chat below (3:2 split with the tabs) is never shorter than its heading and form, so
-      the input and **Enviar** are always visible and only the log scrolls; the
+      photos, resources) scrolls (the list is also `position: sticky` outside this layout). The
+      Captura/Recursos box takes a fixed share of the left column (#458): 50 % at 720 px of
+      viewport height, a third of every extra pixel of height taken off, down to 38 % from about
+      1080 px (`clamp(38%, calc(50% - (100dvh - 45rem) / 3), 50%)`, never under 8rem). The chat
+      takes the rest (`flex: 1 1 0; min-height: 0`): its form keeps its height, so the input and
+      **Enviar** are always visible, and only the log shrinks and scrolls; the
       capture preview is capped at 32vh and the transcript at 20vh there, scoped to `.workspace`
       so `/capture` is unchanged. The log (`.ws-chat-log`) is its own scroll area (60vh at most
       outside that layout) and follows the newest turn through `src/chat/useFollowLog.ts`
@@ -385,12 +394,12 @@
       (only turns seen on their way on this page, and a doubt asked in the chat). The **…** of a
       spoken request has a `title` and an `aria-describedby` text ("Muestra la transcripción de lo
       que dijiste y cuándo lo dijiste"). `WorkspaceChatSlot` takes `capturing` (the page's
-      Captura state) and passes it to `ChatPanel`: the placeholder says "Escribe o habla: «pon un
-      ejemplo aquí»…" while a capture runs, else "Escribe o pulsa «Hablar»: «pon un ejemplo
-      aquí»…" (a doubt: "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…" /
-      "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…"), and so do the
-      empty-chat hint and a doubt's hint. **Microphone (#428):** while no capture runs,
-      `VoiceInputButton` (**Hablar**) sits next to **Enviar**; the spoken message goes through the
+      Captura state) and passes it to `ChatPanel`: the placeholder is "Chatea con el asistente…"
+      (#458) except while a doubt is asked: "Responde a la duda (escribiendo o de viva voz) o pide
+      otra cosa…" while a capture runs, else "Responde a la duda (escribiendo o con el micrófono)
+      o pide otra cosa…"; the empty-chat hint and a doubt's hint change the same way ("hablando o
+      escribiendo" / "escribiendo o con el micrófono"). **Microphone (#428):** while no capture
+      runs, `VoiceInputButton` with `icon` (a microphone icon, #458) sits in **Enviar**'s row; the spoken message goes through the
       same `send` as a typed one, and one arriving while the assistant is busy stays in the input,
       unsent. While a capture runs the button is absent (the capture's speech already reaches the
       chat); a capture starting removes it and stops its recognition, as unmounting the panel does.
