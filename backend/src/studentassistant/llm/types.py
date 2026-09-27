@@ -56,6 +56,9 @@ class LLMRequest(BaseModel):
     # Not sent: which role asked, and the hash of the prompt file used (for the ledger, #28).
     role: str
     prompt_hash: str | None = None
+    # The role's `turn_timeout_seconds` (#409): the transport gives up on the call after it;
+    # unset, the transport's own timeout applies.
+    turn_timeout_seconds: float | None = None
 
     def api_params(self) -> dict[str, Any]:
         """Keyword arguments for `messages.stream(...)`. `thinking` is never sent: omitting it runs

@@ -913,17 +913,18 @@ class ClaudeCodeTransport:
             any(not is_server_tool(tool) for tool in request.tools)
             and (request.tool_choice or {}).get("type") != "none"
         )
+        # The role's own turn timeout (#409), else `[llm.claude_code] turn_timeout_seconds`.
+        timeout = request.turn_timeout_seconds or self.settings.turn_timeout_seconds
         conversation.cancel_idle()
         conversation.busy = True
         try:
             turn = await asyncio.wait_for(
-                conversation.turn(content, on_text, expect_tools, cli_tools),
-                self.settings.turn_timeout_seconds,
+                conversation.turn(content, on_text, expect_tools, cli_tools), timeout
             )
         except TimeoutError as error:
             await self._discard(conversation, kill=True)
             raise LLMConnectionError(
-                f"claude did not answer within {self.settings.turn_timeout_seconds:g} s"
+                f"claude did not answer a {request.role} turn within {timeout:g} s"
             ) from error
         except LLMError:
             await self._discard(conversation, kill=True)

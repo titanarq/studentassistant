@@ -129,6 +129,8 @@ The defaults live here and nowhere else:
 | `vault.size_warning_mb` | `1024`: `doctor` warns once the vault (files + git objects) is bigger |
 | `llm.roles.observer.model`, `llm.roles.transcriber.model` | `claude-sonnet-5` (ADR-0004) |
 | `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
+| `llm.roles.observer.turn_timeout_seconds`, `llm.roles.observer.max_attempts` | `90` s, `2`: a hung observer / request-detection call cannot stall a live session (#409) |
+| `llm.roles.<transcriber\|editor\|generator>.turn_timeout_seconds`, `.max_attempts` | unset: the backend's turn timeout (`llm.claude_code.turn_timeout_seconds`, `600`) and `llm.max_attempts` (`4`); see `docs/modules/llm.md` |
 | `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |
 | `eval.speed` | `4.0`: how many times faster than recorded `eval run` replays each session |
 | `eval.regression_margin` | `0.05`: a score dropping more than this against the previous run is a regression |

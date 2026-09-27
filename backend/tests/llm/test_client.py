@@ -142,7 +142,7 @@ def test_transient_errors_are_retried_with_backoff(settings: Settings) -> None:
         .fail(LLMConnectionError("reset"))
         .reply_text("por fin")
     )
-    client = get_client("observer", settings=settings, transport=fake, sleep=sleep)
+    client = get_client("editor", settings=settings, transport=fake, sleep=sleep)
 
     response = asyncio.run(client.create(USER))
 
@@ -169,12 +169,63 @@ def test_attempts_are_bounded(settings: Settings) -> None:
     fake = FakeClaude().fail(LLMRateLimitError("a")).fail(LLMRateLimitError("b")).reply_text("x")
 
     with pytest.raises(LLMRetriesExhaustedError) as info:
-        asyncio.run(fake.client("observer", settings=settings).create(USER))
+        asyncio.run(fake.client("editor", settings=settings).create(USER))
 
     assert info.value.attempts == 2
     assert isinstance(info.value.last_error, LLMRateLimitError)
     assert len(fake.requests) == 2
     assert fake.pending == 1
+
+
+def fail_every_attempt(count: int) -> FakeClaude:
+    fake = FakeClaude()
+    for n in range(count):
+        fake.fail(LLMConnectionError(f"timed out {n}"))
+    return fake.reply_text("never")
+
+
+def test_the_observer_role_makes_two_attempts_by_default(settings: Settings) -> None:
+    fake = fail_every_attempt(4)
+
+    with pytest.raises(LLMRetriesExhaustedError) as info:
+        asyncio.run(fake.client("observer", settings=settings).create(USER))
+
+    assert info.value.attempts == 2 and len(fake.requests) == 2
+
+
+@pytest.mark.parametrize("role", ["transcriber", "editor", "generator"])
+def test_other_roles_keep_the_global_attempts(settings: Settings, role: str) -> None:
+    settings.llm.max_attempts = 3
+    fake = fail_every_attempt(4)
+
+    with pytest.raises(LLMRetriesExhaustedError) as info:
+        asyncio.run(fake.client(role, settings=settings).create(USER))
+
+    assert info.value.attempts == 3 and len(fake.requests) == 3
+
+
+def test_a_role_override_of_the_attempts_wins_over_the_global_one(settings: Settings) -> None:
+    settings.llm.max_attempts = 4
+    settings.llm.roles.editor.max_attempts = 1
+    fake = fail_every_attempt(4)
+
+    with pytest.raises(LLMRetriesExhaustedError):
+        asyncio.run(fake.client("editor", settings=settings).create(USER))
+
+    assert len(fake.requests) == 1
+
+
+def test_the_request_carries_the_roles_turn_timeout(settings: Settings) -> None:
+    settings.llm.roles.generator.turn_timeout_seconds = 45.0
+    fake = FakeClaude()
+
+    def timeout(role: str) -> float | None:
+        return fake.client(role, settings=settings).build_request(USER).turn_timeout_seconds
+
+    assert timeout("observer") == 90.0
+    assert timeout("generator") == 45.0
+    assert timeout("editor") is None and timeout("transcriber") is None
+    assert "turn_timeout_seconds" not in fake.client("observer").build_request(USER).api_params()
 
 
 def test_non_transient_errors_are_not_retried(settings: Settings) -> None:
@@ -361,6 +412,43 @@ def test_the_real_transport_is_retried_by_the_client(settings: Settings) -> None
     assert asyncio.run(client.create(USER)).text == "ok"
     assert slept == [3.0]
     assert len(recorder.bodies) == 2
+
+
+class HangingStream(httpx2.AsyncByteStream):
+    """A streamed body that never sends its first event."""
+
+    async def __aiter__(self):  # type: ignore[override]
+        await asyncio.sleep(3600)
+        yield b""
+
+
+def test_the_real_transport_gives_up_after_the_roles_turn_timeout(settings: Settings) -> None:
+    settings.llm.roles.observer.turn_timeout_seconds = 0.2
+    recorder = Recorder(
+        *[
+            httpx2.Response(
+                200, stream=HangingStream(), headers={"content-type": "text/event-stream"}
+            )
+            for _ in range(2)
+        ]
+    )
+    client = get_client(
+        "observer", settings=settings, transport=sdk_transport(recorder), sleep=no_wait
+    )
+
+    async def go() -> None:
+        await asyncio.wait_for(client.create(USER), 10.0)
+
+    with pytest.raises(LLMRetriesExhaustedError) as info:
+        asyncio.run(go())
+
+    assert isinstance(info.value.last_error, LLMConnectionError)
+    assert "within 0.2 s" in str(info.value.last_error)
+    assert len(recorder.bodies) == 2
+
+
+async def no_wait(seconds: float) -> None:
+    return None
 
 
 def test_building_a_client_needs_no_api_key(

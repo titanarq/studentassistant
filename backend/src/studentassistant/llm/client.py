@@ -1,4 +1,5 @@
-"""`LLMClient` per role (ADR-0004): model, effort and max_tokens from `[llm.roles.<role>]`."""
+"""`LLMClient` per role (ADR-0004): model, effort, max_tokens, turn timeout and attempts from
+`[llm.roles.<role>]`."""
 
 from __future__ import annotations
 
@@ -120,6 +121,7 @@ class LLMClient:
             tool_choice=tool_choice,
             role=self.role,
             prompt_hash=prompt_hash,
+            turn_timeout_seconds=self.settings.turn_timeout_seconds,
         )
 
     async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
@@ -135,7 +137,17 @@ class LLMClient:
                 return await self.transport.send(request, on_text=on_text)  # type: ignore[call-arg]
             except LLMTransientError as error:
                 if attempt == self.max_attempts:
+                    logger.warning(
+                        "%s call failed after %d attempt(s): %s", self.role, attempt, error
+                    )
                     raise LLMRetriesExhaustedError(attempt, error) from error
+                logger.info(
+                    "%s call attempt %d of %d failed, retrying: %s",
+                    self.role,
+                    attempt,
+                    self.max_attempts,
+                    error,
+                )
                 await self._sleep(backoff_delay(attempt, error))
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -213,7 +225,8 @@ def get_client(
     ledger: LedgerBinding | None = None,
     clock: Clock = utc_now,
 ) -> LLMClient:
-    """The client for `role`, configured from `[llm.roles.<role>]`.
+    """The client for `role`, configured from `[llm.roles.<role>]`; its attempts are the role's
+    `max_attempts`, else `[llm] max_attempts`.
 
     Tests pass `transport=FakeClaude(...)`; without one the real transport of `[llm] backend` is
     used (`default_transport`: the streaming Anthropic API, or the headless Claude Code CLI).
@@ -228,7 +241,7 @@ def get_client(
         role,
         role_settings,
         transport=transport or default_transport(settings),
-        max_attempts=settings.llm.max_attempts,
+        max_attempts=role_settings.max_attempts or settings.llm.max_attempts,
         sleep=sleep,
         ledger=ledger,
         llm_settings=settings.llm,
