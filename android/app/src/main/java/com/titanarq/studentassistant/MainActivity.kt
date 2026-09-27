@@ -138,8 +138,8 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
                         factory = container.captureViewModelFactory(session),
                     ),
                     onLeave = { route = Route.HOME },
-                    onEnded = { route = Route.HOME },
-                    onOpenNotes = { topic ->
+                    onHome = { route = Route.HOME },
+                    onOpenWorkspace = { topic ->
                         deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName, topic.view.name)
                         route = Route.DESK
                     },

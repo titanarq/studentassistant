@@ -6,6 +6,8 @@ import com.titanarq.studentassistant.MainDispatcherRule
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.FakeBackendClient
+import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.AudioFormat
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
@@ -13,6 +15,8 @@ import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
+import com.titanarq.studentassistant.protocol.SessionEndReason
+import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SessionEndResponse
 import com.titanarq.studentassistant.protocol.SessionEndedStatus
 import com.titanarq.studentassistant.protocol.SttMode
@@ -143,11 +147,14 @@ class CaptureViewModelOfflineTest {
 
         viewModel.end()
         runCurrent()
+        // «Sesión terminada» offers the topic's workspace; leaving it releases the session.
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
-        assertNull(holder.current.value)
+        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE), viewModel.deskTopic)
         assertFalse(transcriber.running)
         assertEquals(listOf(PendingEnd("s1", credentials.baseUrl, clock.now)), spools.ends())
         assertEquals(setOf("s1"), finisher.pending.value)
+        viewModel.closeEnded()
+        assertNull(holder.current.value)
 
         // The backend is back.
         backend.resumeSessionResult = BackendResult.Success(session)
@@ -187,7 +194,7 @@ class CaptureViewModelOfflineTest {
     }
 
     @Test
-    fun `Terminar y preparar apuntes while offline keeps the flag for the delivered end`() = runTest(main.dispatcher) {
+    fun `an end spooled while offline is delivered without prepare_notes`() = runTest(main.dispatcher) {
         val spools = Spools(root, SpoolBudget(10_000_000))
         val (viewModel, finisher) = viewModel(spools)
         viewModel.start()
@@ -196,34 +203,34 @@ class CaptureViewModelOfflineTest {
         sockets.last.drop()
         runCurrent()
 
-        viewModel.end(prepareNotes = true)
+        viewModel.end()
         runCurrent()
-        // A spooled end follows no progress: the screen ends as with a plain Terminar.
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
-        assertNull(holder.current.value)
-        assertEquals(listOf(PendingEnd("s1", credentials.baseUrl, clock.now, prepareNotes = true)), spools.ends())
+        assertEquals(listOf(false), spools.ends().map { it.prepareNotes })
+        assertFalse(File(root, "ends/s1.json").readText().contains("prepare_notes\":true"))
 
         backend.resumeSessionResult = BackendResult.HttpError(409)
         backend.endSessionResult = ended
         advanceTimeBy(1_000)
         runCurrent()
-        assertEquals(listOf(true), backend.endSessionRequests.map { it.prepareNotes })
+        assertEquals(listOf(SessionEndRequest(clock.now, SessionEndReason.BUTTON)), backend.endSessionRequests)
         assertEquals(emptySet<String>(), finisher.pending.value)
-        assertTrue(backend.calls.none { it.startsWith("notesGeneration") })
+        assertEquals("endSession http://192.168.1.20:8000 s1", backend.calls.last())
     }
 
     @Test
-    fun `a transient failure of Terminar y preparar apuntes becomes a pending end with the flag`() = runTest(main.dispatcher) {
+    fun `a transient failure of Terminar captura becomes a pending end without the flag`() = runTest(main.dispatcher) {
         val spools = Spools(root, SpoolBudget(10_000_000))
         val (viewModel, _) = viewModel(spools)
         backend.endSessionResult = BackendResult.HttpError(503)
         viewModel.start()
         runCurrent()
         handshake()
-        viewModel.end(prepareNotes = true)
+        viewModel.end()
         runCurrent()
+        assertEquals(listOf(null), backend.endSessionRequests.map { it.prepareNotes })
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
-        assertEquals(listOf(true), spools.ends().map { it.prepareNotes })
+        assertEquals(listOf(false), spools.ends().map { it.prepareNotes })
     }
 
     @Test

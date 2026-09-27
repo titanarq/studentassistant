@@ -3,7 +3,6 @@ package com.titanarq.studentassistant.backend
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
 import com.titanarq.studentassistant.protocol.HealthResponse
-import com.titanarq.studentassistant.protocol.NotesGenerationStatus
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.PairResponse
 import com.titanarq.studentassistant.protocol.Session
@@ -38,10 +37,6 @@ class FakeBackendClient : BackendClient {
     var endSessionResult: BackendResult<SessionEndResponse> = notScripted
     var uploadCaptureResult: BackendResult<CaptureUploadResponse> = notScripted
     var addWebPageResult: BackendResult<WebPageAddResponse> = notScripted
-    var notesGenerationResult: BackendResult<NotesGenerationStatus> = notScripted
-
-    /** Answers of [notesGeneration] used before [notesGenerationResult], oldest first. */
-    val notesGenerationResults: ArrayDeque<BackendResult<NotesGenerationStatus>> = ArrayDeque()
 
     /** The [SessionEndRequest]s sent, oldest first. */
     val endSessionRequests: MutableList<SessionEndRequest> = mutableListOf()
@@ -124,14 +119,6 @@ class FakeBackendClient : BackendClient {
     ): BackendResult<WebPageAddResponse> {
         lastWebPageRequest = request
         return record("addWebPage", backend, "$subjectId/$topicId") { addWebPageResult }
-    }
-
-    override suspend fun notesGeneration(
-        backend: BackendCredentials,
-        subjectId: String,
-        topicId: String,
-    ): BackendResult<NotesGenerationStatus> = record("notesGeneration", backend, "$subjectId/$topicId") {
-        notesGenerationResults.removeFirstOrNull() ?: notesGenerationResult
     }
 
     private fun <T> record(

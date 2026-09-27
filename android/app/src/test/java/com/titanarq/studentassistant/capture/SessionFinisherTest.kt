@@ -16,6 +16,8 @@ import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
+import com.titanarq.studentassistant.protocol.SessionEndReason
+import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SessionEndResponse
 import com.titanarq.studentassistant.protocol.SessionEndedStatus
 import com.titanarq.studentassistant.protocol.SttMode
@@ -119,23 +121,27 @@ class SessionFinisherTest {
     }
 
     @Test
-    fun `a pending end asks the backend to prepare the notes only when the student chose it`() = runTest {
-        val before = spools()
-        before.putEnd(end.copy(prepareNotes = true))
+    fun `a pending end is never sent with prepare_notes, not even a legacy one that had it`() = runTest {
+        // Written by an app version that still had «Terminar y preparar apuntes» (#272).
+        val root = File(folder.root, "spool").also { File(it, "ends").mkdirs() }
+        File(root, "ends/s1.json").writeText(
+            """{"session_id":"s1","base_url":"http://pc:8000","client_time_ms":9000,"reason":"button","prepare_notes":true}""",
+        )
         client.resumeSessionResult = BackendResult.HttpError(409) // ended already: straight to the end
         client.endSessionResult = ended
 
-        // A new process reads the flag back from disk.
+        // A new process still reads it back from disk.
         val spools = spools()
         assertEquals(listOf(end.copy(prepareNotes = true)), spools.ends())
         finisher(spools).restore()
         runCurrent()
-        assertEquals(listOf(true), client.endSessionRequests.map { it.prepareNotes })
+        assertEquals(listOf(SessionEndRequest(9000, SessionEndReason.BUTTON)), client.endSessionRequests)
+        assertEquals(emptyList<PendingEnd>(), spools.ends())
 
         val plain = spools()
         finisher(plain).finish(backend, end)
         runCurrent()
-        assertEquals(listOf(true, null), client.endSessionRequests.map { it.prepareNotes })
+        assertEquals(listOf(null, null), client.endSessionRequests.map { it.prepareNotes })
     }
 
     @Test

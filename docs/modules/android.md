@@ -8,7 +8,7 @@ Thin capture client (ADR-0001), Spanish UI:
   DataStore; several backends allowed; connection test.
 - Home: subjects/topics from the backend, create topic, start or continue a session.
 - Capture screen: CameraX preview, transcription with SpeechRecognizer (Google) sent as
-  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar, Terminar y preparar apuntes), live transcript,
+  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar captura), live transcript,
   pending-doubts counter, screen kept on.
 - Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
@@ -88,7 +88,7 @@ Thin capture client (ADR-0001), Spanish UI:
   one tap on an existing one) and a title. A name matching an existing subject (trimmed, ignoring
   case) reuses it; otherwise `POST /api/subjects` runs first. Then `POST .../topics`, the dialog
   closes and that subject's topics are shown. Failures stay in the dialog.
-- **"Empezar sesión" / "Continuar"** (`startOrContinue(row)`): `POST /api/sessions` with the
+- **«Iniciar captura» / "Continuar"** (`startOrContinue(row)`, #431 renamed «Empezar sesión»): `POST /api/sessions` with the
   clock's `client_time_ms`, or `POST /api/sessions/{open_session_id}/resume`. On success the
   `session.OpenSession(backend, session, subjectName, topicName)` goes into
   **`session.SessionHolder`** (in memory, `AppContainer.sessionHolder`) and the app opens
@@ -141,7 +141,7 @@ study screen (`/study`: study modes and generated material). No notes logic in t
 The legacy notes page (`/notes`) is no longer opened from the phone (#414).
 
 - **«Construir»** and **«Estudiar»** on every topic card of the home screen, below
-  «Empezar sesión/Continuar» and above «Preguntar al tutor», open `Route.DESK` for
+  «Iniciar captura/Continuar» and above «Preguntar al tutor», open `Route.DESK` for
   `HomeViewModel.deskTarget(row, view)` -> `DeskTopic(subjectId, topicId, topicName, view)` with
   `DeskView.WORKSPACE` or `DeskView.STUDY` (kept by `MainActivity` across recreation, the view by
   name; the desk view model is keyed per topic and view).
@@ -189,7 +189,7 @@ The legacy notes page (`/notes`) is no longer opened from the phone (#414).
   download manager. Estudiar has no Anki export link today (that lives on the legacy topic page's
   materials panel); when it gets one it takes the same path.
 - Known gaps: no microphone inside the WebView. Voice requests come from the native capture session
-  («Empezar sesión/Continuar»), whose transcript feeds the same topic's workspace, and the voice
+  («Iniciar captura/Continuar»), whose transcript feeds the same topic's workspace, and the voice
   tutor is native too (#248); nothing offline.
 
 ## Voice tutor on the phone (#248)
@@ -274,29 +274,26 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   server STT mode the backend recognizer's warning while degraded (protocol 1.5 `stt.status`,
   #222: its Spanish `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), and the
   buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
-  **Terminar** (asks for confirmation), with **Terminar y preparar apuntes** right below it (its
-  own confirmation). Back ("Salir") leaves the session open: the home screen offers "Continuar".
-- **Terminar y preparar apuntes** (#272, protocol 1.6): `CaptureViewModel.end(prepareNotes = true)`
-  ends through the same path as Terminar with `SessionEndRequest.prepareNotes = true` (plain
-  Terminar sends no `prepare_notes`). When the backend takes the end at once, the screen stays in
-  phase `NOTES` (holder not yet cleared) and shows `CaptureUiState.notesProgress`, a
-  `NotesProgress`: from the end response's `notes_generation` (`started`/`running` -> `Running`;
-  `unavailable` or absent, an older backend -> `Unavailable`, no polling), then from
-  `NotesGenerationPoller` (`BackendClient.notesGeneration`, `GET .../topics/{t}/notes/generation`
-  every 3 s): `running` -> `Running` (a transient poll failure keeps polling, shown as
-  `Running(pollFailure)`), `done` -> `Done(version, draft, warning)`, `failed` -> `Failed(detail)`,
-  `needs_confirmation` -> `NeedsConfirmation(detail)` (confirm from the study desk), `idle` (the
-  backend restarted) -> `Lost`, a refusal (401, 404, ...) -> `Unknown`; every state but `Running`
-  stops polling. Polling pauses in the background (`onBackground`/`onForeground`) and stops when
-  the student leaves: **Abrir apuntes** (done) / **Ir al escritorio de estudio** (otherwise) open
-  `CaptureViewModel.deskTopic`, the topic's **Construir** screen (`DeskView.WORKSPACE`, #414), in the study desk (`CaptureScreen(onOpenNotes)`), **Volver al
-  inicio** and back go home; each calls `closeNotes()` (clears the holder, phase `ENDED`). An end
-  answered 404/409 (already ended) follows no generation; an end that is spooled keeps the flag in
-  its `PendingEnd` (see "Offline spool") and the screen ends at once, as with Terminar.
+  **Terminar captura** (`capture_button_end`, the counterpart of «Iniciar captura»; one
+  confirmation saying the session ends and the notes are built later from «Construir» through the
+  chat). Back ("Salir") leaves the session open: the home screen offers "Continuar".
+- **Ending only ends the capture** (#431, human decision 2026-09-27: nothing anywhere builds the
+  topic's document automatically). `CaptureViewModel.end()` sends `button end_session` and
+  `POST /api/sessions/{id}/end` **without `prepare_notes`** (optional since protocol 1.6, so valid
+  for every backend); a spooled end is delivered without it too (see "Offline spool"). After a
+  successful end (live, 404/409 already ended, or handed to the spool) the screen shows
+  **«Sesión terminada»** (phase `ENDED`, `EndedPanel`) instead of jumping home: **Abrir en
+  Construir** opens `CaptureViewModel.deskTopic`, the topic's **Construir** screen
+  (`DeskView.WORKSPACE`, #414) in the study desk (`CaptureScreen(onOpenWorkspace)`), where the
+  student asks for the notes in the chat; **Volver al inicio** and back go home
+  (`CaptureScreen(onHome)`). The `SessionHolder` keeps the session until then: leaving calls
+  `closeEnded()`, which clears it. The former «Terminar y preparar apuntes» button (#272), its
+  `NOTES` phase, `NotesProgress` / `NotesGenerationPoller` and `BackendClient.notesGeneration` are
+  gone; the protocol mirror (`SessionEndRequest.prepareNotes`, `NotesGenerationStatus`, ...) stays.
 - **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
   transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
   (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
-  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/NOTES/ENDED, `notesProgress`, `connection`, `transcript` -- the last 50
+  `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
   `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
   modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
   `endFailure`, `sttWarning`: the last degraded `SttStatus`, cleared by an `ok` one and by every
@@ -463,16 +460,16 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   "Continuar" opens the same spools, so everything left is resent the same way.
 - **Captures on resume**: the session start/resume's `received_capture_ids` (the capture screen's
   start and every 4404 resume) are confirmed and failed captures of the session retried.
-- **Ending** (`CaptureViewModel` with `CaptureSpooling`): "Terminar" while not connected, or
+- **Ending** (`CaptureViewModel` with `CaptureSpooling`): «Terminar captura» while not connected, or
   answered with a transient failure (unreachable, 408/425/429/5xx), writes a `PendingEnd` and hands
   it to **`SessionFinisher`** (`AppContainer.sessionFinisher`, on the app-wide scope); the screen
-  ends at once. Online, "Terminar" first waits up to 10 s for `drained` and the session's uploads.
+  shows «Sesión terminada» at once. Online, «Terminar captura» first waits up to 10 s for `drained` and the session's uploads.
   The finisher, per pending end: `POST .../resume` (409: skip the flush; 404: drop), a
   `SessionConnection` over the spools until `drained` (at most 120 s), the session's captures
-  uploaded (at most 300 s), then `POST .../end` with the original "Terminar" time (and
-  `prepare_notes: true` when `PendingEnd.prepareNotes`, "Terminar y preparar apuntes", so the
-  backend prepares the notes when the end is finally delivered; a pending end written before #272
-  has no `prepare_notes` and reads as a plain end); success, 404 or
+  uploaded (at most 300 s), then `POST .../end` with the original «Terminar captura» time and
+  never `prepare_notes` (#431): a `PendingEnd` spooled by an older version with
+  `prepare_notes: true` still decodes (`PendingEnd.prepareNotes`, read only) and is sent without
+  it; success, 404 or
   409 deletes the session's spools and its pending end. Transient failures retry after
   2/5/10/30/60 s; a refusal (401, 403, 400, ...) leaves the pending end on disk.
   `AppContainer.recoverSpool()` (from `StudentAssistantApp.onCreate`) restores the captures and
