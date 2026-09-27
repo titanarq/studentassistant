@@ -46,6 +46,7 @@ from studentassistant.vault.topics import (
     get_topic,
     require_topic,
     topic_directory,
+    topic_file_lock,
 )
 from studentassistant.vault.vault import Vault
 
@@ -216,37 +217,42 @@ def start_session(
     Raises:
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic
             is not one this backend can read; nothing is written.
+        VaultBusyError: when another writer held the topic's lock (`topic_file_lock`) for longer
+            than its timeout; nothing is written.
         OSError: when a directory or a file cannot be written.
     """
-    stored = get_topic(vault, subject_slug, topic_slug)
+    get_topic(vault, subject_slug, topic_slug)
     root = sessions_directory(vault, subject_slug, topic_slug)
     root.mkdir(exist_ok=True)
-    started_at = datetime.now(UTC)
-    candidate = started_at.replace(microsecond=0)
-    while True:
-        session_id = candidate.strftime(SESSION_ID_FORMAT)
-        directory = root / session_id
-        try:
-            directory.mkdir()
-        except FileExistsError:
-            candidate += timedelta(seconds=1)
-            continue
-        break
-    meta = SessionMeta(
-        id=session_id,
-        started_at=started_at,
-        host=host,
-        protocol_version=protocol_version,
-        kind=kind,
-    )
-    write_yaml_atomic(directory / SESSION_FILE_NAME, meta)
-    write_text_atomic(directory / TRANSCRIPT_FILE_NAME, "")
-    write_text_atomic(directory / EVENTS_FILE_NAME, "")
-    topic = stored.topic
-    write_yaml_atomic(
-        topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME,
-        topic.model_copy(update={"sessions": [*topic.sessions, session_id]}),
-    )
+    # Under the topic's lock: `topic.yaml` is read after any other start has written it, so two
+    # sessions started at once both stay in its `sessions` list (#401).
+    with topic_file_lock(vault, subject_slug, topic_slug):
+        started_at = datetime.now(UTC)
+        candidate = started_at.replace(microsecond=0)
+        while True:
+            session_id = candidate.strftime(SESSION_ID_FORMAT)
+            directory = root / session_id
+            try:
+                directory.mkdir()
+            except FileExistsError:
+                candidate += timedelta(seconds=1)
+                continue
+            break
+        meta = SessionMeta(
+            id=session_id,
+            started_at=started_at,
+            host=host,
+            protocol_version=protocol_version,
+            kind=kind,
+        )
+        write_yaml_atomic(directory / SESSION_FILE_NAME, meta)
+        write_text_atomic(directory / TRANSCRIPT_FILE_NAME, "")
+        write_text_atomic(directory / EVENTS_FILE_NAME, "")
+        topic = get_topic(vault, subject_slug, topic_slug).topic
+        write_yaml_atomic(
+            topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME,
+            topic.model_copy(update={"sessions": [*topic.sessions, session_id]}),
+        )
     return Session(
         vault=vault,
         subject_slug=subject_slug,

@@ -26,6 +26,8 @@ unreadable is refused with an error naming the file, rather than left out of the
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +36,7 @@ from pydantic import ValidationError
 from yaml import YAMLError
 
 from studentassistant.vault.files import read_yaml, write_yaml_atomic
+from studentassistant.vault.locking import directory_lock
 from studentassistant.vault.models import Topic
 from studentassistant.vault.slugs import is_slug, slugify, unique_slug
 from studentassistant.vault.subjects import (
@@ -45,6 +48,7 @@ from studentassistant.vault.vault import Vault, VaultError
 
 TOPICS_DIRNAME = "topics"
 TOPIC_FILE_NAME = "topic.yaml"
+TOPIC_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 class TopicError(VaultError):
@@ -75,6 +79,22 @@ def topics_directory(vault: Vault, subject_slug: str) -> Path:
 def topic_directory(vault: Vault, subject_slug: str, topic_slug: str) -> Path:
     """The directory the topic called `topic_slug` lives in, whether or not it exists yet."""
     return topics_directory(vault, subject_slug) / topic_slug
+
+
+@contextmanager
+def topic_file_lock(vault: Vault, subject_slug: str, topic_slug: str) -> Iterator[None]:
+    """Hold the topic's lock around a read-modify-write of its `topic.yaml`.
+
+    Every update of an existing `topic.yaml` reads it, changes one field and writes it whole, so
+    two at once (two sessions started together, #401) would lose one update. Updates read the
+    file inside this lock; it is shared by the threads and processes on the vault.
+
+    Raises:
+        VaultBusyError: another writer held it for more than `TOPIC_LOCK_TIMEOUT_SECONDS`.
+    """
+    directory = topic_directory(vault, subject_slug, topic_slug)
+    with directory_lock(vault.path, directory).hold(TOPIC_LOCK_TIMEOUT_SECONDS):
+        yield
 
 
 def create_topic(vault: Vault, subject_slug: str, title: str) -> StoredTopic:
@@ -179,11 +199,13 @@ def set_fidelity_mode(vault: Vault, subject_slug: str, topic_slug: str, mode: st
     """
     if mode not in FIDELITY_MODES:
         raise ValueError(f"{mode!r} is not a fidelity mode ({', '.join(FIDELITY_MODES)})")
-    stored = require_topic(vault, subject_slug, topic_slug)
-    if stored.topic.fidelity_mode == mode:
-        return stored
-    topic = stored.topic.model_copy(update={"fidelity_mode": mode})
-    write_yaml_atomic(topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME, topic)
+    require_topic(vault, subject_slug, topic_slug)
+    with topic_file_lock(vault, subject_slug, topic_slug):
+        stored = get_topic(vault, subject_slug, topic_slug)
+        if stored.topic.fidelity_mode == mode:
+            return stored
+        topic = stored.topic.model_copy(update={"fidelity_mode": mode})
+        write_yaml_atomic(topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME, topic)
     return StoredTopic(slug=topic_slug, topic=topic)
 
 
