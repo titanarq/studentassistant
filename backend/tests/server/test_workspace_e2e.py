@@ -17,9 +17,9 @@ every detector call sees exactly one new final and the scripts are consumed in a
 detector's own timers are set far beyond the test's length.
 
 The capture client ends the session at the end of the recording; here the spoken "ya está, quiero
-estudiar" has already ended it (the `study` turn), so the client does not (`StopsOnGoStudy`), as
-the web capture page does when the chat's `go_study` turn arrives (the replay itself does not
-know that yet: #387).
+estudiar" has already ended it (the `study` turn) while the student keeps going (a marker after
+it), so the replay stops there and reports the session as ended by the backend (#387), as the web
+capture page stops when the chat's `go_study` turn arrives.
 
 The vault's `GitSync` pushes to a local bare repository (`git_origin`) that stands in for GitHub;
 after the app's shutdown it holds every commit. Every wait is bounded; the test takes a few
@@ -57,6 +57,7 @@ from studentassistant.observer.requests import TOOL_NAME as REQUESTS_TOOL
 from studentassistant.protocol import (
     CaptureImage,
     CaptureUploadRequest,
+    Marker,
     TranscriptClientFinal,
 )
 from studentassistant.server.app import create_app
@@ -71,9 +72,6 @@ from studentassistant.server.recording import (
 from studentassistant.server.replay import (
     AsgiTransport,
     ReplayResult,
-    ReplaySocket,
-    ReplayTransport,
-    Response,
     replay,
 )
 from studentassistant.vault import GitSync, Vault, list_sessions
@@ -107,6 +105,8 @@ SEGMENTS = (
 CAPTURE_OFFSET_MS = 4_500
 TYPED_AT_MS = 14_000
 """The workspace message is typed while the replay waits to send the last final."""
+AFTER_STUDY_MS = 16_000
+"""A marker the student sets after saying "ya está, quiero estudiar": the session has ended."""
 TYPED_QUESTION = "¿Cuál de las tres causas fue la más importante?"
 TYPED_ANSWER = "Tus apuntes no las ordenan; la crisis económica fue el detonante."
 INCORPORATED = (
@@ -197,6 +197,7 @@ def recording(tmp_path: Path) -> Recording:
                     language=LANGUAGE,
                 )
             )
+        writer.append_event(Marker(type="marker", client_time_ms=start + AFTER_STUDY_MS))
         at = start + CAPTURE_OFFSET_MS
         writer.add_capture(
             CaptureUploadRequest(
@@ -408,7 +409,7 @@ class WorkspaceStream:
             await asyncio.wait_for(self._task, WAIT_S)
 
 
-# -- pacing and the capture client -----------------------------------------------------------------
+# -- pacing ----------------------------------------------------------------------------------------
 
 
 class Pace:
@@ -466,36 +467,6 @@ class Pace:
         action = self.actions.pop(ms, None)
         if action is not None:
             await action()
-
-
-class StopsOnGoStudy:
-    """The capture client's transport: its session end waits until the backend has settled
-    (the last final examined, its turn run) and, when the spoken "ya está, quiero estudiar"
-    already ended the session, is not sent -- the answer is the session as it ended."""
-
-    def __init__(self, inner: ReplayTransport, pace: Pace, vault: Vault) -> None:
-        self.inner, self.pace, self.vault = inner, pace, vault
-        self.ended_by_study = False
-
-    async def request(
-        self, method: str, path: str, body: bytes | None = None, content_type: str | None = None
-    ) -> Response:
-        if method == "POST" and path.startswith("/api/sessions/") and path.endswith("/end"):
-            await self.pace.settle(1 << 40)
-            session_id = path.split("/")[3]
-            [meta] = [m for m in list_sessions(self.vault, SUBJECT, TOPIC) if m.id == session_id]
-            if meta.ended_at is not None:
-                self.ended_by_study = True
-                ended = {
-                    "session_id": session_id,
-                    "status": "ended",
-                    "ended_at_ms": int(meta.ended_at.timestamp() * 1000),
-                }
-                return Response(200, json.dumps(ended).encode())
-        return await self.inner.request(method, path, body, content_type)
-
-    async def connect(self, path: str) -> ReplaySocket:
-        return await self.inner.connect(path)
 
 
 # -- helpers ---------------------------------------------------------------------------------------
@@ -599,14 +570,13 @@ def test_a_replayed_session_builds_the_notes_and_studies_them(
             pace = Pace(
                 app,
                 stream,
-                turns={10_000: 1, TYPED_AT_MS: 2, 1 << 40: 4},
+                turns={10_000: 1, TYPED_AT_MS: 2, AFTER_STUDY_MS: 4},
                 actions={TYPED_AT_MS: type_message},
             )
-            client = StopsOnGoStudy(transport, pace, tmp_vault)
             result = await asyncio.wait_for(
-                replay(recording, client, sleep=pace.sleep, clock=pace.clock), WAIT_S * 2
+                replay(recording, transport, sleep=pace.sleep, clock=pace.clock), WAIT_S * 2
             )
-            assert client.ended_by_study, "the spoken study request did not end the session"
+            assert result.ended_by_backend, "the spoken study request did not end the session"
             seen["capture"] = list(stream.events)
 
             # -- the Construir document, the sources and the study screen ------------------------
