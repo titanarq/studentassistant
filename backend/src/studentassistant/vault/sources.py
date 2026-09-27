@@ -21,6 +21,12 @@ Reading is for callers that take a path from outside (the web read API): `list_s
 stored source by its vault-relative path, and `read_source` accepts such a path only when it is
 relative, has no `..`, names a file directly under a topic's `sources/<kind>/`, and still resolves
 there once symlinks are followed. Nothing that reads writes a file or runs git.
+
+Sources are never deleted from the working tree by the student (#451): `remove_source` *retires*
+one, a soft delete that writes a `removed` mapping into its sidecar. A removed source keeps every
+file (and its git history), `read_source` still serves it -- so a footnote of the notes that cites
+it keeps resolving --, but `list_sources` leaves it out unless asked, and with it every caller that
+builds a listing, a catalogue or a context from that list.
 """
 
 from __future__ import annotations
@@ -99,6 +105,15 @@ class SourceNotFoundError(SourceError):
 
 class SourceFileError(SourceError):
     """A source's `.yaml` sidecar exists but is not readable as a YAML mapping."""
+
+
+REMOVED_KEY = "removed"
+"""The sidecar key `remove_source` writes: `{at: <ISO 8601>, by: student}` (#451)."""
+
+
+def is_removed(meta: Mapping[str, Any] | None) -> bool:
+    """Whether a sidecar marks its source as removed (a soft delete, `remove_source`)."""
+    return bool(meta) and isinstance(meta.get(REMOVED_KEY), Mapping)  # type: ignore[union-attr]
 
 
 @dataclass(frozen=True)
@@ -459,8 +474,13 @@ _DEFAULT_MEDIA_TYPE = "application/octet-stream"
 _SOURCE_PATH_PARTS = 7
 
 
-def list_sources(vault: Vault, subject_slug: str, topic_slug: str) -> list[StoredSource]:
+def list_sources(
+    vault: Vault, subject_slug: str, topic_slug: str, *, include_removed: bool = False
+) -> list[StoredSource]:
     """Every stored source of the topic, ordered by kind (`SOURCE_KINDS` order) then number.
+
+    A source `remove_source` retired (its sidecar has `removed`) is left out unless
+    `include_removed`.
 
     A source is the content `put_source` stored: `page-NNN.<ext>` under `notes`, `book` and `pdf`,
     `NNN-<slug>.md` under `web`, `img-NNN.<png|jpg|webp>` under `images`. Sidecars (`.yaml`) and the
@@ -481,14 +501,66 @@ def list_sources(vault: Vault, subject_slug: str, topic_slug: str) -> list[Store
             continue
         entries = sorted(_source_entries(directory, kind), key=lambda item: (item[0], item[1].name))
         for _, entry in entries:
+            meta = _read_sidecar(_sidecar_of(entry))
+            if is_removed(meta) and not include_removed:
+                continue
             listed.append(
-                StoredSource(
-                    kind=kind,
-                    path=entry.relative_to(vault.path).as_posix(),
-                    meta=_read_sidecar(_sidecar_of(entry)),
-                )
+                StoredSource(kind=kind, path=entry.relative_to(vault.path).as_posix(), meta=meta)
             )
     return listed
+
+
+def removed_source_paths(vault: Vault, subject_slug: str, topic_slug: str) -> frozenset[str]:
+    """The vault-relative paths of the topic's removed sources (`remove_source`); reads only.
+
+    Raises what `list_sources` raises.
+    """
+    return frozenset(
+        source.path
+        for source in list_sources(vault, subject_slug, topic_slug, include_removed=True)
+        if is_removed(source.meta)
+    )
+
+
+def remove_source(
+    vault: Vault, vault_relative_path: str, *, removed_at: datetime | None = None
+) -> Path:
+    """Retire one stored source (a soft delete, #451) and return its sidecar's path.
+
+    `vault_relative_path` is a source as `list_sources` names it (not a derived file nor a
+    sidecar). Its sidecar gains `removed: {at: <removed_at, now UTC by default>, by: student}`,
+    written atomically under the directory's lock (a source without a sidecar gets one holding
+    just that). Nothing is deleted: the content, its derived files (crop, transcriptions, PDF page
+    files) and its git history stay, `read_source` still serves it, and `list_sources` leaves it
+    out from now on. The caller commits. Other sources, triage `duplicate_of` references and the
+    session events that mention it are left as they are.
+
+    Raises:
+        SourcePathError: when the path is not a source path (see `read_source`).
+        SourceNotFoundError: when no listed source is at that path -- none was ever stored there,
+            it names a derived file or a sidecar, or it was removed already.
+        SourceFileError: when its sidecar is not a readable YAML mapping.
+        SecretRefused: never in practice (the sidecar was guarded when stored); nothing written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    directory = vault.path.joinpath(*parts[:-1])
+    if not directory.is_dir() or directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourceNotFoundError(f"there is no source at {vault_relative_path!r}")
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        names = {entry.name for _, entry in _source_entries(directory, parts[5])}
+        if parts[-1] not in names:
+            raise SourceNotFoundError(f"there is no source at {vault_relative_path!r}")
+        sidecar = _sidecar_of(directory / parts[-1])
+        if sidecar.is_symlink():
+            raise SourcePathError(f"the sidecar of {vault_relative_path!r} is a symlink")
+        meta = _read_sidecar(sidecar) or {}
+        if is_removed(meta):
+            raise SourceNotFoundError(f"the source at {vault_relative_path!r} was removed already")
+        meta[REMOVED_KEY] = {"at": removed_at or datetime.now(UTC), "by": "student"}
+        text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
+        guard(text)
+        write_text_atomic(sidecar, text)
+    return sidecar
 
 
 def read_source(vault: Vault, vault_relative_path: str) -> SourceContent:

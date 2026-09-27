@@ -282,8 +282,25 @@ Routes registered today:
     so no source is ever rendered as a page of this origin.
   - `GET /api/sources/{vault_id:path}/meta` -> `SourceMeta`: `vault_id`, `kind`, `media_type` (the
     one the content route serves), `size`, `meta` (the parsed sidecar, `null` without one) and
-    `transcription` (the sidecar's `transcription` when it is text, else `null`).
-  - Both source routes go only through the vault's `read_source`: a path that is not a topic's
+    `transcription` (the sidecar's `transcription` when it is text, else `null`) and `removed`
+    (`true` once the student removed it, below).
+  - `DELETE /api/sources/{vault_id:path}` (`server/source_routes.py`, `source_router()`, #451):
+    the Recursos trash button. A **soft delete** ("retirar"): `vault.remove_source` marks the
+    source `removed` in its sidecar and nothing is deleted. It leaves every listing built from
+    `list_sources` (the topic's `sources`, `sources/status` and `summary` counts, the Recursos
+    selection `check_selection` accepts, the editor's catalogue and context, the observer's
+    sources list, triage, the transcription catch-up, the search index), while both GET routes
+    above still serve it, so a citation of it in the notes keeps working. Cited sources may be
+    removed (no 409): the footnote stays and resolves to the removed source. The change is
+    committed at once (`Fuente <topic-relative id> de <s>/<t> retirada`); when the topic's session
+    is the active one, a persisted `source.removed` event (origin `user`, payload `source_id`
+    topic-relative and `source_path` vault-relative) goes on it (the observer's fold ignores it);
+    with no live session the sidecar and the commit are the record. 204 with no body; a path that
+    is not a topic's `sources/<kind>/<file>`, names a derived file or a sidecar, names nothing, or
+    a source removed already is 404 (`"No existe esa fuente en la bóveda."`); an unreadable
+    sidecar 409; an unopenable vault 503. Same LAN guard, Host allowlist and bearer check (loopback
+    trust) as every web route.
+  - Both GET source routes go only through the vault's `read_source`: a path that is not a topic's
     `sources/<kind>/<file>` (absolute, `..` or `%2e%2e`, backslash, NUL, a symlink out of its
     directory) or names no file is 404 (`"No existe esa fuente en la bóveda."`); nothing outside
     the vault's sources is ever served.

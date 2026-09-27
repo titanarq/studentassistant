@@ -70,6 +70,7 @@ from studentassistant.vault import (
     read_notes,
     read_source,
     read_topic_events,
+    removed_source_paths,
     topic_directory,
 )
 
@@ -710,7 +711,11 @@ def assemble_input(
     catalogue: list[CitableSource] = []
 
     # Captures set aside by triage (#324) are neither catalogued nor sent; flagged ones are.
-    excluded = set_aside_ids(vault, subject_slug, topic_slug)
+    # Removed sources (#451) are not listed at all; their pages still hide pending items below.
+    excluded = set_aside_ids(vault, subject_slug, topic_slug) | {
+        path.removeprefix(prefix + "/")
+        for path in removed_source_paths(vault, subject_slug, topic_slug)
+    }
     stored = [
         source
         for source in list_sources(vault, subject_slug, topic_slug)

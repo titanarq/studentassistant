@@ -67,6 +67,7 @@ from studentassistant.vault.sources import (
     _read_sidecar,
     _sidecar_of,
     _source_entries,
+    is_removed,
 )
 from studentassistant.vault.subjects import SUBJECT_FILE_NAME, SUBJECTS_DIRNAME
 from studentassistant.vault.sync import NOTES_TAG_SUFFIX
@@ -854,9 +855,13 @@ def _index_sources(root: Path, directory: Path, subject: str, topic: str, rows: 
     if directory.is_symlink() or not directory.is_dir():
         return
     originals: dict[str, str] = {}
+    removed: set[str] = set()
     for number, entry in sorted(_source_entries(directory, kind), key=lambda e: (e[0], e[1].name)):
         relative = _rel(root, entry)
         meta = _read_sidecar(_sidecar_of(entry))
+        if is_removed(meta):  # a removed source (#451) is neither listed nor searched
+            removed.add(entry.name.split(".", 1)[0])
+            continue
         rows.sources.append(
             (subject, topic, kind, number, relative, None if meta is None else _json(meta))
         )
@@ -872,6 +877,8 @@ def _index_sources(root: Path, directory: Path, subject: str, topic: str, rows: 
             continue
         relative = _rel(root, entry)
         stem = entry.name.split(".", 1)[0]
+        if stem in removed:
+            continue
         if _PAGE_TRANSCRIPTION.match(entry.name):
             source = originals.get(stem, relative)
             rows.docs.append(

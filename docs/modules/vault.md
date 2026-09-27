@@ -235,6 +235,20 @@ followed) anywhere but that directory is a `SourcePathError`; a well-formed path
 `SourceNotFoundError`; a sidecar that is not a YAML mapping is a `SourceFileError` (all three are
 `SourceError`s). A symlinked sidecar is never followed. Neither function writes or runs git.
 
+**Removing a source is a soft delete** (#451): no module deletes a source's files (only the purge
+removes burst originals, below). `remove_source(vault, vault_relative_path, *, removed_at=None) ->
+Path` retires one listed source (same path rules as `read_source`; a derived file, a sidecar, a
+path with nothing listed there or a source removed already is a `SourceNotFoundError`): under the
+directory's lock it merges `removed: {at: <ISO 8601, now UTC by default>, by: student}`
+(`REMOVED_KEY`) into the sidecar, creating one if the source had none, and returns the sidecar's
+path; the caller commits. From then on `list_sources` leaves the source out (pass
+`include_removed=True` to see it), and so does every listing, catalogue or context built from it
+(the web's source lists, the editor's catalogue, the Recursos selection check, triage, the index),
+while `read_source` still serves its content, its derived files and its sidecar, so a footnote of
+the notes that cites it keeps resolving. `is_removed(meta)` tells a removed sidecar;
+`removed_source_paths(vault, s, t)` gives a topic's removed sources' vault-relative paths. The
+number of a removed source is never reused (its files are still in the directory).
+
 ### Study history -- `study.py`
 `study/<name>.jsonl` under a topic: what the student did with the generated material (#75 writes
 `quiz-results`). `append_study_record(vault, s, t, name, record)` appends any Pydantic `record`
@@ -553,7 +567,8 @@ drops every table and indexes the whole vault; `update()` is incremental: it wal
 recorded, and re-reads only the *units* one of whose files appeared, changed or disappeared. A
 unit is `subject.yaml`; `topic.yaml`; a session's `session.yaml` + `transcript.jsonl`
 (`events.jsonl` is not indexed); one `sources/<kind>/` directory; `notes/apuntes.md`;
-`review/pending.yaml`. Both return an `IndexReport` (`rebuilt`, `units_indexed`, `units_removed`,
+`review/pending.yaml` (a removed source, #451, is neither listed nor searched: its row and the
+texts of its page -- transcriptions, PDF page texts -- are left out). Both return an `IndexReport` (`rebuilt`, `units_indexed`, `units_removed`,
 `documents`, `skipped`): a unit whose files this backend cannot read is left out and listed in
 `skipped` as `(unit, reason)`, never failing the rest, and is retried when its files change. The
 notes version tags (`<subject-slug>/<topic-slug>/apuntes-vN`; the old topic-only form is not a
@@ -664,7 +679,8 @@ stored since #426 keep only the chosen still, so `burst_originals` only matters 
 stored before that change; the page itself (`page-NNN.<ext>`), its sidecar, its crop and its transcription are never candidates.
 
 **Never removed**: transcripts, `session.yaml`, `notes/` and its history (tags), sources other
-than burst originals, the editor conversation, and anything `notes/apuntes.md` names by a
+than burst originals (a source the student removed, #451, is only marked `removed` in its
+sidecar and is never a purge candidate either), the editor conversation, and anything `notes/apuntes.md` names by a
 topic-relative path (`cited_paths`: any `sources/...`, `sessions/...`, `generated/...`,
 `conversations/...` it contains, footnote or not) -- a cited candidate is listed as protected.
 A topic is skipped (with the reason) while a session is open, when it has no notes, and, with

@@ -209,9 +209,10 @@
     over the card («¿Borrar esta fuente?» with **Borrar** / **Cancelar**, focus on Cancelar,
     Escape cancels and gives the focus back; never `window.confirm`); **Borrar** calls
     `deleteSource(vaultId)` (`resources.ts`, `DELETE /api/sources/{vault_id}`) and on success the
-    list is read again. A 405/501 says «No se pudo borrar: Este servidor todavía no permite borrar
-    fuentes.» (the backend route is #451, not built yet), any other refusal its `detail`, with
-    **Cerrar**. Cited transcript
+    list is read again. The backend retires the source (#451, a soft delete: its files stay and a
+    citation of it keeps resolving, but it leaves the topic's source list) and answers 204. A
+    405/501 (an older backend) says «No se pudo borrar: Este servidor todavía no permite borrar
+    fuentes.», any other refusal its `detail`, with **Cerrar**. Cited transcript
     spans follow, without a state. The metadata is read by `useSourceMetas`
     (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
     source; every listed source is read again each time the tab is shown and after each change

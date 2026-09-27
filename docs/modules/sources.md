@@ -14,6 +14,18 @@
 ## Boundaries
 - Claude only via `llm`; storage only via `vault`.
 
+## Removed sources (#451)
+The student can **remove** ("retirar") any stored source from the Recursos tab
+(`DELETE /api/sources/{vault_id}`, `docs/modules/server.md`). It is a soft delete, never a file
+deletion: `vault.remove_source` writes `removed: {at, by: student}` into the sidecar, and the
+source's content, derived files (crop, transcriptions, PDF page files) and git history stay.
+Everything this module lists from `vault.list_sources` stops seeing it: triage no longer compares
+new captures with it, `set_aside_ids` / `triage_status` leave it out, a web page or PDF of the same
+URL or content can be stored again, and the transcription catch-up (`catchup.read_owed`) never
+owes it. A removed source is not set aside (triage is about bad captures; removal is the
+student's choice); a triage `duplicate_of` that names it is left as it was, as history. The
+events that mention it (`capture.*`, `page.transcribed`) are append-only and stay.
+
 ## Public surface (`from studentassistant.sources import ...`)
 
 What exists today, after issues #34, #44, #50, #58, #59, #62 and #324: PDF import, capture
@@ -59,7 +71,8 @@ processing and triage, page transcription, textbook pages, web search and web pa
 ### Capture triage -- `triage.py`, `triage_llm.py` (#324)
 Every capture is triaged when it is stored, by cheap deterministic checks (OpenCV/NumPy, no GPU,
 no LLM), so a bad one never reaches the notes. A capture that fails is **set aside**: kept in the
-vault with its reason, never deleted, never transcribed, never given to the editor.
+vault with its reason, never deleted, never transcribed, never given to the editor. (The student
+may still remove it, like any source: see "Removed sources" above.)
 
 - `triage_capture(processed: ProcessedBurst, others: Sequence[TriageRecord], settings) ->
   TriageResult` (pure; `decide(metrics, others, settings)` is the same on computed metrics).

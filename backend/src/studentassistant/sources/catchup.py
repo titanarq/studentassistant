@@ -40,6 +40,7 @@ from studentassistant.vault import (
     get_topic,
     read_source,
     read_topic_events,
+    removed_source_paths,
     subject_slugs,
     topic_directory,
     topic_slugs,
@@ -166,12 +167,13 @@ def read_owed(
     sessions: Collection[str] | None = None,
 ) -> Owed:
     """`owed_pages` of the topic's log, split by whether `page-NNN.md` is stored (blocking).
-    Set-aside captures (their sidecar's `triage`) are left out.
+    Set-aside captures (their sidecar's `triage`) and removed ones (#451) are left out.
 
     Raises what `read_topic_events` raises for a topic or a session it cannot read.
     """
     prefix = topic_directory(vault, subject_slug, topic_slug).relative_to(vault.path).as_posix()
     excluded = {f"{prefix}/{sid}" for sid in set_aside_ids(vault, subject_slug, topic_slug)}
+    excluded |= removed_source_paths(vault, subject_slug, topic_slug)  # retired pages (#451)
     pages, pending_ids = owed_pages(
         read_topic_events(vault, subject_slug, topic_slug),
         before=before,

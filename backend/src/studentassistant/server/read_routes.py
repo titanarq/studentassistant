@@ -48,6 +48,7 @@ from studentassistant.vault import (
     TopicNotFoundError,
     TranscriptSegment,
     Vault,
+    is_removed,
     list_generated,
     list_sessions,
     list_sources,
@@ -218,6 +219,11 @@ class SourceMeta(BaseModel):
     meta: dict[str, Any] | None = Field(description="The parsed sidecar, `null` without one.")
     transcription: str | None = Field(
         description="The sidecar's `transcription` when it carries one as text."
+    )
+    removed: bool = Field(
+        default=False,
+        description="The student retired this source (`DELETE /api/sources/...`, #451): it is"
+        " still served, so a citation of it resolves, but no listing shows it.",
     )
 
 
@@ -557,6 +563,7 @@ def read_router() -> APIRouter:
             size=len(source.content),
             meta=source.meta,
             transcription=transcription if isinstance(transcription, str) else None,
+            removed=is_removed(source.meta),
         )
 
     @router.get(
