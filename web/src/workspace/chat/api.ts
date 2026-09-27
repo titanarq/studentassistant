@@ -516,10 +516,20 @@ export function workspaceMessagesPath(subjectId: string, topicId: string): strin
 /**
  * `POST .../workspace/messages` `{text}` (#327): the message goes to the request classifier like a
  * spoken one and is answered 202 with the requests it became, queued in the backend; their turns
- * then come through the workspace stream. A refusal is its Spanish `detail`.
+ * then come through the workspace stream. A refusal is its Spanish `detail`. With a Recursos
+ * selection (#432) the body is `{text, selected_source_ids}` (topic-relative ids, in the order they
+ * were selected), which the backend resolves «esto», «estas páginas» against (#433).
  */
-export function postMessage(subjectId: string, topicId: string, message: string): Promise<PostOutcome> {
-  return postToMessages(subjectId, topicId, { text: message });
+export function postMessage(
+  subjectId: string,
+  topicId: string,
+  message: string,
+  selectedSourceIds: readonly string[] = [],
+): Promise<PostOutcome> {
+  const payload: Json = { text: message };
+  // The Recursos selection (#432, #433): only when there is one, else the body is `{text}` as before.
+  if (selectedSourceIds.length > 0) payload.selected_source_ids = [...selectedSourceIds];
+  return postToMessages(subjectId, topicId, payload);
 }
 
 /**

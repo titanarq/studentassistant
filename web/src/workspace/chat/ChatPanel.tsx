@@ -4,6 +4,7 @@ import type { OpenSource } from "../../chat/EditorChat";
 import { useFollowLog } from "../../chat/useFollowLog";
 import { sourceItem } from "../resources";
 import VoiceInputButton from "../../tutor/VoiceInputButton";
+import type { SourceSelection } from "../resources/selection";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
 import { capitalized, sourceName } from "./sources";
@@ -407,7 +408,8 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
  * live region, not the whole growing log. While a capture runs (`capturing`) what the student says
  * reaches the chat through the capture; otherwise **Hablar** (#428) dictates one message into the
  * input and sends it like a typed one (kept in the input, unsent, while the assistant is busy).
- * Starting a capture removes the button and stops its recognition.
+ * Starting a capture removes the button and stops its recognition. The sources selected in
+ * **Recursos** (#432) show as chips above the input and go with each message sent.
  */
 /** What the live region says of the latest turn: its status while it runs, its reply once done. */
 export function latestLine(entry: ChatEntry | undefined): string {
@@ -423,11 +425,50 @@ export function latestLine(entry: ChatEntry | undefined): string {
 
 export const FOLLOW_BUTTON = "Nuevos mensajes ↓";
 
+/** More chips than this show the first `CHIPS_SHOWN` and «+N». */
+export const MAX_CHIPS = 6;
+const CHIPS_SHOWN = 5;
+
+/**
+ * The Recursos selection above the chat input (#432): one chip per selected source with × to
+ * deselect it (the first five and «+N» past six) and «Quitar selección». The next message carries
+ * them; the selection stays after it is sent, for a follow-up on the same pages.
+ */
+function SelectionChips({ selection }: { selection: SourceSelection }) {
+  const { selected } = selection;
+  if (selected.length === 0) return null;
+  const shown = selected.length > MAX_CHIPS ? selected.slice(0, CHIPS_SHOWN) : selected;
+  const rest = selected.slice(shown.length);
+  return (
+    <div className="ws-chat-chips" role="group" aria-label="Fuentes seleccionadas para el mensaje">
+      <ul>
+        {shown.map((source) => (
+          <li key={source.id} className="ws-chat-chip">
+            <span>{source.title}</span>
+            <button type="button" aria-label={`Quitar ${source.title} de la selección`} onClick={() => selection.deselect(source.id)}>
+              ×
+            </button>
+          </li>
+        ))}
+        {rest.length > 0 && (
+          <li className="ws-chat-chip ws-chat-chip-more" title={rest.map((source) => source.title).join(", ")}>
+            {`+${rest.length}`}
+          </li>
+        )}
+      </ul>
+      <button type="button" className="ws-chat-link" onClick={selection.clear}>
+        Quitar selección
+      </button>
+    </div>
+  );
+}
+
 export default function ChatPanel({
   chat,
   versionsPath,
   onOpenSource,
   capturing = false,
+  selection = null,
 }: {
   chat: WorkspaceChat;
   /** The topic's versions page, where a change read from the history is compared. */
@@ -435,6 +476,8 @@ export default function ChatPanel({
   onOpenSource?: OpenSource;
   /** A capture of this topic is running: what the student says reaches the chat too. */
   capturing?: boolean;
+  /** The Recursos selection (#432): chips above the input, sent with each message. */
+  selection?: SourceSelection | null;
 }) {
   const [draft, setDraft] = useState("");
   const idle = chat.busy === null;
@@ -457,7 +500,7 @@ export default function ChatPanel({
 
   const send = (text: string) => {
     if (!idle || text.trim() === "") return;
-    chat.send(text);
+    chat.send(text, selection?.selected.map((source) => source.id) ?? []);
     setDraft("");
     log.follow();
   };
@@ -566,6 +609,7 @@ export default function ChatPanel({
         <label htmlFor="ws-chat-input" className="ws-chat-label">
           Mensaje para el asistente
         </label>
+        {selection !== null && <SelectionChips selection={selection} />}
         <textarea
           id="ws-chat-input"
           rows={2}

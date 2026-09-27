@@ -19,7 +19,8 @@ export interface WorkspaceChat {
   historyFailure: string | null;
   /** The last line about an undo, in Spanish. */
   notice: string | null;
-  send: (message: string) => void;
+  /** Posts a typed message, with the Recursos selection's source ids when there are any (#432). */
+  send: (message: string, selectedSourceIds?: readonly string[]) => void;
   /** "Continuar igualmente" on a turn stopped at the cost cap. */
   retry: (key: string) => void;
   undo: () => void;
@@ -119,7 +120,7 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
   }, [subjectId, topicId, loadHistory]);
 
   const send = useCallback(
-    (message: string) => {
+    (message: string, selectedSourceIds: readonly string[] = []) => {
       const text = message.trim();
       if (text === "" || running.current) return;
       running.current = true;
@@ -127,7 +128,7 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
       setBusy("send");
       setNotice(null);
       dispatch({ type: "post.start", key, message: text, time: new Date().toISOString() });
-      void postMessage(subjectId, topicId, text).then((result) => {
+      void postMessage(subjectId, topicId, text, selectedSourceIds).then((result) => {
         running.current = false;
         if (!mounted.current) return;
         setBusy(null);
