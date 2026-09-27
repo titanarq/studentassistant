@@ -288,6 +288,9 @@ DEFAULT_CLAUDE_CODE_TURN_TIMEOUT_SECONDS = 600.0
 DEFAULT_CLAUDE_CODE_AUTH_CHECK_TIMEOUT_SECONDS = 20.0
 # The private, empty working directory the `claude` processes run in (no CLAUDE.md, no repo).
 DEFAULT_CLAUDE_CODE_WORKDIR = Path("~/.cache/studentassistant/claude-code")
+# The CLI's own built-in tools that serve a web search / web fetch request (#306).
+DEFAULT_CLAUDE_CODE_WEB_SEARCH_TOOL = "WebSearch"
+DEFAULT_CLAUDE_CODE_WEB_FETCH_TOOL = "WebFetch"
 
 
 class ClaudeCodeSettings(BaseModel):
@@ -306,6 +309,11 @@ class ClaudeCodeSettings(BaseModel):
         default=DEFAULT_CLAUDE_CODE_AUTH_CHECK_TIMEOUT_SECONDS, gt=0
     )
     workdir: Path = DEFAULT_CLAUDE_CODE_WORKDIR
+    # The CLI built-in tools a request of `[sources] web_search_role` carrying the API's web
+    # search / web fetch server tool runs with (every other process keeps `--tools ""`). An empty
+    # name turns that web tool off under this backend: such a request fails with a clear error.
+    web_search_tool: str = DEFAULT_CLAUDE_CODE_WEB_SEARCH_TOOL
+    web_fetch_tool: str = DEFAULT_CLAUDE_CODE_WEB_FETCH_TOOL
 
     @field_validator("workdir")
     @classmethod

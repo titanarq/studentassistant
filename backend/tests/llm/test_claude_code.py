@@ -16,16 +16,21 @@ from pydantic import BaseModel
 
 from studentassistant.config import ClaudeCodeSettings, Settings
 from studentassistant.llm import (
+    WEB_TOOL_UNAVAILABLE_ERROR,
     ClaudeCodeTransport,
+    CostCapReachedError,
     CostConfirmationRequiredError,
     LLMAPIError,
     LLMConnectionError,
     LLMRateLimitError,
     LLMServerError,
     StructuredOutputError,
+    WebToolsUnavailableError,
     get_client,
     no_sleep,
+    parse_web_results,
     structured,
+    web_fetch_tool,
     web_search_tool,
 )
 from studentassistant.llm.claude_code import parse_tool_calls
@@ -586,3 +591,227 @@ def test_parse_tool_calls(text: str, expected: Any) -> None:
             json.loads(parsed[1][0]["input"])
         return
     assert parsed == expected
+
+
+# -- web search / web fetch on the CLI's own tools (#306) -----------------------------------------
+
+PAGE = "# La Bastilla\n\nLa toma de la Bastilla ocurrió el 14 de julio de 1789."
+URL = "https://es.wikipedia.org/wiki/Toma_de_la_Bastilla"
+
+
+def _tools_arg(run_entry: dict[str, Any]) -> str:
+    argv = run_entry["argv"]
+    return argv[argv.index("--tools") + 1]
+
+
+def test_only_the_web_role_gets_the_cli_web_tools(fake: FakeClaudeCli, settings: Settings) -> None:
+    fake.web_search("bastilla", [(URL, "Bastilla")], "Hecho.").reply("Hola").reply("Hola")
+    transport = ClaudeCodeTransport(
+        fake.settings(web_search_tool="WebSearch", web_fetch_tool="WebFetch"), web_role="observer"
+    )
+    observer = get_client("observer", settings=settings, transport=transport)
+    editor = get_client("editor", settings=settings, transport=transport)
+
+    async def go() -> None:
+        try:
+            await observer.create([user("busca")], tools=[web_search_tool(settings.llm)])
+            await observer.create([user("sin web")])
+            await editor.create([user("sin web")])
+        finally:
+            await transport.aclose()
+
+    run(go)
+
+    web, plain_observer, plain_editor = fake.runs
+    assert _tools_arg(web) == "WebSearch"
+    argv = web["argv"]
+    assert argv[argv.index("--allowedTools") + 1] == "WebSearch"
+    assert "WebSearch" in web["system"] and '"tool_calls"' not in web["system"]
+    for entry in (plain_observer, plain_editor):
+        assert _tools_arg(entry) == ""
+        assert "--allowedTools" not in entry["argv"]
+
+
+def test_the_cli_tool_names_come_from_the_config(fake: FakeClaudeCli, settings: Settings) -> None:
+    fake.reply("Hecho.", cli_tools=["BuscarWeb", "Descargar"])
+    transport = ClaudeCodeTransport(
+        fake.settings(web_search_tool="BuscarWeb", web_fetch_tool="Descargar"), web_role="observer"
+    )
+    request = get_client("observer", settings=settings, transport=transport).build_request(
+        [user("x")], tools=[web_search_tool(settings.llm), web_fetch_tool(settings.llm)]
+    )
+
+    async def go() -> None:
+        try:
+            await transport.send(request)
+        finally:
+            await transport.aclose()
+
+    run(go)
+    assert _tools_arg(fake.runs[0]) == "BuscarWeb,Descargar"
+
+
+def test_a_cli_web_search_becomes_the_api_search_blocks(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    hits = [(URL, "Toma de la Bastilla"), ("https://historia.example.edu/b", "La Bastilla")]
+    offer = json.dumps({"tool_calls": [{"name": "offer", "input": {"urls": [URL]}}]})
+    fake.web_search("toma de la Bastilla", hits, offer)
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport)
+    offer_tool = {"name": "offer", "description": "Ofrece.", "input_schema": {"type": "object"}}
+
+    async def go() -> Any:
+        try:
+            return await client.create(
+                [user("busca")], tools=[web_search_tool(settings.llm, max_uses=2), offer_tool]
+            )
+        finally:
+            await transport.aclose()
+
+    response = run(go)
+
+    found = parse_web_results(response.content)
+    assert found.queries == ["toma de la Bastilla"]
+    assert [(hit.url, hit.title) for hit in found.hits] == hits
+    assert [call.name for call in response.tool_calls] == ["offer"]
+    assert response.stop_reason == "tool_use"
+    assert response.usage.web_search_requests == 1  # from the result event's modelUsage
+    assert response.billing == "subscription"
+    system = fake.runs[0]["system"]
+    assert "at most 2" in system and "## offer" in system
+
+
+def test_a_cli_web_fetch_becomes_the_api_fetch_blocks(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    fake.web_fetch(URL, PAGE)
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport)
+
+    async def go() -> Any:
+        try:
+            return await client.create([user(f"Descarga {URL}")], tools=[web_fetch_tool()])
+        finally:
+            await transport.aclose()
+
+    response = run(go)
+
+    (document,) = parse_web_results(response.content).documents
+    assert (document.url, document.text) == (URL, PAGE)
+    assert document.retrieved_at == "2026-09-27T10:00:00.000Z"
+    assert response.usage.web_fetch_requests == 1
+    assert _tools_arg(fake.runs[0]) == "WebFetch"
+    assert "verbatim" in fake.runs[0]["system"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        None,  # no WebFetch call at all
+        {"tool": "WebFetch", "input": {"url": URL}, "content": "", "result": {"result": ""}},
+    ],
+)
+def test_a_fetch_that_returns_nothing_is_an_unavailable_error(
+    fake: FakeClaudeCli, settings: Settings, call: dict[str, Any] | None
+) -> None:
+    fake.reply("No he podido.", web=[call] if call else [])
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport)
+
+    async def go() -> Any:
+        try:
+            return await client.create([user("x")], tools=[web_fetch_tool()])
+        finally:
+            await transport.aclose()
+
+    found = parse_web_results(run(go).content)
+    assert found.documents == []
+    assert found.fetch_errors == [WEB_TOOL_UNAVAILABLE_ERROR]
+
+
+def test_a_failed_cli_fetch_is_a_fetch_error(fake: FakeClaudeCli, settings: Settings) -> None:
+    call = {"tool": "WebFetch", "input": {"url": URL}, "content": "404", "is_error": True}
+    fake.reply("No existe.", web=[call])
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport)
+
+    async def go() -> Any:
+        try:
+            return await client.create([user("x")], tools=[web_fetch_tool()])
+        finally:
+            await transport.aclose()
+
+    assert parse_web_results(run(go).content).fetch_errors == ["fetch_failed"]
+
+
+def test_a_web_tool_turned_off_is_refused_before_starting(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    transport = ClaudeCodeTransport(fake.settings(web_search_tool=""), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport, sleep=no_sleep)
+
+    with pytest.raises(WebToolsUnavailableError, match="turned off"):
+        run(lambda: client.create([user("busca")], tools=[web_search_tool()]))
+    assert fake.runs == []
+
+
+def test_a_cli_without_the_web_tool_is_not_retried(fake: FakeClaudeCli, settings: Settings) -> None:
+    fake.reply("Hecho.", cli_tools=[]).reply("Hecho.", cli_tools=[])
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client("observer", settings=settings, transport=transport, sleep=no_sleep)
+
+    async def go() -> None:
+        try:
+            await client.create([user("busca")], tools=[web_search_tool()])
+        finally:
+            await transport.aclose()
+
+    with pytest.raises(WebToolsUnavailableError, match="does not offer"):
+        run(go)
+    assert len(fake.turns) == 1
+    assert transport.process_count == 0
+
+
+def test_server_tools_of_another_role_are_still_refused(
+    fake: FakeClaudeCli, settings: Settings
+) -> None:
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    editor = get_client("editor", settings=settings, transport=transport)
+    observer = get_client("observer", settings=settings, transport=transport)
+    other = {"type": "code_execution_20250825", "name": "code_execution"}
+
+    with pytest.raises(LLMAPIError, match="claude-code backend") as refused:
+        run(lambda: transport.send(editor.build_request([user("x")], tools=[web_search_tool()])))
+    assert not isinstance(refused.value, WebToolsUnavailableError)
+    with pytest.raises(LLMAPIError, match="claude-code backend"):
+        run(lambda: transport.send(observer.build_request([user("x")], tools=[other])))
+    assert fake.runs == []
+
+
+def test_a_bound_web_search_is_recorded_as_subscription(
+    fake: FakeClaudeCli, tmp_vault: Vault, settings: Settings
+) -> None:
+    topic = make_topic(tmp_vault)
+    fake.web_search("bastilla", [(URL, "Bastilla")], "Hecho.", cost=0.03)
+    transport = ClaudeCodeTransport(fake.settings(), web_role="observer")
+    client = get_client(
+        "observer",
+        settings=capped_settings(settings, per_session=0.02),
+        transport=transport,
+        ledger=binding(tmp_vault, topic),
+    )
+
+    async def go() -> None:
+        try:
+            await client.create([user("busca")], tools=[web_search_tool()])
+        finally:
+            await transport.aclose()
+
+    run(go)
+
+    [entry] = read_ledger(tmp_vault, *topic)
+    assert entry.billing == "subscription" and entry.role == "observer"
+    assert entry.estimated_usd == pytest.approx(0.03)
+    with pytest.raises(CostCapReachedError):
+        run(lambda: client.create([user("otra")], tools=[web_search_tool()]))

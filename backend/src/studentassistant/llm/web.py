@@ -8,8 +8,10 @@ A long server-side loop may stop with `stop_reason: "pause_turn"`; sending the c
 with the paused assistant turn appended resumes it (`run_server_tools`).
 
 The tool versions come from `[llm] web_search_tool` / `web_fetch_tool` (the dynamic-filtering
-`*_20260209` versions by default), so nothing here hard-codes one. Everything is plain dicts: no
-`anthropic` type leaves `transport.py` (ADR-0004).
+`*_20260209` versions by default), so nothing here hard-codes one. Under the Claude Code backend
+the same request runs on the CLI's own `WebSearch` / `WebFetch` tools and `claude_code.py` hands
+back the same blocks, so `parse_web_results` and every caller work unchanged. Everything is plain
+dicts: no `anthropic` type leaves `transport.py` (ADR-0004).
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ from studentassistant.llm.types import LLMResponse
 WEB_SEARCH_TOOL_NAME = "web_search"
 WEB_FETCH_TOOL_NAME = "web_fetch"
 PAUSE_TURN = "pause_turn"
+# The error code of a web tool result the backend could not produce at all (the Claude Code CLI
+# made no fetch, or its fetch returned nothing): not a failure of the page itself.
+WEB_TOOL_UNAVAILABLE_ERROR = "web_tool_unavailable"
 DEFAULT_MAX_CONTINUATIONS = 5
 
 
@@ -208,6 +213,7 @@ __all__ = [
     "PAUSE_TURN",
     "WEB_FETCH_TOOL_NAME",
     "WEB_SEARCH_TOOL_NAME",
+    "WEB_TOOL_UNAVAILABLE_ERROR",
     "FetchedDocument",
     "ServerToolRun",
     "WebSearchHit",

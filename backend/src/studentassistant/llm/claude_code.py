@@ -22,7 +22,17 @@ server, no slash command, no user or project settings, no session persistence, a
 runs in a private, empty working directory. Client tools (the strict tool of `structured`, the
 observer's and the editor's tools) are described in the system prompt and answered as one JSON
 object, which this module turns back into `tool_use` blocks; `tool_result` blocks go back as text.
-The API's server tools (web search / fetch) are not available and are refused.
+
+Web search / web fetch (#306): a request of the `web_role` (`[sources] web_search_role`) carrying
+the API's web search / web fetch server tools runs on a process started with the CLI's own
+built-in `WebSearch` / `WebFetch` tools allowed (their names come from `[llm.claude_code]`), and
+those only. The CLI's tool events are turned back into the API's blocks (`server_tool_use`,
+`web_search_tool_result`, `web_fetch_tool_result`), so `llm.web.parse_web_results` and the
+sources that use it do not branch on the backend. The CLI's WebFetch answers with the page as its
+own small model rewrites it for a prompt, so the request asks for the page verbatim. A web tool
+turned off by configuration, or missing from the CLI, is a `WebToolsUnavailableError`; a fetch
+that returns nothing is a `web_fetch_tool_result` error with `WEB_TOOL_UNAVAILABLE_ERROR`. Server
+tools in any other role's request are refused.
 
 Usage and cost come from each turn's `result` event: its `usage` is the turn's, while
 `total_cost_usd` is the process's running total, so the turn's cost is the difference.
@@ -59,10 +69,16 @@ from studentassistant.llm.errors import (
     LLMError,
     LLMRateLimitError,
     LLMServerError,
+    WebToolsUnavailableError,
 )
 from studentassistant.llm.json_repair import loads_tolerant
 from studentassistant.llm.transport import TextSink
 from studentassistant.llm.types import Billing, LLMRequest, LLMResponse, Usage
+from studentassistant.llm.web import (
+    WEB_FETCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_NAME,
+    WEB_TOOL_UNAVAILABLE_ERROR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +94,16 @@ TOOL_ID_PREFIX = "toolu_cc_"
 
 
 def base_command(
-    settings: ClaudeCodeSettings, *, model: str, effort: str, system_prompt_file: Path
+    settings: ClaudeCodeSettings,
+    *,
+    model: str,
+    effort: str,
+    system_prompt_file: Path,
+    tools: Sequence[str] = (),
 ) -> list[str]:
-    """The `claude` command line of one conversation process."""
+    """The `claude` command line of one conversation process: no built-in tool but `tools` (the
+    CLI web tools of a web request), which are also pre-approved."""
+    allowed = ",".join(tools)
     return [
         settings.executable,
         "-p",
@@ -97,7 +120,8 @@ def base_command(
         "--system-prompt-file",
         str(system_prompt_file),
         "--tools",
-        "",
+        allowed,
+        *(["--allowedTools", allowed] if tools else []),
         "--strict-mcp-config",
         "--setting-sources",
         "",
@@ -179,9 +203,28 @@ def render_blocks(content: Any, tool_names: dict[str, str]) -> list[dict[str, An
             rendered.append(_text(_tool_call_json([block])))
         elif kind in ("thinking", "redacted_thinking"):
             continue
+        elif kind in ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result"):
+            rendered.append(_text(_render_web_block(block)))
         else:
             rendered.append(_text(json.dumps(block, ensure_ascii=False)))
     return rendered
+
+
+def _render_web_block(block: dict[str, Any]) -> str:
+    """A web tool block of an earlier answer as a short text (a new process's history)."""
+    kind = block.get("type")
+    if kind == "server_tool_use":
+        return f"[{block.get('name')} {json.dumps(block.get('input'), ensure_ascii=False)}]"
+    inner = block.get("content")
+    if isinstance(inner, dict) and "error_code" in inner:
+        return f"[{kind}: error {inner.get('error_code')}]"
+    if kind == "web_search_tool_result" and isinstance(inner, list):
+        hits = [f"- {h.get('title')} <{h.get('url')}>" for h in inner if isinstance(h, dict)]
+        return "[web search results]\n" + "\n".join(hits)
+    if isinstance(inner, dict):
+        source = (inner.get("content") or {}).get("source") or {}
+        return f"[fetched page <{inner.get('url')}>]\n{source.get('data') or ''}"
+    return f"[{kind}]"
 
 
 def render_turns(messages: Sequence[dict[str, Any]], tool_names: dict[str, str]) -> list[dict]:
@@ -226,21 +269,86 @@ in the next user turn as a block starting with `[tool_result of ...]`.
 """
 
 
-def tools_instruction(tools: Sequence[dict[str, Any]], tool_choice: dict[str, Any] | None) -> str:
+# What a WebFetch call asks the CLI's small model to return: the page itself, not an answer.
+WEB_FETCH_PROMPT = (
+    "Return the whole main content of the page verbatim, as Markdown: every heading, paragraph, "
+    "list, table and formula in order. Do not summarize, shorten, translate or comment on it."
+)
+
+
+def is_server_tool(tool: dict[str, Any]) -> bool:
+    return tool.get("type") not in (None, "custom")
+
+
+def web_tool_kind(tool: dict[str, Any]) -> str | None:
+    """`web_search` / `web_fetch` for the API's web server tools, else `None`."""
+    if not is_server_tool(tool):
+        return None
+    kind = str(tool.get("type") or "")
+    for name in (WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME):
+        if kind.startswith(name) and tool.get("name", name) == name:
+            return name
+    return None
+
+
+def _refused(kind: Any) -> LLMAPIError:
+    return LLMAPIError(
+        f"the server tool {kind!r} needs the Anthropic API: it is not available with "
+        "the claude-code backend ([llm] backend)"
+    )
+
+
+def _web_section(tools: Sequence[dict[str, Any]], cli_tools: dict[str, str]) -> str:
+    lines = [
+        "# Web tools",
+        "",
+        "You can run these built-in tools yourself (directly, not through a JSON reply):",
+    ]
+    for tool in tools:
+        kind = web_tool_kind(tool)
+        name = cli_tools.get(kind or "")
+        if name is None:
+            continue
+        limit = tool.get("max_uses")
+        uses = f" Use it at most {limit} time(s)." if isinstance(limit, int) else ""
+        if kind == WEB_SEARCH_TOOL_NAME:
+            domains = ""
+            if tool.get("allowed_domains"):
+                domains = " Only search these domains: " + ", ".join(tool["allowed_domains"]) + "."
+            elif tool.get("blocked_domains"):
+                domains = " Never use these domains: " + ", ".join(tool["blocked_domains"]) + "."
+            lines.append(f"- `{name}` searches the web.{uses}{domains}")
+        else:
+            lines.append(
+                f"- `{name}` fetches a web page. Call it with the page's URL and exactly this "
+                f"prompt: {WEB_FETCH_PROMPT!r}{uses}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def tools_instruction(
+    tools: Sequence[dict[str, Any]],
+    tool_choice: dict[str, Any] | None,
+    cli_tools: dict[str, str] | None = None,
+) -> str:
     """The system-prompt section describing `tools`; empty without tools.
 
-    Raises `LLMAPIError` for a server tool (web search / fetch), which only the API runs.
+    `cli_tools` maps the web server tools allowed on this process (`web_search`, `web_fetch`) to
+    the CLI tool that runs them. Raises `LLMAPIError` for any other server tool.
     """
     if not tools:
         return ""
-    parts = [_TOOLS_INSTRUCTION]
+    cli_tools = cli_tools or {}
+    parts: list[str] = []
+    custom = [tool for tool in tools if not is_server_tool(tool)]
     for tool in tools:
-        kind = tool.get("type")
-        if kind not in (None, "custom"):
-            raise LLMAPIError(
-                f"the server tool {kind!r} needs the Anthropic API: it is not available with "
-                "the claude-code backend ([llm] backend)"
-            )
+        if is_server_tool(tool) and web_tool_kind(tool) not in cli_tools:
+            raise _refused(tool.get("type"))
+    if any(is_server_tool(tool) for tool in tools):
+        parts.append(_web_section(tools, cli_tools))
+    if custom:
+        parts.append(_TOOLS_INSTRUCTION)
+    for tool in custom:
         schema = json.dumps(tool.get("input_schema", {}), ensure_ascii=False, indent=1)
         parts.append(
             f"## {tool.get('name')}\n\n{tool.get('description', '')}\n\n"
@@ -251,12 +359,12 @@ def tools_instruction(tools: Sequence[dict[str, Any]], tool_choice: dict[str, An
     return "\n".join(parts)
 
 
-def system_text(request: LLMRequest) -> str:
+def system_text(request: LLMRequest, cli_tools: dict[str, str] | None = None) -> str:
     """The whole system prompt of the request's conversation: its blocks, then its tools."""
     text = "\n\n".join(
         block.get("text", "") for block in request.system if block.get("type", "text") == "text"
     )
-    tools = tools_instruction(request.tools, request.tool_choice)
+    tools = tools_instruction(request.tools, request.tool_choice, cli_tools)
     return "\n\n".join(part for part in (text, tools) if part)
 
 
@@ -306,6 +414,164 @@ def _call_input(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return value
+
+
+# -- web tools ----------------------------------------------------------------------------------
+
+_LINKS = re.compile(r"Links:\s*(\[.*?\])\s*(?:\n|$)", re.DOTALL)
+
+
+def _tool_result_text(block: dict[str, Any]) -> str:
+    inner = block.get("content")
+    if isinstance(inner, str):
+        return inner
+    if isinstance(inner, list):
+        return "\n".join(str(item.get("text", "")) for item in inner if isinstance(item, dict))
+    return ""
+
+
+def _search_hits(result: Any, text: str) -> list[dict[str, Any]] | None:
+    """The `{url, title}` pages of a CLI WebSearch result (its `tool_use_result`, else the
+    `Links: [...]` line of its text); `None` when it has none to read."""
+    found: list[dict[str, Any]] | None = None
+    if isinstance(result, dict) and isinstance(result.get("results"), list):
+        found = []
+        for item in result["results"]:
+            if isinstance(item, dict) and isinstance(item.get("content"), list):
+                found.extend(hit for hit in item["content"] if isinstance(hit, dict))
+    if not found:
+        match = _LINKS.search(text)
+        if match:
+            with contextlib.suppress(json.JSONDecodeError):
+                links = json.loads(match.group(1))
+                if isinstance(links, list):
+                    found = [hit for hit in links if isinstance(hit, dict)]
+    if found is None:
+        return None
+    return [
+        {"type": "web_search_result", "url": hit["url"], "title": str(hit.get("title") or "")}
+        for hit in found
+        if isinstance(hit.get("url"), str)
+    ]
+
+
+class _WebTurn:
+    """The CLI WebSearch / WebFetch calls of one turn, as the API's web tool blocks."""
+
+    def __init__(self, cli_tools: dict[str, str]) -> None:
+        self.kinds = {name: kind for kind, name in cli_tools.items()}  # CLI name -> API kind
+        self.calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        self.blocks: list[dict[str, Any]] = []
+        self.searches = 0
+        self.fetches = 0
+        self.fetched_text = False
+
+    def on_assistant(self, block: dict[str, Any]) -> None:
+        kind = self.kinds.get(str(block.get("name")))
+        if block.get("type") != "tool_use" or kind is None:
+            return
+        tool_id = str(block.get("id") or f"srvtoolu_cc_{uuid.uuid4().hex[:24]}")
+        tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+        self.calls[tool_id] = (kind, tool_input)
+        api_input = (
+            {"query": tool_input.get("query")}
+            if kind == WEB_SEARCH_TOOL_NAME
+            else {"url": tool_input.get("url")}
+        )
+        self.blocks.append(
+            {"type": "server_tool_use", "id": tool_id, "name": kind, "input": api_input}
+        )
+        if kind == WEB_SEARCH_TOOL_NAME:
+            self.searches += 1
+        else:
+            self.fetches += 1
+
+    def on_user(self, event: dict[str, Any]) -> None:
+        content = (event.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return
+        results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+        # `tool_use_result` (the tool's structured output) is per event: only one result's.
+        structured = event.get("tool_use_result") if len(results) == 1 else None
+        for block in results:
+            call = self.calls.get(str(block.get("tool_use_id")))
+            if call is None:
+                continue
+            kind, tool_input = call
+            tool_id = str(block.get("tool_use_id"))
+            text = _tool_result_text(block)
+            if kind == WEB_SEARCH_TOOL_NAME:
+                self.blocks.append(self._search_result(tool_id, block, structured, text))
+            else:
+                self.blocks.append(
+                    self._fetch_result(tool_id, block, structured, text, tool_input, event)
+                )
+
+    def _search_result(
+        self, tool_id: str, block: dict[str, Any], structured: Any, text: str
+    ) -> dict[str, Any]:
+        hits = None if block.get("is_error") else _search_hits(structured, text)
+        content: Any = (
+            {"type": "web_search_tool_result_error", "error_code": "unavailable"}
+            if hits is None
+            else hits
+        )
+        return {"type": "web_search_tool_result", "tool_use_id": tool_id, "content": content}
+
+    def _fetch_result(
+        self,
+        tool_id: str,
+        block: dict[str, Any],
+        structured: Any,
+        text: str,
+        tool_input: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        info = structured if isinstance(structured, dict) else {}
+        page = info.get("result") if isinstance(info.get("result"), str) else text
+        if block.get("is_error"):
+            content: dict[str, Any] = {"type": "web_fetch_tool_error", "error_code": "fetch_failed"}
+        elif not page.strip():
+            content = {"type": "web_fetch_tool_error", "error_code": WEB_TOOL_UNAVAILABLE_ERROR}
+        else:
+            self.fetched_text = True
+            content = {
+                "type": "web_fetch_result",
+                "url": str(info.get("url") or tool_input.get("url") or ""),
+                "retrieved_at": event.get("timestamp"),
+                "content": {
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": page},
+                    "title": None,
+                },
+            }
+        return {"type": "web_fetch_tool_result", "tool_use_id": tool_id, "content": content}
+
+    def finish(self, wanted: set[str]) -> None:
+        """A web fetch was asked for but none returned text: say the CLI could not serve it."""
+        if (
+            WEB_FETCH_TOOL_NAME in wanted
+            and not self.fetched_text
+            and not any(block.get("type") == "web_fetch_tool_result" for block in self.blocks)
+        ):
+            self.blocks.append(
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": f"srvtoolu_cc_{uuid.uuid4().hex[:24]}",
+                    "content": {
+                        "type": "web_fetch_tool_error",
+                        "error_code": WEB_TOOL_UNAVAILABLE_ERROR,
+                    },
+                }
+            )
+
+
+@dataclass
+class _TurnResult:
+    event: dict[str, Any]
+    text: str
+    model: str | None
+    web: _WebTurn
 
 
 # -- the transport ------------------------------------------------------------------------------
@@ -363,13 +629,19 @@ class _Conversation:
             raise await self._exit_error("before reading its input") from error
 
     async def turn(
-        self, content: list[dict[str, Any]], on_text: TextSink | None, expect_tools: bool
-    ) -> tuple[dict[str, Any], str, str | None]:
-        """Send one user turn; return its `result` event, the answer's text and its model."""
+        self,
+        content: list[dict[str, Any]],
+        on_text: TextSink | None,
+        expect_tools: bool,
+        cli_tools: dict[str, str] | None = None,
+    ) -> _TurnResult:
+        """Send one user turn; return its `result` event, the answer's text, its model and the
+        web tool calls it made."""
         await self._write(content)
         stdout = self.process.stdout
         assert stdout is not None
         sink = _TextStream(on_text, expect_tools)
+        web = _WebTurn(cli_tools or {})
         texts: list[str] = []
         model: str | None = None
         while True:
@@ -390,6 +662,13 @@ class _Conversation:
             if kind == "system" and event.get("subtype") == "init":
                 source = event.get("apiKeySource")
                 self.billing = "subscription" if source in (None, "none") else "api"
+                offered = event.get("tools")
+                missing = [n for n in (cli_tools or {}).values() if n not in (offered or [])]
+                if isinstance(offered, list) and missing:
+                    raise WebToolsUnavailableError(
+                        f"this claude CLI does not offer the {', '.join(missing)} tool(s) "
+                        "a web request needs ([llm.claude_code] web_search_tool / web_fetch_tool)"
+                    )
             elif kind == "stream_event":
                 delta = (event.get("event") or {}).get("delta") or {}
                 if delta.get("type") == "text_delta":
@@ -400,13 +679,18 @@ class _Conversation:
                 for block in message.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "text":
                         texts.append(block.get("text", ""))
+                    elif isinstance(block, dict):
+                        web.on_assistant(block)
+            elif kind == "user":
+                web.on_user(event)
             elif kind == "result":
                 text = "".join(texts)
                 if not text and isinstance(event.get("result"), str):
                     text = event["result"]
                 if not event.get("is_error") and event.get("subtype", "success") == "success":
                     await sink.finish(text, is_tool_call=expect_tools and _is_call(text))
-                return event, text, model
+                web.finish(set(cli_tools or {}))
+                return _TurnResult(event, text, model, web)
 
     async def _wait_exit(self) -> None:
         with contextlib.suppress(TimeoutError):
@@ -512,16 +796,31 @@ def _error_for(event: dict[str, Any]) -> LLMError:
     return LLMAPIError(message)
 
 
-def _usage(event: dict[str, Any]) -> Usage:
+def _usage(event: dict[str, Any], web: _WebTurn | None = None) -> Usage:
+    """The turn's usage. Web searches are counted as the `result` event reports them
+    (`usage.server_tool_use`, else the per-model `modelUsage.*.webSearchRequests`: the CLI's
+    WebSearch runs on a helper model); the CLI reports no fetch count, so its WebFetch calls
+    are counted (a count reported as 0 falls back to the calls seen)."""
     usage = event.get("usage") or {}
     server = usage.get("server_tool_use") or {}
+    searches = int(server.get("web_search_requests") or 0)
+    if not searches and isinstance(event.get("modelUsage"), dict):
+        searches = sum(
+            int(model.get("webSearchRequests") or 0)
+            for model in event["modelUsage"].values()
+            if isinstance(model, dict)
+        )
+    fetches = int(server.get("web_fetch_requests") or 0)
+    if web is not None:
+        searches = searches or web.searches
+        fetches = fetches or web.fetches
     return Usage(
         input_tokens=int(usage.get("input_tokens") or 0),
         output_tokens=int(usage.get("output_tokens") or 0),
         cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
         cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
-        web_search_requests=int(server.get("web_search_requests") or 0),
-        web_fetch_requests=int(server.get("web_fetch_requests") or 0),
+        web_search_requests=searches,
+        web_fetch_requests=fetches,
     )
 
 
@@ -538,8 +837,10 @@ class ClaudeCodeTransport:
     """`Transport` over long-lived headless `claude` processes, one per conversation.
 
     One instance should serve the whole backend process (the server passes one to every feature),
-    so conversations are found again across requests. `spawn` replaces
-    `asyncio.create_subprocess_exec` and `monotonic` the clock (tests).
+    so conversations are found again across requests. `web_role` is the role whose requests may
+    carry the web search / web fetch server tools (`[sources] web_search_role`; none: every
+    server tool is refused). `spawn` replaces `asyncio.create_subprocess_exec` and `monotonic`
+    the clock (tests).
     """
 
     # A tool call written as text is malformed more often than an API one (#320).
@@ -549,10 +850,12 @@ class ClaudeCodeTransport:
         self,
         settings: ClaudeCodeSettings | None = None,
         *,
+        web_role: str | None = None,
         spawn: Spawn | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings or ClaudeCodeSettings()
+        self.web_role = web_role
         self._spawn: Spawn = spawn or asyncio.create_subprocess_exec
         self._monotonic = monotonic
         self._conversations: list[_Conversation] = []
@@ -564,11 +867,37 @@ class ClaudeCodeTransport:
         """How many `claude` processes are live (for tests and diagnostics)."""
         return sum(1 for conversation in self._conversations if conversation.alive)
 
+    def cli_web_tools(self, request: LLMRequest) -> dict[str, str]:
+        """The CLI tools the request's web server tools run on (`{"web_search": "WebSearch"}`);
+        empty without any. Raises `LLMAPIError` for a server tool this request may not use and
+        `WebToolsUnavailableError` for a web tool turned off in `[llm.claude_code]`."""
+        server = [tool for tool in request.tools if is_server_tool(tool)]
+        if not server:
+            return {}
+        names = {
+            WEB_SEARCH_TOOL_NAME: self.settings.web_search_tool.strip(),
+            WEB_FETCH_TOOL_NAME: self.settings.web_fetch_tool.strip(),
+        }
+        tools: dict[str, str] = {}
+        for tool in server:
+            kind = web_tool_kind(tool)
+            if kind is None or self.web_role is None or request.role != self.web_role:
+                raise _refused(tool.get("type"))
+            if not names[kind]:
+                raise WebToolsUnavailableError(
+                    f"the {kind} tool is turned off for the claude-code backend "
+                    f"([llm.claude_code] {kind}_tool is empty)"
+                )
+            tools[kind] = names[kind]
+        return tools
+
     async def send(self, request: LLMRequest, on_text: TextSink | None = None) -> LLMResponse:
-        system = system_text(request)  # refuses server tools before anything starts
+        cli_tools = self.cli_web_tools(request)  # refuses server tools before anything starts
+        system = system_text(request, cli_tools)
         key = hashlib.sha256(
             json.dumps(
-                [request.model, request.effort, request.max_tokens, system], ensure_ascii=False
+                [request.model, request.effort, request.max_tokens, system, sorted(cli_tools)],
+                ensure_ascii=False,
             ).encode("utf-8")
         ).hexdigest()
         normalized = [normalized_message(message) for message in request.messages]
@@ -578,14 +907,17 @@ class ClaudeCodeTransport:
             content = render_turns(new, conversation.tool_names)
         else:
             await self._make_room()
-            conversation = await self._start(request, key, system)
+            conversation = await self._start(request, key, system, cli_tools)
             content = render_history(request.messages, conversation.tool_names)
-        expect_tools = bool(request.tools) and (request.tool_choice or {}).get("type") != "none"
+        expect_tools = (
+            any(not is_server_tool(tool) for tool in request.tools)
+            and (request.tool_choice or {}).get("type") != "none"
+        )
         conversation.cancel_idle()
         conversation.busy = True
         try:
-            event, text, model = await asyncio.wait_for(
-                conversation.turn(content, on_text, expect_tools),
+            turn = await asyncio.wait_for(
+                conversation.turn(content, on_text, expect_tools, cli_tools),
                 self.settings.turn_timeout_seconds,
             )
         except TimeoutError as error:
@@ -602,10 +934,11 @@ class ClaudeCodeTransport:
             raise
         finally:
             conversation.busy = False
+        event = turn.event
         if event.get("is_error") or event.get("subtype", "success") != "success":
             await self._discard(conversation, kill=True)
             raise _error_for(event)
-        response = self._response(conversation, request, event, text, model, expect_tools)
+        response = self._response(conversation, request, turn, expect_tools)
         conversation.seen = [*normalized, normalized_message(response.assistant_turn())]
         conversation.last_used = self._monotonic()
         self._schedule_idle(conversation)
@@ -615,11 +948,10 @@ class ClaudeCodeTransport:
         self,
         conversation: _Conversation,
         request: LLMRequest,
-        event: dict[str, Any],
-        text: str,
-        model: str | None,
+        turn: _TurnResult,
         expect_tools: bool,
     ) -> LLMResponse:
+        event, text, model = turn.event, turn.text, turn.model
         reported: float | None = None
         if isinstance(event.get("total_cost_usd"), int | float):
             total = float(event["total_cost_usd"])
@@ -648,8 +980,8 @@ class ClaudeCodeTransport:
         return LLMResponse(
             model=model or request.model,
             stop_reason=stop_reason,
-            content=content,
-            usage=_usage(event),
+            content=[*turn.web.blocks, *content],
+            usage=_usage(event, turn.web),
             billing=conversation.billing,
             reported_usd=reported,
         )
@@ -673,7 +1005,9 @@ class ClaudeCodeTransport:
                 return conversation
         return None
 
-    async def _start(self, request: LLMRequest, key: str, system: str) -> _Conversation:
+    async def _start(
+        self, request: LLMRequest, key: str, system: str, cli_tools: dict[str, str]
+    ) -> _Conversation:
         # Absolute once, here: the CLI runs with this as its cwd and gets the system prompt file
         # by path, so a relative (or unexpanded `~`) dir would be resolved twice (issue #307).
         workdir = self.settings.workdir.expanduser().absolute()
@@ -688,6 +1022,7 @@ class ClaudeCodeTransport:
             model=request.model,
             effort=request.effort,
             system_prompt_file=system_file,
+            tools=sorted(set(cli_tools.values())),
         )
         env = dict(os.environ)
         env[MAX_OUTPUT_TOKENS_ENV_VAR] = str(request.max_tokens)

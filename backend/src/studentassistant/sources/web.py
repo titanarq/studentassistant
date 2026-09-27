@@ -34,10 +34,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from studentassistant.config import SourcesSettings
 from studentassistant.llm import (
+    WEB_TOOL_UNAVAILABLE_ERROR,
     LLMClient,
     LLMError,
     LLMResponse,
     RefusalError,
+    WebToolsUnavailableError,
     load_prompt,
     parse_web_results,
     run_server_tools,
@@ -77,6 +79,12 @@ FailureReason = Literal["cost_cap", "refused", "error", "interrupted"]
 
 _HTTP_URL = re.compile(r"^https?://[^\s/$.?#][^\s]*$", re.IGNORECASE)
 _FALLBACK_TITLE = "pagina web"
+# The backend cannot run web tools at all (the Claude Code CLI with its web tools turned off or
+# missing, or a fetch that brought nothing back): said once, the same for a search or a page.
+WEB_UNAVAILABLE_MESSAGE = (
+    "La búsqueda web no está disponible con el backend de Claude Code en este equipo: "
+    "no se ha podido buscar ni descargar la página."
+)
 
 
 class WebSearchError(LLMError):
@@ -212,9 +220,12 @@ async def search_web(
             ),
         }
     ]
-    run = await run_server_tools(
-        client, messages, system=prompt.content, tools=tools, prompt_hash=prompt.hash
-    )
+    try:
+        run = await run_server_tools(
+            client, messages, system=prompt.content, tools=tools, prompt_hash=prompt.hash
+        )
+    except WebToolsUnavailableError as error:
+        raise WebSearchError(WEB_UNAVAILABLE_MESSAGE) from error
     responses = list(run.responses)
     offered, reason = _offered(run.final)
     if offered is None:
@@ -296,19 +307,24 @@ async def snapshot_page(
             max_content_tokens=settings.web_fetch_max_content_tokens,
         )
     ]
-    run = await run_server_tools(
-        client,
-        [{"role": "user", "content": f"Descarga esta página: {url}"}],
-        system=prompt.content,
-        tools=tools,
-        prompt_hash=prompt.hash,
-    )
+    try:
+        run = await run_server_tools(
+            client,
+            [{"role": "user", "content": f"Descarga esta página: {url}"}],
+            system=prompt.content,
+            tools=tools,
+            prompt_hash=prompt.hash,
+        )
+    except WebToolsUnavailableError as error:
+        raise WebFetchError(WEB_UNAVAILABLE_MESSAGE) from error
     if run.final.stop_reason == "refusal":
         raise RefusalError("Claude declined to fetch the page")
     found = parse_web_results(run.content)
     documents = [doc for doc in found.documents if doc.url == url] or found.documents
     if not documents:
         code = found.fetch_errors[0] if found.fetch_errors else "no_result"
+        if code == WEB_TOOL_UNAVAILABLE_ERROR:
+            raise WebFetchError(WEB_UNAVAILABLE_MESSAGE)
         raise WebFetchError(f"No se pudo descargar la página ({code}).")
     document = documents[0]
     if document.text is None:
@@ -643,6 +659,7 @@ __all__ = [
     "WEB_SEARCH_FAILED_KIND",
     "WEB_SEARCH_RESULTS_KIND",
     "WEB_SNAPSHOT_STORED_KIND",
+    "WEB_UNAVAILABLE_MESSAGE",
     "AddedVia",
     "KeptResult",
     "KeptWebSource",

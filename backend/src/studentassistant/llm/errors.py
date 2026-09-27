@@ -24,6 +24,11 @@ class LLMAPIError(LLMError):
         self.status_code = status_code
 
 
+class WebToolsUnavailableError(LLMAPIError):
+    """A web search / web fetch request the backend cannot serve (the Claude Code backend with
+    the CLI's web tool turned off in `[llm.claude_code]`, or a CLI that lacks it). Not retried."""
+
+
 class LLMTransientError(LLMError):
     """A failure worth retrying with backoff: rate limit, server error or lost connection."""
 
