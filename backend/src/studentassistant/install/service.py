@@ -18,6 +18,11 @@ from pathlib import Path
 
 UNIT_NAME = "studentassistant.service"
 SYSTEMCTL_TIMEOUT_SECONDS = 30.0
+STOP_TIMEOUT_SECONDS = 300
+"""The unit's `TimeoutStopSec` (#408): how long systemd waits after SIGTERM before SIGKILL. Above
+the bounded waits of a shutdown (the observer loop's and the request detector's calls, `[observer]
+stop_timeout_seconds` each; a few seconds for the running turns) plus the final commit and push
+(`[vault.git] timeout_seconds` per git step), so `SessionService.shutdown()` always runs."""
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,8 @@ def _quote(value: str) -> str:
 
 
 def render_unit(executable: Path, config_path: Path) -> str:
-    """The unit's text: `serve` with `SA_CONFIG` pinned, restarted when it fails."""
+    """The unit's text: `serve` with `SA_CONFIG` pinned, restarted when it fails, given
+    `STOP_TIMEOUT_SECONDS` to shut down."""
     return (
         "[Unit]\n"
         "Description=Student Assistant backend (studentassistant serve)\n"
@@ -89,6 +95,7 @@ def render_unit(executable: Path, config_path: Path) -> str:
         f"Environment={_quote(f'SA_CONFIG={config_path}')}\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
+        f"TimeoutStopSec={STOP_TIMEOUT_SECONDS}\n"
         "\n"
         "[Install]\n"
         "WantedBy=default.target\n"

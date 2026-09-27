@@ -146,7 +146,8 @@ git, imports `anthropic`, `studentassistant.server` or a vault submodule (only t
 ### Live loop -- `live.py`, `context.py`
 `ObserverLoop(bus, lookup, *, settings=ObserverSettings(), client_factory=None, digest=..., clock=...)`
 subscribes to the session bus (`start()`; `stop()` folds what was delivered and waits for the
-calls in flight). `lookup(session_id)` gives an attached session's vault handle
+calls in flight at most `[observer] stop_timeout_seconds`, default 20, then cancels them -- the
+unanswered batch is caught up later, below; `wait_bounded`, #408). `lookup(session_id)` gives an attached session's vault handle
 (`SessionBus.attached`); `client_factory(LedgerBinding)` builds the session's `observer` client
 (`default_client_factory(settings, transport)`: `get_client("observer", ...)` bound to the
 session's ledger, so every call is capped and recorded); `digest(vault, subject, topic)` reads the
@@ -328,6 +329,16 @@ and the context models are re-exported by `studentassistant.observer`.
   the kind. When a session is first seen (a start, a resume, a restart) the session's earlier
   `assistant.request` events are read back, so numbering goes on (typed `req-t<n>` ids do not
   count) and their segments stay assigned.
+- **Restart catch-up** (#408): when a session is first seen, the detector also rebuilds its window
+  from the session's `transcript.final` events: every final up to the newest one examined before
+  -- one shown in an answered call's window (the `user` record's `detail.examined`, or for a
+  record written before #408 the segment ids of its window lines) or part of a request -- is
+  examined, the later ones are not; the newest `request_window_segments` are kept and, when some
+  are unexamined, the trigger examines them as if they had just arrived (once: after that call
+  they are examined, and their segments assigned to any request found). The `context` record then
+  has `unexamined` (the count). `stop()` waits for the calls in flight at most `[observer]
+  stop_timeout_seconds` (default 20), then cancels them (their finals stay unexamined and are
+  caught up when the session is opened again).
 - **Cost caps**: calls are bound to the session's ledger (`default_client_factory`). A reached cap
   keeps the finals unexamined and publishes one `observer.status` (`status: paused`, `reason`,
   `cap`, `limit_usd`, `total_usd`, `detector: "requests"`); the next new final tries again and a
@@ -336,8 +347,9 @@ and the context models are re-exported by `studentassistant.observer`.
   "requests"`). A failed call is never retried until a new final arrives.
 - **Conversation file**: `conversations/observer-requests-<session-id>.jsonl`, the live loop's
   record shapes: a `context` record when the session is first seen (`reason` `start`/`resume`,
-  `requests` read back, `window_segments`), each `user` turn and `assistant` answer (model, prompt
-  hash, usage) and `status` changes (with `detector`).
+  `requests` read back, `window_segments`, `unexamined` when the catch-up found some), each
+  `user` turn (the first one of a call with `detail.examined`: the window's segment ids) and
+  `assistant` answer (model, prompt hash, usage) and `status` changes (with `detector`).
 - **Typed messages** (#327): `MessageClassifier(client_factory, *, sources_lookup=None,
   clock=None).classify(vault, subject, topic, text, *, session_id=None) -> list[ReportedRequest]`
   classifies one message typed in the workspace chat with the same prompt, tool and checks: the

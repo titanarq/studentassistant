@@ -64,6 +64,8 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
 - `service.py` -- `studentassistant.service` in `$XDG_CONFIG_HOME/systemd/user`
   (`~/.config/systemd/user`): `ExecStart=<venv>/bin/studentassistant serve`,
   `Environment=SA_CONFIG=<absolute config path>`, `Restart=on-failure`,
+  `TimeoutStopSec=300` (`STOP_TIMEOUT_SECONDS`, #408: above the shutdown's bounded waits plus
+  the final commit and push, so systemd never SIGKILLs `serve` before it pushed),
   `WantedBy=default.target`. `install_unit(executable, config_path)` writes it when it differs,
   `daemon-reload`, `enable --now`, and `try-restart` when an existing unit changed.
   `service_state()` is `systemctl --user is-active`. Every call goes through `run_systemctl`,

@@ -302,6 +302,24 @@ def _failure_kind(error: LLMError) -> CallFailureKind:
     return "error"
 
 
+async def wait_bounded(tasks: Collection[asyncio.Task[Any]], timeout: float, what: str) -> None:
+    """Wait for `tasks` at most `timeout` seconds, then cancel what still runs and wait for it
+    to unwind (the shutdown bound of the observer loop and the request detector, #408)."""
+    if not tasks:
+        return
+    _done, pending = await asyncio.wait(tasks, timeout=timeout)
+    if pending:
+        logger.warning(
+            "%s: %d calls still in flight after %.0f s at shutdown; cancelling them",
+            what,
+            len(pending),
+            timeout,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _prompt_tokens(response: LLMResponse) -> int:
     """Every token of the prompt of a call, cached or not."""
     usage = response.usage
@@ -398,7 +416,9 @@ class ObserverLoop:
         self._task = asyncio.create_task(self._run(self._subscription), name="observer")
 
     async def stop(self) -> None:
-        """Stop receiving, fold what was delivered, wait for the calls in flight, end the task."""
+        """Stop receiving, fold what was delivered, wait for the calls in flight (at most
+        `[observer] stop_timeout_seconds`, then they are cancelled: the batch is caught up later,
+        #176), end the task."""
         subscription, task = self._subscription, self._task
         if subscription is None or task is None:
             return
@@ -410,8 +430,7 @@ class ObserverLoop:
             self._task = None
             self._settled.set()
         calls = [o.call for o in self._observed.values() if o.call is not None]
-        if calls:
-            await asyncio.gather(*calls, return_exceptions=True)
+        await wait_bounded(calls, self.settings.stop_timeout_seconds, "observer")
         self._observed.clear()
 
     async def drain(self) -> None:
@@ -1100,4 +1119,5 @@ __all__ = [
     "ObserverLoop",
     "default_client_factory",
     "state_ops_tool",
+    "wait_bounded",
 ]

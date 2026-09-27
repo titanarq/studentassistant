@@ -600,8 +600,29 @@ Routes registered today:
   already classified request again with `QueuedRequest.confirm_over_cap`, threaded to
   `revise_notes`, `NotesGenerator.generate`, `NotesGenerator.incorporate` and `answer_doubt`; it
   is not classified or announced again (no second `request.detected`) and its new turn carries
-  the same `request_id`. Confirmed once; nothing is kept across a restart (`NotStoppedError`). Shutdown gives running turns 5 s, then cancels them; still-queued requests
-  are dropped with a log line (they stay in `events.jsonl`).
+  the same `request_id`. Confirmed once; nothing is kept across a restart (`NotStoppedError`).
+  The reader catches and logs an exception per event, so one bad event never ends it; a request
+  kind with no handler (`HANDLERS`, which covers every `observer.REQUEST_KINDS`) is a
+  `turn.error` 422 with a Spanish `detail` (`UNKNOWN_KIND_DETAIL`).
+- **Requests survive a restart** (#408): every request whose turn ended in a result or an error
+  (a busy topic, an unknown kind and a reached cap included) is recorded as a persisted
+  `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, turn_id, kind,
+  outcome: "result" | "error", status?, code?}`) in the request's session while it is attached
+  (written before `turn.result` is announced). On every `session.started` / `session.resumed` on
+  the bus, and at `start()` for a session already attached, `AssistantRequestConsumer.replay`
+  reads the session's `events.jsonl` and queues again through `submit`, oldest first,
+  every `assistant.request` no turn answered (`unanswered_requests(events, session_id, turns)`):
+  no `turn.finished` of its id, no voice chat turn (`editor.chat_history`) whose `transcript` is
+  that request of that session, and after the session's newest answered request (a topic's
+  requests run in order, so what precedes an answered one ran; this also keeps a session left
+  open across the upgrade from replaying requests answered before `turn.finished` existed). A
+  replayed request is announced (`request.detected`) and streams as usual. `submit` takes each
+  `(session_id, request_id)` once per process, so a request queued, running or replayed already
+  is never queued twice (a reconnect's resume replays nothing). Shutdown gives running turns 5 s,
+  then cancels them; the cancelled turns and the still-queued requests have no `turn.finished`,
+  so they run when the session is resumed on the restarted backend (the log names them). Not
+  replayed: a typed request kept in a review session (no capture session was open) and a request
+  whose session ended before its turn ran.
   The request classifiers' context (`sources_lookup(sessions)`, `request_context`) is wired here
   into the detector and the typed classifier: the topic's `editor.source_status` rows and the
   open doubt last asked in the chat (`editor.doubts.doubt_chat_turns`).
