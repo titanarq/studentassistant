@@ -120,6 +120,15 @@ def list_topics(vault: Vault, subject_slug: str) -> list[StoredTopic]:
     return [_read_topic(vault, subject_slug, slug) for slug in slugs]
 
 
+def topic_slugs(vault: Vault, subject_slug: str) -> list[str]:
+    """The sorted slugs of the directories under one subject's `topics/`, reading no YAML.
+
+    Neither the subject's `subject.yaml` nor any `topic.yaml` is read: a half-created topic is
+    listed. A subject (or vault) with no `topics/` directory lists as empty.
+    """
+    return sorted(_taken_slugs(vault, subject_slug))
+
+
 def get_topic(vault: Vault, subject_slug: str, topic_slug: str) -> StoredTopic:
     """Read the topic called `topic_slug`, which is the whole of its `topic.yaml`.
 

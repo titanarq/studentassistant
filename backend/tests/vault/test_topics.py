@@ -22,6 +22,7 @@ from studentassistant.vault import (
     list_topics,
     subject_directory,
     topic_directory,
+    topic_slugs,
     topics_directory,
 )
 from studentassistant.vault.files import read_yaml
@@ -281,3 +282,42 @@ def test_every_refusal_of_a_topic_is_a_vault_error_a_caller_can_catch_as_one_typ
         "and so is the subject refusal a topic entry point lets through"
     )
     assert issubclass(SubjectFileError, VaultError)
+
+
+def test_topic_slugs_of_a_subject_that_has_no_topic_yet_is_empty(
+    tmp_vault: Vault, subject_slug: str
+) -> None:
+    assert topic_slugs(tmp_vault, subject_slug) == []
+
+
+def test_topic_slugs_of_a_subject_the_vault_does_not_have_is_empty(tmp_vault: Vault) -> None:
+    assert topic_slugs(tmp_vault, "no-existe") == []
+
+
+def test_topic_slugs_lists_the_slugs_sorted_not_in_creation_order(
+    tmp_vault: Vault, subject_slug: str
+) -> None:
+    create_topic(tmp_vault, subject_slug, "Vectores")
+    create_topic(tmp_vault, subject_slug, "Derivadas")
+    create_topic(tmp_vault, subject_slug, "Matrices")
+
+    assert topic_slugs(tmp_vault, subject_slug) == ["derivadas", "matrices", "vectores"]
+
+
+def test_topic_slugs_lists_a_directory_whose_topic_yaml_is_not_written_yet(
+    tmp_vault: Vault, subject_slug: str
+) -> None:
+    create_topic(tmp_vault, subject_slug, "Vectores")
+    topic_directory(tmp_vault, subject_slug, "a-medias").mkdir(parents=True)
+    (topics_directory(tmp_vault, subject_slug) / "not-a-directory").write_text(
+        "x", encoding="utf-8"
+    )
+
+    assert topic_slugs(tmp_vault, subject_slug) == ["a-medias", "vectores"]
+
+
+def test_topic_slugs_does_not_read_the_subject_yaml(tmp_vault: Vault, subject_slug: str) -> None:
+    create_topic(tmp_vault, subject_slug, "Vectores")
+    (subject_directory(tmp_vault, subject_slug) / SUBJECT_FILE_NAME).unlink()
+
+    assert topic_slugs(tmp_vault, subject_slug) == ["vectores"]

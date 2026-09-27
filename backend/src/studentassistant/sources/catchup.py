@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 from studentassistant.observer import (
     CAPTURE_EVENT_KIND,
@@ -40,9 +40,9 @@ from studentassistant.vault import (
     get_topic,
     read_source,
     read_topic_events,
-    subject_directory,
+    subject_slugs,
     topic_directory,
-    topics_directory,
+    topic_slugs,
 )
 
 logger = logging.getLogger(__name__)
@@ -205,13 +205,13 @@ def readable_topics(vault: Vault) -> list[tuple[str, str]]:
     catch-up still reaches every other topic.
     """
     found: list[tuple[str, str]] = []
-    for subject_slug in _directory_names(subject_directory(vault, "_").parent):
+    for subject_slug in subject_slugs(vault):
         try:
             get_subject(vault, subject_slug)
         except (VaultError, OSError) as error:
             logger.warning("catch-up skips subject %s it cannot read: %s", subject_slug, error)
             continue
-        for topic_slug in _directory_names(topics_directory(vault, subject_slug)):
+        for topic_slug in topic_slugs(vault, subject_slug):
             try:
                 get_topic(vault, subject_slug, topic_slug)
             except (VaultError, OSError) as error:
@@ -221,14 +221,6 @@ def readable_topics(vault: Vault) -> list[tuple[str, str]]:
                 continue
             found.append((subject_slug, topic_slug))
     return found
-
-
-def _directory_names(root: Path) -> list[str]:
-    """The sorted names of the directories under `root`; none when `root` is not a directory."""
-    try:
-        return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
-    except (FileNotFoundError, NotADirectoryError):
-        return []
 
 
 __all__ = [

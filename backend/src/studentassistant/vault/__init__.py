@@ -112,6 +112,7 @@ from studentassistant.vault.subjects import (
     list_subjects,
     set_style_guide,
     subject_directory,
+    subject_slugs,
 )
 from studentassistant.vault.sync import (
     Clock,
@@ -137,6 +138,7 @@ from studentassistant.vault.topics import (
     require_topic,
     set_fidelity_mode,
     topic_directory,
+    topic_slugs,
     topics_directory,
 )
 from studentassistant.vault.vault import (
@@ -270,7 +272,9 @@ __all__ = [
     "update_page_meta",
     "start_session",
     "subject_directory",
+    "subject_slugs",
     "topic_directory",
+    "topic_slugs",
     "topics_directory",
     "write_generated",
     "write_notes",
