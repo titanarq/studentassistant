@@ -1266,7 +1266,18 @@ every frame after the highest acknowledged `audio_seq`. `speed <= 0` is a `Value
 request, a closed socket, a mismatched STT mode or a socket that keeps dropping raise
 `ReplayError`. `ReplayResult` counts what was sent (`partials_sent`, `finals_sent`,
 `events_sent`, `captures_stored`, `captures_duplicate`, `audio_frames_sent`,
-`audio_frames_resent`, `reconnects`) plus `session_id`, `subject_id`, `topic_id`, `ended_at_ms`.
+`audio_frames_resent`, `reconnects`) plus `session_id`, `subject_id`, `topic_id`, `ended_at_ms`
+and `ended_by_backend`.
+
+A session the backend ends itself is not a failure. The spoken "ya está, quiero estudiar" runs the
+`study` turn (`study_routes.switch_to_study`), which ends the session, possibly before the
+recording's last step. The replay then finds the socket closed as not active, or a capture upload
+or its own end refused with 409. Before raising `ReplayError` for a closed socket or a refused
+upload/end it reads `GET /api/subjects/{s}/topics/{t}/sessions`; when that lists the session as
+ended, it stops sending (a server-mode socket is not reconnected either) and returns with
+`ended_by_backend=True` and `ended_at_ms` from the listing's `ended_at` (no end of its own). A
+message sent between the end and the socket closing is counted as sent but reaches nothing. The
+CLI says so in its summary.
 
 Pacing reads the injectable `clock` and waits with the injectable `sleep`, so tests replay without
 real waiting. The backend is reached through a `ReplayTransport`: `AsgiTransport(app,
