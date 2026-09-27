@@ -20,6 +20,13 @@ Thin: the work is `studentassistant.editor.tutor`. The vault is opened through t
   `result` `{kind: "generation", option, material_kind, question, reply, items, warnings,
   study}` or `error`; every failure of it, no notes and a busy material included, is an `error`
   event. The turn is recorded (`editor.tutor.record_generation`) unless it failed.
+  A **bare** match (`study_requests.needs_parameters`: "hazme un quiz", no count nor difficulty;
+  #383) generates nothing yet: it streams one `result` `{kind: "clarification", option, style,
+  question, reply, refs: [], sections: [], warning: null, defaults}` -- answer-shaped, `reply` the
+  Spanish question back -- and records it (`editor.tutor.record_clarification`). While it is the
+  topic's latest tutor turn, the next `written` message that is not itself a request is read by
+  `study_requests.complete_parameters` ("5 difíciles", "vale"): a completion runs the generation
+  stream above; anything else goes to the tutor, which drops the clarification.
 - `GET /api/subjects/{s}/topics/{t}/tutor` -> `TutorHistory` (answer and generation turns).
 
 Errors before the stream are HTTP errors, `{"detail": "..."}` in Spanish: no `llm_transport` 503,
@@ -34,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
@@ -43,10 +50,13 @@ from pydantic import BaseModel, Field
 from studentassistant.editor.revise import InvalidMessageError, RevisionError
 from studentassistant.editor.tutor import (
     MAX_QUESTION_CHARS,
+    TutorClarification,
     TutorGeneration,
     TutorHistory,
     TutorStyle,
     ask_tutor,
+    pending_clarification,
+    record_clarification,
     record_generation,
     tutor_history,
 )
@@ -73,8 +83,13 @@ from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.revise_routes import sse
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.server.study_requests import (
+    OPTION_TITLES,
+    Clarification,
+    GenerationOption,
     GenerationRequest,
+    complete_parameters,
     match_generation,
+    needs_parameters,
     result_reply,
     started_text,
 )
@@ -295,6 +310,82 @@ def tutor_router() -> APIRouter:
         task.add_done_callback(tasks.discard)
         return respond(queue)
 
+    async def clarification_stream(
+        vault: Vault,
+        sync: GitSync,
+        subject_id: str,
+        topic_id: str,
+        body: TutorRequest,
+        clarification: Clarification,
+    ) -> StreamingResponse:
+        """A bare study chat generation request (#383): one `result` (kind `clarification`)."""
+        question = " ".join(body.question.split())
+        await record_clarification(
+            vault,
+            subject_id,
+            topic_id,
+            TutorClarification(
+                subject=subject_id,
+                topic=topic_id,
+                question=question,
+                reply=clarification.reply,
+                option=clarification.option,
+                material_kind=clarification.kind,
+                defaults=clarification.defaults,
+            ),
+            sync=sync,
+        )
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        queue.put_nowait(
+            sse(
+                "result",
+                {
+                    "kind": "clarification",
+                    "option": clarification.option,
+                    "style": "written",
+                    "question": question,
+                    "reply": clarification.reply,
+                    "refs": [],
+                    "sections": [],
+                    "warning": None,
+                    "defaults": clarification.defaults,
+                },
+            )
+        )
+        queue.put_nowait(None)
+        return respond(queue)
+
+    async def study_request(
+        vault: Vault, subject_id: str, topic_id: str, text: str, registry: GeneratorRegistry
+    ) -> tuple[GenerationRequest | None, Clarification | None]:
+        """What a written message asks for: a generation to run, a question to ask back, or
+        neither (the tutor answers it)."""
+        matched = match_generation(text, registry=registry)
+        if matched is not None:
+            clarification = needs_parameters(matched, registry=registry)
+            if clarification is None:
+                return matched, None
+            notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
+            if not notes or not notes.strip():
+                return matched, None  # nothing to ask about: the generation reports no notes
+            return None, clarification
+        pending = await asyncio.to_thread(pending_clarification, vault, subject_id, topic_id)
+        if (
+            pending is None
+            or pending.option not in OPTION_TITLES
+            or pending.material_kind not in registry
+        ):
+            return None, None
+        asked = needs_parameters(
+            GenerationRequest(
+                kind=pending.material_kind, option=cast(GenerationOption, pending.option)
+            ),
+            registry=registry,
+        )
+        if asked is None:
+            return None, None
+        return complete_parameters(text, asked, registry=registry), None
+
     @router.get("/api/subjects/{subject_id}/topics/{topic_id}/tutor")
     async def history(request: Request, subject_id: SubjectId, topic_id: TopicId) -> TutorHistory:
         vault, _sync = await open_topic(request, subject_id, topic_id)
@@ -315,11 +406,26 @@ def tutor_router() -> APIRouter:
                 getattr(request.app.state, "generators", None) or default_registry
             )
             materials: MaterialGenerators | None = request.app.state.materials
-            matched = match_generation(body.question, registry=registry)
-            if matched is not None and materials is not None:
-                return generation_stream(
-                    request, vault, sync, subject_id, topic_id, body, matched, materials, registry
+            if materials is not None:
+                matched, clarification = await study_request(
+                    vault, subject_id, topic_id, body.question, registry
                 )
+                if clarification is not None:
+                    return await clarification_stream(
+                        vault, sync, subject_id, topic_id, body, clarification
+                    )
+                if matched is not None:
+                    return generation_stream(
+                        request,
+                        vault,
+                        sync,
+                        subject_id,
+                        topic_id,
+                        body,
+                        matched,
+                        materials,
+                        registry,
+                    )
         notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
         if not notes or not notes.strip():
             raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)

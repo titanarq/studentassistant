@@ -27,6 +27,11 @@ notes lack is left out and named in `warning`. Each style is given only its own 
 history. Neither style offers a tool nor writes anything under `notes/`: a request to change the
 document is answered with "Eso se cambia en Construir: pídeselo allí al asistente." (a prompt
 rule). Records written before the styles existed read as `spoken` with no `sections`.
+
+**Study chat turns the server decides** (it matches and runs them; this module only keeps them):
+a generated material (`tutor.generation`, `record_generation`, #366) and a question back about a
+bare generation request (`tutor.clarification`, `record_clarification`, #383), which
+`pending_clarification` returns while it is the latest turn.
 """
 
 from __future__ import annotations
@@ -76,6 +81,7 @@ WRITTEN_PROMPT_NAME = "editor_study_chat"
 CONVERSATION_NAME = "tutor"
 ANSWER_RECORD = "tutor.answer"
 GENERATION_RECORD = "tutor.generation"
+CLARIFICATION_RECORD = "tutor.clarification"
 REPLY_DELTA = "reply.delta"
 MAX_QUESTION_CHARS = 1000
 HISTORY_TURNS = 6
@@ -86,8 +92,9 @@ Clock = Callable[[], datetime]
 TutorStyle = Literal["spoken", "written"]
 """How the tutor answers: read aloud (`spoken`) or in the study screen's chat (`written`)."""
 
-TurnKind = Literal["answer", "generation"]
-"""A tutor turn answers a question, or (study chat, #366) reports a generated study material."""
+TurnKind = Literal["answer", "generation", "clarification"]
+"""A tutor turn answers a question, or (study chat) reports a generated study material (#366) or
+asks back the count and difficulty of a bare generation request (#383)."""
 
 _REFERENCE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
 _SECTION_REFERENCE = re.compile(r"\[§[ \t]*#?([A-Za-z0-9][A-Za-z0-9_-]*)[ \t]*\]")
@@ -161,6 +168,23 @@ class TutorGeneration(_Strict):
     model: str | None = None
 
 
+class TutorClarification(_Strict):
+    """A bare study chat generation request ("hazme un quiz", #383) the server asked back about
+    before generating; recorded as the `tutor.clarification` conversation record. The server
+    decides and later completes it; this only keeps it."""
+
+    subject: str
+    topic: str
+    style: TutorStyle = "written"
+    question: str = Field(description="The student's request, as typed (trimmed).")
+    reply: str = Field(description="The Spanish question back, naming the defaults.")
+    option: str = Field(description="The study option it will fill (`quiz`, `tarjetas`...).")
+    material_kind: str = Field(description="The generator kind (`quiz`, `flashcards`...).")
+    defaults: dict[str, Any] = Field(
+        default_factory=dict, description="The asked options at the generator's defaults."
+    )
+
+
 class TutorTurn(_Strict):
     """One question and its answer, as a client shows them."""
 
@@ -172,7 +196,9 @@ class TutorTurn(_Strict):
     refs: list[ChatRef] = Field(default_factory=list)
     sections: list[SectionRef] = Field(default_factory=list)
     warning: str | None = None
-    option: str | None = Field(default=None, description="`generation` turns: the study option.")
+    option: str | None = Field(
+        default=None, description="`generation` and `clarification` turns: the study option."
+    )
     items: int | None = Field(default=None, description="`generation` turns: the item count.")
 
 
@@ -188,8 +214,33 @@ class TutorHistory(_Strict):
 
 
 def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[TutorTurn]:
-    turns: list[TutorTurn] = []
+    return [turn for turn, _ in _read_turn_records(vault, subject_slug, topic_slug)]
+
+
+def _read_turn_records(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> list[tuple[TutorTurn, TutorClarification | None]]:
+    """The turns, each with its clarification record when it is one."""
+    turns: list[tuple[TutorTurn, TutorClarification | None]] = []
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
+        if record.kind == CLARIFICATION_RECORD and record.detail:
+            try:
+                clarification = TutorClarification.model_validate(record.detail)
+            except ValidationError:
+                logger.warning(
+                    "ignoring a malformed tutor record of %s/%s", subject_slug, topic_slug
+                )
+                continue
+            turn = TutorTurn(
+                time=record.time,
+                kind="clarification",
+                style=clarification.style,
+                question=clarification.question,
+                reply=clarification.reply,
+                option=clarification.option,
+            )
+            turns.append((turn, clarification))
+            continue
         if record.kind == GENERATION_RECORD and record.detail:
             try:
                 generation = TutorGeneration.model_validate(record.detail)
@@ -198,18 +249,17 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[TutorT
                     "ignoring a malformed tutor record of %s/%s", subject_slug, topic_slug
                 )
                 continue
-            turns.append(
-                TutorTurn(
-                    time=record.time,
-                    kind="generation",
-                    style=generation.style,
-                    question=generation.question,
-                    reply=generation.reply,
-                    warning=" ".join(generation.warnings) or None,
-                    option=generation.option,
-                    items=generation.items,
-                )
+            generated = TutorTurn(
+                time=record.time,
+                kind="generation",
+                style=generation.style,
+                question=generation.question,
+                reply=generation.reply,
+                warning=" ".join(generation.warnings) or None,
+                option=generation.option,
+                items=generation.items,
             )
+            turns.append((generated, None))
             continue
         if record.kind != ANSWER_RECORD or not record.detail:
             continue
@@ -218,17 +268,16 @@ def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[TutorT
         except ValidationError:
             logger.warning("ignoring a malformed tutor record of %s/%s", subject_slug, topic_slug)
             continue
-        turns.append(
-            TutorTurn(
-                time=record.time,
-                style=answer.style,
-                question=answer.question,
-                reply=answer.reply,
-                refs=answer.refs,
-                sections=answer.sections,
-                warning=answer.warning,
-            )
+        answered = TutorTurn(
+            time=record.time,
+            style=answer.style,
+            question=answer.question,
+            reply=answer.reply,
+            refs=answer.refs,
+            sections=answer.sections,
+            warning=answer.warning,
         )
+        turns.append((answered, None))
     return turns
 
 
@@ -282,6 +331,39 @@ async def record_generation(
     )
     if sync is not None:
         sync.note_change()
+
+
+async def record_clarification(
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    clarification: TutorClarification,
+    *,
+    sync: GitSync | None = None,
+    clock: Clock = _utc_now,
+) -> None:
+    """Append a study chat clarification turn (#383) to the tutor conversation, so
+    `tutor_history` shows it and `pending_clarification` finds it. `sync`, when given, is told
+    the conversation changed. A failure to record is logged, never raised."""
+    await _record(
+        vault,
+        subject_slug,
+        topic_slug,
+        clock,
+        CLARIFICATION_RECORD,
+        detail=clarification.model_dump(mode="json"),
+    )
+    if sync is not None:
+        sync.note_change()
+
+
+def pending_clarification(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> TutorClarification | None:
+    """The clarification the topic's latest tutor turn is, when it is one (still unanswered: any
+    later answer or generation turn drops it); reads only (blocking)."""
+    turns = _read_turn_records(vault, subject_slug, topic_slug)
+    return turns[-1][1] if turns else None
 
 
 # -- the refs -----------------------------------------------------------------------------------
@@ -501,6 +583,7 @@ async def ask_tutor(
 
 __all__ = [
     "ANSWER_RECORD",
+    "CLARIFICATION_RECORD",
     "CONVERSATION_NAME",
     "GENERATION_RECORD",
     "MAX_QUESTION_CHARS",
@@ -509,6 +592,7 @@ __all__ = [
     "SectionRef",
     "TurnKind",
     "TutorAnswer",
+    "TutorClarification",
     "TutorGeneration",
     "TutorHistory",
     "TutorStyle",
@@ -516,6 +600,8 @@ __all__ = [
     "ask_tutor",
     "cited_refs",
     "cited_sections",
+    "pending_clarification",
+    "record_clarification",
     "record_generation",
     "tutor_history",
 ]

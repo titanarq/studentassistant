@@ -8,8 +8,11 @@ import pytest
 
 from material_generators import points_registry
 from studentassistant.server.study_requests import (
+    Clarification,
     GenerationRequest,
+    complete_parameters,
     match_generation,
+    needs_parameters,
     result_reply,
     started_text,
 )
@@ -119,3 +122,162 @@ def test_the_chat_lines() -> None:
     slides = GenerationRequest(kind="diapositivas", option="diapositivas")
     assert result_reply(slides, {}, 9) == "Listas: 9 diapositivas. Ábrelas en «Diapositivas»."
     assert result_reply(slides, {}, 1) == "Listas: 1 diapositiva. Ábrelas en «Diapositivas»."
+
+
+# -- asking back (#383) ----------------------------------------------------------------------------
+
+ASKS_BACK: list[tuple[str, str, dict[str, Any], str]] = [
+    # text, option, defaults, reply
+    (
+        "hazme un quiz",
+        "quiz",
+        {"size": 10, "difficulty": "mixed"},
+        "¿Cuántas preguntas quieres y de qué dificultad (fácil, media, difícil o variada)? Si no"
+        " me dices nada distinto, hago 10 preguntas de dificultad variada.",
+    ),
+    ("hazme tarjetas", "tarjetas", {"size": 20}, "¿Cuántas tarjetas quieres? Por defecto, 20."),
+    (
+        "hazme ejercicios",
+        "ejercicios",
+        {"exercises": 6},
+        "¿Cuántos ejercicios quieres? Por defecto, 6.",
+    ),
+    (
+        "hazme un examen",
+        "examen",
+        {"questions": 5},
+        "¿Cuántas preguntas quieres en el examen? Por defecto, 5.",
+    ),
+    (
+        "hazme unas diapositivas",
+        "diapositivas",
+        {"size": 12},
+        "¿Cuántas diapositivas quieres? Por defecto, 12.",
+    ),
+]
+
+GENERATES_DIRECTLY = [
+    "hazme un esquema",  # no options: never asks back
+    "hazme un quiz de 5",
+    "hazme un quiz difícil",  # the count at its default
+    "hazme un quiz de 10 preguntas fáciles",
+    "genera veinte tarjetas",
+    "prepárame 5 ejercicios",
+    "hazme un examen de 4 preguntas",
+    "hazme 8 diapositivas",
+]
+
+
+@pytest.mark.parametrize(("text", "option", "defaults", "reply"), ASKS_BACK)
+def test_a_bare_request_asks_back(
+    text: str, option: str, defaults: dict[str, Any], reply: str
+) -> None:
+    matched = match_generation(text)
+    assert matched is not None
+    clarification = needs_parameters(matched)
+    assert clarification == Clarification(
+        kind=matched.kind, option=matched.option, defaults=defaults, reply=reply
+    )
+
+
+@pytest.mark.parametrize("text", GENERATES_DIRECTLY)
+def test_a_request_with_its_parameters_does_not_ask(text: str) -> None:
+    matched = match_generation(text)
+    assert matched is not None and needs_parameters(matched) is None
+
+
+def test_the_defaults_come_from_the_registry() -> None:
+    from pydantic import Field
+
+    from studentassistant.generators import GeneratorRegistry
+    from studentassistant.generators.flashcards import FlashcardsGenerator, FlashcardsOptions
+
+    class FewOptions(FlashcardsOptions):
+        size: int = Field(default=7, ge=1, le=9)
+
+    class FewCards(FlashcardsGenerator):
+        options_model = FewOptions
+
+    registry = GeneratorRegistry()
+    registry.register(FewCards)
+    matched = match_generation("hazme tarjetas", registry=registry)
+    assert matched is not None
+    clarification = needs_parameters(matched, registry=registry)
+    assert clarification is not None and clarification.defaults == {"size": 7}
+    assert clarification.reply.endswith("Por defecto, 7.")
+    completed = complete_parameters("12", clarification, registry=registry)
+    assert completed is not None and completed.options == {"size": 9}
+    assert completed.clamped == ["Como mucho pueden ser 9 tarjetas: preparo 9."]
+
+
+def _pending(text: str) -> Clarification:
+    matched = match_generation(text)
+    assert matched is not None
+    clarification = needs_parameters(matched)
+    assert clarification is not None
+    return clarification
+
+
+COMPLETIONS: list[tuple[str, str, dict[str, Any]]] = [
+    # pending request, follow-up, options
+    ("hazme un quiz", "5", {"size": 5, "difficulty": "mixed"}),
+    ("hazme un quiz", "10 fáciles", {"size": 10, "difficulty": "easy"}),
+    ("hazme un quiz", "difícil, 8", {"size": 8, "difficulty": "hard"}),
+    ("hazme un quiz", "DIFICIL 8", {"size": 8, "difficulty": "hard"}),
+    ("hazme un quiz", "de 12", {"size": 12, "difficulty": "mixed"}),
+    ("hazme un quiz", "doce preguntas de dificultad media", {"size": 12, "difficulty": "medium"}),
+    ("hazme un quiz", "fáciles", {"size": 10, "difficulty": "easy"}),
+    ("hazme un quiz", "que sean variadas", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "vale", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "Sí.", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "las de por defecto", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "como quieras", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "da igual", {"size": 10, "difficulty": "mixed"}),
+    ("hazme un quiz", "vale, 7", {"size": 7, "difficulty": "mixed"}),
+    ("hazme tarjetas", "30 tarjetas", {"size": 30}),
+    ("hazme tarjetas", "veinticinco", {"size": 25}),
+    ("hazme ejercicios", "4", {"exercises": 4}),
+    ("hazme ejercicios", "6 ejercicios y 3 preguntas", {"exercises": 6, "questions": 3}),
+    ("hazme un examen", "8", {"questions": 8}),
+    ("hazme diapositivas", "de 15", {"size": 15}),
+]
+
+NON_COMPLETIONS: list[tuple[str, str]] = [
+    ("hazme un quiz", "¿Qué es la derivada?"),
+    ("hazme un quiz", "no"),
+    ("hazme un quiz", "de"),
+    ("hazme un quiz", "¿?"),
+    ("hazme un quiz", ""),
+    ("hazme un quiz", "5 tarjetas"),  # another material's noun
+    ("hazme un quiz", "fácil y difícil"),
+    ("hazme un quiz", "5 o 6"),
+    ("hazme un quiz", "10 y 12"),
+    ("hazme un quiz", "sí, pero explícame antes la derivada"),
+    ("hazme tarjetas", "¿cuántas caben?"),
+]
+
+
+@pytest.mark.parametrize(("pending", "text", "options"), COMPLETIONS)
+def test_the_follow_up_table(pending: str, text: str, options: dict[str, Any]) -> None:
+    clarification = _pending(pending)
+    completed = complete_parameters(text, clarification)
+    assert completed is not None, text
+    assert (completed.kind, completed.option) == (clarification.kind, clarification.option)
+    assert completed.options == options
+    assert completed.clamped == []
+
+
+@pytest.mark.parametrize(("pending", "text"), NON_COMPLETIONS)
+def test_non_completions_go_to_the_tutor(pending: str, text: str) -> None:
+    assert complete_parameters(text, _pending(pending)) is None
+
+
+def test_a_follow_up_count_is_clamped() -> None:
+    completed = complete_parameters("50 difíciles", _pending("hazme un quiz"))
+    assert completed is not None
+    assert completed.options == {"size": 30, "difficulty": "hard"}
+    assert completed.clamped == ["Como mucho pueden ser 30 preguntas: preparo 30."]
+    assert started_text(completed, 2) == (
+        "Preparando un quiz de 30 preguntas difíciles con tus apuntes v2…"
+        " Como mucho pueden ser 30 preguntas: preparo 30."
+    )
