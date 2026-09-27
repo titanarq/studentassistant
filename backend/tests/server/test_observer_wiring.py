@@ -85,7 +85,7 @@ def test_a_disabled_observer_is_not_built(
     assert app.state.observer is None
 
 
-def test_the_request_detector_is_built_only_in_observer_mode(
+def test_the_request_detector_is_built_unless_request_detection_is_off(
     server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
 ) -> None:
     def build(**observer: object) -> FastAPI:
@@ -99,7 +99,8 @@ def test_the_request_detector_is_built_only_in_observer_mode(
         )
 
     assert isinstance(build().state.requests, RequestDetector)
-    assert build(request_detection="wake_word").state.requests is None
+    wake_word = build(request_detection="wake_word").state.requests
+    assert isinstance(wake_word, RequestDetector) and wake_word.wake_word
     assert build(request_detection="off").state.requests is None
     assert build(enabled=False).state.requests is None
     assert _app(server, codes, tmp_path, tmp_vault).state.requests is None

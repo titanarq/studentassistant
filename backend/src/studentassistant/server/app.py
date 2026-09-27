@@ -298,8 +298,13 @@ def create_app(
             )
             # Registered after the gateway's STT flush, so the observer sees the last finals.
             app.state.sessions.add_before_ended(app.state.observer.flush)
-            if observer_settings.request_detection == "observer":
-                # Requests to the assistant in the transcript (#314), after the STT flush too.
+            if observer_settings.request_detection == "wake_word":
+                # "anel, ...": the voice commands of the last finals first (#318).
+                commands_detector: CommandDetector = app.state.commands
+                app.state.sessions.add_before_ended(lambda _id: commands_detector.drain())
+            if observer_settings.request_detection != "off":
+                # Requests to the assistant in the transcript: Sonnet (#314) or the wake word
+                # (#318, no Claude call), after the STT flush too.
                 app.state.requests = RequestDetector(
                     app.state.bus,
                     app.state.bus.attached,

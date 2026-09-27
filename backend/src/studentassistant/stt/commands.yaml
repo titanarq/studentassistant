@@ -25,3 +25,7 @@ end_and_prepare:
 # The text after the phrase is the search query.
 web_search:
   phrases: ["busca en internet"]
+# The wake word: the text after it is a request to the assistant (`[observer] request_detection =
+# "wake_word"`). The other spellings are how recognisers have written "anel".
+assistant_request:
+  phrases: ["anel", "anél", "a nel", "annel"]
