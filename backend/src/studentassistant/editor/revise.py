@@ -40,7 +40,11 @@ first turn can create the notes (with `add_section`).
 `GitSync.revert_paths` -- a `git revert` of that commit restricted to the files the turn changed,
 so the ledger and conversation lines it also carried stay -- and committed (`Deshecho en <s>/<t>:
 <summary>`). Refused when one of those files changed afterwards (a later turn must be undone
-first; a regeneration cannot be undone this way). Undoing again goes one more turn back.
+first; a regeneration cannot be undone this way), and when the revert would change no file (a
+commit that does not carry the turn's files): nothing is recorded then. A turn's write and its
+commit are one locked step (`notes_lock.checkpointing`, #410), so a turn applied now always has a
+commit to revert, unless the git lock stayed busy (`commit` None, said in its `warning`). Undoing
+again goes one more turn back.
 
 **Spoken requests**: a turn may come from a request the student said aloud (an `assistant.request`
 of the session, run by the server's `assistant_requests.py`): `request` (`ChatRequestRef`) is then
@@ -63,7 +67,7 @@ import asyncio
 import difflib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal
@@ -99,7 +103,7 @@ from studentassistant.editor.notes_format import (
     topic_source_resolver,
     validate,
 )
-from studentassistant.editor.notes_lock import holding_notes
+from studentassistant.editor.notes_lock import checkpointing, holding_notes
 from studentassistant.editor.style_guide import (
     append_rules,
     new_rules,
@@ -171,6 +175,17 @@ REPLY_RESTART = "reply.restart"
 DOUBTS_NOT_RECORDED = (
     "El cambio está aplicado, pero no se han podido guardar las dudas que ha encontrado el editor."
 )
+
+NOT_UNDOABLE_WARNING = (
+    "El cambio está aplicado, pero no se ha podido guardar como un paso propio en el historial:"
+    " este cambio no se podrá deshacer."
+)
+"""An applied turn whose checkpoint returned no commit (the git lock stayed busy)."""
+
+
+def _with_warning(current: str | None, extra: str) -> str:
+    """`extra` after the turn's warning so far, if any."""
+    return f"{current} {extra}" if current else extra
 
 
 def _utc_now() -> datetime:
@@ -924,28 +939,34 @@ def _apply(
     value: EditsOutput,
     current_mode: str,
 ) -> tuple[list[str], str | None, str | None, list[str]]:
-    """Write and commit one change; blocking. `(paths, commit, new mode, rules added)`."""
+    """Write and commit one change as one locked step; blocking. `(paths, commit, new mode, rules
+    added)`.
+
+    The writes and their checkpoint run under the vault's git lock (`checkpointing`), so the sync
+    loop cannot commit these files first and leave the turn's commit -- the one an undo reverts
+    -- without them.
+    """
     root = vault.path
     paths: list[str] = []
-    if edited != notes:
-        write_notes(vault, subject_slug, topic_slug, edited)
-        paths.append(notes_path(vault, subject_slug, topic_slug).relative_to(root).as_posix())
-    new_mode = None
-    if value.fidelity_mode is not None and value.fidelity_mode != current_mode:
-        set_fidelity_mode(vault, subject_slug, topic_slug, value.fidelity_mode)
-        new_mode = value.fidelity_mode
-        topic_file = topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME
-        paths.append(topic_file.relative_to(root).as_posix())
-    added = append_rules(vault, subject_slug, _rules(value.confirmed_style_rules))
-    if added:
-        subject_file = subject_directory(vault, subject_slug) / SUBJECT_FILE_NAME
-        paths.append(subject_file.relative_to(root).as_posix())
-    if not paths:
-        return [], None, None, []
-    sync.note_change()
-    commit = sync.checkpoint(
-        f"Apuntes de {subject_slug}/{topic_slug} revisados: {_short(value.summary)}"
-    )
+    with checkpointing(sync) as commit_now:
+        if edited != notes:
+            write_notes(vault, subject_slug, topic_slug, edited)
+            paths.append(notes_path(vault, subject_slug, topic_slug).relative_to(root).as_posix())
+        new_mode = None
+        if value.fidelity_mode is not None and value.fidelity_mode != current_mode:
+            set_fidelity_mode(vault, subject_slug, topic_slug, value.fidelity_mode)
+            new_mode = value.fidelity_mode
+            topic_file = topic_directory(vault, subject_slug, topic_slug) / TOPIC_FILE_NAME
+            paths.append(topic_file.relative_to(root).as_posix())
+        added = append_rules(vault, subject_slug, _rules(value.confirmed_style_rules))
+        if added:
+            subject_file = subject_directory(vault, subject_slug) / SUBJECT_FILE_NAME
+            paths.append(subject_file.relative_to(root).as_posix())
+        if not paths:
+            return [], None, None, []
+        commit = commit_now(
+            f"Apuntes de {subject_slug}/{topic_slug} revisados: {_short(value.summary)}"
+        )
     return paths, commit, new_mode, added
 
 
@@ -1192,6 +1213,7 @@ async def revise_notes(
                 "notes": edited if changed else None,
                 "paths": paths,
                 "commit": commit,
+                "warning": NOT_UNDOABLE_WARNING if paths and commit is None else None,
             }
         )
     if value is not None and not errors and value.doubts:
@@ -1203,7 +1225,9 @@ async def revise_notes(
             logger.exception(
                 "could not record the doubts of a turn of %s/%s", subject_slug, topic_slug
             )
-            result = result.model_copy(update={"warning": DOUBTS_NOT_RECORDED})
+            result = result.model_copy(
+                update={"warning": _with_warning(result.warning, DOUBTS_NOT_RECORDED)}
+            )
         else:
             result = result.model_copy(update={"doubts": raised})
     if result.notes_changed and result.notes is not None:
@@ -1252,12 +1276,15 @@ async def undo_last_revision(
 
     Raises:
         NothingToUndoError: no applied turn is left to undo.
-        UndoConflictError: a file the turn changed was changed again afterwards; nothing written.
+        UndoConflictError: a file the turn changed was changed again afterwards, or reverting the
+            turn's commit would change no file (it does not carry them); nothing written and no
+            `notes.undone` recorded.
     """
     target = await asyncio.to_thread(_undo_target, vault, subject_slug, topic_slug)
     if target is None:
         raise NothingToUndoError("No hay ningún cambio de la conversación que deshacer.")
     before = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
+    files_before = await asyncio.to_thread(_file_contents, vault, target.paths)
     message = f"Deshecho en {subject_slug}/{topic_slug}: {_short(target.summary or '')}"
     try:
         commit = await asyncio.to_thread(sync.revert_paths, target.commit, target.paths, message)
@@ -1266,6 +1293,16 @@ async def undo_last_revision(
             "No se puede deshacer ese cambio: los apuntes (o las instrucciones) han cambiado"
             " después. Deshaz antes los cambios posteriores."
         ) from error
+    if commit is None and await asyncio.to_thread(_file_contents, vault, target.paths) == (
+        files_before
+    ):
+        # The turn's commit does not carry its files (the sync loop committed them first, in a
+        # turn applied before #410): the revert changed no file, so no undo is recorded. (A
+        # revert written but not committed -- git failing -- is still recorded, `commit` None.)
+        raise UndoConflictError(
+            "No se puede deshacer ese cambio: no quedó guardado como un paso propio en el"
+            " historial, así que deshacerlo no cambiaría nada. Los apuntes siguen igual."
+        )
     after = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
     changed = after != before
     result = UndoResult(
@@ -1289,6 +1326,15 @@ async def undo_last_revision(
     return result
 
 
+def _file_contents(vault: Vault, paths: Sequence[str]) -> list[bytes | None]:
+    """The bytes of each vault-relative path (`None` when absent); reads only (blocking)."""
+    contents: list[bytes | None] = []
+    for path in paths:
+        file = vault.path / path
+        contents.append(file.read_bytes() if file.is_file() else None)
+    return contents
+
+
 def _short(text: str, width: int = 72) -> str:
     words = " ".join(text.split())
     return words if len(words) <= width else words[:width].rstrip() + "…"
@@ -1301,6 +1347,7 @@ __all__ = [
     "MAX_REASKS",
     "NOTES_EDITED_KIND",
     "NOTES_UNDONE_KIND",
+    "NOT_UNDOABLE_WARNING",
     "REPLY_DELTA",
     "REPLY_RESTART",
     "STUDENT_EDIT_RECORD",

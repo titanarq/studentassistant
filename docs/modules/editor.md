@@ -291,7 +291,10 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   `NotesMissingError`. `ReviewResult`: `auto_resolved`, `asked` (ids), `notes_changed`, `summary`
   (one Spanish line reporting the auto-resolutions, "He resuelto con tus fuentes 2 dudas: ...",
   for the chat), `revision`, `session_id`, `commit`, `attempts`, `warning`, `model`. The edits are
-  applied under the topic's write lock on the latest notes, as the answer's are (below).
+  applied under the topic's write lock on the latest notes, as the answer's are (below); since
+  #410 the notes write and its own checkpoint (`Apuntes de <s>/<t>: dudas resueltas con fuentes`,
+  an answer's `...: duda resuelta: <doubt>`) are one locked step (`checkpointing`, below), and the
+  events are committed after it; `commit` is the events' commit, else the notes'.
 - `await answer_doubt(vault, subject, topic, pending_id, answer, *, client, sync, ...) ->
   ResolutionResult` (tool `apply_decision`, `DecisionOutput`: `resolution`, `edits`,
   `footnotes`). `DoubtAnswer`: `suggestion` (1-based, into the latest question's suggestions),
@@ -459,7 +462,14 @@ mode, and the student's message.
   {"attempt"})` tells the caller to drop the reply streamed so far. Past the re-asks nothing is
   applied and the result has `errors` and a Spanish `warning`.
 - **Applied**: the notes (`vault.write_notes`), `topic.yaml` and `subject.yaml` as needed, then
-  `GitSync.checkpoint("Apuntes de <s>/<t> revisados: <summary>")` at once; no notes tag.
+  `GitSync.checkpoint("Apuntes de <s>/<t> revisados: <summary>")` at once, as one locked step
+  (#410): `editor.notes_lock.checkpointing(sync)` holds the vault's git lock (`GitSync.locked()`,
+  re-entrant per thread) around the writes and the checkpoint, inside the topic's notes lock
+  (always that order), so the sync loop's batch commit can never take the turn's files first. The
+  same step is used by an incorporation, a doubt's edit and the student's save. When the git lock
+  stays busy past `[vault.git] timeout_seconds` the change is still written, `commit` is `None`,
+  the sync loop commits it later, and the turn's `warning` is `NOT_UNDOABLE_WARNING` ("... este
+  cambio no se podrá deshacer"). No notes tag.
   `on_event("notes.edited", payload)` gets the result without the `notes` text.
 - `RevisionResult`: `subject`, `topic`, `turn_id`, `origin` (`typed` | `voice`), `request` (the
   `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`, `summary`, `ops`,
@@ -476,7 +486,10 @@ mode, and the student's message.
   carried stay) and committed as `Deshecho en <s>/<t>: <summary>`; `notes.undone` to `on_event`.
   Undoing again goes one turn further back. `UndoResult`: `undone_commit`, `summary`, `commit`,
   `notes_changed`, `diff`, `notes`, `paths`, `revision`. No Claude call. A student save after the
-  turn changes `apuntes.md`, so undoing it then is an `UndoConflictError`.
+  turn changes `apuntes.md`, so undoing it then is an `UndoConflictError`. A revert that would
+  change no file (a turn applied before #410 whose files a batch commit took, so its commit does
+  not carry them) is refused too, an `UndoConflictError` ("... deshacerlo no cambiaría nada"), with
+  nothing committed and **no** `notes.undone` recorded: the chat shows the error, never a success.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
   (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `turn_id`,
   `origin` (`typed` | `voice`), `request_summary` (the spoken request's short line, `None` when
@@ -509,8 +522,9 @@ mode, and the student's message.
   `NothingToUndoError`, `UndoConflictError` (a file of the
   turn changed afterwards -- a later turn, a regeneration, a doubt's edit); plus the llm errors as
   in `generate_notes`, with nothing written but the conversation records.
-- Limitations: a turn is committed as soon as it is applied; when the sync loop happened to commit
-  the files first, `commit` is `None` and that turn cannot be undone. Nothing here streams to the
+- Limitations: a turn's write and its commit are one locked step, so its commit always carries its
+  files; only a git lock busy past its timeout (another process holding git) leaves `commit`
+  `None`, and that turn -- which says so in its `warning` -- cannot be undone. Nothing here streams to the
   web itself: that is the server's `POST .../notes/chat` (SSE) and the workspace stream
   (`docs/modules/server.md`).
 

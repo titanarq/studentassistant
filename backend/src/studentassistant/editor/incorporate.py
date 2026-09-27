@@ -84,11 +84,12 @@ from studentassistant.editor.notes_format import (
     topic_source_resolver,
     validate,
 )
-from studentassistant.editor.notes_lock import holding_notes
+from studentassistant.editor.notes_lock import checkpointing, holding_notes
 from studentassistant.editor.revise import (
     EDIT_TOOL,
     INCORPORATION_RECORD,
     MAX_REASKS,
+    NOT_UNDOABLE_WARNING,
     NOTES_CHANGED_NOTE,
     REPLY_DELTA,
     REPLY_RESTART,
@@ -102,6 +103,7 @@ from studentassistant.editor.revise import (
     _emit,
     _event_payload,
     _seeded,
+    _with_warning,
 )
 from studentassistant.llm import (
     CostConfirmationRequiredError,
@@ -665,10 +667,12 @@ def _apply_if_current(
             return None, current
         if edited == (current or ""):
             return ([], None), current
-        write_notes(vault, subject_slug, topic_slug, edited)
-        path = notes_path(vault, subject_slug, topic_slug).relative_to(vault.path).as_posix()
-        sync.note_change()
-        return ([path], sync.checkpoint(message)), current
+        # One locked step (`checkpointing`): the sync loop cannot commit the notes before the
+        # incorporation's own commit, which is the one an undo reverts.
+        with checkpointing(sync) as commit_now:
+            write_notes(vault, subject_slug, topic_slug, edited)
+            path = notes_path(vault, subject_slug, topic_slug).relative_to(vault.path).as_posix()
+            return ([path], commit_now(message)), current
 
 
 async def incorporate_sources(
@@ -859,6 +863,7 @@ async def incorporate_sources(
                 "notes": edited if changed else None,
                 "paths": paths,
                 "commit": commit,
+                "warning": NOT_UNDOABLE_WARNING if paths and commit is None else None,
             }
         )
     if value is not None and not errors and value.doubts:
@@ -872,8 +877,11 @@ async def incorporate_sources(
             )
             result = result.model_copy(
                 update={
-                    "warning": "Las fuentes están incorporadas, pero no se han podido guardar las"
-                    " dudas que ha encontrado el editor."
+                    "warning": _with_warning(
+                        result.warning,
+                        "Las fuentes están incorporadas, pero no se han podido guardar las"
+                        " dudas que ha encontrado el editor.",
+                    )
                 }
             )
         else:

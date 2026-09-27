@@ -54,7 +54,7 @@ from studentassistant.editor.notes_format import (
     topic_source_resolver,
     validate,
 )
-from studentassistant.editor.notes_lock import holding_notes
+from studentassistant.editor.notes_lock import checkpointing, holding_notes
 from studentassistant.editor.versions import PREAMBLE_KEY, compare_notes
 from studentassistant.vault import (
     ConversationRecord,
@@ -359,11 +359,12 @@ def _save(
         changed = normalised != current
         commit = None
         if changed:
-            write_notes(vault, subject_slug, topic_slug, normalised)
-            sync.note_change()
-            commit = sync.checkpoint(
-                f"Apuntes de {subject_slug}/{topic_slug} editados por el estudiante"
-            )
+            # One locked step (`checkpointing`): the save's commit always carries the notes.
+            with checkpointing(sync) as commit_now:
+                write_notes(vault, subject_slug, topic_slug, normalised)
+                commit = commit_now(
+                    f"Apuntes de {subject_slug}/{topic_slug} editados por el estudiante"
+                )
     return StudentEditResult(
         subject=subject_slug,
         topic=topic_slug,

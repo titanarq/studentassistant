@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 
 from generate_topic import PAGE_1_TRANSCRIPTION, make_topic, valid_notes
+from racing_sync import RacingSyncLoop
+from studentassistant.editor import incorporate
 from studentassistant.editor.direct_edit import save_student_edit
 from studentassistant.editor.incorporate import (
     INCORPORATION_PROGRESS_KIND,
@@ -371,6 +373,25 @@ def test_an_incorporation_is_a_chat_turn_and_can_be_undone(tmp_vault: Vault, syn
 
     assert undone.undone_commit == result.commit and _notes(topic) == before
     assert chat_history(topic.vault, topic.subject, topic.topic).turns[-1].undone
+
+
+def test_a_sync_commit_racing_an_incorporation_does_not_take_its_notes(
+    tmp_vault: Vault, sync: GitSync, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topic = _make(tmp_vault)
+    before = _notes(topic)
+    racer = RacingSyncLoop(sync, incorporate.write_notes)
+    monkeypatch.setattr(incorporate, "write_notes", racer)
+
+    result = _incorporate(topic, sync, _add_chain_rule(FakeClaude()), [P3])
+    racer.finish()
+
+    assert result.applied and result.commit is not None and result.warning is None
+    assert "notes/apuntes.md" in _git(
+        topic.vault, "show", "--name-only", "--format=", result.commit
+    )
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert undone.undone_commit == result.commit and _notes(topic) == before
 
 
 # -- the whole topic in small batches ------------------------------------------------------------
