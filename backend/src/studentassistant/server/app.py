@@ -252,6 +252,8 @@ def create_app(
             doubts=app.state.doubt_chat,
             transcribing=sources.transcription_enabled,
         )
+        # Server start: the requests of ended sessions a restart left unanswered (#423).
+        app.state.sessions.add_on_open(app.state.assistant_requests.catch_up_vault)
         # The topic's sources and the doubt asked now, for the request classifiers (#327).
         request_context = sources_lookup(app.state.sessions)
         # Typed workspace messages -> requests, whatever `request_detection` says (#327).
