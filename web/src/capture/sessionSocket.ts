@@ -25,6 +25,8 @@ import {
   ProtocolDecodeError,
   type ServerAck,
   type ServerEvent,
+  type PauseReason,
+  parseVersion,
   type SourceKind,
   type SttStatus,
   type TranscriptClientFinal,
@@ -50,6 +52,9 @@ export const CAPTURE_CAPABILITIES: ClientCapabilities = {
   stt_provider: WEB_SPEECH_PROVIDER,
   audio_format: CLIENT_AUDIO_FORMAT,
 };
+
+/** The protocol MINOR (of MAJOR 1) since which a `pause` may carry its `reason` (#454). */
+const PAUSE_REASON_MINOR = 7;
 
 /** Close codes this side sends: the student's clean end, and a frame that breaks protocol v1. */
 const NORMAL_CLOSURE = 1000;
@@ -330,6 +335,16 @@ export class SessionSocket {
     this.send(message);
   }
 
+  /**
+   * The capture paused, and why (#454): `hidden` (the tab went to the background: the backend's
+   * idle clock runs) or `student` (the workspace's Recursos tab: the page is still in front of the
+   * student, so the backend keeps the session). The reason goes out only on a connection that
+   * negotiated 1.7 or later; before `hello.ack`, or with an older backend, a bare `pause` does.
+   */
+  sendPause(clientTimeMs: number, reason: PauseReason): void {
+    this.send({ type: "button", button: "pause", reason, client_time_ms: clientTimeMs });
+  }
+
   /** The client received the server `command` with that id and acted on it. */
   sendAck(commandId: string, clientTimeMs: number): void {
     this.send({ type: "ack", command_id: commandId, client_time_ms: clientTimeMs });
@@ -466,7 +481,7 @@ export class SessionSocket {
       this.phase = "live";
       this.attempts = 0;
       for (const message of this.offline.splice(0)) {
-        if (this.suits(message)) this.transmit(JSON.stringify(message));
+        if (this.suits(message)) this.transmit(JSON.stringify(this.spoken(message)));
       }
       this.notify({ kind: "reconnected", ack });
       return;
@@ -604,7 +619,19 @@ export class SessionSocket {
       return;
     }
     if (!this.suits(message)) return;
-    this.transmit(JSON.stringify(message));
+    this.transmit(JSON.stringify(this.spoken(message)));
+  }
+
+  /**
+   * The message as the connection's negotiated version has it: a pause's `reason` (1.7, #454) is
+   * left out until `hello.ack` said the backend speaks 1.7 or later (an older one refuses it).
+   */
+  private spoken(message: ClientEvent): ClientEvent {
+    if (message.type !== "button" || message.reason === undefined) return message;
+    const [major, minor] = this.version === null ? [0, 0] : parseVersion(this.version);
+    if (major > 1 || (major === 1 && minor >= PAUSE_REASON_MINOR)) return message;
+    const { reason: _dropped, ...bare } = message;
+    return bare;
   }
 
   /**

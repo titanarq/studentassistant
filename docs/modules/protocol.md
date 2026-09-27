@@ -13,7 +13,9 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   the end response's `notes_generation` and `GET .../topics/{t}/notes/generation`; since #440
   (still 1.6) the backend accepts `prepare_notes` but ignores it, never sends
   `notes_generation`, and the polling route and its `rest.topics.notes.generation.response`
-  schema are removed (`protocol/README.md` "Notes generation").
+  schema are removed (`protocol/README.md` "Notes generation"). Protocol 1.7 (#454) added
+  the optional `reason` (`hidden` | `student`) of a `button` `pause` (`protocol/README.md`
+  "Pause reason"): a `student` pause keeps the backend's idle auto-end away.
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
@@ -36,7 +38,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.6"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.7"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -73,7 +75,7 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.6"`: the end request's `prepare_notes`, #258, never
+- Version: `PROTOCOL_VERSION` (`"1.7"`: 1.7 the pause `reason`, #454, sent by `SessionSocket.sendPause` only on a connection that negotiated it; 1.6 the end request's `prepare_notes`, #258, never
   sent and ignored by the backend since #440, whose notes generation status types are removed; since 1.5 the capture page shows the server-side STT status, #222;
   since 1.4 it biases the browser recognizer towards the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
@@ -96,7 +98,7 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.6"`, for `SessionEndRequest.prepareNotes`, #258,
+- Version: `PROTOCOL_VERSION` (`"1.7"`; 1.7 adds `Button.reason` / `PauseReason`, #454, never sent by this app; 1.6 was for `SessionEndRequest.prepareNotes`, #258,
   never sent and ignored by the backend since #440, which removed `NotesGenerationStatus`; 1.5 for the server-side STT status `SttStatus`, #222; the
   1.2 error `code` needs nothing from the app, which decodes no error body, only the HTTP status;
   the 1.4 `vocabulary_hints`, decoded as `HelloAck.vocabularyHints` /

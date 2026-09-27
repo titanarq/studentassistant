@@ -10,6 +10,13 @@ The active session is *sending* while at least one of its capture WebSockets (`w
 its own flag, and a closed socket stops counting. The WebSocket gateway reports those changes
 here (`connected`, `set_paused`, `disconnected`).
 
+A pause says why since protocol 1.7 (#454): `reason: "hidden"` -- or no reason, what older
+clients and the Android app send when they go to the background -- means the client stopped
+sending, and the idle clock runs; `reason: "student"` is the web workspace's Recursos tab, a page
+still in front of the student who only put the capture aside, and that socket keeps the session
+*held*: while it stays connected the idle clock does not run. The human's rule stands: a hidden
+tab stops sending and auto-ends; a closed socket stops counting whatever it said.
+
 The idle clock of the watched session (the one `SessionService` last attached, on `start` or
 `resume`) starts when it stops sending and is reset as soon as a socket connects or resumes; a
 session just started or resumed with no socket yet counts as not sending, so its grace period
@@ -59,6 +66,8 @@ def _now_ms() -> int:
 class _Socket:
     session_id: str
     paused: bool = False
+    # Paused with `reason: "student"` (#454): not sending, but the client is there.
+    held: bool = False
 
 
 class CaptureLiveness:
@@ -104,12 +113,18 @@ class CaptureLiveness:
         self._update(session_id)
         return token
 
-    def set_paused(self, token: int, paused: bool) -> None:
-        """The socket's latest `button` was `pause` (True) or `resume` (False)."""
+    def set_paused(self, token: int, paused: bool, reason: str | None = None) -> None:
+        """The socket's latest `button` was `pause` (True) or `resume` (False).
+
+        A pause's `reason` `student` (#454) keeps the session held while the socket is connected;
+        `hidden` or none lets the idle clock run. A new pause with another reason replaces it.
+        """
         socket = self._sockets.get(token)
-        if socket is None or socket.paused == paused:
+        held = paused and reason == "student"
+        if socket is None or (socket.paused, socket.held) == (paused, held):
             return
         socket.paused = paused
+        socket.held = held
         self._update(socket.session_id)
 
     def disconnected(self, token: int) -> None:
@@ -123,6 +138,13 @@ class CaptureLiveness:
     def is_sending(self, session_id: str) -> bool:
         """Whether a socket of `session_id` is connected and not paused."""
         return any(s.session_id == session_id and not s.paused for s in self._sockets.values())
+
+    def is_held(self, session_id: str) -> bool:
+        """Whether a socket of `session_id` is connected and sending, or paused by the student
+        in a client still in front of them (`reason: "student"`, #454): the idle clock stops."""
+        return any(
+            s.session_id == session_id and (not s.paused or s.held) for s in self._sockets.values()
+        )
 
     def idle_seconds(self, session_id: str) -> float | None:
         """Seconds the watched `session_id` has not been sending; None if sending or unwatched."""
@@ -216,13 +238,13 @@ class CaptureLiveness:
         if session_id != self._watched:
             self._sockets = {t: s for t, s in self._sockets.items() if s.session_id == session_id}
         self._watched = session_id
-        self._idle_since = None if self.is_sending(session_id) else self.clock()
+        self._idle_since = None if self.is_held(session_id) else self.clock()
 
     def _update(self, session_id: str) -> None:
         """Start or reset the idle clock after a socket change of `session_id`."""
         if session_id != self._watched:
             return
-        if self.is_sending(session_id):
+        if self.is_held(session_id):
             self._idle_since = None
         elif self._idle_since is None:
             self._idle_since = self.clock()

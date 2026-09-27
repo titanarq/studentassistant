@@ -660,6 +660,8 @@ class _Connection:
             payload: dict[str, Any] = {"button": event.button}
             if event.source is not None:
                 payload["source"] = event.source
+            if event.reason is not None:
+                payload["reason"] = event.reason
             await self._publish_client_event(BUTTON, payload, event.client_time_ms)
             await self._record_event(event)
             liveness = self.gateway.liveness
@@ -668,7 +670,9 @@ class _Connection:
                 and self.liveness_token is not None
                 and event.button in ("pause", "resume")
             ):
-                liveness.set_paused(self.liveness_token, event.button == "pause")
+                liveness.set_paused(
+                    self.liveness_token, event.button == "pause", reason=event.reason
+                )
         elif isinstance(event, Marker):
             payload = {} if event.label is None else {"label": event.label}
             await self._publish_client_event(MARKER, payload, event.client_time_ms)

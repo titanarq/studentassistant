@@ -102,6 +102,29 @@ def test_button_source_goes_with_switch_source_only(event: dict[str, object]) ->
         parse_client_event(event)
 
 
+@pytest.mark.parametrize("reason", ["hidden", "student"])
+def test_a_pause_may_say_why(reason: str) -> None:
+    event = {"type": "button", "button": "pause", "reason": reason, "client_time_ms": 1}
+    schema = _load(PROTOCOL_DIR / "client.button.schema.json")
+    Draft202012Validator(schema).validate(event)
+    parsed = parse_client_event(event)
+    assert parsed.model_dump(mode="json", exclude_none=True) == event
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "button", "button": "resume", "reason": "student", "client_time_ms": 1},
+        {"type": "button", "button": "pause", "reason": "away", "client_time_ms": 1},
+    ],
+)
+def test_button_reason_goes_with_pause_only(event: dict[str, object]) -> None:
+    schema = _load(PROTOCOL_DIR / "client.button.schema.json")
+    assert not Draft202012Validator(schema).is_valid(event)
+    with pytest.raises(ValidationError):
+        parse_client_event(event)
+
+
 def test_transcript_segment_cannot_end_before_it_starts() -> None:
     example = _load(PROTOCOL_DIR / "examples" / "client.transcript.client.final.json")
     assert isinstance(example, dict)

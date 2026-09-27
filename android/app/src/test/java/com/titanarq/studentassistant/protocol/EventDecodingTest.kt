@@ -44,6 +44,15 @@ class EventDecodingTest {
     }
 
     @Test
+    fun `a pause may say why, and only a pause`() {
+        val paused = decodeClientEvent("""{"type":"button","button":"pause","reason":"student","client_time_ms":1}""")
+        assertEquals(Button(ButtonName.PAUSE, null, 1, PauseReason.STUDENT), paused)
+        assertThrows(IllegalArgumentException::class.java) {
+            decodeClientEvent("""{"type":"button","button":"resume","reason":"hidden","client_time_ms":1}""")
+        }
+    }
+
+    @Test
     fun `both ack types decode into their own hierarchy`() {
         assertTrue(decodeClientEvent(SharedExamples.read("client.ack")) is ClientAck)
         assertTrue(decodeServerEvent(SharedExamples.read("server.ack")) is ServerAck)

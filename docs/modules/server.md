@@ -1137,10 +1137,18 @@ grace_seconds, clock=time.monotonic, wall_clock_ms=..., interval=5.0)` (on `app.
 - **Sending** means at least one of the session's capture WebSockets has said `hello` (it counts
   from its `hello.ack`) and has not declared itself paused; each socket's latest `button` `pause` /
   `resume` sets its own flag, and a closed socket stops counting. The gateway reports it:
-  `connected(session_id) -> token`, `set_paused(token, paused)`, `disconnected(token)`;
-  `is_sending(session_id)`, `idle_seconds(session_id)` read it.
-- **Idle clock**: starts when the session stops sending, is reset as soon as a socket connects or
-  resumes. A session just started or resumed with no socket counts as not sending, so the grace
+  `connected(session_id) -> token`, `set_paused(token, paused, reason=None)`,
+  `disconnected(token)`; `is_sending(session_id)`, `is_held(session_id)`, `idle_seconds(session_id)`
+  read it.
+- **Held** (#454, protocol 1.7): a `pause` with `reason: "student"` -- the web workspace's
+  Recursos tab, a page still in front of the student -- does not count as sending but keeps the
+  session *held*: while that socket stays connected the idle clock does not run. `reason:
+  "hidden"`, or a `pause` without reason (the Android app in the background, any 1.6 client), lets
+  it run as before: the human's rule "a hidden web tab stops sending -> auto-end" stands, and a
+  closed socket stops counting whatever it said. A new `pause` with the other reason replaces
+  the socket's; the reason is kept in the persisted `button` event's payload.
+- **Idle clock**: starts when the session is neither sending nor held, is reset as soon as a
+  socket connects, resumes or is held. A session just started or resumed with no socket counts as not sending, so the grace
   starts at `session.started` / `session.resumed` (a reconnect's resume restarts it too). The
   default is longer than the web's 2-minute reconnect window (`LONG_OUTAGE_MS`, #411), so a
   dropped socket that reconnects never ends the session. The pause flag is per socket: a client

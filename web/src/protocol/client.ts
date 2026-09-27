@@ -74,6 +74,12 @@ export type ButtonName =
   | "end_session"
   | "web_search";
 export type SourceKind = "book" | "notes" | "pdf";
+/**
+ * Why a client paused (1.7, #454): `hidden`, the page went to the background and stops sending
+ * (what a `pause` without reason means too); `student`, the student put the capture aside in a
+ * page still in front of them (the workspace's Recursos tab), which the idle auto-end spares.
+ */
+export type PauseReason = "hidden" | "student";
 
 /** The student pressed the button equivalent of a voice command (ADR-0006). */
 export interface Button {
@@ -81,6 +87,8 @@ export interface Button {
   button: ButtonName;
   /** Present exactly when `button` is `switch_source`. */
   source?: SourceKind;
+  /** Since 1.7: only with `pause`; absent means `hidden`. */
+  reason?: PauseReason;
   client_time_ms: number;
 }
 
@@ -162,12 +170,14 @@ export const decodeButton: Decoder<Button> = refine(
       ),
       client_time_ms: epochMs,
     },
-    { source: literal<SourceKind>("book", "notes", "pdf") },
+    { source: literal<SourceKind>("book", "notes", "pdf"), reason: literal<PauseReason>("hidden", "student") },
   ),
   (b) =>
     (b.button === "switch_source") !== (b.source !== undefined)
       ? "source is required with switch_source and forbidden otherwise"
-      : null,
+      : b.reason !== undefined && b.button !== "pause"
+        ? "reason is only allowed with pause"
+        : null,
 );
 
 export const decodeMarker: Decoder<Marker> = object(
