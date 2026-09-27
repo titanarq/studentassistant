@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
 from fastapi import FastAPI
 from typer.testing import CliRunner
 
 from studentassistant import __version__
 from studentassistant.cli import cli
+from studentassistant.server.serving import AppServer
 
 PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
@@ -44,13 +44,22 @@ def config_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 @pytest.fixture
 def uvicorn_run(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Replace `uvicorn.run` with a recorder, so `serve` never binds a port or starts a server."""
+    """Replace `AppServer.run` with a recorder, so `serve` never binds a port or starts a server."""
     calls: list[dict[str, Any]] = []
 
-    def record(app: Any, **kwargs: Any) -> None:
-        calls.append({"app": app, **kwargs})
+    def record(self: AppServer, sockets: Any = None) -> None:
+        config = self.config
+        calls.append(
+            {
+                "app": config.app,
+                "host": config.host,
+                "port": config.port,
+                "proxy_headers": config.proxy_headers,
+                "timeout_graceful_shutdown": config.timeout_graceful_shutdown,
+            }
+        )
 
-    monkeypatch.setattr(uvicorn, "run", record)
+    monkeypatch.setattr(AppServer, "run", record)
     return calls
 
 
@@ -87,6 +96,18 @@ def test_serve_hands_uvicorn_the_configured_host_and_port(
     assert len(uvicorn_run) == 1
     assert uvicorn_run[0]["host"] == "127.0.0.1"
     assert uvicorn_run[0]["port"] == 9100
+    assert uvicorn_run[0]["proxy_headers"] is False
+
+
+def test_serve_bounds_uvicorn_graceful_shutdown_by_the_configured_seconds(
+    runner: CliRunner,
+    config_toml: Path,
+    uvicorn_run: list[dict[str, Any]],
+) -> None:
+    write_toml(config_toml, "[server]\ngraceful_shutdown_seconds = 2.5\n")
+
+    assert runner.invoke(cli, ["serve"]).exit_code == 0
+    assert uvicorn_run[0]["timeout_graceful_shutdown"] == 2.5
 
 
 def test_serve_takes_the_host_and_port_from_the_environment(

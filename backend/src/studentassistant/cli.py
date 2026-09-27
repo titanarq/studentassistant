@@ -37,7 +37,6 @@ from typing import Annotated, Any
 import click
 import segno
 import typer
-import uvicorn
 from pydantic import ValidationError
 
 from studentassistant import __version__
@@ -93,6 +92,7 @@ from studentassistant.server.replay import (
     ReplayResult,
     replay,
 )
+from studentassistant.server.serving import serve_app
 from studentassistant.sources import (
     PdfImportError,
     PdfTooLargeError,
@@ -175,9 +175,8 @@ def serve(
         raise typer.Exit(code=1) from error
     if recorder is not None:
         typer.echo(f"Recording every session under {recorder.root}")
-    # No proxy sits in front: never let `X-Forwarded-For` rewrite the client address the LAN
-    # guard and the loopback trust see (uvicorn trusts it from loopback by default).
-    uvicorn.run(app, host=server.host, port=server.port, proxy_headers=False)
+    # Uvicorn, with an app-aware prompt shutdown on SIGTERM and a bounded wait for requests (#466).
+    serve_app(app, server)
 
 
 @cli.command()

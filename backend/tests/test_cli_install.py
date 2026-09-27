@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
 from typer.testing import CliRunner
 
 import studentassistant.cli as cli_module
@@ -21,6 +20,7 @@ from studentassistant.install.apikey import API_KEY_ENV_VAR, read_api_key, store
 from studentassistant.install.doctor import DoctorProbes
 from studentassistant.install.service import SystemctlResult
 from studentassistant.llm import ClaudeCodeStatus, LLMAPIError
+from studentassistant.server.serving import AppServer
 from whisper_fakes import hide_faster_whisper, install_fakes
 
 KEY = "sk-" + "ant-" + "api03-" + "z" * 40
@@ -265,7 +265,7 @@ def test_doctor_reports_an_invalid_configuration(runner: CliRunner, env: Path) -
 def test_serve_exports_the_stored_key_unless_the_environment_has_one(
     runner: CliRunner, env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    monkeypatch.setattr(AppServer, "run", lambda self, sockets=None: None)
     # Recorded as absent, so the key `serve` exports is removed again after the test.
     monkeypatch.setenv(API_KEY_ENV_VAR, "")
     monkeypatch.delenv(API_KEY_ENV_VAR)

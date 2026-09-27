@@ -251,11 +251,11 @@ def test_resuming_after_a_restart_records_into_a_new_directory(tmp_path: Path) -
 
 @pytest.fixture
 def uvicorn_apps(monkeypatch: pytest.MonkeyPatch) -> list[FastAPI]:
-    """Stand in for `uvicorn.run`: `serve` hands over its app and returns at once."""
-    import uvicorn
+    """Stand in for `AppServer.run`: `serve` hands over its app and returns at once."""
+    from studentassistant.server.serving import AppServer
 
     apps: list[FastAPI] = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **_kwargs: apps.append(app))
+    monkeypatch.setattr(AppServer, "run", lambda self, sockets=None: apps.append(self.config.app))
     return apps
 
 

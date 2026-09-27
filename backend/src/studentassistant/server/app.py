@@ -70,6 +70,7 @@ from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.redaction import install_log_redaction
 from studentassistant.server.revise_routes import revise_router
 from studentassistant.server.search_routes import search_router
+from studentassistant.server.serving import ShutdownSignal, begin_shutdown
 from studentassistant.server.session_health import SessionHealth
 from studentassistant.server.session_routes import session_router
 from studentassistant.server.sessions import SessionService
@@ -227,6 +228,8 @@ def create_app(
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     # The study workspace's live stream, per topic (`workspace.py`, `workspace_routes.py`).
     app.state.workspace = WorkspaceHub()
+    # Set when the server starts shutting down; the open-ended streams end on it (#466).
+    app.state.shutdown = ShutdownSignal()
     # Doubts asked in the workspace chat one at a time (#325, `doubt_chat.py`).
     app.state.doubt_chat = DoubtChat(app.state.sessions, app.state.workspace)
     app.state.assistant_requests = None
@@ -418,6 +421,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # `AppServer` set it already under uvicorn; under a `TestClient` the streams end here.
+        begin_shutdown(app)
         # First, so no idle end starts while the consumers its end hooks wait for are stopping.
         await liveness.stop()
         await transcripts.stop()

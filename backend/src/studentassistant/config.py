@@ -48,6 +48,7 @@ DEFAULT_MAX_CAPTURE_IMAGE_BYTES = 15 * 1024 * 1024
 DEFAULT_MAX_CAPTURE_IMAGES = 5
 # `[server] capture_idle_end_seconds` (#425): 5 minutes.
 DEFAULT_CAPTURE_IDLE_END_SECONDS = 300.0
+DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 5.0
 
 
 class ServerSettings(BaseModel):
@@ -79,6 +80,9 @@ class ServerSettings(BaseModel):
     # tab or a backgrounded app that said `pause`) for this long is ended by the backend on its
     # own, with nothing generated (#425). Longer than the web's 2-minute reconnect window.
     capture_idle_end_seconds: float = Field(default=DEFAULT_CAPTURE_IDLE_END_SECONDS, gt=0)
+    # On SIGTERM `serve` ends the open live streams at once (#466); a request still running after
+    # this long is cancelled, then the app's own shutdown (the final vault commit and push) runs.
+    graceful_shutdown_seconds: float = Field(default=DEFAULT_GRACEFUL_SHUTDOWN_SECONDS, gt=0)
 
     @field_validator("devices_path", "recordings_dir")
     @classmethod
