@@ -1,0 +1,95 @@
+/* The question chat of the study screen (#336). */
+
+.study-chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.study-chat > h2 {
+  margin: 0;
+}
+
+.study-chat-empty,
+.study-chat-note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.study-chat-log {
+  margin: 0;
+}
+
+.study-chat .chat-reply {
+  white-space: normal;
+}
+
+.study-reply > :first-child {
+  margin-top: var(--space-1);
+}
+
+.study-reply > :last-child {
+  margin-bottom: 0;
+}
+
+.study-reply p,
+.study-reply ul,
+.study-reply ol {
+  margin: 0 0 var(--space-2);
+}
+
+/* A citation chip: "§ Funciones del lenguaje" or "p3", inline where the answer cites it. */
+.study-chip {
+  display: inline;
+  margin: 0 0.15em;
+  padding: 0.05em 0.5em;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--step--1);
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.study-chip:hover:not(:disabled) {
+  background: var(--accent-line);
+}
+
+.study-chip:disabled {
+  background: var(--surface-sunken);
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+.study-chat-failure p {
+  margin: 0 0 var(--space-2);
+}
+
+.study-chat-form {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.study-chat-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.study-chat-form button {
+  min-height: 44px;
+}
+
+.study-chat-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

@@ -2,8 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { artifact, materialsBody } from "../materials/testMaterials";
 import { NOTES } from "../notes/testNotes";
-import { jsonResponse, stubApi } from "../test/mockApi";
-import { CHAT_PLACEHOLDER } from "./StudyChatSlot";
+import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import StudyPage, { sectionTitles } from "./StudyPage";
 import { parseNotes } from "../notes/markdown";
 
@@ -127,6 +126,7 @@ function routes(overrides: Record<string, Response | (() => Response)> = {}) {
     [`${BASE}/quiz/results`]: jsonResponse([]),
     [`${BASE}/exam`]: EXAM,
     [`${BASE}/exam/results`]: jsonResponse([]),
+    [`${BASE}/tutor`]: jsonResponse({ subject: "historia", topic: "revolucion-industrial", turns: [] }),
     ...overrides,
   };
 }
@@ -164,7 +164,7 @@ function block(name: RegExp) {
   return within(doc).getByRole("heading", { name }).closest(".notes-block") as HTMLElement;
 }
 
-it("shows the options, today's reviews, the chat slot and the document in read mode", async () => {
+it("shows the options, today's reviews, the question chat and the document in read mode", async () => {
   renderPage();
 
   expect(screen.getByRole("heading", { level: 1, name: "Estudiar" })).toBeInTheDocument();
@@ -183,7 +183,8 @@ it("shows the options, today's reviews, the chat slot and the document in read m
 
   const reviews = screen.getByRole("region", { name: "Repasos para hoy" });
   expect(await within(reviews).findByText(/3 para repasar · 2 nuevas/)).toBeInTheDocument();
-  expect(screen.getByText(CHAT_PLACEHOLDER)).toBeInTheDocument();
+  const chat = screen.getByRole("region", { name: "Preguntas sobre el documento" });
+  expect(within(chat).getByRole("textbox", { name: "Tu pregunta" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "La Revolución Industrial" })).toBeInTheDocument();
 
   const names = (await options()).map((button) => within(button).getByText(/^[A-Z]/, { selector: ".study-option-title" }).textContent);
@@ -406,4 +407,97 @@ it("names each section by its heading text", () => {
   const titles = sectionTitles(parseNotes(NOTES));
   expect(titles.get("causas")).toBe("2. Causas");
   expect(titles.get("maquina-de-vapor")).toBe("2.1. La máquina de vapor");
+});
+
+// ---- The question chat's citation chips (#336) ----
+
+function written(reply: string, overrides: Record<string, unknown> = {}) {
+  return {
+    time: "2026-09-26T19:04:00Z",
+    style: "written",
+    question: "¿Qué causas tuvo?",
+    reply,
+    refs: [{ label: "p2", kind: "notes_page", text: "Apuntes, página 2", source_id: null, path: null }],
+    sections: [{ anchor: "causas", title: "2. Causas" }],
+    warning: null,
+    ...overrides,
+  };
+}
+
+function chatRegion() {
+  return screen.getByRole("region", { name: "Preguntas sobre el documento" });
+}
+
+it("a section chip of an answer scrolls the document to that section and highlights it", async () => {
+  renderPage({
+    [`${BASE}/tutor`]: jsonResponse({ turns: [written("El carbón y el hierro [§causas].[^p2]")] }),
+  });
+  await screen.findByRole("heading", { name: /Causas/ });
+  const chip = await within(chatRegion()).findByRole("button", { name: "Ir a la sección 2. Causas" });
+  expect(chip).toHaveTextContent("§ 2. Causas");
+  expect(document.querySelector(".notes-focus")).toBeNull();
+
+  fireEvent.click(chip);
+
+  await waitFor(() => expect(block(/Causas/)).toHaveClass("notes-focus"));
+  expect(block(/Contexto/)).not.toHaveClass("notes-focus");
+  expect(scrollTo).toHaveBeenCalled();
+  expect(scrollTo.mock.contexts.at(-1)).toHaveClass("study-document");
+});
+
+it("a source chip highlights the blocks citing it and opens its source over the document", async () => {
+  renderPage({
+    [`${BASE}/tutor`]: jsonResponse({ turns: [written("El carbón y el hierro [§causas].[^p2]")] }),
+  });
+  const doc = screen.getByRole("region", { name: "Documento" });
+  await within(doc).findByRole("heading", { name: /Causas/ });
+  const chip = await within(chatRegion()).findByRole("button", { name: "Ver la fuente p2" });
+  expect(chip).toHaveTextContent("p2");
+
+  fireEvent.click(chip);
+
+  const source = screen.getByRole("dialog", { name: "Apuntes, página 2" });
+  expect(doc).toContainElement(source);
+  // The list citing [^p2] is highlighted, the rest is not.
+  const cited = within(doc).getByText(/Disponibilidad de carbón y hierro/).closest(".notes-block");
+  expect(cited).toHaveClass("notes-focus");
+  expect(block(/Contexto/)).not.toHaveClass("notes-focus");
+  expect(scrollTo).toHaveBeenCalled();
+
+  fireEvent.click(within(source).getByRole("button", { name: "Cerrar" }));
+  expect(document.querySelector(".notes-focus")).toBeNull();
+  expect(chip).toHaveFocus();
+});
+
+it("a chip for a section the document no longer has is disabled", async () => {
+  renderPage({
+    [`${BASE}/tutor`]: jsonResponse({
+      turns: [written("Eso estaba en [§consecuencias].", { sections: [{ anchor: "consecuencias", title: "3. Consecuencias" }] })],
+    }),
+  });
+  await screen.findByRole("heading", { name: /Causas/ });
+  const chip = await within(chatRegion()).findByRole("button", { name: "Ir a la sección 3. Consecuencias" });
+  expect(chip).toBeDisabled();
+  expect(chip).toHaveAttribute("title", "Esa sección ya no está en los apuntes");
+});
+
+it("a question asked on the study screen streams its answer with chips into the document", async () => {
+  const fetchMock = renderPage({
+    [`POST ${BASE}/tutor`]: () =>
+      sseResponse([
+        ["reply.delta", { text: "Empezó en Gran Bretaña ", attempt: 1 }],
+        ["result", { ...written("Empezó en Gran Bretaña [§contexto].[^p1]"), sections: [{ anchor: "contexto", title: "1. Contexto" }] }],
+      ]),
+  }).fetchMock;
+  await screen.findByRole("heading", { name: /Causas/ });
+  const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+
+  fireEvent.change(input, { target: { value: "¿Dónde empezó?" } });
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+
+  fireEvent.click(await within(chatRegion()).findByRole("button", { name: "Ir a la sección 1. Contexto" }));
+  await waitFor(() => expect(block(/Contexto/)).toHaveClass("notes-focus"));
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ question: "¿Dónde empezó?", style: "written" });
 });

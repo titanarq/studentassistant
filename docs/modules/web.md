@@ -78,9 +78,12 @@
   synthesis says the answers are only written. A reached cost cap offers "Continuar
   igualmente" (the same question with `confirm_over_cap`).
   - `api.ts`: `fetchTutorHistory(s, t) -> ReadResult<TutorTurn[]>` (`GET .../tutor`),
-    `askTutor(s, t, question, {confirmOverCap, onDelta}) -> StreamOutcome<TutorAnswer>` (`POST
-    .../tutor`, read with the editor chat's `streamTurn`), `describeTutorFailure`,
-    `readTutorAnswer`, `readTutorHistory`, `tutorPath`.
+    `askTutor(s, t, question, {confirmOverCap, style, onDelta}) -> StreamOutcome<TutorAnswer>`
+    (`POST .../tutor`, read with the editor chat's `streamTurn`; `style` `"spoken"` |
+    `"written"` is sent only when given, the voice tutor gives none), `describeTutorFailure`,
+    `readTutorAnswer`, `readTutorHistory`, `readSections`, `tutorPath`. `TutorAnswer` (and each
+    `TutorTurn`) carries `style` (`spoken` for turns recorded before #334) and `sections`
+    (`SectionRef {anchor, title}`, written answers only).
   - `voiceQuestion.ts`: `listenForQuestion(callbacks)` (a `VoiceQuestionStarter`:
     `onInterim`, `onFinal`, `onProblem(VoiceProblemCode)`, `onEnd`; returns `{stop()}`),
     `voiceQuestionSupported()`; the recognition constructor comes from
@@ -323,8 +326,26 @@
     `flashcards`); each a button with `aria-expanded` and a text badge of the kind's state from
     `GET .../generated`: "Listo", "Desactualizado" (its `stale_reason` as `title`) or "Sin
     generar".
-  - Left, bottom: `StudyChatSlot`, a placeholder ("Aquí podrás preguntar sobre el documento.")
-    that #336 replaces.
+  - Left, bottom: the question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
+    documento" that answers questions about the document and **never edits the notes** (the only
+    requests it sends are `GET` and `POST .../tutor`). Its `log` (`aria-live="polite"`) shows the
+    topic's earlier **written** turns of `GET .../tutor` (the voice tutor's spoken ones are left
+    out), then the fixed line "Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve
+    a Construir." (a link to `.../workspace`) and a text input ("Pregunta sobre el documento…",
+    label "Tu pregunta", up to 1000 characters, Enter or "Preguntar"). A question is `askTutor(...,
+    {style: "written"})`: "Pensando…" until the first delta, then the reply streams; the answer is
+    light Markdown rendered by `chat/ReplyView.tsx` through the notes' `parseNotes`/`parseInline`
+    (no raw HTML). **Citation chips**, inline where cited: every `[§anchor]` is a button "§
+    <section title>" (the title from the answer's `sections`, else the document's heading;
+    accessible name "Ir a la sección <title>") that scrolls the document to that section and
+    highlights it (`focusSections`); every `[^label]` a button with the label ("p3", "Ver la
+    fuente p3") that opens its source in `SourcePanel` as a provenance footnote does and
+    highlights every block citing that label (`NotesView`'s `focusLabel`), scrolling to the first
+    citation. A chip for an anchor the document no longer has is disabled with the title "Esa
+    sección ya no está en los apuntes". Errors: a reached cost cap shows its `detail` and
+    "Continuar igualmente" (the same question with `confirm_over_cap`); another question of the
+    topic running (409) "Espera a que termine la respuesta anterior."; no notes (409) "Todavía
+    no hay apuntes: constrúyelos en Construir."; anything else the backend's Spanish `detail`.
   - Right: the document, `NotesView` read-only (no "¿Por qué?"), with its version and one link
     "Editar en Construir" (`.../workspace`); without notes "Todavía no hay apuntes: constrúyelos
     en Construir.". A provenance footnote opens `SourcePanel` in the slide-over place.
