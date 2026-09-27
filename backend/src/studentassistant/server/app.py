@@ -40,10 +40,10 @@ from studentassistant.generators import default_registry
 from studentassistant.llm import Transport
 from studentassistant.observer import DigestOnEnd, topic_digest
 from studentassistant.observer.live import ObserverLoop, default_client_factory
-from studentassistant.observer.requests import RequestDetector
+from studentassistant.observer.requests import MessageClassifier, RequestDetector
 from studentassistant.protocol.rest import HealthResponse
 from studentassistant.protocol.version import PROTOCOL_VERSION
-from studentassistant.server.assistant_requests import AssistantRequestConsumer
+from studentassistant.server.assistant_requests import AssistantRequestConsumer, sources_lookup
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.book_routes import book_router
 from studentassistant.server.bus import SessionBus
@@ -222,6 +222,7 @@ def create_app(
     app.state.assistant_requests = None
     app.state.observer = None
     app.state.requests = None
+    app.state.message_classifier = None
     app.state.transcriber = None
     app.state.pdf_transcriber = None
     app.state.notes = None
@@ -248,6 +249,13 @@ def create_app(
             app.state.notes,
             app.state.workspace,
             doubts=app.state.doubt_chat,
+            transcribing=sources.transcription_enabled,
+        )
+        # The topic's sources and the doubt asked now, for the request classifiers (#327).
+        request_context = sources_lookup(app.state.sessions)
+        # Typed workspace messages -> requests, whatever `request_detection` says (#327).
+        app.state.message_classifier = MessageClassifier(
+            default_client_factory(llm_settings, llm_transport), sources_lookup=request_context
         )
         # Study materials: the generator role (`generators_routes.py`).
         app.state.materials = MaterialGenerators(llm_settings, llm_transport)
@@ -297,6 +305,7 @@ def create_app(
                     app.state.bus.attached,
                     settings=observer_settings,
                     client_factory=default_client_factory(llm_settings, llm_transport),
+                    sources_lookup=request_context,
                 )
                 app.state.sessions.add_before_ended(app.state.requests.flush)
     if recorder is not None:

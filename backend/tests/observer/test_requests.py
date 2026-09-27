@@ -18,14 +18,24 @@ import pytest
 from pydantic import ValidationError
 
 from studentassistant.config import LlmSettings, ObserverSettings, Settings
-from studentassistant.llm import FakeClaude, LLMRequest
+from studentassistant.llm import FakeClaude, LLMAPIError, LLMRequest
 from studentassistant.observer import (
     ASSISTANT_REQUEST_KIND,
+    REQUEST_KINDS,
+    AskedDoubtRef,
     AssistantRequest,
+    RequestContext,
+    RequestSource,
     fold,
 )
 from studentassistant.observer.live import STATUS_EVENT_KIND, default_client_factory
-from studentassistant.observer.requests import TOOL_NAME, RequestDetector
+from studentassistant.observer.requests import (
+    MESSAGES_CONVERSATION,
+    TOOL_NAME,
+    ClassificationError,
+    MessageClassifier,
+    RequestDetector,
+)
 from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.bus import SessionBus
 from studentassistant.vault import (
@@ -590,3 +600,343 @@ def test_request_detection_from_the_environment(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("SA_OBSERVER__REQUEST_DETECTION", "wake_word")
     monkeypatch.setenv("SA_CONFIG", "/nonexistent/config.toml")
     assert Settings().observer.request_detection == "wake_word"
+
+
+# -- chat-driven kinds (#327) ----------------------------------------------------------------------
+
+PAGE_ID = "sources/notes/page-00{n}.jpg"
+
+
+def page_source(n: int, state: str = "pendiente", reason: str | None = None) -> RequestSource:
+    return RequestSource(
+        source_id=PAGE_ID.format(n=n),
+        kind="notes",
+        number=n,
+        label=f"la página {n}",
+        state=state,  # type: ignore[arg-type]
+        reason=reason,
+    )
+
+
+CONTEXT = RequestContext(
+    sources=[
+        page_source(1, "incorporada"),
+        page_source(2, "apartada", "borrosa"),
+        page_source(3),
+        page_source(4),
+        RequestSource(
+            source_id="sources/pdf/tema.pdf",
+            kind="pdf",
+            label="el PDF «tema.pdf»",
+            state="pendiente",
+        ),
+    ]
+)
+ASKED = AskedDoubtRef(pending_id="p-7", question="¿Qué pone?", suggestions=["escrita", "escrito"])
+
+
+def context_detector(
+    bus: SessionBus,
+    fake: FakeClaude,
+    clock: FakeClock,
+    context: RequestContext,
+    *,
+    llm: LlmSettings | None = None,
+) -> tuple[RequestDetector, list[tuple[str, str]]]:
+    asked: list[tuple[str, str]] = []
+
+    async def lookup(subject: str, topic: str) -> RequestContext:
+        asked.append((subject, topic))
+        return context
+
+    settings = Settings(llm=llm or LlmSettings(), observer=ObserverSettings())
+    detector = RequestDetector(
+        bus,
+        bus.attached,
+        settings=settings.observer,
+        client_factory=default_client_factory(settings, fake),
+        clock=clock,
+        sources_lookup=lookup,
+    )
+    return detector, asked
+
+
+async def test_the_two_last_pages_are_resolved_from_the_sources_list(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    detector, asked = context_detector(bus, fake, clock, CONTEXT)
+    detector.start()
+    try:
+        fake.reply_tool(
+            TOOL_NAME,
+            report(
+                {
+                    "kind": "incorporate",
+                    "summary": "Incorporar las páginas 3 y 4",
+                    "segment_ids": ["seg-1"],
+                    "targets": [PAGE_ID.format(n=3), PAGE_ID.format(n=4), PAGE_ID.format(n=3)],
+                    "answer": "ignored",
+                }
+            ),
+        )
+        await segment(bus, session, 1, "incorpora las dos últimas")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+
+    assert asked == [(session.subject_slug, session.topic_slug)]
+    text = user_text(fake.requests[0])
+    assert "sources/notes/page-002.jpg: página 2 (apuntes) -- apartada: borrosa" in text
+    assert "sources/notes/page-001.jpg: página 1 (apuntes) -- incorporada" in text
+    assert "sources/pdf/tema.pdf: PDF «tema.pdf» (PDF) -- pendiente" in text
+    assert "Doubt asked in the chat now: none." in text
+    assert text.index("Sources of the topic") < text.index("seg-1")
+    # The context is in the user turn, after the cached system prefix.
+    assert "Sources of the topic" not in str(fake.requests[0].system)
+    [event] = requests_of(session)
+    assert event["kind"] == "incorporate"
+    assert event["targets"] == [PAGE_ID.format(n=3), PAGE_ID.format(n=4)]
+    assert "answer" not in event and "pending_id" not in event
+
+
+async def test_an_unresolvable_reference_is_re_asked_and_becomes_a_question(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    detector, _ = context_detector(bus, fake, clock, CONTEXT)
+    detector.start()
+    try:
+        fake.reply_tool(
+            TOOL_NAME,
+            report(
+                {
+                    "kind": "incorporate",
+                    "summary": "Incorporar la página 9",
+                    "segment_ids": ["seg-1"],
+                    "targets": [PAGE_ID.format(n=9)],
+                },
+                {
+                    "kind": "set_aside",
+                    "summary": "Apartar el PDF",
+                    "segment_ids": ["seg-2"],
+                    "targets": ["sources/pdf/tema.pdf"],
+                },
+                {"kind": "restore", "summary": "Recuperar", "segment_ids": ["seg-3"]},
+            ),
+        )
+        fake.reply_tool(
+            TOOL_NAME,
+            report(
+                {
+                    "kind": "question",
+                    "summary": "No hay página 9: ¿cuál quieres incorporar?",
+                    "segment_ids": ["seg-1"],
+                }
+            ),
+        )
+        await segment(bus, session, 1, "incorpora la nueve")
+        await segment(bus, session, 2, "y aparta el pdf")
+        await segment(bus, session, 3, "y recupera esa")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+
+    retry = user_text(fake.requests[1])
+    assert "targets not in the sources list: sources/notes/page-009.jpg" in retry
+    assert "only captured pages" in retry
+    assert "a restore request needs its targets" in retry
+    assert [(e["kind"], e["request_id"]) for e in requests_of(session)] == [("question", "req-1")]
+
+
+async def test_a_doubt_answer_needs_the_doubt_asked_now(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    answer = {
+        "kind": "doubt_answer",
+        "summary": "Responder: la primera",
+        "segment_ids": ["seg-1"],
+        "pending_id": "p-7",
+        "answer": "1",
+    }
+    detector, _ = context_detector(bus, fake, clock, CONTEXT)
+    detector.start()
+    try:
+        fake.reply_tool(TOOL_NAME, report(answer)).reply_tool(TOOL_NAME, report())
+        await segment(bus, session, 1, "la primera")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    assert "no doubt is asked in the chat now" in user_text(fake.requests[1])
+    assert requests_of(session) == []
+
+
+async def test_a_doubt_answer_to_the_asked_doubt_is_published(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    context = CONTEXT.model_copy(update={"doubt": ASKED})
+    detector, _ = context_detector(bus, fake, clock, context)
+    detector.start()
+    try:
+        fake.reply_tool(
+            TOOL_NAME,
+            report(
+                {
+                    "kind": "doubt_answer",
+                    "summary": "Responder «escrita»",
+                    "segment_ids": ["seg-1"],
+                    "pending_id": "",
+                    "answer": " escrita ",
+                    "targets": [PAGE_ID.format(n=3)],
+                }
+            ),
+        )
+        await segment(bus, session, 1, "pone escrita")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    text = user_text(fake.requests[0])
+    assert "Doubt asked in the chat now: p-7 «¿Qué pone?»" in text
+    assert "suggestion 2: escrito" in text
+    [event] = requests_of(session)
+    assert (event["kind"], event["pending_id"], event["answer"]) == (
+        "doubt_answer",
+        "p-7",
+        "escrita",
+    )
+    assert "targets" not in event
+
+
+async def test_the_re_asks_follow_structured_reasks(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    bad = {"kind": "edit", "summary": "", "segment_ids": ["seg-1"]}
+    detector, _ = context_detector(bus, fake, clock, CONTEXT, llm=LlmSettings(structured_reasks=2))
+    detector.start()
+    try:
+        fake.reply_tool(TOOL_NAME, report(bad)).reply_tool(TOOL_NAME, report(bad))
+        fake.reply_tool(
+            TOOL_NAME, report({"kind": "edit", "summary": "Tabla", "segment_ids": ["seg-1"]})
+        )
+        await segment(bus, session, 1, "haz una tabla")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    assert len(fake.requests) == 3
+    assert [e["summary"] for e in requests_of(session)] == ["Tabla"]
+
+
+async def test_typed_requests_do_not_move_the_spoken_numbering(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    for request_id in ("req-1", "req-t1", "req-t2"):
+        await bus.publish(
+            session.id,
+            ASSISTANT_REQUEST_KIND,
+            "user" if "t" in request_id[4:] else "observer",
+            {
+                "request_id": request_id,
+                "kind": "edit",
+                "summary": "Antes",
+                "text": "antes",
+                "t_start_ms": 0,
+                "t_end_ms": 0,
+                **(
+                    {"detector": "typed"}
+                    if "t" in request_id[4:]
+                    else {"detector": "observer", "segment_ids": ["seg-0"]}
+                ),
+            },
+        )
+    detector = make_detector(bus, fake, clock)
+    detector.start()
+    try:
+        fake.reply_tool(
+            TOOL_NAME, report({"kind": "edit", "summary": "Otra", "segment_ids": ["seg-1"]})
+        )
+        await segment(bus, session, 1, "otra cosa")
+        await advance(detector, clock, session, 2)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    assert [e["request_id"] for e in requests_of(session)][-1] == "req-2"
+
+
+def test_the_new_kinds_and_fields_of_the_model() -> None:
+    old = {
+        "request_id": "req-3",
+        "kind": "edit",
+        "summary": "Hacer una tabla",
+        "text": "haz una tabla",
+        "segment_ids": ["s-1"],
+        "t_start_ms": 10,
+        "t_end_ms": 20,
+        "detector": "observer",
+    }
+    # An event written before #327 reads unchanged and dumps back the same.
+    assert AssistantRequest.model_validate(old).payload() == old
+    typed = {
+        "request_id": "req-t1",
+        "kind": "set_aside",
+        "summary": "Apartar la página 9",
+        "text": "aparta la 9",
+        "t_start_ms": 0,
+        "t_end_ms": 0,
+        "detector": "typed",
+        "targets": ["sources/notes/page-009.jpg"],
+        "message_id": "msg-0123456789abcdef",
+    }
+    assert AssistantRequest.model_validate(typed).payload() == typed
+    for change in (
+        {"targets": []},
+        {"detector": "observer"},  # a spoken request needs segments
+        {"targets": ["a", "a"]},
+        {"request_id": "req-x1"},
+    ):
+        with pytest.raises(ValidationError):
+            AssistantRequest.model_validate(typed | change)
+    answer = old | {"kind": "doubt_answer", "pending_id": "p-1", "answer": "2"}
+    assert AssistantRequest.model_validate(answer).answer == "2"
+    with pytest.raises(ValidationError):
+        AssistantRequest.model_validate(old | {"kind": "doubt_answer", "answer": "2"})
+    assert set(REQUEST_KINDS) >= {"incorporate", "set_aside", "restore", "doubt_answer"}
+
+
+async def test_a_typed_message_is_classified_with_the_same_prompt_and_tool(
+    tmp_vault: Vault, topic: tuple[str, str], fake: FakeClaude
+) -> None:
+    async def lookup(subject: str, topic_slug: str) -> RequestContext:
+        return CONTEXT
+
+    settings = Settings(llm=LlmSettings(), observer=ObserverSettings())
+    classifier = MessageClassifier(default_client_factory(settings, fake), sources_lookup=lookup)
+    fake.reply_tool(
+        TOOL_NAME,
+        report(
+            {
+                "kind": "set_aside",
+                "summary": "Apartar la 3",
+                "segment_ids": [],
+                "targets": [PAGE_ID.format(n=3)],
+            },
+            {
+                "kind": "incorporate",
+                "summary": "Incorporar la 4",
+                "segment_ids": ["m1"],
+                "targets": [PAGE_ID.format(n=4)],
+            },
+        ),
+    )
+    found = await asyncio.wait_for(
+        classifier.classify(tmp_vault, *topic, "aparta la 3 e incorpora la 4"), WAIT
+    )
+    assert [(r.kind, r.targets) for r in found] == [
+        ("set_aside", [PAGE_ID.format(n=3)]),
+        ("incorporate", [PAGE_ID.format(n=4)]),
+    ]
+    request = fake.requests[0]
+    assert request.role == "observer" and request.tools[0]["name"] == TOOL_NAME
+    assert "m1 aparta la 3 e incorpora la 4" in user_text(request)
+    records = read_conversation(tmp_vault, *topic, MESSAGES_CONVERSATION)
+    assert [record.kind for record in records] == ["user", "assistant"]
+
+    fake.fail(LLMAPIError("boom"))
+    with pytest.raises(ClassificationError):
+        await asyncio.wait_for(classifier.classify(tmp_vault, *topic, "hola"), WAIT)

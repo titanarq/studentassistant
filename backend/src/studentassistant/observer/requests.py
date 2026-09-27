@@ -1,4 +1,5 @@
-"""Requests to the assistant, detected by Sonnet (role `observer`) in the raw transcript (#314).
+"""Requests to the assistant, detected by Sonnet (role `observer`) in the raw transcript (#314),
+and the same classification of a message typed in the workspace chat (#327).
 
 `RequestDetector` subscribes to the session bus (`transcript.final` and the lifecycle events) and,
 per active session, keeps the newest final segments and which of them it has examined. Once no new
@@ -10,13 +11,20 @@ batches. One call per session is in flight at a time; finals arriving meanwhile 
 next call.
 
 Each call is self-contained: system = the `observer_requests` prompt + the topic block (subject,
-title), the cached prefix together with the tool; one user turn = the window, each final marked
-`new`, `seen` or with the request it already belongs to, so no segment is reported twice. The
-answer must call the strict tool `report_requests` (`{requests: [{kind, summary, segment_ids}]}`).
+title), the cached prefix together with the tool; one user turn = the topic's context (uncached:
+its sources with their states and the doubt asked in the chat now, from the injected
+`sources_lookup`, #327), then the window, each final marked `new`, `seen` or with the request it
+already belongs to, so no segment is reported twice. The answer must call the strict tool
+`report_requests` (`{requests: [{kind, summary, segment_ids, targets, pending_id, answer}]}`).
 Each request is checked (a Spanish `summary` of at most 140 characters, `segment_ids` consecutive
-in the window and not already assigned); valid ones are published at once as persisted
-`assistant.request` events (origin `observer`, payload `AssistantRequest`), the rest are re-asked
-once and then dropped and logged.
+in the window and not already assigned, `targets` among the topic's sources -- only captured pages
+for `set_aside`/`restore` --, a `doubt_answer` only for the doubt asked now); valid ones are
+published at once as persisted `assistant.request` events (origin `observer`, payload
+`AssistantRequest`), the rest are re-asked `client.structured_reasks` times (`[llm]
+structured_reasks`) and then dropped and logged.
+
+`MessageClassifier` classifies one typed chat message with the same prompt, tool and checks (the
+message is the window, as the single segment `m1`); the server persists and queues what it finds.
 
 Cost caps: the client is bound to the session's ledger. A reached cap pauses the detector: the
 finals stay unexamined, one `observer.status` event (`status: paused`, `detector: "requests"`) is
@@ -34,12 +42,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from studentassistant.config import ObserverSettings
 from studentassistant.llm import (
@@ -52,10 +60,15 @@ from studentassistant.llm import (
     strict_tool,
 )
 from studentassistant.observer.assistant_request import (
+    ANSWER_MAX_CHARS,
     ASSISTANT_REQUEST_KIND,
+    CAPTURE_KINDS,
     SUMMARY_MAX_CHARS,
+    TARGET_KINDS,
     AssistantRequest,
+    RequestContext,
     RequestKind,
+    SourcesLookup,
 )
 from studentassistant.observer.context import OBSERVER_ORIGIN, render_topic
 from studentassistant.observer.fold import SEGMENT_EVENT_KIND, SEGMENT_ID_KEY
@@ -101,12 +114,29 @@ REQUEST_KINDS_READ = frozenset(
 QUEUE_SIZE = 1024
 
 
+MESSAGE_SEGMENT = "m1"
+"""The one segment id a typed message is shown as."""
+MESSAGES_CONVERSATION = "observer-messages"
+"""The conversation file of the typed messages' classifications (`conversations/<name>.jsonl`)."""
+
+
 class ReportedRequest(BaseModel):
     """One request of the `report_requests` tool input."""
 
     kind: RequestKind
     summary: str
     segment_ids: list[str]
+    targets: list[str] = Field(
+        default_factory=list,
+        description="incorporate, set_aside, restore: the source ids, from the sources list.",
+    )
+    pending_id: str | None = Field(
+        default=None, description="doubt_answer: the id of the doubt asked now."
+    )
+    answer: str | None = Field(
+        default=None,
+        description="doubt_answer: the suggestion's number as digits, or the answer's words.",
+    )
 
 
 class ReportRequests(BaseModel):
@@ -201,7 +231,8 @@ class RequestDetector:
     Active only when `settings.request_detection == "observer"`; otherwise `start()` does nothing
     and no call is ever made. `lookup` gives an attached session's vault handle; `client_factory`
     builds a session's `observer` client from its ledger binding (tests pass
-    `default_client_factory(transport=fake)`); `clock` gives the time (`SystemClock`).
+    `default_client_factory(transport=fake)`); `clock` gives the time (`SystemClock`);
+    `sources_lookup` the topic's context of each call (none: no sources, no doubt asked).
     """
 
     def __init__(
@@ -213,9 +244,11 @@ class RequestDetector:
         client_factory: ClientFactory | None = None,
         clock: Clock | None = None,
         queue_size: int = QUEUE_SIZE,
+        sources_lookup: SourcesLookup | None = None,
     ) -> None:
         self.bus = bus
         self.lookup = lookup
+        self.sources_lookup = sources_lookup
         self.settings = settings or ObserverSettings()
         self.client_factory = client_factory or default_client_factory()
         self.clock: Clock = clock or SystemClock()
@@ -363,7 +396,7 @@ class RequestDetector:
             session=session,
             client=self.client_factory(LedgerBinding(vault, subject, topic, session_id)),
             system=[self.prompt.content, render_topic(subject_name, topic_title, None)],
-            requests=len(earlier),
+            requests=max((_spoken_number(r.request_id) for r in earlier), default=0),
         )
         for request in earlier:
             for segment_id in request.segment_ids:
@@ -506,10 +539,11 @@ class RequestDetector:
         if not examining:
             return
         detected.calls += 1
-        turn = {
-            "role": "user",
-            "content": [{"type": "text", "text": self._render_window(detected, window, last)}],
-        }
+        context = await _context_of(
+            self.sources_lookup, detected.session.subject_slug, detected.session.topic_slug
+        )
+        text = context.render() + "\n\n" + self._render_window(detected, window, last)
+        turn = {"role": "user", "content": [{"type": "text", "text": text}]}
         response = await self._ask(detected, [turn])
         if response is None:
             detected.blocked = True
@@ -517,42 +551,28 @@ class RequestDetector:
         # Examined once answered, whatever the answer: a final is never examined twice as new.
         for final in examining:
             final.examined = True
-        checked = self._check(detected, response, window)
+        position = {final.segment_id: index for index, final in enumerate(window)}
+        checked = _check(response, position, set(detected.assigned), context, window)
         published = await self._publish(detected, checked)
-        if checked.errors or not checked.called:
-            reasons = checked.errors or [f"you did not call the `{TOOL_NAME}` tool"]
-            content: list[dict[str, Any]] = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": call.id,
-                    "content": "Errors:\n" + "\n".join(reasons),
-                    "is_error": True,
-                }
-                for call in response.tool_calls
-            ]
-            content.append(
-                {
-                    "type": "text",
-                    "text": (
-                        f"{published} requests were accepted. These were refused:\n"
-                        + "\n".join(f"- {reason}" for reason in reasons)
-                        + f"\nCall `{TOOL_NAME}` again with only the corrected requests (or an"
-                        " empty list)."
-                    ),
-                }
-            )
-            retry_turn = {"role": "user", "content": content}
-            retry = await self._ask(detected, [turn, response.assistant_turn(), retry_turn])
+        messages: list[dict[str, Any]] = [turn]
+        reasks = detected.client.structured_reasks
+        for _ in range(reasks):
+            if not checked.errors and checked.called:
+                break
+            messages = [*messages, response.assistant_turn(), _reask_turn(response, checked)]
+            retry = await self._ask(detected, messages)
             if retry is None:
                 return
-            again = self._check(detected, retry, window)
-            published += await self._publish(detected, again)
-            if again.errors or not again.called:
-                logger.warning(
-                    "request detector of session %s: dropped after one re-ask: %s",
-                    detected.id,
-                    "; ".join(again.errors or [f"no {TOOL_NAME} call"]),
-                )
+            response = retry
+            checked = _check(response, position, set(detected.assigned), context, window)
+            published += await self._publish(detected, checked)
+        if checked.errors or not checked.called:
+            logger.warning(
+                "request detector of session %s: dropped after %s: %s",
+                detected.id,
+                "one re-ask" if reasks == 1 else f"{reasks} re-asks",
+                "; ".join(checked.errors or [f"no {TOOL_NAME} call"]),
+            )
         logger.info(
             "request detector of session %s: call %d, %d new finals, %d requests",
             detected.id,
@@ -620,48 +640,6 @@ class RequestDetector:
             await self._set_status(detected, "running", "", {})
         return response
 
-    @staticmethod
-    def _check(detected: _Detected, response: LLMResponse, window: list[_Final]) -> _Checked:
-        """The valid requests of `response`, in order; errors for the rest."""
-        result = _Checked()
-        if response.stop_reason == "refusal":
-            result.called = True
-            result.errors.append("the request was declined")
-            return result
-        position = {final.segment_id: index for index, final in enumerate(window)}
-        taken = set(detected.assigned)
-        for call in response.tool_calls:
-            if call.name != TOOL_NAME:
-                result.errors.append(f"unknown tool `{call.name}`")
-                continue
-            result.called = True
-            try:
-                data = call.parsed_input()
-            except ValueError as error:
-                result.errors.append(f"the tool input is not valid JSON: {error}")
-                continue
-            raw_requests = data.get("requests") if isinstance(data, dict) else None
-            if not isinstance(raw_requests, list):
-                result.errors.append("the tool input has no `requests` list")
-                continue
-            for index, raw in enumerate(raw_requests):
-                try:
-                    request = ReportedRequest.model_validate(raw)
-                except ValidationError as error:
-                    detail = "; ".join(
-                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in error.errors()
-                    )
-                    result.errors.append(f"request {index} is malformed ({detail})")
-                    continue
-                problem = _span_problem(request, position, taken)
-                if problem:
-                    result.errors.append(f"request {index}: {problem}")
-                    continue
-                taken.update(request.segment_ids)
-                span = [window[position[segment_id]] for segment_id in request.segment_ids]
-                result.requests.append((request, span))
-        return result
-
     async def _publish(self, detected: _Detected, checked: _Checked) -> int:
         count = 0
         for request, span in checked.requests:
@@ -675,13 +653,11 @@ class RequestDetector:
                 t_start_ms=span[0].start_ms,
                 t_end_ms=max(span[0].start_ms, span[-1].end_ms),
                 detector="observer",
+                **_kind_fields(request),
             )
             try:
                 await self.bus.publish(
-                    detected.id,
-                    ASSISTANT_REQUEST_KIND,
-                    OBSERVER_ORIGIN,
-                    payload.model_dump(mode="json"),
+                    detected.id, ASSISTANT_REQUEST_KIND, OBSERVER_ORIGIN, payload.payload()
                 )
             except Exception as error:  # the session ended under the call, a refused secret...
                 logger.warning(
@@ -763,15 +739,105 @@ class RequestDetector:
             )
 
 
-def _span_problem(
-    request: ReportedRequest, position: Mapping[str, int], taken: set[str]
-) -> str | None:
-    """Why a reported request's span is refused, or `None` when it is valid."""
+def _check(
+    response: LLMResponse,
+    position: Mapping[str, int],
+    taken: set[str],
+    context: RequestContext,
+    window: Sequence[_Final],
+    *,
+    typed: bool = False,
+) -> _Checked:
+    """The valid requests of `response`, in order; errors for the rest.
+
+    `position` maps the window's segment ids to their index, `taken` holds the segments already
+    part of a request. A typed message (`typed`) is one segment that every request of it shares.
+    """
+    result = _Checked()
+    if response.stop_reason == "refusal":
+        result.called = True
+        result.errors.append("the request was declined")
+        return result
+    taken = set(taken)
+    for call in response.tool_calls:
+        if call.name != TOOL_NAME:
+            result.errors.append(f"unknown tool `{call.name}`")
+            continue
+        result.called = True
+        try:
+            data = call.parsed_input()
+        except ValueError as error:
+            result.errors.append(f"the tool input is not valid JSON: {error}")
+            continue
+        raw_requests = data.get("requests") if isinstance(data, dict) else None
+        if not isinstance(raw_requests, list):
+            result.errors.append("the tool input has no `requests` list")
+            continue
+        for index, raw in enumerate(raw_requests):
+            try:
+                request = ReportedRequest.model_validate(raw)
+            except ValidationError as error:
+                detail = "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in error.errors()
+                )
+                result.errors.append(f"request {index} is malformed ({detail})")
+                continue
+            if typed:
+                request = request.model_copy(update={"segment_ids": [MESSAGE_SEGMENT]})
+            problem = _summary_problem(request) or (
+                None if typed else _span_problem(request, position, taken)
+            )
+            if problem is None:
+                request, problem = _kind_problem(request, context)
+            if problem:
+                result.errors.append(f"request {index}: {problem}")
+                continue
+            if not typed:
+                taken.update(request.segment_ids)
+            span = [window[position[segment_id]] for segment_id in request.segment_ids]
+            result.requests.append((request, span))
+    return result
+
+
+def _reask_turn(response: LLMResponse, checked: _Checked) -> dict[str, Any]:
+    """The user turn answering an answer with refused requests (or no tool call)."""
+    reasons = checked.errors or [f"you did not call the `{TOOL_NAME}` tool"]
+    content: list[dict[str, Any]] = [
+        {
+            "type": "tool_result",
+            "tool_use_id": call.id,
+            "content": "Errors:\n" + "\n".join(reasons),
+            "is_error": True,
+        }
+        for call in response.tool_calls
+    ]
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                f"{len(checked.requests)} requests were accepted. These were refused:\n"
+                + "\n".join(f"- {reason}" for reason in reasons)
+                + f"\nCall `{TOOL_NAME}` again with only the corrected requests (or an"
+                " empty list)."
+            ),
+        }
+    )
+    return {"role": "user", "content": content}
+
+
+def _summary_problem(request: ReportedRequest) -> str | None:
     summary = request.summary.strip()
     if not summary:
         return "the summary is empty"
     if len(summary) > SUMMARY_MAX_CHARS:
         return f"the summary has {len(summary)} characters; at most {SUMMARY_MAX_CHARS}"
+    return None
+
+
+def _span_problem(
+    request: ReportedRequest, position: Mapping[str, int], taken: set[str]
+) -> str | None:
+    """Why a reported request's span is refused, or `None` when it is valid."""
     ids = request.segment_ids
     if not ids:
         return "segment_ids is empty"
@@ -789,15 +855,222 @@ def _span_problem(
     return None
 
 
+def _kind_problem(
+    request: ReportedRequest, context: RequestContext
+) -> tuple[ReportedRequest, str | None]:
+    """The request with only its kind's fields, and why its targets or answer are refused."""
+    kind = request.kind
+    if kind in TARGET_KINDS:
+        targets = list(dict.fromkeys(t.strip() for t in request.targets if t.strip()))
+        cleaned = request.model_copy(
+            update={"targets": targets, "pending_id": None, "answer": None}
+        )
+        if not targets:
+            return cleaned, f"a {kind} request needs its targets (source ids of the list)"
+        unknown = [t for t in targets if context.source(t) is None]
+        if unknown:
+            return cleaned, (
+                f"targets not in the sources list: {', '.join(unknown)} (an unclear reference"
+                " is a `question`)"
+            )
+        if kind in ("set_aside", "restore"):
+            other = [t for t in targets if context.source(t).kind not in CAPTURE_KINDS]  # type: ignore[union-attr]
+            if other:
+                return cleaned, (
+                    f"only captured pages (apuntes, libro) can be set aside or restored:"
+                    f" {', '.join(other)}"
+                )
+        return cleaned, None
+    if kind == "doubt_answer":
+        doubt = context.doubt
+        answer = (request.answer or "").strip()
+        pending_id = (request.pending_id or "").strip() or (doubt.pending_id if doubt else "")
+        cleaned = request.model_copy(
+            update={"targets": [], "pending_id": pending_id or None, "answer": answer or None}
+        )
+        if doubt is None:
+            return cleaned, "no doubt is asked in the chat now, so nothing is a doubt_answer"
+        if pending_id != doubt.pending_id:
+            return cleaned, f"the doubt asked now is {doubt.pending_id}, not {pending_id}"
+        if not answer:
+            return cleaned, "a doubt_answer needs the student's answer"
+        if len(answer) > ANSWER_MAX_CHARS:
+            return cleaned, f"the answer has {len(answer)} characters; at most {ANSWER_MAX_CHARS}"
+        return cleaned, None
+    return request.model_copy(update={"targets": [], "pending_id": None, "answer": None}), None
+
+
+def _kind_fields(request: ReportedRequest) -> dict[str, Any]:
+    """The `AssistantRequest` fields of a checked request's kind."""
+    if request.kind in TARGET_KINDS:
+        return {"targets": list(request.targets)}
+    if request.kind == "doubt_answer":
+        return {"pending_id": request.pending_id, "answer": request.answer}
+    return {}
+
+
+async def _context_of(
+    lookup: SourcesLookup | None, subject_slug: str, topic_slug: str
+) -> RequestContext:
+    """The topic's context for a call; empty without a lookup or when it fails."""
+    if lookup is None:
+        return RequestContext()
+    try:
+        return await lookup(subject_slug, topic_slug)
+    except Exception:
+        logger.exception("the request context of %s/%s cannot be read", subject_slug, topic_slug)
+        return RequestContext()
+
+
+def _spoken_number(request_id: str) -> int:
+    """`n` of a spoken `req-<n>`; 0 for a typed `req-t<n>`."""
+    number = request_id.removeprefix("req-")
+    return int(number) if number.isdigit() else 0
+
+
+# -- typed messages ------------------------------------------------------------------------------
+
+
+class ClassificationError(Exception):
+    """A typed message could not be classified (Claude failed, or no valid answer)."""
+
+
+class MessageClassifier:
+    """Classifies one message typed in the workspace chat into requests (#327).
+
+    The same prompt, tool and checks as `RequestDetector`, the message as the window's single
+    segment `m1` (every request of it shares that segment), the topic's context from
+    `sources_lookup`. `client_factory` builds the `observer` client from a ledger binding (the
+    topic's live session when it has one). The calls are recorded in
+    `conversations/observer-messages.jsonl` (`user` and `assistant` records).
+    """
+
+    def __init__(
+        self,
+        client_factory: ClientFactory | None = None,
+        *,
+        sources_lookup: SourcesLookup | None = None,
+        clock: Clock | None = None,
+    ) -> None:
+        self.client_factory = client_factory or default_client_factory()
+        self.sources_lookup = sources_lookup
+        self.clock: Clock = clock or SystemClock()
+        self.prompt = load_prompt(PROMPT_NAME)
+        self.tool = requests_tool()
+
+    async def classify(
+        self,
+        vault: Any,
+        subject_slug: str,
+        topic_slug: str,
+        text: str,
+        *,
+        session_id: str | None = None,
+    ) -> list[ReportedRequest]:
+        """The requests of `text`, checked (possibly none).
+
+        Raises:
+            ClassificationError: Claude failed (a reached cap too) or never gave a valid answer.
+        """
+        subject_name, topic_title = await asyncio.to_thread(
+            _topic_names, vault, subject_slug, topic_slug
+        )
+        client = self.client_factory(LedgerBinding(vault, subject_slug, topic_slug, session_id))
+        system = [self.prompt.content, render_topic(subject_name, topic_title, None)]
+        context = await _context_of(self.sources_lookup, subject_slug, topic_slug)
+        segment = _Final(MESSAGE_SEGMENT, text.strip(), 0, 0, self.clock.monotonic())
+        rendered = (
+            context.render() + "\n\nA typed message of the student, the single segment"
+            f" `{MESSAGE_SEGMENT}`:\n{MESSAGE_SEGMENT} {segment.text}"
+        )
+        turn = {"role": "user", "content": [{"type": "text", "text": rendered}]}
+        position = {MESSAGE_SEGMENT: 0}
+        messages: list[dict[str, Any]] = [turn]
+        accepted: list[ReportedRequest] = []
+        checked = _Checked()
+        for attempt in range(1 + client.structured_reasks):
+            try:
+                response = await client.create(
+                    messages,
+                    system=system,
+                    tools=[self.tool],
+                    tool_choice={"type": "auto"},
+                    prompt_hash=self.prompt.hash,
+                )
+            except LLMError as error:
+                raise ClassificationError(str(error)) from error
+            await self._record(vault, subject_slug, topic_slug, messages[-1], response)
+            checked = _check(response, position, set(), context, [segment], typed=True)
+            accepted += [request for request, _span in checked.requests]
+            if checked.called and not checked.errors:
+                return accepted
+            if attempt < client.structured_reasks:
+                messages = [*messages, response.assistant_turn(), _reask_turn(response, checked)]
+        if accepted:
+            return accepted
+        raise ClassificationError("; ".join(checked.errors or [f"no {TOOL_NAME} call"]))
+
+    async def _record(
+        self,
+        vault: Any,
+        subject_slug: str,
+        topic_slug: str,
+        message: dict[str, Any],
+        response: LLMResponse,
+    ) -> None:
+        records = [
+            ConversationRecord(time=self.clock.now(), kind="user", message=message),
+            ConversationRecord(
+                time=self.clock.now(),
+                kind="assistant",
+                message=response.assistant_turn(),
+                model=response.model,
+                prompt_hash=self.prompt.hash,
+                usage=response.usage.model_dump(),
+            ),
+        ]
+        for record in records:
+            try:
+                await asyncio.to_thread(
+                    append_conversation_record,
+                    vault,
+                    subject_slug,
+                    topic_slug,
+                    MESSAGES_CONVERSATION,
+                    record,
+                )
+            except SecretRefused:
+                logger.warning(
+                    "a typed message record of %s/%s looks like a secret", subject_slug, topic_slug
+                )
+            except (VaultError, OSError):
+                logger.exception(
+                    "the typed messages conversation of %s/%s cannot be written",
+                    subject_slug,
+                    topic_slug,
+                )
+
+
+def _topic_names(vault: Any, subject_slug: str, topic_slug: str) -> tuple[str, str]:
+    return (
+        get_subject(vault, subject_slug).subject.name,
+        get_topic(vault, subject_slug, topic_slug).topic.title,
+    )
+
+
 def _ms(value: Any, default: int) -> int:
     return int(value) if isinstance(value, int | float) and value >= 0 else max(0, default)
 
 
 __all__ = [
     "DETECTOR",
+    "MESSAGES_CONVERSATION",
+    "MESSAGE_SEGMENT",
     "PROMPT_NAME",
     "TOOL_NAME",
+    "ClassificationError",
     "Clock",
+    "MessageClassifier",
     "ReportRequests",
     "ReportedRequest",
     "RequestDetector",
