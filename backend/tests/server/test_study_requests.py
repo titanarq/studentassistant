@@ -117,7 +117,5 @@ def test_the_chat_lines() -> None:
         result_reply(outline, {}, 4) == "Listo: el esquema tiene 4 apartados. Ábrelo en «Esquema»."
     )
     slides = GenerationRequest(kind="diapositivas", option="diapositivas")
-    assert (
-        result_reply(slides, {}, 9)
-        == "Listas las diapositivas: descárgalas desde la ficha del tema."
-    )
+    assert result_reply(slides, {}, 9) == "Listas: 9 diapositivas. Ábrelas en «Diapositivas»."
+    assert result_reply(slides, {}, 1) == "Listas: 1 diapositiva. Ábrelas en «Diapositivas»."

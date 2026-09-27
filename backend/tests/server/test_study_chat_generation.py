@@ -15,6 +15,8 @@ from quiz_replies import reply_quiz
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.config import LlmSettings, ObserverSettings, ServerSettings, Settings
 from studentassistant.editor.tutor import ANSWER_RECORD, CONVERSATION_NAME, TutorAnswer
+from studentassistant.generators.slides import PDF_NAME, PPTX_NAME, Exported, SlidesGenerator
+from studentassistant.generators.slides import TOOL_NAME as SLIDES_TOOL
 from studentassistant.llm import FakeClaude, LLMServerError
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
@@ -137,6 +139,67 @@ def test_a_stale_material_is_regenerated(
     kind, result = events_of(_ask(client, topic, "hazme el quiz de nuevo"))[-1]
     assert kind == "result" and _option(result["study"], "quiz") == "listo"
     assert len(client.get(f"{_topic_base(topic)}/tutor").json()["turns"]) == 2
+
+
+class _FakeExporter:
+    async def export(self, markdown: str, assets: dict[str, bytes]) -> Exported:
+        return Exported(files={PDF_NAME: b"%PDF-1.7 fake", PPTX_NAME: b"PK fake pptx"})
+
+
+SLIDES_DECK: dict[str, Any] = {
+    "title": "Derivadas",
+    "slides": [
+        {
+            "title": "Qué es la derivada",
+            "bullets": ["**Derivada**: el límite del cociente incremental."],
+            "anchors": ["definicion"],
+        },
+        {"title": "Próximo día", "bullets": ["La regla de la cadena."], "anchors": ["proximo-dia"]},
+    ],
+}
+
+
+def test_slides_are_the_sixth_study_option(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(SlidesGenerator, "exporter", _FakeExporter())
+    before = client.get(f"{_topic_base(topic)}/study").json()
+    assert [option["key"] for option in before["options"]] == [
+        "esquema",
+        "ejercicios",
+        "examen",
+        "quiz",
+        "tarjetas",
+        "diapositivas",
+    ]
+    assert _option(before, "diapositivas") == "sin_generar"
+
+    fake.reply_tool(SLIDES_TOOL, SLIDES_DECK)
+    kind, result = events_of(_ask(client, topic, "hazme diapositivas"))[-1]
+    assert kind == "result", result
+    assert result["option"] == "diapositivas" and result["material_kind"] == "diapositivas"
+    items = result["items"]
+    assert result["reply"] == (
+        f"Listas: {items} diapositiva{'' if items == 1 else 's'}. Ábrelas en «Diapositivas»."
+    )
+    assert _option(result["study"], "diapositivas") == "listo"
+    assert client.get(f"{_topic_base(topic)}/study").json() == result["study"]
+    # The downloads come from the materials listing, as on the topic card page.
+    materials = client.get(f"{_topic_base(topic)}/generated").json()
+    [slides] = [a for a in materials["artifacts"] if a["kind"] == "diapositivas"]
+    names = {Path(name).name for name in slides["files"]}
+    assert {"diapositivas.md", PDF_NAME, PPTX_NAME} <= names
+    pdf = client.get(f"{_topic_base(topic)}/generated/files/{PDF_NAME}")
+    assert pdf.status_code == 200 and pdf.content == b"%PDF-1.7 fake"
+
+    write_notes(topic.vault, topic.subject, topic.topic, topic.notes + "\nOtro.[^p1]\n")
+    GitSync(topic.vault).checkpoint("edit")
+    stale = next(
+        option
+        for option in client.get(f"{_topic_base(topic)}/study").json()["options"]
+        if option["key"] == "diapositivas"
+    )
+    assert stale["state"] == "desactualizado" and stale["stale_reason"]
 
 
 def test_a_reached_cap_is_a_coded_error_until_confirmed(

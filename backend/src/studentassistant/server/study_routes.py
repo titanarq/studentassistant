@@ -44,6 +44,7 @@ from studentassistant.editor.versions import (
     study_current,
 )
 from studentassistant.generators import GeneratorRegistry, default_registry, materials_status
+from studentassistant.generators.slides import KIND as SLIDES_KIND
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import ApiError
@@ -76,7 +77,7 @@ BUSY_DETAIL = (
     " estudiar."
 )
 
-StudyOptionKey = Literal["esquema", "ejercicios", "examen", "quiz", "tarjetas"]
+StudyOptionKey = Literal["esquema", "ejercicios", "examen", "quiz", "tarjetas", "diapositivas"]
 StudyOptionState = Literal["listo", "desactualizado", "sin_generar"]
 OPTION_KINDS: dict[StudyOptionKey, str] = {
     "esquema": "esquema",
@@ -84,9 +85,12 @@ OPTION_KINDS: dict[StudyOptionKey, str] = {
     "examen": "examen",
     "quiz": "quiz",
     "tarjetas": "flashcards",
+    "diapositivas": SLIDES_KIND,
 }
 """Each study option and the generator kind whose material it shows (ejercicios and examen are
-both built from the `examen` material)."""
+both built from the `examen` material). `diapositivas` is the slides deck: its exported PDF/PPTX
+are the `files` of the `diapositivas` artifact in `GET .../topics/{t}/generated`, downloaded from
+`GET .../generated/files/{name}` (`generators_routes.py`), as the topic card page does."""
 
 
 class _Strict(BaseModel):
