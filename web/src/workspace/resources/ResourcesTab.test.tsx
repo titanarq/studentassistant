@@ -110,11 +110,16 @@ it("shows each source's state, the reasons, the counts and the hint", async () =
   expect(await screen.findByText("2 pendientes · 1 incorporada · 4 apartadas")).toBeInTheDocument();
   expect(screen.getByText(RESOURCES_HINT)).toBeInTheDocument();
   const kept = screen.getByRole("list", { name: "Fuentes del tema" });
-  expect(within(kept).getAllByRole("button").map((b) => b.textContent)).toEqual([
-    "Página 1 · apuntesIncorporada",
-    "Página 2 · apuntesPendiente",
-    "Página 3 · apuntesPendienteAviso: Puede estar cortada",
-  ]);
+  // The counts do not wait for page 3's metadata (flagged stays pending): wait for its warning.
+  await waitFor(
+    () =>
+      expect(within(kept).getAllByRole("button").map((b) => b.textContent)).toEqual([
+        "Página 1 · apuntesIncorporada",
+        "Página 2 · apuntesPendiente",
+        "Página 3 · apuntesPendienteAviso: Puede estar cortada",
+      ]),
+    { timeout: 5000 },
+  );
 
   const toggle = screen.getByRole("button", { name: "Apartadas (4)" });
   expect(toggle).toHaveAttribute("aria-expanded", "false");

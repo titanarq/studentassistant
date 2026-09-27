@@ -187,15 +187,23 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
 
   const resources = document.getElementById("workspace-panel-resources")!;
   const pages = await within(resources).findByRole("list", { name: "Fuentes del tema" });
-  expect(within(pages).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
-    "Página 1 · apuntes",
-    "Página 2 · apuntes",
-    "Libro, página 1",
-    "PDF",
-    "Web: 001-maquina-de-vapor.md",
-  ]);
-  expect(within(resources).getByText("0 pendientes · 5 incorporadas · 0 apartadas")).toBeInTheDocument();
-  expect(within(resources).getByText("Hay 1 web guardada que los apuntes todavía no citan.")).toBeInTheDocument();
+  // The list first shows the notes' citations alone; the summary's counts and the sources'
+  // metadata arrive on their own, so wait for the whole list.
+  await waitFor(
+    () =>
+      expect(within(pages).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+        "Página 1 · apuntes",
+        "Página 2 · apuntes",
+        "Libro, página 1",
+        "PDF",
+        "Web: 001-maquina-de-vapor.md",
+      ]),
+    { timeout: 5000 },
+  );
+  expect(await within(resources).findByText("0 pendientes · 5 incorporadas · 0 apartadas", {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(
+    await within(resources).findByText("Hay 1 web guardada que los apuntes todavía no citan.", {}, { timeout: 5000 }),
+  ).toBeInTheDocument();
 
   fireEvent.click(within(pages).getByRole("button", { name: /Página 1 · apuntes/ }));
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
@@ -246,17 +254,21 @@ it("refreshes the document after the chat applied a change", async () => {
 });
 
 it("reads the doubts counter again on a doubt of the chat and opens a contradiction's source in Recursos", async () => {
-  let counts = 0;
+  // The counter is also read when the notes load, so it drops to 2 only once the doubt is asked:
+  // "2 dudas pendientes" then proves the read the doubt triggered.
+  let asked = false;
   const stream = streamResponse();
   const fetchMock = renderPage({
     ...ROUTES,
     [`${BASE}/workspace/stream`]: () => stream.response,
     [`${BASE}/pending?status=open`]: () =>
-      jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", open_count: counts++ === 0 ? 3 : 2, items: [] }),
+      jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", open_count: asked ? 2 : 3, items: [] }),
   });
-  expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toBeInTheDocument();
   await screen.findByRole("heading", { name: /Contexto/ });
+  expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toBeInTheDocument();
+  const readsBefore = fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length;
 
+  asked = true;
   act(() =>
     stream.push(
       sseEvent("doubt.asked", {
@@ -271,10 +283,11 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
       }),
     ),
   );
-  expect(await screen.findByRole("link", { name: "2 dudas pendientes" })).toBeInTheDocument();
-  expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length).toBeGreaterThanOrEqual(2);
+  // The counter and the chat's doubt card render from independent paths: await each on its own.
+  expect(await screen.findByRole("link", { name: "2 dudas pendientes" }, { timeout: 5000 })).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length).toBeGreaterThan(readsBefore);
 
-  fireEvent.click(screen.getByRole("button", { name: "Ver la fuente: página 2" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Ver la fuente: página 2" }, { timeout: 5000 }));
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
   const resources = document.getElementById("workspace-panel-resources")!;
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 2" });
@@ -335,16 +348,20 @@ it("lists every stored source from the topic's source list, uncited webs include
   const resources = document.getElementById("workspace-panel-resources")!;
   const cards = await within(resources).findByRole("list", { name: "Fuentes del tema" });
   // By kind: the real files (page 3, not a guessed page 2) before what only the notes cite, and
-  // the uncited web too.
-  expect(within(cards).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
-    "Página 1 · apuntes",
-    "Página 3 · apuntes",
-    "Página 2 · apuntes",
-    "Libro, página 1",
-    "PDF",
-    "Web: La máquina de vapor",
-    "Web: El telar mecánico",
-  ]);
+  // the uncited web too. The list first shows the notes' citations alone: wait for the listing.
+  await waitFor(
+    () =>
+      expect(within(cards).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+        "Página 1 · apuntes",
+        "Página 3 · apuntes",
+        "Página 2 · apuntes",
+        "Libro, página 1",
+        "PDF",
+        "Web: La máquina de vapor",
+        "Web: El telar mecánico",
+      ]),
+    { timeout: 5000 },
+  );
   expect(within(resources).queryByText(/todavía no citan/)).toBeNull();
   expect(fetchMock.mock.calls.some(([path]) => path === `${BASE}/summary`)).toBe(false);
 
