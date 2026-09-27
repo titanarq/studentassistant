@@ -18,6 +18,7 @@ __pycache__/
 # Web
 node_modules/
 web/dist/
+web/**/*.tsbuildinfo
 backend/src/studentassistant/server/static/
 
 # Gradle / Android
