@@ -713,8 +713,9 @@ Routes registered today:
     10") sets `QuizOptions.size`, `FlashcardsOptions.size`, `ExamOptions.exercises` /
     `questions` or `SlidesOptions.size`, clamped to the bounds of the registry's options model
     (the lines say so: "Como mucho pueden ser 30 preguntas: preparo 30."); `fácil(es)`,
-    `media(s)`, `difícil(es)` set `QuizOptions.difficulty`. A bare request uses the generator's
-    defaults and the progress line states them. Anything else -- "¿qué es un quiz?", "explícame
+    `media(s)`, `difícil(es)` set `QuizOptions.difficulty`. A request that sets none of its
+    option's parameters asks back first (below); the progress line states the effective options,
+    defaults included. Anything else -- "¿qué es un quiz?", "explícame
     el esquema de la página 3" -- goes to the tutor as before, and `spoken` questions are never
     matched. A match runs `generators_routes.generate_material` -- the same code path as
     `POST .../generated/{kind}` (the `MaterialGenerators` claim of the topic and kind, a
@@ -735,10 +736,35 @@ Routes registered today:
       (after `generation.started`), not before it.
     The turn is appended to `conversations/tutor.jsonl` (`editor.tutor.record_generation`, a
     `tutor.generation` record); a failed generation is not saved.
+  - **Asking back** (#383, human decision 2026-09-27): a **bare** match -- one that sets none of
+    the count or difficulty its option asks for (`needs_parameters(request, *, registry) ->
+    Clarification | None`) -- generates nothing yet. `quiz` asks for `size` and `difficulty` (it
+    asks only when neither is given: "hazme un quiz difícil" generates 10 hard questions);
+    `tarjetas` for `size`, `ejercicios` for `exercises`, `examen` for `questions`,
+    `diapositivas` for `size`; `esquema` has no options and never asks. The defaults it names come
+    from the registry's options models. Unless the topic has no notes (then the generation stream
+    reports it, as before), the stream is one `result` `{kind: "clarification", option, style:
+    "written", question, reply, refs: [], sections: [], warning: null, defaults}` -- answer-shaped,
+    so a client that knows only answers shows `reply` -- e.g. «¿Cuántas preguntas quieres y de qué
+    dificultad (fácil, media, difícil o variada)? Si no me dices nada distinto, hago 10 preguntas
+    de dificultad variada.» or «¿Cuántas tarjetas quieres? Por defecto, 20.». It is appended as a
+    `tutor.clarification` record (`editor.tutor.record_clarification`: `question`, `reply`,
+    `option`, `material_kind`, `defaults`). While that is the topic's latest tutor turn
+    (`editor.tutor.pending_clarification`), the next `written` message is dispatched: a new
+    request ("hazme un esquema") is handled as that request; otherwise
+    `complete_parameters(text, pending, *, registry) -> GenerationRequest | None` reads it -- a
+    count and/or a difficulty in any order ("5", "10 fáciles", "difícil, 8", "de 12", "6
+    ejercicios y 3 preguntas"; `variada`/`mixta` too), or an acceptance of the defaults ("vale",
+    "sí", "las de por defecto", "como quieras", "da igual") -- and a completion runs the
+    generation stream above with the pending option (missing parameters at their defaults, counts
+    clamped and said so). Anything else goes to the tutor as a question, whose answer turn drops
+    the clarification (a later "10" is then a question too). The Construir chat, `spoken`
+    questions and `POST .../generated/{kind}` never ask back.
   - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, kind, style, question, reply, refs,
     sections, warning, option, items}`, oldest first, both styles; `kind` `answer` (the default:
-    turns recorded before #366 read so) or `generation` (with `option` and `items`, `reply` the
-    result sentence, `warning` its warnings joined); turns recorded before #334 are `spoken`
+    turns recorded before #366 read so), `generation` (with `option` and `items`, `reply` the
+    result sentence, `warning` its warnings joined) or `clarification` (#383, with `option`,
+    `reply` the question back); turns recorded before #334 are `spoken`
     with no `sections`). Reads only; works without `llm_transport`.
   - Errors before the stream, Spanish `detail`: no `llm_transport` 503, a vault that cannot be
     opened 503, an unknown topic 404, no notes yet 409, another question of the topic running

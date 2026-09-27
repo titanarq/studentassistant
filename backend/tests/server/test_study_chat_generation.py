@@ -136,7 +136,7 @@ def test_a_stale_material_is_regenerated(
     assert _option(client.get(f"{_topic_base(topic)}/study").json(), "quiz") == "desactualizado"
 
     reply_quiz(fake)
-    kind, result = events_of(_ask(client, topic, "hazme el quiz de nuevo"))[-1]
+    kind, result = events_of(_ask(client, topic, "hazme de nuevo el quiz de 3"))[-1]
     assert kind == "result" and _option(result["study"], "quiz") == "listo"
     assert len(client.get(f"{_topic_base(topic)}/tutor").json()["turns"]) == 2
 
@@ -175,7 +175,7 @@ def test_slides_are_the_sixth_study_option(
     assert _option(before, "diapositivas") == "sin_generar"
 
     fake.reply_tool(SLIDES_TOOL, SLIDES_DECK)
-    kind, result = events_of(_ask(client, topic, "hazme diapositivas"))[-1]
+    kind, result = events_of(_ask(client, topic, "hazme 2 diapositivas"))[-1]
     assert kind == "result", result
     assert result["option"] == "diapositivas" and result["material_kind"] == "diapositivas"
     items = result["items"]
@@ -206,7 +206,7 @@ def test_a_reached_cap_is_a_coded_error_until_confirmed(
     make_app: AppFactory, fake: FakeClaude, topic: ReviseTopic
 ) -> None:
     with _local(make_app(fake, LlmSettings(max_usd_per_day=0))) as client:
-        events = events_of(_ask(client, topic, "hazme un quiz"))
+        events = events_of(_ask(client, topic, "hazme un quiz de 3 preguntas"))
         assert [kind for kind, _ in events] == ["generation.started", "error"]
         error = events[1][1]
         assert error["status"] == 409 and error["code"] == "cost_cap_reached"
@@ -215,7 +215,7 @@ def test_a_reached_cap_is_a_coded_error_until_confirmed(
         assert client.get(f"{_topic_base(topic)}/tutor").json()["turns"] == []
 
         reply_quiz(fake)
-        confirmed = _ask(client, topic, "hazme un quiz", confirm_over_cap=True)
+        confirmed = _ask(client, topic, "hazme un quiz de 3 preguntas", confirm_over_cap=True)
         assert events_of(confirmed)[-1][0] == "result"
 
 
@@ -224,7 +224,7 @@ def test_the_same_material_generating_is_busy(
 ) -> None:
     materials = client.app.state.materials  # type: ignore[attr-defined]
     assert materials.claim(topic.subject, topic.topic, "quiz")
-    kind, error = events_of(_ask(client, topic, "hazme un quiz"))[-1]
+    kind, error = events_of(_ask(client, topic, "hazme un quiz de 3 preguntas"))[-1]
     assert kind == "error" and error["status"] == 409 and "Ya se está generando" in error["detail"]
     materials.release(topic.subject, topic.topic, "quiz")
     assert fake.requests == []
@@ -243,7 +243,7 @@ def test_no_notes_and_claude_failures(
 
     for _ in range(4):  # every attempt of the client's retries
         fake.fail(LLMServerError("overloaded", status_code=529, retry_after=0))
-    kind, error = events_of(_ask(client, topic, "hazme un quiz"))[-1]
+    kind, error = events_of(_ask(client, topic, "hazme un quiz de 3 preguntas"))[-1]
     assert kind == "error" and error["status"] == 502
     # A failed generation is not saved.
     assert client.get(f"{_topic_base(topic)}/tutor").json()["turns"] == []
@@ -280,3 +280,110 @@ def test_older_answer_records_still_read(client: TestClient, topic: ReviseTopic)
     )
     [turn] = client.get(f"{_topic_base(topic)}/tutor").json()["turns"]
     assert turn["kind"] == "answer" and turn["style"] == "spoken" and turn["reply"] == "Eso."
+
+
+# -- asking back (#383) ----------------------------------------------------------------------------
+
+QUIZ_QUESTION = (
+    "¿Cuántas preguntas quieres y de qué dificultad (fácil, media, difícil o variada)? Si no me"
+    " dices nada distinto, hago 10 preguntas de dificultad variada."
+)
+
+
+def test_a_bare_request_asks_back_and_generates_nothing(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    events = events_of(_ask(client, topic, "Hazme un quiz"))
+    assert events == [
+        (
+            "result",
+            {
+                "kind": "clarification",
+                "option": "quiz",
+                "style": "written",
+                "question": "Hazme un quiz",
+                "reply": QUIZ_QUESTION,
+                "refs": [],
+                "sections": [],
+                "warning": None,
+                "defaults": {"size": 10, "difficulty": "mixed"},
+            },
+        )
+    ]
+    assert fake.requests == []
+    [turn] = client.get(f"{_topic_base(topic)}/tutor").json()["turns"]
+    assert turn["kind"] == "clarification" and turn["option"] == "quiz"
+    assert turn["style"] == "written" and turn["reply"] == QUIZ_QUESTION
+    assert turn["items"] is None
+    assert _option(client.get(f"{_topic_base(topic)}/study").json(), "quiz") == "sin_generar"
+
+
+def test_the_follow_up_completes_the_request(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    _ask(client, topic, "hazme un quiz")
+    reply_quiz(fake)
+    events = events_of(_ask(client, topic, "5 difíciles"))
+    assert [kind for kind, _ in events] == ["generation.started", "result"]
+    assert events[0][1]["text"].startswith("Preparando un quiz de 5 preguntas difíciles")
+    assert events[1][1]["kind"] == "generation" and events[1][1]["option"] == "quiz"
+    assert [request.role for request in fake.requests] == ["generator"]
+    turns = client.get(f"{_topic_base(topic)}/tutor").json()["turns"]
+    assert [turn["kind"] for turn in turns] == ["clarification", "generation"]
+    assert turns[1]["question"] == "5 difíciles"
+
+    # Answered: a later count is no completion.
+    fake.reply_text("¿Diez qué?")
+    later = events_of(_ask(client, topic, "10"))
+    assert later[-1][1]["reply"] == "¿Diez qué?"
+    assert [request.role for request in fake.requests] == ["generator", "editor"]
+
+
+def test_an_acceptance_generates_with_the_defaults(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    _ask(client, topic, "dame un test")
+    reply_quiz(fake)
+    events = events_of(_ask(client, topic, "Vale"))
+    assert events[0][0] == "generation.started"
+    assert events[0][1]["text"].startswith(
+        "Preparando un quiz de 10 preguntas de dificultad variada"
+    )
+    assert events[-1][0] == "result" and events[-1][1]["kind"] == "generation"
+
+
+def test_a_count_only_option_asks_for_its_count(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    [(kind, result)] = events_of(_ask(client, topic, "hazme tarjetas"))
+    assert kind == "result" and result["kind"] == "clarification"
+    assert result["option"] == "tarjetas" and result["defaults"] == {"size": 20}
+    assert result["reply"] == "¿Cuántas tarjetas quieres? Por defecto, 20."
+    # A new bare request replaces the pending one.
+    [(_, again)] = events_of(_ask(client, topic, "hazme un quiz"))
+    assert again["kind"] == "clarification" and again["option"] == "quiz"
+    assert fake.requests == []
+
+
+def test_a_question_after_the_clarification_drops_it(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    _ask(client, topic, "hazme un quiz")
+    fake.reply_text("Es el límite del cociente incremental.")
+    answer = events_of(_ask(client, topic, "¿Qué es la derivada?"))[-1][1]
+    assert answer["reply"].startswith("Es el límite")
+    fake.reply_text("¿Diez qué?")
+    later = events_of(_ask(client, topic, "10"))[-1][1]
+    assert later["reply"] == "¿Diez qué?"
+    assert [request.role for request in fake.requests] == ["editor", "editor"]
+    turns = client.get(f"{_topic_base(topic)}/tutor").json()["turns"]
+    assert [turn["kind"] for turn in turns] == ["clarification", "answer", "answer"]
+
+
+def test_a_request_with_its_parameters_generates_directly(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    reply_quiz(fake)
+    events = events_of(_ask(client, topic, "hazme un quiz de 10 preguntas fáciles"))
+    assert [kind for kind, _ in events] == ["generation.started", "result"]
+    assert events[0][1]["text"].startswith("Preparando un quiz de 10 preguntas fáciles")

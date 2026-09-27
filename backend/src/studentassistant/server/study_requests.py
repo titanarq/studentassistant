@@ -332,6 +332,237 @@ def match_generation(
     return GenerationRequest(kind=kind, option=option, options=options, clamped=clamped)
 
 
+# -- asking back (#383) ----------------------------------------------------------------------------
+
+# The options each study option asks back for when a request sets none of them. `esquema` has no
+# options: it never asks back.
+_ASKED_FIELDS: dict[GenerationOption, tuple[str, ...]] = {
+    "quiz": ("size", "difficulty"),
+    "tarjetas": ("size",),
+    "ejercicios": ("exercises",),
+    "examen": ("questions",),
+    "diapositivas": ("size",),
+}
+_DIFFICULTY_NAMES = {"easy": "fácil", "medium": "media", "hard": "difícil", "mixed": "variada"}
+_COMPLETION_DIFFICULTIES = {
+    **_DIFFICULTIES,
+    "variada": "mixed",
+    "variadas": "mixed",
+    "variado": "mixed",
+    "variados": "mixed",
+    "mixta": "mixed",
+    "mixtas": "mixed",
+    "mixto": "mixed",
+    "mixtos": "mixed",
+}
+# The unit nouns of a follow-up ("10 preguntas", "8 tarjetas"), singular too, per kind.
+_COMPLETION_UNITS: dict[tuple[str, str], str] = {
+    **_UNIT_FIELDS,
+    (QUIZ_KIND, "pregunta"): "size",
+    (FLASHCARDS_KIND, "tarjeta"): "size",
+    (EXAM_KIND, "ejercicio"): "exercises",
+    (EXAM_KIND, "pregunta"): "questions",
+    (SLIDES_KIND, "diapositiva"): "size",
+    (SLIDES_KIND, "slides"): "size",
+}
+# Words a follow-up may carry around its count and difficulty ("que sean 8", "de dificultad media").
+_COMPLETION_FILLERS = {
+    "de",
+    "con",
+    "que",
+    "sean",
+    "y",
+    "pues",
+    "mejor",
+    "unas",
+    "unos",
+    "un",
+    "una",
+    "dificultad",
+    "nivel",
+    "por",
+    "favor",
+    "porfa",
+    "venga",
+    "bueno",
+    "ok",
+    "okay",
+    "vale",
+    "si",
+    "hazme",
+    "haz",
+    "dame",
+    "ponme",
+    "pon",
+    "quiero",
+    "genera",
+    "prepara",
+    "memoria",
+}
+# A follow-up that takes the defaults ("vale", "sí", "las de por defecto", "como quieras"...).
+_ACCEPTANCE_PHRASES: tuple[tuple[str, ...], ...] = (
+    ("por", "defecto"),
+    ("como", "quieras"),
+    ("lo", "que", "quieras"),
+    ("las", "que", "quieras"),
+    ("los", "que", "quieras"),
+    ("da", "igual"),
+    ("me", "da", "igual"),
+    ("tu", "mismo"),
+    ("tu", "misma"),
+    ("tu", "eliges"),
+    ("tu", "decides"),
+    ("lo", "normal"),
+)
+_ACCEPTANCE_WORDS = {
+    "vale",
+    "si",
+    "ok",
+    "okay",
+    "venga",
+    "dale",
+    "perfecto",
+    "claro",
+    "genial",
+    "bien",
+    "valen",
+    "bueno",
+}
+_COMPLETION_FILLERS |= _ACCEPTANCE_WORDS | {"las", "los", "el", "la"}
+
+
+@dataclass(frozen=True)
+class Clarification:
+    """A study chat request that must ask back before generating: it set none of its option's
+    count or difficulty (#383)."""
+
+    kind: str
+    """The generator kind to run once completed."""
+    option: GenerationOption
+    """The study option it will fill."""
+    defaults: dict[str, Any]
+    """The asked options at the generator's defaults (`{"size": 10, "difficulty": "mixed"}`)."""
+    reply: str
+    """The Spanish question back, naming the defaults."""
+
+
+def _clarification_reply(option: GenerationOption, defaults: dict[str, Any]) -> str:
+    if option == "quiz":
+        size = int(defaults.get("size", 10))
+        difficulty = _DIFFICULTY_NAMES.get(str(defaults.get("difficulty", "mixed")), "variada")
+        return (
+            "¿Cuántas preguntas quieres y de qué dificultad (fácil, media, difícil o variada)?"
+            f" Si no me dices nada distinto, hago {_plural(size, 'pregunta', 'preguntas')}"
+            f" de dificultad {difficulty}."
+        )
+    field_name = _ASKED_FIELDS[option][0]
+    value = defaults.get(field_name)
+    question = {
+        "tarjetas": "¿Cuántas tarjetas quieres?",
+        "ejercicios": "¿Cuántos ejercicios quieres?",
+        "examen": "¿Cuántas preguntas quieres en el examen?",
+        "diapositivas": "¿Cuántas diapositivas quieres?",
+    }[option]
+    return f"{question} Por defecto, {value}." if value is not None else question
+
+
+def needs_parameters(
+    request: GenerationRequest, *, registry: GeneratorRegistry = default_registry
+) -> Clarification | None:
+    """The question to ask back when `request` sets none of the count or difficulty its option
+    asks for ("hazme un quiz"), or None when it can generate directly ("hazme un quiz de 5",
+    "hazme un quiz difícil", any `esquema`). Pure; the defaults come from `registry`'s options
+    model, as the progress line's."""
+    asked = _ASKED_FIELDS.get(request.option)
+    if not asked or any(name in request.options for name in asked):
+        return None
+    effective = _effective(registry, GenerationRequest(kind=request.kind, option=request.option))
+    defaults = {name: effective[name] for name in asked if name in effective}
+    return Clarification(
+        kind=request.kind,
+        option=request.option,
+        defaults=defaults,
+        reply=_clarification_reply(request.option, defaults),
+    )
+
+
+def _strip_acceptance(words: list[str]) -> tuple[list[str], bool]:
+    """`words` without the acceptance phrases they contain, and whether there was one."""
+    rest: list[str] = []
+    found = False
+    at = 0
+    while at < len(words):
+        for phrase in _ACCEPTANCE_PHRASES:
+            if tuple(words[at : at + len(phrase)]) == phrase:
+                at += len(phrase)
+                found = True
+                break
+        else:
+            rest.append(words[at])
+            at += 1
+    return rest, found
+
+
+def complete_parameters(
+    text: str,
+    pending: Clarification,
+    *,
+    registry: GeneratorRegistry = default_registry,
+) -> GenerationRequest | None:
+    """The request a follow-up `text` completes `pending` into, or None when `text` is not such an
+    answer (it then goes to the tutor). An answer is a count and/or a difficulty in any order
+    ("5", "10 fáciles", "difícil, 8", "de 12", "6 ejercicios y 3 preguntas") -- the missing ones at
+    their defaults, counts clamped as `match_generation`'s -- or an acceptance of the defaults
+    ("vale", "sí", "las de por defecto", "como quieras", "da igual"). Pure."""
+    words, accepted = _strip_acceptance(normalize(text))
+    kind = pending.kind
+    primary = _PRIMARY_FIELDS.get(pending.option)
+    values: dict[str, int] = {}
+    difficulty: str | None = None
+    position = 0
+    while position < len(words):
+        word = words[position]
+        number = _number(words, position)
+        if number is not None:
+            value, width = number
+            after = position + width
+            unit = words[after] if after < len(words) else None
+            name = _COMPLETION_UNITS.get((kind, unit)) if unit is not None else None
+            if name is not None:
+                after += 1
+            else:
+                name = primary
+            if name is None or name in values:
+                return None
+            values[name] = value
+            position = after
+            continue
+        if word in _COMPLETION_DIFFICULTIES:
+            found = _COMPLETION_DIFFICULTIES[word]
+            if difficulty is not None and difficulty != found:
+                return None
+            difficulty = found
+        elif (kind, word) in _COMPLETION_UNITS or _MATERIALS.get(word, ("",))[0] == kind:
+            pass  # "preguntas fáciles", "un quiz de 5": the pending material's own nouns
+        elif word not in _COMPLETION_FILLERS:
+            return None  # anything else is not an answer: the tutor takes it
+        position += 1
+    accepted = accepted or any(word in _ACCEPTANCE_WORDS for word in words)
+    if not values and difficulty is None and not accepted:
+        return None  # no count, difficulty or acceptance ("vale", "sí"): not an answer
+
+    options: dict[str, Any] = dict(pending.defaults)
+    clamped: list[str] = []
+    for name, value in values.items():
+        bounded, note = _clamp(registry, kind, name, value)
+        options[name] = bounded
+        if note is not None:
+            clamped.append(note)
+    if kind == QUIZ_KIND and difficulty is not None:
+        options["difficulty"] = difficulty
+    return GenerationRequest(kind=kind, option=pending.option, options=options, clamped=clamped)
+
+
 # -- the chat lines --------------------------------------------------------------------------------
 
 
@@ -422,9 +653,12 @@ def result_reply(request: GenerationRequest, counts: dict[str, int], items: int)
 
 __all__ = [
     "OPTION_TITLES",
+    "Clarification",
     "GenerationOption",
     "GenerationRequest",
+    "complete_parameters",
     "match_generation",
+    "needs_parameters",
     "normalize",
     "result_reply",
     "started_text",
