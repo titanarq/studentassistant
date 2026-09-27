@@ -75,19 +75,20 @@ import com.titanarq.studentassistant.ui.backendFailureMessage
 /**
  * The session screen: camera preview, live transcript, pending-doubts counter and the session
  * buttons. Asks for the camera and microphone at runtime; the session starts once the microphone
- * is granted. Keeps the screen on. [onLeave] (back) leaves the session open; [onEnded] follows
- * "Terminar". [imageCapture] (the still camera's use case) is bound next to the preview; the
- * thumbnail strip shows each capture's upload state (a tap on a failed one retries it).
+ * is granted. Keeps the screen on. [onLeave] (back) leaves the session open. [imageCapture] (the
+ * still camera's use case) is bound next to the preview; the thumbnail strip shows each capture's
+ * upload state (a tap on a failed one retries it).
  *
- * After "Terminar y preparar apuntes" the screen shows the notes generation's progress instead
- * ([NotesProgressPanel]); [onOpenNotes] opens the topic's «Construir» screen (its workspace) in the study desk.
+ * After «Terminar captura» the screen shows «Sesión terminada» instead ([EndedPanel]):
+ * [onOpenWorkspace] opens the topic's «Construir» screen (its workspace) in the study desk, where
+ * the student asks for the notes through the chat; [onHome] (and back) goes home.
  */
 @Composable
 fun CaptureScreen(
     viewModel: CaptureViewModel,
     onLeave: () -> Unit,
-    onEnded: () -> Unit,
-    onOpenNotes: (DeskTopic) -> Unit,
+    onHome: () -> Unit,
+    onOpenWorkspace: (DeskTopic) -> Unit,
     modifier: Modifier = Modifier,
     imageCapture: ImageCapture? = null,
 ) {
@@ -111,28 +112,31 @@ fun CaptureScreen(
     KeepScreenOn()
     PauseInBackground(viewModel)
     LaunchedEffect(micGranted) { if (micGranted) viewModel.start() }
-    LaunchedEffect(state.phase) { if (state.phase == CapturePhase.ENDED) onEnded() }
     val leave = {
         viewModel.leave()
         onLeave()
     }
-    BackHandler(onBack = leave)
-    // The end the student is confirming: null, END_PLAIN or END_PREPARE.
-    var confirmEnd by rememberSaveable { mutableStateOf<String?>(null) }
+    var confirmEnd by rememberSaveable { mutableStateOf(false) }
 
-    if (state.phase == CapturePhase.NOTES) {
-        NotesProgressPanel(
+    if (state.phase == CapturePhase.ENDED) {
+        val home = {
+            // The route changes before the holder is cleared, so the app never jumps home first.
+            onHome()
+            viewModel.closeEnded()
+        }
+        BackHandler(onBack = home)
+        EndedPanel(
             state = state,
-            onOpen = {
-                val topic = viewModel.deskTopic
-                viewModel.closeNotes()
-                onOpenNotes(topic)
+            onOpenWorkspace = {
+                onOpenWorkspace(viewModel.deskTopic)
+                viewModel.closeEnded()
             },
-            onClose = viewModel::closeNotes,
+            onHome = home,
             modifier = modifier,
         )
         return
     }
+    BackHandler(onBack = leave)
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -182,103 +186,53 @@ fun CaptureScreen(
                 onCapture = viewModel::capture,
                 onImportant = viewModel::important,
                 onToggleSource = viewModel::toggleSource,
-                onEnd = { confirmEnd = END_PLAIN },
-                onEndPrepare = { confirmEnd = END_PREPARE },
+                onEnd = { confirmEnd = true },
             )
         }
     }
 
-    confirmEnd?.let { choice ->
-        val prepare = choice == END_PREPARE
+    if (confirmEnd) {
         AlertDialog(
-            onDismissRequest = { confirmEnd = null },
-            title = { Text(stringResource(if (prepare) R.string.capture_end_prepare_title else R.string.capture_end_title)) },
-            text = { Text(stringResource(if (prepare) R.string.capture_end_prepare_text else R.string.capture_end_text)) },
+            onDismissRequest = { confirmEnd = false },
+            title = { Text(stringResource(R.string.capture_end_title)) },
+            text = { Text(stringResource(R.string.capture_end_text)) },
             confirmButton = {
                 TextButton(onClick = {
-                    confirmEnd = null
-                    viewModel.end(prepareNotes = prepare)
-                }) { Text(stringResource(if (prepare) R.string.capture_end_prepare_confirm else R.string.capture_end_confirm)) }
+                    confirmEnd = false
+                    viewModel.end()
+                }) { Text(stringResource(R.string.capture_end_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmEnd = null }) { Text(stringResource(R.string.cancel)) }
+                TextButton(onClick = { confirmEnd = false }) { Text(stringResource(R.string.cancel)) }
             },
         )
     }
 }
 
-private const val END_PLAIN = "plain"
-private const val END_PREPARE = "prepare"
-
 /**
- * The notes generation after "Terminar y preparar apuntes": running, done (open the notes),
- * failed, needs confirmation (from the study desk), unavailable. [onOpen] opens the topic in the
- * study desk; [onClose] goes back home. The generation goes on in the backend either way.
+ * «Sesión terminada»: the capture is over and nothing prepares the notes by itself (#431).
+ * [onOpenWorkspace] opens the topic's «Construir» screen, where the student asks for them in the
+ * chat; [onHome] goes back home.
  */
 @Composable
-private fun NotesProgressPanel(
+private fun EndedPanel(
     state: CaptureUiState,
-    onOpen: () -> Unit,
-    onClose: () -> Unit,
+    onOpenWorkspace: () -> Unit,
+    onHome: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val progress = state.notesProgress ?: NotesProgress.Running()
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier.padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(
-                stringResource(R.string.capture_notes_title, state.subjectName, state.topicName),
-                style = MaterialTheme.typography.titleLarge,
-            )
-            when (progress) {
-                is NotesProgress.Running -> {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                        Text(stringResource(R.string.capture_notes_running))
-                    }
-                    progress.pollFailure?.let {
-                        Text(
-                            stringResource(R.string.capture_notes_poll_failed, backendFailureMessage(it)),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-                is NotesProgress.Done -> {
-                    Text(
-                        stringResource(if (progress.draft) R.string.capture_notes_done_draft else R.string.capture_notes_done),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    progress.warning?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-                is NotesProgress.Failed -> Text(
-                    progress.detail?.let { stringResource(R.string.capture_notes_failed, it) }
-                        ?: stringResource(R.string.capture_notes_failed_unknown),
-                    color = MaterialTheme.colorScheme.error,
-                )
-                is NotesProgress.NeedsConfirmation -> {
-                    Text(stringResource(R.string.capture_notes_needs_confirmation))
-                    progress.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                }
-                NotesProgress.Unavailable -> Text(stringResource(R.string.capture_notes_unavailable))
-                NotesProgress.Lost -> Text(stringResource(R.string.capture_notes_lost))
-                is NotesProgress.Unknown -> Text(
-                    stringResource(R.string.capture_notes_unknown, backendFailureMessage(progress.failure)),
-                    color = MaterialTheme.colorScheme.error,
-                )
+            Text(stringResource(R.string.capture_ended_title), style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.capture_ended_text, state.subjectName, state.topicName))
+            Button(onClick = onOpenWorkspace, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.capture_ended_open_workspace))
             }
-            if (progress is NotesProgress.Done) {
-                Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.capture_notes_open))
-                }
-            } else {
-                OutlinedButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.capture_notes_open_desk))
-                }
-            }
-            TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.capture_notes_close))
+            TextButton(onClick = onHome, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.capture_ended_home))
             }
         }
     }
@@ -397,7 +351,6 @@ private fun SessionButtons(
     onImportant: () -> Unit,
     onToggleSource: () -> Unit,
     onEnd: () -> Unit,
-    onEndPrepare: () -> Unit,
 ) {
     val enabled = state.phase == CapturePhase.RUNNING
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -424,9 +377,6 @@ private fun SessionButtons(
                     ),
                 )
             }
-        }
-        OutlinedButton(onClick = onEndPrepare, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.capture_button_end_prepare))
         }
     }
 }

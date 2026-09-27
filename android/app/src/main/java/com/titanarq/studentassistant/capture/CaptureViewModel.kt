@@ -58,16 +58,14 @@ enum class CapturePhase {
 
     RUNNING,
 
-    /** "Terminar" pressed; the backend is ending the session. */
+    /** «Terminar captura» pressed; the backend is ending the session. */
     ENDING,
 
     /**
-     * "Terminar y preparar apuntes" was delivered: the session is over and the screen shows the
-     * notes generation's progress ([CaptureUiState.notesProgress]) until the student leaves it.
+     * The session is over (the backend took the end, or the spool will deliver it): the screen
+     * shows «Sesión terminada» with «Abrir en Construir» / «Volver al inicio» until the student
+     * leaves it ([CaptureViewModel.closeEnded]).
      */
-    NOTES,
-
-    /** The session is over; the screen goes back home. */
     ENDED,
 }
 
@@ -89,7 +87,7 @@ data class CaptureUiState(
     /** What the camera is looking at, toggled by "Libro/Apuntes". */
     val source: SourceKind = SourceKind.NOTES,
     val micProblem: MicProblem? = null,
-    /** The last "Terminar" failed with this; the session is still open. */
+    /** The last «Terminar captura» failed with this; the session is still open. */
     val endFailure: BackendResult.Failure? = null,
     /**
      * «Micrófono en pausa»: the app went to the background and the microphone stopped. Stays
@@ -104,8 +102,6 @@ data class CaptureUiState(
      * backend repeats a status that still holds right after it.
      */
     val sttWarning: SttStatus? = null,
-    /** In [CapturePhase.NOTES], the notes generation the end started. */
-    val notesProgress: NotesProgress? = null,
 )
 
 /**
@@ -133,17 +129,17 @@ class CaptureSpooling(
  * open, so the session goes on where it was.
  *
  * With [spooling] (the app), audio, finals and queued events go through its disk backlogs, so they
- * survive the process dying and are resent when the session is continued. "Terminar" while
+ * survive the process dying and are resent when the session is continued. «Terminar captura» while
  * offline, or answered with a transient failure, becomes a [PendingEnd] that the
  * [SessionFinisher] completes when the backend is back: the screen ends at once. Online,
- * "Terminar" first waits (at most [END_FLUSH_TIMEOUT_MS]) for the connection to drain and the
+ * «Terminar captura» first waits (at most [END_FLUSH_TIMEOUT_MS]) for the connection to drain and the
  * session's captures to upload. Without it (tests), everything stays in memory.
  *
- * "Terminar y preparar apuntes" (`end(prepareNotes = true)`, #272) sends the end with
- * `prepare_notes` (a pending end keeps the flag). When the backend takes it at once the screen
- * stays in [CapturePhase.NOTES] and polls the topic's notes generation every
- * [notesPollIntervalMs] (paused in the background) until it finishes or the student leaves
- * ([closeNotes], [leave]).
+ * Ending only ends the capture (#431): nothing on the phone prepares the notes. The end request
+ * never carries `prepare_notes`; after it the screen stays in [CapturePhase.ENDED] and offers the
+ * topic's «Construir» screen ([deskTopic]), where the student asks for the notes through the chat.
+ * The open session is released ([SessionHolder.clear]) when the student leaves that screen
+ * ([closeEnded], [leave]).
  */
 class CaptureViewModel(
     private val open: OpenSession,
@@ -156,7 +152,6 @@ class CaptureViewModel(
     private val stillCapture: StillCapture = NoStillCapture,
     private val reconnectDelaysMs: List<Long> = SessionConnection.DEFAULT_RECONNECT_DELAYS_MS,
     private val spooling: CaptureSpooling? = null,
-    private val notesPollIntervalMs: Long = NotesGenerationPoller.DEFAULT_INTERVAL_MS,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CaptureUiState(open.subjectName, open.topicName))
     val state: StateFlow<CaptureUiState> = _state.asStateFlow()
@@ -180,7 +175,6 @@ class CaptureViewModel(
     private var micMode: SttMode? = null
     private var inBackground = false
     private var pauseNoticeJob: Job? = null
-    private var notesPollJob: Job? = null
     private val transcriptLines = LinkedHashMap<String, TranscriptLine>()
 
     /**
@@ -233,19 +227,19 @@ class CaptureViewModel(
     }
 
     /**
-     * What "Abrir apuntes" / "Ir al escritorio de estudio" open in the study desk: the topic's
-     * «Construir» screen (its workspace, #414), where the session's material is worked into notes.
+     * What «Abrir en Construir» opens in the study desk after the end: the topic's «Construir»
+     * screen (its workspace, #414), where the student asks for the notes through the chat.
      */
     val deskTopic: DeskTopic
         get() = DeskTopic(open.session.subjectId, open.session.topicId, open.topicName, DeskView.WORKSPACE)
 
     /**
      * Leaves the screen: socket and microphone stop, the session stays open. In
-     * [CapturePhase.NOTES] it is [closeNotes].
+     * [CapturePhase.ENDED] it is [closeEnded].
      */
     fun leave() {
-        if (_state.value.phase == CapturePhase.NOTES) {
-            closeNotes()
+        if (_state.value.phase == CapturePhase.ENDED) {
+            closeEnded()
             return
         }
         stopMic()
@@ -268,7 +262,6 @@ class CaptureViewModel(
         pauseNoticeJob = null
         val wasListening = micMode != null
         stopMic()
-        stopNotesPolling()
         if (wasListening || _state.value.phase == CapturePhase.RUNNING) _state.update { it.copy(micPaused = true) }
     }
 
@@ -282,7 +275,6 @@ class CaptureViewModel(
         inBackground = false
         val state = connection?.state?.value
         if (state is ConnectionState.Connected) startMic(state.sttMode)
-        pollNotes()
         if (_state.value.micPaused) {
             pauseNoticeJob = viewModelScope.launch {
                 delay(PAUSE_NOTICE_MS)
@@ -320,11 +312,12 @@ class CaptureViewModel(
     }
 
     /**
-     * "Terminar": `button end_session`, then `POST /api/sessions/{id}/end`, with `prepare_notes`
-     * when [prepareNotes] ("Terminar y preparar apuntes"). With [spooling], an end the backend
-     * cannot take now is handed to the [SessionFinisher] (see the class doc).
+     * «Terminar captura»: `button end_session`, then `POST /api/sessions/{id}/end` without
+     * `prepare_notes`. With
+     * [spooling], an end the backend cannot take now is handed to the [SessionFinisher] (see the
+     * class doc). Either way the screen then shows «Sesión terminada» ([CapturePhase.ENDED]).
      */
-    fun end(prepareNotes: Boolean = false) {
+    fun end() {
         if (_state.value.phase != CapturePhase.RUNNING) return
         _state.update { it.copy(phase = CapturePhase.ENDING, endFailure = null) }
         val endedAtMs = clock.nowMillis()
@@ -332,7 +325,7 @@ class CaptureViewModel(
         val connection = connection
         val spooling = spooling
         if (spooling != null && connection?.state?.value !is ConnectionState.Connected) {
-            handOffEnd(spooling, endedAtMs, prepareNotes)
+            handOffEnd(spooling, endedAtMs)
             return
         }
         viewModelScope.launch {
@@ -346,30 +339,19 @@ class CaptureViewModel(
             val result = backendClient.endSession(
                 open.backend,
                 open.session.sessionId,
-                SessionEndRequest(endedAtMs, SessionEndReason.BUTTON, prepareNotes = true.takeIf { prepareNotes }),
+                SessionEndRequest(endedAtMs, SessionEndReason.BUTTON),
             )
             // 404/409: the session is already gone or ended (e.g. by voice); ended either way.
             val ended = result is BackendResult.Success ||
                 (result is BackendResult.HttpError && result.status in ENDED_STATUSES)
             when {
-                prepareNotes && result is BackendResult.Success -> {
-                    leave()
-                    spooling?.finisher?.ended(open.session.sessionId)
-                    // The holder is cleared when the student leaves the progress (closeNotes).
-                    _state.update {
-                        it.copy(phase = CapturePhase.NOTES, notesProgress = NotesProgress.fromStart(result.value.notesGeneration))
-                    }
-                    pollNotes()
-                }
                 ended -> {
-                    // A 404/409 started no generation: nothing to follow.
                     leave()
                     spooling?.finisher?.ended(open.session.sessionId)
-                    sessionHolder.clear()
                     _state.update { it.copy(phase = CapturePhase.ENDED) }
                 }
                 spooling != null && CaptureUploadQueue.isTransient(result as BackendResult.Failure) &&
-                    !(result is BackendResult.HttpError && result.status == 409) -> handOffEnd(spooling, endedAtMs, prepareNotes)
+                    !(result is BackendResult.HttpError && result.status == 409) -> handOffEnd(spooling, endedAtMs)
                 else -> {
                     val state = connection?.state?.value
                     if (state is ConnectionState.Connected) startMic(state.sttMode)
@@ -382,46 +364,21 @@ class CaptureViewModel(
     }
 
     /**
-     * Leaves the notes progress ("Volver", "Abrir apuntes", back): polling stops and the screen
-     * ends. The generation goes on in the backend.
+     * Leaves «Sesión terminada» («Abrir en Construir», «Volver al inicio», back): the open session
+     * is released, so the home screen offers no «Continuar» for it.
      */
-    fun closeNotes() {
-        if (_state.value.phase != CapturePhase.NOTES) return
-        stopNotesPolling()
+    fun closeEnded() {
+        if (_state.value.phase != CapturePhase.ENDED) return
         sessionHolder.clear()
-        _state.update { it.copy(phase = CapturePhase.ENDED) }
-    }
-
-    /** In [CapturePhase.NOTES], in the foreground, while the generation runs: polls it. */
-    private fun pollNotes() {
-        val state = _state.value
-        if (state.phase != CapturePhase.NOTES || inBackground || notesPollJob?.isActive == true) return
-        if (state.notesProgress?.finished != false) return
-        val poller = NotesGenerationPoller(
-            backendClient,
-            open.backend,
-            open.session.subjectId,
-            open.session.topicId,
-            notesPollIntervalMs,
-        )
-        notesPollJob = viewModelScope.launch {
-            poller.poll { progress -> _state.update { it.copy(notesProgress = progress) } }
-        }
-    }
-
-    private fun stopNotesPolling() {
-        notesPollJob?.cancel()
-        notesPollJob = null
     }
 
     /** The backend cannot take the end now: the finisher completes it once the spool is flushed. */
-    private fun handOffEnd(spooling: CaptureSpooling, endedAtMs: Long, prepareNotes: Boolean) {
+    private fun handOffEnd(spooling: CaptureSpooling, endedAtMs: Long) {
         leave()
         spooling.finisher.finish(
             open.backend,
-            PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON, prepareNotes),
+            PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON),
         )
-        sessionHolder.clear()
         _state.update { it.copy(phase = CapturePhase.ENDED) }
     }
 
@@ -518,7 +475,7 @@ class CaptureViewModel(
 
         private val ENDED_STATUSES = setOf(404, 409)
 
-        /** How long an online "Terminar" waits for the spool to drain and captures to upload. */
+        /** How long an online «Terminar captura» waits for the spool to drain and captures to upload. */
         const val END_FLUSH_TIMEOUT_MS: Long = 10_000
 
         internal fun toEvent(transcript: ClientTranscript, transcriber: ClientTranscriber) = when (transcript) {

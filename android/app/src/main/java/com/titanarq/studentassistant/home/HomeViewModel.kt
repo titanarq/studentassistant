@@ -94,7 +94,7 @@ data class HomeUiState(
 
 /**
  * The home screen: the active backend's subjects and their topics, creating a topic (and its
- * subject when it is new), and starting ("Empezar sesión") or resuming ("Continuar") a session,
+ * subject when it is new), and starting («Iniciar captura») or resuming ("Continuar") a session,
  * which is handed to the capture screen through [SessionHolder]. A topic whose session end is still
  * pending is marked [TopicRow.ending]; "Continuar" on it stops that end first ([PendingEnds]).
  */
@@ -220,7 +220,7 @@ class HomeViewModel(
         }
     }
 
-    /** "Empezar sesión" (no open session) or "Continuar" (resumes the topic's open session). */
+    /** «Iniciar captura» (no open session) or "Continuar" (resumes the topic's open session). */
     fun startOrContinue(row: TopicRow) {
         val credentials = backend ?: return
         val subject = _state.value.selectedSubject ?: return

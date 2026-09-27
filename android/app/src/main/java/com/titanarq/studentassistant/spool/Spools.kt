@@ -13,13 +13,13 @@ import kotlinx.serialization.Serializable
 data class PendingEnd(
     @SerialName("session_id") val sessionId: String,
     @SerialName("base_url") val baseUrl: String,
-    /** Phone time of "Terminar", sent as the end request's `client_time_ms`. */
+    /** Phone time of «Terminar captura», sent as the end request's `client_time_ms`. */
     @SerialName("client_time_ms") val clientTimeMs: Long,
     val reason: SessionEndReason = SessionEndReason.BUTTON,
     /**
-     * "Terminar y preparar apuntes" (protocol 1.6, #272): the end request says `prepare_notes`, so
-     * the backend prepares the topic's notes once the end is finally delivered. Absent in the
-     * files of older versions, which read as a plain end.
+     * Legacy (#272, removed in #431): an end spooled by an older app version after «Terminar y
+     * preparar apuntes» may carry `prepare_notes`. It is read so such a file still decodes, and
+     * never sent: nothing on the phone asks the backend to prepare the notes.
      */
     @SerialName("prepare_notes") val prepareNotes: Boolean = false,
 )
