@@ -32,7 +32,8 @@ state is whatever we feed them. It must also be auditable ("why did you put this
 - **Purge.** (a) Context: the observer's live conversation is rolled over to snapshot + digest +
   a short tail when it passes a token threshold and at every session end (the state is the fold,
   so nothing is lost). (b) Storage: `studentassistant purge` applies a per-topic retention
-  policy (burst originals, rolled-over conversations, events folded into a snapshot, old
+  policy (burst originals of sessions stored before 2026-09-27 -- new captures keep only the
+  chosen still, ADR-0001 --, rolled-over conversations, events folded into a snapshot, old
   generated artifacts), never removing what the current notes cite; soft purge is a normal
   commit, hard purge (history rewrite) is explicit.
 
