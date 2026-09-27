@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -14,11 +15,13 @@ from studentassistant.config import ObserverSettings, ServerSettings, Settings
 from studentassistant.editor.doubts import DECISION_TOOL, REVIEW_TOOL
 from studentassistant.llm import FakeClaude, LLMServerError
 from studentassistant.server.app import create_app
+from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.vault import Vault, read_notes, start_session
 
 LOCAL_BASE_URL = "http://localhost:8765"
 AppFactory = Callable[[FakeClaude | None], FastAPI]
+WAIT_SECONDS = 10.0
 
 
 @pytest.fixture
@@ -58,6 +61,13 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
         yield client
 
 
+def _settle(client: TestClient) -> None:
+    """Wait (bounded) for the chat's asker each write schedules, so the next read is settled."""
+    app: Any = client.app
+    chat: DoubtChat = app.state.doubt_chat
+    client.portal.call(chat.wait_idle, WAIT_SECONDS)  # type: ignore[union-attr]
+
+
 def test_review_then_answer_then_dismiss(
     client: TestClient, fake: FakeClaude, topic: DoubtsTopic
 ) -> None:
@@ -69,6 +79,7 @@ def test_review_then_answer_then_dismiss(
     review = client.post(f"{_base(topic)}/review")
     assert review.status_code == 200, review.text
     assert review.json()["auto_resolved"] == ["p-1"] and review.json()["asked"] == ["p-4", "p-5"]
+    _settle(client)
 
     queue = client.get(_base(topic)).json()
     assert queue["current"] == "p-4"
@@ -80,9 +91,11 @@ def test_review_then_answer_then_dismiss(
     answer = client.post(f"{_base(topic)}/p-4/answer", json={"suggestion": 1})
     assert answer.status_code == 200, answer.text
     assert answer.json()["status"] == "resolved" and answer.json()["notes_changed"] is False
+    _settle(client)
 
     dismiss = client.post(f"{_base(topic)}/p-5/dismiss")
     assert dismiss.status_code == 200 and dismiss.json()["status"] == "dismissed"
+    _settle(client)
     assert client.get(_base(topic)).json()["open_count"] == 0
     # The read side of #80 sees the same fold.
     pending = client.get(f"/api/subjects/{topic.subject}/topics/{topic.topic}/pending").json()
@@ -119,8 +132,10 @@ def test_an_unended_session_blocks_the_doubts(client: TestClient, topic: DoubtsT
 def test_without_a_transport_only_listing_and_dismissing_work(
     make_app: AppFactory, topic: DoubtsTopic
 ) -> None:
-    client = TestClient(make_app(None), base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000))
-    assert client.post(f"{_base(topic)}/review").status_code == 503
-    assert client.post(f"{_base(topic)}/p-4/answer", json={"answer": "x"}).status_code == 503
-    assert client.post(f"{_base(topic)}/p-4/dismiss").status_code == 200
-    assert client.get(_base(topic)).json()["open_count"] == 2
+    app = make_app(None)
+    with TestClient(app, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000)) as client:
+        assert client.post(f"{_base(topic)}/review").status_code == 503
+        assert client.post(f"{_base(topic)}/p-4/answer", json={"answer": "x"}).status_code == 503
+        assert client.post(f"{_base(topic)}/p-4/dismiss").status_code == 200
+        _settle(client)
+        assert client.get(_base(topic)).json()["open_count"] == 2

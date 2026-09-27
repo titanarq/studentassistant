@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
@@ -126,6 +129,35 @@ def test_two_sessions_started_in_the_same_second_get_distinct_ids(
     assert first.id == "20260924-183000"
     assert second.id == "20260924-183001"
     assert get_topic(tmp_vault, *topic).topic.sessions == [first.id, second.id]
+
+
+def test_two_sessions_started_at_once_both_stay_in_the_topic_list(
+    tmp_vault: Vault, topic: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hold each start just before it updates `topic.yaml` until the other one gets there too:
+    # without the topic's lock both would read the same list and one id would be lost (#401).
+    # With it the second start waits for the first, so the barrier breaks after its timeout.
+    barrier = threading.Barrier(2)
+    real_write = sessions_module.write_text_atomic
+
+    def write_then_meet(path, text):  # type: ignore[no-untyped-def]
+        real_write(path, text)
+        if path.name == EVENTS_FILE_NAME:
+            with contextlib.suppress(threading.BrokenBarrierError):
+                barrier.wait(timeout=0.5)
+
+    monkeypatch.setattr(sessions_module, "write_text_atomic", write_then_meet)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(start_session, tmp_vault, *topic, host=HOST, protocol_version=PROTOCOL)
+            for _ in range(2)
+        ]
+        ids = sorted(future.result(timeout=10).id for future in futures)
+
+    assert len(set(ids)) == 2
+    assert sorted(get_topic(tmp_vault, *topic).topic.sessions) == ids
+    listed = sorted(entry.name for entry in sessions_directory(tmp_vault, *topic).iterdir())
+    assert listed == ids
 
 
 def test_resume_picks_the_latest_session_that_has_not_ended(
