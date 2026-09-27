@@ -149,6 +149,15 @@
     source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
     (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
     the list.
+    Above the list, one **Añadir fuente** button (`resources/AddSource.tsx`, #384) opens a
+    small inline panel with three choices -- **PDF**, **Página web**, **Libro de texto** -- each
+    showing the topic page's existing form as is (`PdfUploadForm`, `WebPageForm`,
+    `BookTitleForm`, which gained an optional `onSaved`), and **Cancelar**. A successful add (a
+    PDF imported, a new web page stored, the book title saved) closes the panel, leaves a short
+    `role="status"` line («PDF «Tema 4.pdf» añadido.») and re-reads the source list and the
+    metadata, as a new `refreshKey` does, so the new source shows in its group; a validation or
+    server error stays in the open form, in Spanish as the form shows it (a web page the topic
+    already had keeps the panel open with the form's notice).
   - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
     #317; the notes page keeps `EditorChat`). "Chat con el asistente": an `aria-live="polite"`
     `role="log"` list of turns, oldest first. A spoken request shows "Por voz · HH:MM" and

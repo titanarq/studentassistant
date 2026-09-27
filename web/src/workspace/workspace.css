@@ -467,3 +467,32 @@
 .resource-disclosure[aria-expanded="true"]::before {
   content: "▾ ";
 }
+
+/* ---- Recursos: «Añadir fuente» (#384) ---- */
+
+.add-source {
+  margin: 0 0 var(--space-3);
+}
+
+.add-source-panel {
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.add-source-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+.add-source-panel h2 {
+  font-size: var(--step-0, 1rem);
+}
+
+.add-source-done {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}

@@ -21,7 +21,16 @@ function saveFailure(result: Exclude<BookResult, { kind: "ok" }>): string {
   return GENERIC_SAVE_ERROR;
 }
 
-export default function BookTitleForm({ subjectId, topicId }: { subjectId: string; topicId: string }) {
+export default function BookTitleForm({
+  subjectId,
+  topicId,
+  onSaved,
+}: {
+  subjectId: string;
+  topicId: string;
+  /** Called after the title was stored, with the stored title. */
+  onSaved?: (title: string | null) => void;
+}) {
   const [shown, setShown] = useState<Shown>({ state: "loading" });
   const [draft, setDraft] = useState("");
   const [save, setSave] = useState<SaveState>({ state: "idle" });
@@ -51,6 +60,7 @@ export default function BookTitleForm({ subjectId, topicId }: { subjectId: strin
       setShown({ state: "loaded", title: result.title });
       setDraft(result.title ?? "");
       setSave({ state: "saved" });
+      onSaved?.(result.title);
     } else {
       setSave({ state: "failed", message: saveFailure(result) });
     }
