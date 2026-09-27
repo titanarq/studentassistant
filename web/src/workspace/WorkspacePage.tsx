@@ -8,6 +8,7 @@ import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
 import WorkspaceTabs from "./WorkspaceTabs";
+import ModeSwitch from "../study/ModeSwitch";
 import "../notes/notes.css";
 import "./workspace.css";
 
@@ -109,6 +110,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
             </a>
           </p>
           <h1>Espacio de estudio</h1>
+          <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
           <p className="page-context">Tema {topicName}</p>
           <p className="workspace-pending" role="status" aria-label="Dudas pendientes">
             {pending === null ? null : (

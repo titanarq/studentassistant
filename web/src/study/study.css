@@ -1,0 +1,410 @@
+/* The study screen (#333, epic #332): the study options on the left, the document on the right
+   with the option panel sliding in over its right edge; one column with a two-way switch below
+   900 px (56.25rem). */
+
+.study {
+  --study-panel-width: min(26rem, 48%);
+
+  /* Wider than the other pages: the document keeps a reading column beside the open panel. */
+  max-width: 90rem;
+  margin: 0 auto;
+  padding: var(--space-4) var(--gutter) var(--space-6);
+  overflow-wrap: anywhere;
+}
+
+.study-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-1);
+}
+
+.study-title h1 {
+  margin: 0;
+}
+
+.study-header .page-context {
+  margin-bottom: var(--space-4);
+}
+
+.study-columns {
+  display: grid;
+  grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.study-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.study-left h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+/* ---- Repasos para hoy ---- */
+
+.study-reviews {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-l);
+}
+
+.study-reviews h2 {
+  margin-bottom: var(--space-1);
+}
+
+.study-reviews p {
+  margin: 0;
+}
+
+.study-review-now {
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* ---- The options ---- */
+
+.study-options {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  overflow: hidden;
+}
+
+.study-options h2 {
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.study-options > p {
+  padding: 0 var(--space-4);
+}
+
+.study-option-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.study-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--target);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  font-weight: 400;
+  text-align: left;
+}
+
+.study-option:hover {
+  background: var(--paper);
+}
+
+.study-option[aria-expanded="true"] {
+  background: var(--accent-soft);
+}
+
+.study-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.study-option-title {
+  display: block;
+  font-weight: 700;
+}
+
+.study-option[aria-expanded="true"] .study-option-title {
+  color: var(--accent);
+}
+
+.study-option-description {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.study-missing-badge {
+  color: var(--ink-faint);
+  font-size: var(--step--1);
+  white-space: nowrap;
+}
+
+/* ---- The chat slot (#336) ---- */
+
+.study-chat {
+  margin: 0;
+}
+
+.study-chat-placeholder {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+/* ---- The document and the panel over its right edge ---- */
+
+.study-right {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  min-width: 0;
+}
+
+.study-document {
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  transition: padding-right 0.25s var(--ease);
+}
+
+.study-right[data-panel="open"] .study-document {
+  padding-right: calc(var(--study-panel-width) + var(--space-3));
+}
+
+.study-document-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.study-document-bar h2 {
+  margin: 0;
+  font-size: var(--step-0);
+}
+
+.study-version {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.study-edit {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.study-empty {
+  color: var(--ink-muted);
+}
+
+/* What the item studied now is about: blue ink in the margin, apart from the editor's green
+   "changed" and the AI's yellow. */
+.study .notes-focus {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  margin-left: -0.75rem;
+  padding-left: calc(0.75rem - 3px);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.study-panel,
+.study .source-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--study-panel-width);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l) var(--radius-s) var(--radius-s) var(--radius-l);
+  box-shadow: var(--shadow-float);
+  animation: study-slide-in 0.25s var(--ease);
+}
+
+.study-panel[hidden] {
+  display: none;
+}
+
+@keyframes study-slide-in {
+  from {
+    transform: translateX(2rem);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .study-panel,
+  .study .source-panel {
+    animation: none;
+  }
+
+  .study-document {
+    transition: none;
+  }
+}
+
+.study-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.study-panel-header h2 {
+  margin: 0;
+  font-size: var(--step-0);
+}
+
+.study-panel-header button {
+  margin: 0;
+}
+
+.study-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+/* The pages embedded in the panel fill it. */
+.study-panel-body .quiz-page,
+.study-panel-body .exam-page,
+.study-panel-body .practice-page,
+.study-panel-body .material-preview {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.study-stale {
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.study-note {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+/* Source chips ("§ Funciones del lenguaje") of the practice cards and the exercises. */
+.practice-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.practice-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  margin: 0;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--step--1);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.practice-chip:hover {
+  color: var(--accent-hover);
+}
+
+.study-exercise-progress {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.study-exercise {
+  margin-bottom: var(--space-3);
+  padding: var(--space-4);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+.study-exercise-statement {
+  font-family: var(--font-read);
+  font-size: var(--step-1);
+}
+
+.study-exercise-solution h3 {
+  margin: var(--space-3) 0 var(--space-1);
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+/* ---- One column ---- */
+
+.study-switch {
+  display: none;
+}
+
+@media (max-width: 56.25rem) {
+  .study {
+    --study-panel-width: 100%;
+  }
+
+  .study-switch {
+    display: flex;
+    gap: var(--space-1);
+    margin-bottom: var(--space-4);
+  }
+
+  .study-switch button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: var(--target-phone);
+    margin: 0;
+    padding-inline: var(--space-2);
+  }
+
+  .study-switch button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+
+  .study-columns {
+    display: block;
+  }
+
+  .study-right {
+    height: calc(100vh - var(--space-4));
+  }
+
+  .study-right[data-panel="open"] .study-document {
+    padding-right: 0;
+  }
+
+  .study-panel,
+  .study .source-panel {
+    border-radius: var(--radius-l);
+  }
+
+  .study[data-view="study"] .study-right,
+  .study[data-view="document"] .study-left {
+    display: none;
+  }
+}

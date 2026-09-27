@@ -307,6 +307,48 @@
     tables; with the preservation layer, its stringify options and `tidyBlock` it passes 9/9 and
     9/9 (`roundTrip.test.ts`, plus an edited heading keeping `{#funciones_del_lenguaje}`), so it
     is the visual editor; the raw Markdown mode stays for anything it cannot show.
+- **Study screen** (`/subjects/<s>/topics/<t>/study`, "Estudiar", `src/study/`, #333, epic #332):
+  the second mode of a topic, beside the workspace (Construir). `ModeSwitch({subjectId, topicId,
+  current: "build" | "study"})` is the header switch **Construir · Estudiar** (a `nav` "Modo del
+  tema" with two links, the current one `aria-current="page"`), shown in the study header and
+  mounted in the workspace header; today it only navigates (ending the capture and labelling the
+  "versión de estudio" is #337). Two columns:
+  - Left, top: "Repasos para hoy" (`ReviewsToday`) -- this topic's entry of `GET
+    /api/practice/summary` (`desk/practiceSummary.ts`): "N para repasar · M nuevas" with
+    "Repasar ahora" (opens **Tarjetas de memoria**), else "Nada que repasar hoy." with
+    "Próximo repaso: <fecha>." when there is one.
+  - Left, middle: the study options (`options.ts`, `studyOptions(materials)`) in the order
+    **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`), **Examen**
+    (its `questions`), **Quiz** (kind `quiz`), **Tarjetas de memoria** (the practice queue, kind
+    `flashcards`); each a button with `aria-expanded` and a text badge of the kind's state from
+    `GET .../generated`: "Listo", "Desactualizado" (its `stale_reason` as `title`) or "Sin
+    generar".
+  - Left, bottom: `StudyChatSlot`, a placeholder ("Aquí podrás preguntar sobre el documento.")
+    that #336 replaces.
+  - Right: the document, `NotesView` read-only (no "¿Por qué?"), with its version and one link
+    "Editar en Construir" (`.../workspace`); without notes "Todavía no hay apuntes: constrúyelos
+    en Construir.". A provenance footnote opens `SourcePanel` in the slide-over place.
+  - `OptionPanel`: opening an option slides a labelled `region` (not a modal) over the right edge
+    of the document, which reflows to its left and stays scrollable; its heading takes the focus,
+    "Cerrar" and Escape close it and give the focus back to the option button. Content
+    (`OptionContent`) is the existing page with `embedded` (no crumbs, heading, stale note or quiz
+    generate form): Esquema -> `MaterialPreviewPage` of `esquema.md`, Ejercicios ->
+    `ExercisesView` (the exercises of `examen.yaml` one at a time, "Ver solución", "Anterior" /
+    "Siguiente"; `exam/api.ts`'s `StoredExam` now carries `exercises`), Examen -> `ExamPage`,
+    Quiz -> `QuizPage`, Tarjetas de memoria -> `PracticePage` (its "En los apuntes:" links as
+    "§ <section title>" chips). There is **no "Generar" button** (human decision: everything the
+    student asks goes through the chat): an option "Sin generar" says "Todavía no está
+    generado." and what to ask the chat (e.g. «Pídelo en el chat: «hazme un quiz».»); a
+    "Desactualizado" one shows its reason and the same hint above the material.
+  - Highlight: `PracticePage`, `QuizPage`, `ExamPage` and `ExercisesView` take an optional
+    `onFocusAnchors(anchors)`: the item shown (the current card or exercise; the quiz or exam
+    question the focus is in; a chip's one anchor) reports its `anchors`, and the page passes the
+    ones the notes have to `NotesView`'s `focusSections`, which marks every block of those
+    sections (`notes-focus`, blue, apart from the green "changed") and scrolls the document (not
+    the page) to the first. An anchor the notes lack is ignored.
+  - Below 900 px the columns become one with the switch **Estudiar** | **Documento** (the root's
+    `data-view`); opening an option shows the document with the panel over it full-width, closing
+    it goes back to Estudiar.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -356,7 +398,7 @@ token):
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
   -> `NotesPage`, `/subjects/<subject>/topics/<topic>/pending` -> `PendingPage`,
   `/subjects/<subject>/topics/<topic>/versions` -> `VersionsPage`, `.../quiz` -> `QuizPage`, `.../exam` -> `ExamPage`, `.../practice` -> `PracticePage`,
-  `.../workspace` -> `WorkspacePage`, `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
+  `.../workspace` -> `WorkspacePage`, `.../study` -> `StudyPage`, `.../material/<name>` -> `MaterialPreviewPage`, `/subjects/<subject>/style-guide` -> `StyleGuidePage`, anything else
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except

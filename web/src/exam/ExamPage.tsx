@@ -60,16 +60,18 @@ function QuestionCard({
   values,
   notesHref,
   onChange,
+  onFocusAnchors,
 }: {
   question: ExamQuestion;
   values: Record<string, string>;
   notesHref: string;
   onChange: (key: string, value: string) => void;
+  onFocusAnchors?: (anchors: string[]) => void;
 }) {
   const [revealed, setRevealed] = useState(false);
   const score = questionScore(question, values);
   return (
-    <li className="exam-question">
+    <li className="exam-question" onFocus={onFocusAnchors && (() => onFocusAnchors(question.anchors))}>
       <fieldset aria-label={`Pregunta ${question.number}`}>
         <legend>
           Pregunta {question.number} <span className="exam-points">({pointsText(question.points)})</span>
@@ -113,7 +115,18 @@ function QuestionCard({
                 {question.anchors.map((anchor, index) => (
                   <span key={anchor}>
                     {index > 0 && ", "}
-                    <a href={`${notesHref}#${encodeURIComponent(anchor)}`}>#{anchor}</a>
+                    <a
+                      href={`${notesHref}#${encodeURIComponent(anchor)}`}
+                      onClick={
+                        onFocusAnchors &&
+                        ((event) => {
+                          event.preventDefault();
+                          onFocusAnchors([anchor]);
+                        })
+                      }
+                    >
+                      #{anchor}
+                    </a>
                   </span>
                 ))}
               </p>
@@ -130,7 +143,16 @@ function QuestionCard({
   );
 }
 
-export default function ExamPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
+export interface ExamPageProps {
+  subjectId: string;
+  topicId: string;
+  /** Shown inside another page (the study screen, #333): no crumbs, no heading, no stale note (the host says it). */
+  embedded?: boolean;
+  /** The anchors of the question the student is on (focus inside it, or one of its links). */
+  onFocusAnchors?: (anchors: string[]) => void;
+}
+
+export default function ExamPage({ subjectId, topicId, embedded = false, onFocusAnchors }: ExamPageProps) {
   const [topicName, setTopicName] = useState(topicId);
   const [exam, setExam] = useState<ActionResult<StoredExam> | null>(null);
   const [history, setHistory] = useState<ExamResult[]>([]);
@@ -193,15 +215,20 @@ export default function ExamPage({ subjectId, topicId }: { subjectId: string; to
     setSaved(null);
   }
 
+  const Root = embedded ? "div" : "main";
   return (
-    <main className="exam-page">
-      <p className="crumbs">
-        <a href={base}>← Tema {topicName}</a>
-        <a className="crumbs-home" href="/">
-          Mesa de estudio
-        </a>
-      </p>
-      <h1>Corregir examen de {topicName}</h1>
+    <Root className="exam-page">
+      {!embedded && (
+        <>
+          <p className="crumbs">
+            <a href={base}>← Tema {topicName}</a>
+            <a className="crumbs-home" href="/">
+              Mesa de estudio
+            </a>
+          </p>
+          <h1>Corregir examen de {topicName}</h1>
+        </>
+      )}
       {exam === null && <p>Cargando el examen…</p>}
       {exam !== null && exam.kind !== "ok" && (
         <>
@@ -218,7 +245,7 @@ export default function ExamPage({ subjectId, topicId }: { subjectId: string; to
             {stored.durationMinutes !== null && ` · ${stored.durationMinutes} minutos`}
             {stored.notes_version !== null && ` · de los apuntes v${stored.notes_version}`}
           </p>
-          {stored.stale && (
+          {stored.stale && !embedded && (
             <p className="exam-warning" role="note">
               {stored.stale_reason ?? "Los apuntes han cambiado desde que se generó este examen."} Puedes
               corregirlo igualmente o generar uno nuevo desde el material de estudio.
@@ -233,6 +260,7 @@ export default function ExamPage({ subjectId, topicId }: { subjectId: string; to
                 values={values}
                 notesHref={`${base}/notes`}
                 onChange={change}
+                onFocusAnchors={onFocusAnchors}
               />
             ))}
           </ol>
@@ -270,6 +298,6 @@ export default function ExamPage({ subjectId, topicId }: { subjectId: string; to
           </ul>
         </section>
       )}
-    </main>
+    </Root>
   );
 }

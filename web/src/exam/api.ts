@@ -38,6 +38,8 @@ export interface StoredExam {
   instructions: string;
   durationMinutes: number | null;
   questions: ExamQuestion[];
+  /** The practice exercises (`e<n>`, no points of their own), shown one at a time in Estudiar (#333). */
+  exercises: ExamQuestion[];
   /** ISO 8601: identifies the exam a correction answers. */
   built_at: string;
   notes_version: number | null;
@@ -102,12 +104,16 @@ export function readStoredExam(body: unknown): StoredExam | null {
   const questions = exam.questions
     .map((entry, index) => readQuestion(entry, index))
     .filter((q): q is ExamQuestion => q !== null);
+  const exercises = (Array.isArray(exam.exercises) ? exam.exercises : [])
+    .map((entry, index) => readQuestion(entry, index))
+    .filter((q): q is ExamQuestion => q !== null);
   const notesVersion = body.notes_version;
   return {
     title: typeof exam.title === "string" ? exam.title : "Examen",
     instructions: typeof exam.instructions === "string" ? exam.instructions : "",
     durationMinutes: typeof exam.duration_minutes === "number" ? exam.duration_minutes : null,
     questions,
+    exercises,
     built_at: body.built_at,
     notes_version: typeof notesVersion === "number" && Number.isInteger(notesVersion) ? notesVersion : null,
     stale: body.stale === true,
