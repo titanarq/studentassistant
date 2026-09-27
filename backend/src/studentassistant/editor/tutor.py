@@ -75,6 +75,7 @@ PROMPT_NAME = "editor_tutor"
 WRITTEN_PROMPT_NAME = "editor_study_chat"
 CONVERSATION_NAME = "tutor"
 ANSWER_RECORD = "tutor.answer"
+GENERATION_RECORD = "tutor.generation"
 REPLY_DELTA = "reply.delta"
 MAX_QUESTION_CHARS = 1000
 HISTORY_TURNS = 6
@@ -84,6 +85,9 @@ Clock = Callable[[], datetime]
 
 TutorStyle = Literal["spoken", "written"]
 """How the tutor answers: read aloud (`spoken`) or in the study screen's chat (`written`)."""
+
+TurnKind = Literal["answer", "generation"]
+"""A tutor turn answers a question, or (study chat, #366) reports a generated study material."""
 
 _REFERENCE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
 _SECTION_REFERENCE = re.compile(r"\[§[ \t]*#?([A-Za-z0-9][A-Za-z0-9_-]*)[ \t]*\]")
@@ -141,16 +145,35 @@ class TutorAnswer(_Strict):
     model: str | None = None
 
 
+class TutorGeneration(_Strict):
+    """A study chat request that generated a material ("hazme un quiz", #366); recorded as the
+    `tutor.generation` conversation record. The server matches and runs it; this only keeps it."""
+
+    subject: str
+    topic: str
+    style: TutorStyle = "written"
+    question: str = Field(description="The student's request, as typed (trimmed).")
+    reply: str = Field(description="The Spanish sentence of the result.")
+    option: str = Field(description="The study option it filled (`quiz`, `ejercicios`...).")
+    material_kind: str = Field(description="The generator kind (`quiz`, `examen`...).")
+    items: int = Field(ge=0, description="How many items the material has.")
+    warnings: list[str] = Field(default_factory=list, description="The generation's, Spanish.")
+    model: str | None = None
+
+
 class TutorTurn(_Strict):
     """One question and its answer, as a client shows them."""
 
     time: datetime
+    kind: TurnKind = "answer"
     style: TutorStyle = "spoken"
     question: str
     reply: str
     refs: list[ChatRef] = Field(default_factory=list)
     sections: list[SectionRef] = Field(default_factory=list)
     warning: str | None = None
+    option: str | None = Field(default=None, description="`generation` turns: the study option.")
+    items: int | None = Field(default=None, description="`generation` turns: the item count.")
 
 
 class TutorHistory(_Strict):
@@ -167,6 +190,27 @@ class TutorHistory(_Strict):
 def _read_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[TutorTurn]:
     turns: list[TutorTurn] = []
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
+        if record.kind == GENERATION_RECORD and record.detail:
+            try:
+                generation = TutorGeneration.model_validate(record.detail)
+            except ValidationError:
+                logger.warning(
+                    "ignoring a malformed tutor record of %s/%s", subject_slug, topic_slug
+                )
+                continue
+            turns.append(
+                TutorTurn(
+                    time=record.time,
+                    kind="generation",
+                    style=generation.style,
+                    question=generation.question,
+                    reply=generation.reply,
+                    warning=" ".join(generation.warnings) or None,
+                    option=generation.option,
+                    items=generation.items,
+                )
+            )
+            continue
         if record.kind != ANSWER_RECORD or not record.detail:
             continue
         try:
@@ -213,6 +257,31 @@ async def _record(
         logger.exception(
             "could not record the tutor conversation of %s/%s", subject_slug, topic_slug
         )
+
+
+async def record_generation(
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    generation: TutorGeneration,
+    *,
+    sync: GitSync | None = None,
+    clock: Clock = _utc_now,
+) -> None:
+    """Append a generation turn of the study chat to the tutor conversation, so `tutor_history`
+    shows it (and a later written question has it as history). `sync`, when given, is told the
+    conversation changed. A failure to record is logged, never raised."""
+    await _record(
+        vault,
+        subject_slug,
+        topic_slug,
+        clock,
+        GENERATION_RECORD,
+        model=generation.model,
+        detail=generation.model_dump(mode="json"),
+    )
+    if sync is not None:
+        sync.note_change()
 
 
 # -- the refs -----------------------------------------------------------------------------------
@@ -433,16 +502,20 @@ async def ask_tutor(
 __all__ = [
     "ANSWER_RECORD",
     "CONVERSATION_NAME",
+    "GENERATION_RECORD",
     "MAX_QUESTION_CHARS",
     "PROMPT_NAME",
     "WRITTEN_PROMPT_NAME",
     "SectionRef",
+    "TurnKind",
     "TutorAnswer",
+    "TutorGeneration",
     "TutorHistory",
     "TutorStyle",
     "TutorTurn",
     "ask_tutor",
     "cited_refs",
     "cited_sections",
+    "record_generation",
     "tutor_history",
 ]

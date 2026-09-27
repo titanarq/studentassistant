@@ -119,6 +119,65 @@ class MaterialGenerators:
         self._running.discard((subject_id, topic_id, kind))
 
 
+async def generate_material(
+    service: MaterialGenerators,
+    vault: Vault,
+    sync: GitSync,
+    subject_id: str,
+    topic_id: str,
+    kind: str,
+    *,
+    registry: GeneratorRegistry,
+    options: dict[str, Any] | None = None,
+    confirm_over_cap: bool = False,
+) -> GenerateResult:
+    """Generate `kind` for the topic as `POST .../generated/{kind}` does; the study chat's
+    generation requests (`tutor_routes.py`, #366) run it too.
+
+    Takes the topic's and kind's claim (one generation at a time), a `generator` client bound to
+    the topic's ledger and `[generators] grounding_min_support`.
+
+    Raises:
+        HTTPException: the route's errors -- the same generation running 409, invalid options 422,
+            no notes 409, a reached cost cap `ApiError` 409 `cost_cap_reached` (until
+            `confirm_over_cap`), a Claude refusal or failure 502.
+    """
+    if not service.claim(subject_id, topic_id, kind):
+        raise HTTPException(status_code=409, detail=BUSY_DETAIL)
+    try:
+        client = get_client(
+            "generator",
+            settings=service.settings,
+            transport=service.transport,
+            ledger=LedgerBinding(vault, subject_id, topic_id),
+        )
+        return await run_generator(
+            vault,
+            subject_id,
+            topic_id,
+            kind,
+            client=client,
+            sync=sync,
+            registry=registry,
+            options=options or {},
+            confirm_over_cap=confirm_over_cap,
+            grounding_min_support=service.settings.generators.grounding_min_support,
+        )
+    except InvalidOptionsError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except NoNotesError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except CostConfirmationRequiredError as error:
+        raise cost_cap_error(error, CONFIRM_SENTENCE) from error
+    except RefusalError as error:
+        raise HTTPException(status_code=502, detail=REFUSED_DETAIL) from error
+    except LLMError as error:
+        logger.warning("generation of %s for %s/%s failed: %s", kind, subject_id, topic_id, error)
+        raise HTTPException(status_code=502, detail=FAILED_DETAIL) from error
+    finally:
+        service.release(subject_id, topic_id, kind)
+
+
 def generators_router() -> APIRouter:
     router = APIRouter()
 
@@ -179,43 +238,18 @@ def generators_router() -> APIRouter:
                 status_code=404, detail=str(UnknownGeneratorError(kind, registry.kinds()))
             )
         vault, sync = await open_topic(request, subject_id, topic_id)
-        if not service.claim(subject_id, topic_id, kind):
-            raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         body = body or GenerateMaterialRequest()
-        try:
-            client = get_client(
-                "generator",
-                settings=service.settings,
-                transport=service.transport,
-                ledger=LedgerBinding(vault, subject_id, topic_id),
-            )
-            return await run_generator(
-                vault,
-                subject_id,
-                topic_id,
-                kind,
-                client=client,
-                sync=sync,
-                registry=registry,
-                options=body.options,
-                confirm_over_cap=body.confirm_over_cap,
-                grounding_min_support=service.settings.generators.grounding_min_support,
-            )
-        except InvalidOptionsError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        except NoNotesError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except CostConfirmationRequiredError as error:
-            raise cost_cap_error(error, CONFIRM_SENTENCE) from error
-        except RefusalError as error:
-            raise HTTPException(status_code=502, detail=REFUSED_DETAIL) from error
-        except LLMError as error:
-            logger.warning(
-                "generation of %s for %s/%s failed: %s", kind, subject_id, topic_id, error
-            )
-            raise HTTPException(status_code=502, detail=FAILED_DETAIL) from error
-        finally:
-            service.release(subject_id, topic_id, kind)
+        return await generate_material(
+            service,
+            vault,
+            sync,
+            subject_id,
+            topic_id,
+            kind,
+            registry=registry,
+            options=body.options,
+            confirm_over_cap=body.confirm_over_cap,
+        )
 
     @router.get(BASE + "/files/{name:path}")
     async def generated_file(
