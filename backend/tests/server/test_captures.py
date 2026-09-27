@@ -56,11 +56,11 @@ def _soft_still() -> np.ndarray:
 
 
 # The first still of the default burst is the sharp one (and the larger file), the second a
-# blurred PNG, stored as the burst original `page-NNN.burst2.png`.
+# blurred PNG, which the vault does not keep.
 JPEG = _encode(_sharp_still(), ".jpg", cv2.IMWRITE_JPEG_QUALITY, 95)
 PNG = _encode(_soft_still(), ".png", cv2.IMWRITE_PNG_COMPRESSION, 9)
 assert len(JPEG) > len(PNG)
-PAGE_FILES = ["page-001.burst2.png", "page-001.jpg", "page-001.page.jpg", "page-001.yaml"]
+PAGE_FILES = ["page-001.jpg", "page-001.page.jpg", "page-001.yaml"]
 
 
 def decoded_size(path: Path) -> tuple[int, int]:
@@ -249,8 +249,7 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
 
     files = stored_files(tmp_vault)
     assert [f.name for f in files] == PAGE_FILES
-    burst_original, still, page, sidecar_path = files
-    assert burst_original.read_bytes() == PNG  # the blurred still, kept as it came
+    still, page, sidecar_path = files  # no `burst<K>` file: only the chosen still is kept
     assert still.read_bytes().startswith(b"\xff\xd8")
     assert decoded_size(still) == STILL_SIZE
     assert decoded_size(page) == STILL_SIZE  # no sheet in a noise still: uncropped fallback

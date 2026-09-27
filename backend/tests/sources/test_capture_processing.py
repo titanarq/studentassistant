@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
 import yaml
 from capture_images import SHEET_SIZE, desk_still, encode, flat_still, rotated_corners
 
-from studentassistant.config import SourcesSettings
+from studentassistant.config import Settings, SourcesSettings
 from studentassistant.sources import (
     BurstStill,
     CaptureImageError,
@@ -88,22 +90,31 @@ def test_a_burst_with_no_decodable_still_is_refused() -> None:
 # -- downscale -------------------------------------------------------------------------------------
 
 
+def test_the_default_long_edge_is_2000_px() -> None:
+    assert SETTINGS.capture_long_edge == 2000
+    assert SETTINGS.capture_jpeg_quality == 85
+
+
 def test_the_still_is_downscaled_to_the_long_edge_as_jpeg() -> None:
     big = desk_still(width=4000, height=3000)
     processed = process_burst([encode(big, ".png")], SETTINGS)
-    assert (processed.width_px, processed.height_px) == (2400, 1800)
+    assert (processed.width_px, processed.height_px) == (2000, 1500)
     still = _decoded(processed.still)
-    assert still.shape[:2] == (1800, 2400)
+    assert still.shape[:2] == (1500, 2000)
     assert processed.still.startswith(b"\xff\xd8")  # re-encoded as JPEG
     page = _decoded(processed.page)
-    assert max(page.shape[:2]) <= 2400
+    assert max(page.shape[:2]) <= 2000
 
 
 def test_a_small_still_is_never_enlarged() -> None:
     image = flat_still(640, 480)
-    assert downscale(image, 2400) is image
+    assert downscale(image, 2000) is image
     processed = process_burst([encode(image)], SETTINGS)
     assert (processed.width_px, processed.height_px) == (640, 480)
+    one_thousand = flat_still(1000, 750)
+    processed = process_burst([encode(one_thousand)], SETTINGS)
+    assert (processed.width_px, processed.height_px) == (1000, 750)
+    assert _decoded(processed.page).shape[:2] == (750, 1000)
 
 
 def test_the_long_edge_and_quality_are_configurable() -> None:
@@ -161,7 +172,7 @@ def test_the_transcript_window_is_20s_before_to_10s_after_by_default() -> None:
 # -- storage ---------------------------------------------------------------------------------------
 
 
-def test_a_burst_is_stored_as_one_page_with_its_page_image_and_originals(
+def test_a_burst_is_stored_as_one_page_with_its_page_image_and_no_other_still(
     tmp_vault: Vault, topic: tuple[str, str]
 ) -> None:
     subject, topic_slug = topic
@@ -179,15 +190,13 @@ def test_a_burst_is_stored_as_one_page_with_its_page_image_and_originals(
     directory = sources_directory(tmp_vault, subject, topic_slug, "notes")
     assert stored.path == directory / "page-001.jpg"
     assert stored.page_path == directory / "page-001.page.jpg"
+    # Only the chosen still, its page image and the sidecar: no `burst<K>` file.
     assert sorted(p.name for p in directory.iterdir()) == [
-        "page-001.burst1.jpg",
-        "page-001.burst3.png",
         "page-001.jpg",
         "page-001.page.jpg",
         "page-001.yaml",
     ]
-    assert (directory / "page-001.burst1.jpg").read_bytes() == blurred
-    assert (directory / "page-001.burst3.png").read_bytes() == also_blurred
+    assert not any("burst" in p.name for p in tmp_vault.path.rglob("*"))
     assert stored.path.read_bytes() == stored.processed.still
     assert stored.page_path.read_bytes() == stored.processed.page
 
@@ -203,9 +212,45 @@ def test_a_burst_is_stored_as_one_page_with_its_page_image_and_originals(
     assert len(sidecar["sharpness"]) == 3
     assert sidecar["sharpness"][1] == max(sidecar["sharpness"])
 
-    # One source: the page image and the burst originals are derived files, not sources.
+    # One source: the page image is a derived file, not a source.
     [listed] = list_sources(tmp_vault, subject, topic_slug)
     assert listed.path.endswith("sources/notes/page-001.jpg")
+
+
+def test_a_big_still_and_its_page_are_stored_at_the_configured_long_edge(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    subject, topic_slug = topic
+    big = BurstStill(encode(desk_still(width=4000, height=3000), ".png"), "image/png")
+    stored = store_capture(
+        tmp_vault, subject, topic_slug, "notes", [big], {"capture_id": "c-3"}, 0, SETTINGS
+    )
+    assert _decoded(stored.path.read_bytes()).shape[:2] == (1500, 2000)
+    assert max(_decoded(stored.page_path.read_bytes()).shape[:2]) <= 2000
+    sidecar = yaml.safe_load(stored.path.with_suffix(".yaml").read_text(encoding="utf-8"))
+    assert (sidecar["width_px"], sidecar["height_px"]) == (2000, 1500)
+
+    custom = SourcesSettings(capture_long_edge=1000, capture_jpeg_quality=30)
+    small = store_capture(
+        tmp_vault, subject, topic_slug, "notes", [big], {"capture_id": "c-4"}, 0, custom
+    )
+    assert _decoded(small.path.read_bytes()).shape[:2] == (750, 1000)
+    assert max(_decoded(small.page_path.read_bytes()).shape[:2]) <= 1000
+    assert len(small.path.read_bytes()) < len(stored.path.read_bytes())
+
+
+def test_the_capture_size_comes_from_the_sources_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[sources]\ncapture_long_edge = 1500\n", encoding="utf-8")
+    monkeypatch.setenv("SA_CONFIG", str(config))
+    monkeypatch.delenv("SA_SOURCES__CAPTURE_LONG_EDGE", raising=False)
+    monkeypatch.setenv("SA_SOURCES__CAPTURE_JPEG_QUALITY", "70")
+    sources = Settings().sources
+    assert (sources.capture_long_edge, sources.capture_jpeg_quality) == (1500, 70)
+    monkeypatch.setenv("SA_SOURCES__CAPTURE_LONG_EDGE", "1234")
+    assert Settings().sources.capture_long_edge == 1234
 
 
 def test_a_single_still_burst_stores_no_originals(tmp_vault: Vault, topic: tuple[str, str]) -> None:

@@ -455,7 +455,12 @@ DEFAULT_PDF_THUMBNAIL_QUALITY = 85
 # Claude vision downscales an image whose long edge exceeds ~1568 px, so a bigger render only costs.
 DEFAULT_PDF_TRANSCRIPTION_LONG_EDGE = 1568
 DEFAULT_PDF_TRANSCRIPTION_QUALITY = 90
-DEFAULT_CAPTURE_LONG_EDGE = 2400
+# A capture keeps only its chosen still, downscaled to this long edge (never enlarged), and its page
+# image. Opus 5.5 / Sonnet 5 read images up to a 2576 px long edge (at most ~4784 image tokens;
+# tokens ~= w*h/750). 2000 px on an A4 page is ~170 dpi, enough for handwriting and small diagram
+# labels, at ~3.8k tokens and ~0.5-0.8 MB per JPEG at q85; 2576 px costs ~25 % more tokens for
+# marginal gain, 1600 px (~137 dpi) risks losing small diagram labels.
+DEFAULT_CAPTURE_LONG_EDGE = 2000
 DEFAULT_CAPTURE_JPEG_QUALITY = 85
 DEFAULT_CAPTURE_WINDOW_BEFORE_SECONDS = 20.0
 DEFAULT_CAPTURE_WINDOW_AFTER_SECONDS = 10.0

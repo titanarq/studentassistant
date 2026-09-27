@@ -4,19 +4,25 @@
 scores each by the variance of its Laplacian (computed on a grayscale copy scaled to a common long
 edge, so stills of different sizes compare fairly) and keeps the sharpest; when several share the
 best score the one nearest the middle of the burst wins (a burst's first and last frames are the
-likeliest to be shaken by the tap). The kept still is downscaled to `[sources]
-capture_long_edge` (2400 px) and re-encoded as JPEG at `capture_jpeg_quality` (85). The page
+likeliest to be shaken by the tap). Scoring runs on the full-resolution decoded stills, in memory.
+The kept still is downscaled (never enlarged) so its long side is at most `[sources]
+capture_long_edge` (2000 px) and re-encoded as JPEG at `capture_jpeg_quality` (85). The page
 image is derived from it: the largest convex quadrilateral found in the still (the sheet of
 paper) is warped flat by a perspective transform and given a mild contrast boost (CLAHE on
-lightness); when no page is found the whole still gets the contrast boost instead.
+lightness); when no page is found the whole still gets the contrast boost instead. The page image
+obeys the same long-edge limit.
 
 `store_capture` stores the result through `vault.put_source`, all in one call:
 
     sources/<kind>/page-NNN.jpg          the kept still, downscaled
     sources/<kind>/page-NNN.page.jpg     the cropped, deskewed page (or the uncropped fallback)
-    sources/<kind>/page-NNN.burst<K>.<ext>  each other still of the burst as it came, `K` its
-                                         1-based position in the burst (a retention-purge target)
     sources/<kind>/page-NNN.yaml         the sidecar
+
+Only the chosen still is kept: the other stills of the burst are never written to the vault (human
+decision 2026-09-27); the sidecar's `sharpness` list and `selected_image` keep the record of the
+burst. Sessions stored before that change may still hold `page-NNN.burst<K>.<ext>` files (`K` the
+still's 1-based position in the burst); they stay readable and `vault.purge` still removes them
+(`burst_originals`).
 
 The sidecar carries what the caller gives (capture id, trigger, source context, session...) plus
 the capture's session time `session_t_ms` and its `transcript_window` (`t_start`/`t_end`, session
@@ -45,7 +51,6 @@ from studentassistant.vault import Vault, put_source
 
 STILL_NAME = "capture.jpg"
 PAGE_SUFFIX = "page.jpg"
-BURST_SUFFIX = "burst{position}{extension}"
 
 # Sharpness is compared on grayscale copies of this long edge, whatever each still's size.
 _ANALYSIS_LONG_EDGE = 1200
@@ -63,8 +68,6 @@ _MIN_PAGE_CONTRAST = 25.0
 _CLAHE_CLIP_LIMIT = 1.5
 _CLAHE_TILES = (8, 8)
 _SHARPNESS_REL_TOLERANCE = 1e-6
-
-_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
 class CaptureImageError(Exception):
@@ -343,11 +346,8 @@ def store_capture(
         processed = process_burst([still.data for still in stills], settings)
     if triage is None and settings.triage_enabled and kind in ("notes", "book"):
         triage = prepare_triage(vault, subject_slug, topic_slug, kind, processed, settings)
+    # Only the chosen still (downscaled) and its page image: the other stills are not kept.
     derived: dict[str, bytes] = {PAGE_SUFFIX: processed.page}
-    for index, still in enumerate(stills):
-        if index != processed.selected:
-            extension = _EXTENSIONS.get(still.content_type, ".bin")
-            derived[BURST_SUFFIX.format(position=index + 1, extension=extension)] = still.data
     sidecar: dict[str, Any] = dict(meta)
     sidecar |= {
         "width_px": processed.width_px,

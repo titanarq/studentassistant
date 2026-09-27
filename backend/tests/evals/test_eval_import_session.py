@@ -165,7 +165,8 @@ def test_a_vault_session_becomes_a_case_that_reads_and_replays(
         START_MS + 3500,
     )
     assert [e.type for e in case.recording.events] == ["button", "marker"]
-    # Every capture on the session clock; the first one with both stills of its burst.
+    # Every capture on the session clock, each with its one kept still (the vault keeps no other
+    # still of a burst; a legacy `burst<K>` file is read back: see the test below).
     captures = case.recording.captures
     assert [c.metadata.capture_id for c in captures] == list(stored.captures)
     assert [c.metadata.client_time_ms for c in captures] == [
@@ -173,7 +174,7 @@ def test_a_vault_session_becomes_a_case_that_reads_and_replays(
         START_MS + 9000,
         START_MS + 10000,
     ]
-    assert [len(c.image_paths) for c in captures] == [2, 1, 1]
+    assert [len(c.image_paths) for c in captures] == [1, 1, 1]
 
     # The reference drafts: the stored transcription, the triage each capture got, no notes.
     assert case.reference_pages == {stored.captures[0]: "\n\n" + PAGE_TEXT}
@@ -205,6 +206,26 @@ def test_a_vault_session_becomes_a_case_that_reads_and_replays(
     assert len(result.pages) == 1 and result.pages[0].transcribed
     markdown = render_report(report)
     assert "referencia en borrador sin corregir" in markdown and "Triaje de capturas" in markdown
+
+
+def test_a_legacy_session_with_burst_originals_imports_every_still(
+    tmp_vault: Vault, tmp_path: Path
+) -> None:
+    # A session stored before the vault stopped keeping the other stills of a burst: its first
+    # capture (a burst of two, the sharp second still kept) still has `page-001.burst1.jpg`.
+    stored = _session(tmp_vault)
+    directory = tmp_vault.path / "subjects" / stored.subject / "topics" / stored.topic
+    legacy = encode(framed(written(3), blur=9))
+    (directory / "sources" / "book" / "page-001.burst1.jpg").write_bytes(legacy)
+    out = tmp_path / "evals" / "legacy"
+
+    import_session(
+        tmp_vault, stored.subject, stored.topic, stored.session_id, out, language="es-ES"
+    )
+
+    captures = read_case(out).recording.captures
+    assert [len(c.image_paths) for c in captures] == [2, 1, 1]
+    assert captures[0].image_paths[0].read_bytes() == legacy
 
 
 def test_an_existing_output_or_an_unknown_session_is_refused(
