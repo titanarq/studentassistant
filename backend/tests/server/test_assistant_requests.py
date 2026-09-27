@@ -29,21 +29,33 @@ from studentassistant.config import (
 )
 from studentassistant.editor.notes_format import notes_revision
 from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn
-from studentassistant.llm import FakeClaude
+from studentassistant.llm import FakeClaude, LLMAPIError
 from studentassistant.observer import ASSISTANT_REQUEST_KIND, REQUEST_KINDS
+from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server import assistant_requests
 from studentassistant.server.app import create_app
 from studentassistant.server.assistant_requests import (
     HANDLERS,
+    REQUESTS_OUTSTANDING_KIND,
     TURN_FINISHED_KIND,
     TURN_KINDS,
     UNKNOWN_KIND_DETAIL,
     AssistantRequestConsumer,
+    outstanding_requests,
     unanswered_requests,
 )
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscription
-from studentassistant.vault import Event, Vault, read_notes, resume_session
+from studentassistant.vault import (
+    Event,
+    Vault,
+    end_session,
+    list_sessions,
+    read_notes,
+    read_topic_events,
+    resume_session,
+    start_session,
+)
 
 LOCAL_BASE_URL = "http://localhost:8765"
 WAIT_SECONDS = 10.0
@@ -516,6 +528,173 @@ def test_a_request_queued_at_shutdown_is_answered_after_a_restart(
         _settle(client)
         assert subscription.drain() == []
         assert third.requests == []
+
+
+# -- requests of an ended session across a restart (#423) ------------------------------------------
+
+
+def _held(client: TestClient, topic: ReviseTopic) -> Any:
+    """Take the topic's notes lock, so the next request waits in the queue; the generator."""
+    generator = client.app.state.notes  # type: ignore[attr-defined]
+    assert generator.claim(topic.subject, topic.topic, "editor")
+    return generator
+
+
+def _wait_detected(subscription: WorkspaceSubscription) -> list[WorkspaceEvent]:
+    deadline = time.monotonic() + WAIT_SECONDS
+    seen: list[WorkspaceEvent] = []
+    while not any(e.event == "request.detected" for e in seen):
+        assert time.monotonic() < deadline, "no request.detected"
+        seen += subscription.drain()
+        time.sleep(0.01)
+    return seen
+
+
+def _shut_down(client: TestClient) -> None:
+    consumer: AssistantRequestConsumer = client.app.state.assistant_requests  # type: ignore[attr-defined]
+    client.portal.call(consumer.stop, 0.1)  # type: ignore[union-attr]
+
+
+def _review_events(topic: ReviseTopic, kind: str) -> list[dict[str, Any]]:
+    """The payloads of `kind` in the topic's review sessions, read back from the vault."""
+    reviews = {
+        m.id for m in list_sessions(topic.vault, topic.subject, topic.topic) if not m.is_study
+    }
+    return [
+        dict(event.payload)
+        for session_id, event in read_topic_events(topic.vault, topic.subject, topic.topic)
+        if session_id in reviews and event.kind == kind
+    ]
+
+
+def _restart(
+    make_app: AppFactory, topic: ReviseTopic, transport: FakeClaude
+) -> tuple[list[WorkspaceEvent], list[dict[str, Any]]]:
+    """A new backend: open the vault (a first request), let it catch up; its stream and chat."""
+    with _client(make_app(transport)) as client:
+        subscription = _subscribe(client, topic)
+        assert client.get(_chat(topic)).status_code == 200  # opens the vault: the catch-up runs
+        _settle(client)
+        return subscription.drain(), client.get(_chat(topic)).json()["turns"]
+
+
+def test_a_typed_request_of_a_review_session_is_answered_after_a_restart(
+    make_app: AppFactory, topic: ReviseTopic
+) -> None:
+    first = FakeClaude()
+    first.fail(LLMAPIError("boom"))  # the classifier fails: the text is kept as a question
+    with _client(make_app(first)) as client:
+        generator = _held(client, topic)
+        subscription = _subscribe(client, topic)
+        response = client.post(
+            f"/api/subjects/{topic.subject}/topics/{topic.topic}/workspace/messages",
+            json={"text": "¿qué es la derivada?"},
+        )
+        assert response.status_code == 202, response.text
+        [request] = response.json()["requests"]
+        assert request["request_id"] == "req-t1" and request["kind"] == "question"
+        _wait_detected(subscription)
+        _shut_down(client)
+        generator.release(topic.subject, topic.topic)
+    assert len(first.requests) == 1  # the classification only: the turn never ran
+    [outstanding] = _review_events(topic, REQUESTS_OUTSTANDING_KIND)
+    assert outstanding == {"request_ids": ["req-t1"]}
+    assert _review_events(topic, TURN_FINISHED_KIND) == []
+
+    second = FakeClaude()
+    second.reply_text("La derivada mide el cambio instantáneo.")
+    events, turns = _restart(make_app, topic, second)
+    assert [e.data["request_id"] for e in events if e.event == "request.detected"] == ["req-t1"]
+    assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-t1"]
+    assert [e.data["origin"] for e in events if e.event == "turn.started"] == ["typed"]
+    assert len(second.requests) == 1
+    assert "qué es la derivada" in json.dumps(second.requests[0].messages, ensure_ascii=False)
+    assert [(t["origin"], t["message"]) for t in turns] == [("typed", "¿qué es la derivada?")]
+    [finished] = _review_events(topic, TURN_FINISHED_KIND)
+    assert finished["request_id"] == "req-t1" and finished["outcome"] == "result"
+
+    # A third backend finds it answered: exactly once.
+    third = FakeClaude()
+    events, turns = _restart(make_app, topic, third)
+    assert not any(e.event == "request.detected" for e in events)
+    assert third.requests == [] and len(turns) == 1
+
+
+def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restart(
+    make_app: AppFactory, topic: ReviseTopic
+) -> None:
+    first = FakeClaude()
+    with _client(make_app(first)) as client:
+        session_id = _start(client, topic)
+        generator = _held(client, topic)
+        subscription = _subscribe(client, topic)
+        _publish(client, session_id, _request(1, "question", "qué es la derivada"))
+        _wait_detected(subscription)
+        ended = client.post(
+            f"/api/sessions/{session_id}/end", json={"client_time_ms": 2_000, "reason": "button"}
+        )
+        assert ended.status_code == 200, ended.text
+        deadline = time.monotonic() + WAIT_SECONDS
+        while not _review_events(topic, REQUESTS_OUTSTANDING_KIND):
+            assert time.monotonic() < deadline, "the ended session's requests were not recorded"
+            time.sleep(0.01)
+        _shut_down(client)
+        generator.release(topic.subject, topic.topic)
+    assert first.requests == []
+    [outstanding] = _review_events(topic, REQUESTS_OUTSTANDING_KIND)
+    assert outstanding == {"session_id": session_id, "request_ids": ["req-1"]}
+
+    second = FakeClaude()
+    second.reply_text("La derivada mide el cambio instantáneo.")
+    events, turns = _restart(make_app, topic, second)
+    assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-1"]
+    assert len(second.requests) == 1
+    [turn] = turns
+    assert turn["origin"] == "voice"
+    assert (turn["transcript"]["session_id"], turn["transcript"]["request_id"]) == (
+        session_id,
+        "req-1",
+    )
+    [finished] = _review_events(topic, TURN_FINISHED_KIND)
+    assert (finished["session_id"], finished["request_id"]) == (session_id, "req-1")
+
+    third = FakeClaude()
+    events, turns = _restart(make_app, topic, third)
+    assert events == [] and third.requests == [] and len(turns) == 1
+
+
+def test_outstanding_requests_skip_the_answered_and_the_unknown(topic: ReviseTopic) -> None:
+    vault, s, t = topic.vault, topic.subject, topic.topic
+    capture = start_session(vault, s, t, "host", PROTOCOL_VERSION)
+    for n in (1, 2, 3):
+        capture.append_event(ASSISTANT_REQUEST_KIND, "observer", _request(n))
+    end_session(capture)
+
+    def review(*events: tuple[str, dict[str, Any]]) -> str:
+        session = start_session(vault, s, t, "host", PROTOCOL_VERSION, kind="review")
+        for kind, payload in events:
+            session.append_event(kind, "editor", payload)
+        end_session(session)
+        return session.id
+
+    finished = {"turn_id": "t", "kind": "revise", "outcome": "result"}
+    review(
+        (REQUESTS_OUTSTANDING_KIND, {"session_id": capture.id, "request_ids": ["req-1", "req-2"]}),
+        (REQUESTS_OUTSTANDING_KIND, {"session_id": capture.id, "request_ids": ["req-3", "req-9"]}),
+    )
+    review((TURN_FINISHED_KIND, {"request_id": "req-2", "session_id": capture.id, **finished}))
+    # The same id of another session answers nothing here.
+    review((TURN_FINISHED_KIND, {"request_id": "req-3", "session_id": "other", **finished}))
+    # An `outstanding` in a study session is not the backend's record: ignored.
+    study = start_session(vault, s, t, "host", PROTOCOL_VERSION)
+    study.append_event(REQUESTS_OUTSTANDING_KIND, "editor", {"request_ids": ["req-x"]})
+    end_session(study)
+
+    pending = outstanding_requests(vault, s, t)
+    assert [(sid, r.request_id) for sid, r in pending] == [
+        (capture.id, "req-1"),
+        (capture.id, "req-3"),  # req-9 has no assistant.request: left out
+    ]
 
 
 def test_unanswered_requests_follow_the_newest_answered_one() -> None:

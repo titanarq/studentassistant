@@ -61,21 +61,34 @@ order**:
   carries the same `request_id`. A request is confirmed once; after a restart nothing is kept.
 
 Surviving a restart (#408): every request that ran to a result or an error is recorded as a
-persisted `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, turn_id,
-kind, outcome: "result" | "error", status?, code?}`) in the request's session while that session
-is attached. When a session is started or resumed on the bus (and at `start`, for a session
-already attached), `replay` reads the session's `events.jsonl` and queues again, through
-`submit`, oldest first, each `assistant.request` no turn answered (`unanswered_requests`): no
-`turn.finished` for its id, no voice chat turn (`editor.chat_history`) whose transcript is that
-request, and after the newest answered request of the session (requests run in order, so what
-precedes an answered one ran). Each `(session, request_id)` is submitted at most once per
-process, so a request queued or running now, or replayed already, is never queued twice. What is
-not replayed: a typed request kept in a review session (no capture session was open), and a
-request whose session ended before its turn ran.
+persisted `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, session_id,
+turn_id, kind, outcome: "result" | "error", status?, code?}`) in the request's session while that
+session is attached. When a session is started or resumed on the bus (and at `start`, for a session
+already attached), `replay` reads the session's `events.jsonl` and queues again, through `submit`,
+oldest first, each `assistant.request` no turn answered (`unanswered_requests`): no `turn.finished`
+for its id, no voice chat turn (`editor.chat_history`) whose transcript is that request, and after
+the newest answered request of the session (requests run in order, so what precedes an answered one
+ran). Each `(session, request_id)` is submitted at most once per process, so a request queued or
+running now, or replayed already, is never queued twice. What is not replayed: a typed request kept
+in a review session (no capture session was open), and a request whose session ended before its
+turn ran -- those are the outstanding ones below.
+
+Requests of an ended session (#423): a typed request kept in a review session (no capture session
+was open) and a request whose session ended before its turn ran cannot wait for a resume. They
+are recorded as outstanding in a `requests.outstanding` event (`REQUESTS_OUTSTANDING_KIND`,
+origin `editor`, `{session_id?, request_ids}`; `session_id` omitted: the event's own session)
+of a review session: `post_message` writes it next to the typed requests of its review session,
+and a `session.ended` on the bus writes it (in a new review session) for the ended session's
+requests still queued or running. A `turn.finished` whose session is no longer attached is
+written in a review session too, with the request's `session_id` in it. Once the vault is open
+(`catch_up_vault`, a `SessionService.add_on_open` hook), every topic's outstanding requests with
+no `turn.finished` (`outstanding_requests`) are submitted again, oldest first, so each is
+answered after a restart; submitted once per process, like every request.
 
 Shutdown (`stop`) closes the bus subscription and gives the running turns
 `SHUTDOWN_TIMEOUT_SECONDS` to finish before cancelling them; still-queued requests, and the
-cancelled turns, have no `turn.finished`, so they are replayed when their session is resumed.
+cancelled turns, have no `turn.finished`, so they are replayed when their session is resumed, or
+at the next start for an outstanding one.
 """
 
 from __future__ import annotations
@@ -150,6 +163,7 @@ from studentassistant.server.notes_routes import (
 )
 from studentassistant.server.revise_routes import turn_error
 from studentassistant.server.sessions import (
+    SESSION_ENDED,
     SESSION_RESUMED,
     SESSION_STARTED,
     SessionService,
@@ -169,6 +183,7 @@ from studentassistant.server.workspace import (
     WorkspaceHub,
 )
 from studentassistant.sources import triage_status
+from studentassistant.sources.catchup import readable_topics
 from studentassistant.sources.triage import (
     CAPTURE_TRIAGED_KIND,
     REASON_TEXT,
@@ -185,7 +200,9 @@ from studentassistant.vault import (
     SourceError,
     Vault,
     end_session,
+    list_sessions,
     read_source,
+    read_topic_events,
     start_session,
 )
 
@@ -225,6 +242,8 @@ TURN_FINISHED_KIND = "turn.finished"
 """The persisted record of a request's turn that ended in a result or an error (#408)."""
 REPLAY_TRIGGERS = frozenset({SESSION_STARTED, SESSION_RESUMED})
 """The bus events after which the consumer replays a session's unanswered requests."""
+REQUESTS_OUTSTANDING_KIND = "requests.outstanding"
+"""The requests of an ended session still to run, recorded in a review session (#423)."""
 TYPED_ORIGIN: Origin = "user"
 """The origin of a typed message's `assistant.request` and of a student's `capture.triaged`."""
 
@@ -309,6 +328,11 @@ class AssistantRequestConsumer:
         """The reader is handling an event (`wait_idle`)."""
         self._seen: set[tuple[str, str]] = set()
         """`(session_id, request_id)` of every request submitted by this process (#408)."""
+        self._running: dict[tuple[str, str], QueuedRequest] = {}
+        """Per topic, the request whose turn runs now."""
+        self._catch_up: asyncio.Task[None] | None = None
+        """The start-up submission of the vault's outstanding requests (#423)."""
+        self._stopping = False
 
     # -- lifecycle -------------------------------------------------------------------------------
 
@@ -317,17 +341,22 @@ class AssistantRequestConsumer:
         if self._reader is not None:
             return
         self._subscription = self.bus.subscribe(
-            name="assistant-requests", kinds={ASSISTANT_REQUEST_KIND, *REPLAY_TRIGGERS}
+            name="assistant-requests",
+            kinds={ASSISTANT_REQUEST_KIND, SESSION_ENDED, *REPLAY_TRIGGERS},
         )
         self._reader = asyncio.create_task(self._read(), name="assistant-requests")
 
     async def stop(self, timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> None:
+        self._stopping = True
         if self._subscription is not None:
             self._subscription.close()
         if self._reader is not None:
             self._reader.cancel()
             await asyncio.gather(self._reader, return_exceptions=True)
             self._reader = None
+        if self._catch_up is not None:
+            self._catch_up.cancel()
+            await asyncio.gather(self._catch_up, return_exceptions=True)
         for key, queue in self._queues.items():
             if queue:
                 logger.warning(
@@ -350,7 +379,12 @@ class AssistantRequestConsumer:
         """Wait until the bus events delivered so far are read, every queue is empty and no turn
         runs (tests)."""
         deadline = time.monotonic() + timeout
-        while self._reading() or self._workers or any(self._queues.values()):
+        while (
+            self._reading()
+            or (self._catch_up is not None and not self._catch_up.done())
+            or self._workers
+            or any(self._queues.values())
+        ):
             if time.monotonic() > deadline:
                 raise TimeoutError("the assistant requests did not finish")
             await asyncio.sleep(0.01)
@@ -399,6 +433,9 @@ class AssistantRequestConsumer:
         if event.kind in REPLAY_TRIGGERS:
             await self.replay(event.session_id)
             return
+        if event.kind == SESSION_ENDED:
+            await self._ended(event.subject_id, event.topic_id, event.session_id)
+            return
         try:
             request = AssistantRequest.model_validate(dict(event.payload))
         except ValidationError:
@@ -432,6 +469,73 @@ class AssistantRequestConsumer:
                 ", ".join(replayed),
             )
         return replayed
+
+    async def _ended(self, subject_id: str, topic_id: str, session_id: str) -> None:
+        """Record the ended session's requests still queued or running as outstanding (#423)."""
+        key = (subject_id, topic_id)
+        waiting = [
+            *([self._running[key]] if key in self._running else []),
+            *self._queues.get(key, ()),
+        ]
+        ids = list(
+            dict.fromkeys(q.request.request_id for q in waiting if q.session_id == session_id)
+        )
+        if not ids:
+            return
+        payload = {"session_id": session_id, "request_ids": ids}
+        await self._write_review(
+            subject_id, topic_id, [(REQUESTS_OUTSTANDING_KIND, "editor", payload)]
+        )
+
+    async def _write_review(
+        self, subject_id: str, topic_id: str, events: list[tuple[str, Origin, dict[str, Any]]]
+    ) -> str:
+        vault = await self.sessions.open_vault()
+        review = await asyncio.to_thread(
+            _review_session, vault, subject_id, topic_id, self.sessions.host, events
+        )
+        if self.sessions.sync is not None:
+            self.sessions.sync.note_change()
+        return review
+
+    def catch_up_vault(self, vault: Vault) -> None:
+        """Once the vault is open: submit every topic's outstanding requests (#423), once per
+        process, in the background (a `SessionService.add_on_open` hook)."""
+        if self._catch_up is not None or self._stopping:
+            return
+        self._catch_up = asyncio.create_task(
+            self._catch_up_vault(vault), name="assistant-requests:startup"
+        )
+
+    async def _catch_up_vault(self, vault: Vault) -> None:
+        try:
+            topics = await asyncio.to_thread(readable_topics, vault)
+        except Exception:
+            logger.exception("the outstanding assistant requests cannot be listed")
+            return
+        for subject_id, topic_id in topics:
+            try:
+                pending = await asyncio.to_thread(outstanding_requests, vault, subject_id, topic_id)
+            except Exception:
+                logger.exception(
+                    "the outstanding assistant requests of %s/%s cannot be read",
+                    subject_id,
+                    topic_id,
+                )
+                continue
+            submitted = [
+                request.request_id
+                for session_id, request in pending
+                if self.submit(subject_id, topic_id, session_id, request)
+            ]
+            if submitted:
+                logger.info(
+                    "%s/%s: running %d outstanding assistant requests of ended sessions (%s)",
+                    subject_id,
+                    topic_id,
+                    len(submitted),
+                    ", ".join(submitted),
+                )
 
     def submit(
         self, subject_id: str, topic_id: str, session_id: str, request: AssistantRequest
@@ -479,12 +583,15 @@ class AssistantRequestConsumer:
             queue = self._queues[key]
             while queue:
                 queued = queue.popleft()
+                self._running[key] = queued
                 try:
                     await self._run(queued)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # pragma: no cover - `_run` reports its own failures
                     logger.exception("an assistant request of %s/%s failed", *key)
+                finally:
+                    self._running.pop(key, None)
         finally:
             self._workers.pop(key, None)
             if not self._queues.get(key):
@@ -551,9 +658,10 @@ class AssistantRequestConsumer:
         code: str | None = None,
     ) -> None:
         """Persist `turn.finished` in the request's session, so a restart does not replay it;
-        a session no longer attached (ended, a review session) needs none."""
+        for a session no longer attached (ended, a review session), in a review session (#423)."""
         payload: dict[str, Any] = {
             "request_id": queued.request.request_id,
+            "session_id": queued.session_id,
             "turn_id": broadcast.turn_id,
             "kind": broadcast.kind,
             "outcome": outcome,
@@ -563,9 +671,12 @@ class AssistantRequestConsumer:
         if code is not None:
             payload["code"] = code
         try:
-            await self.bus.publish(queued.session_id, TURN_FINISHED_KIND, "editor", payload)
-        except BusError:
-            pass
+            try:
+                await self.bus.publish(queued.session_id, TURN_FINISHED_KIND, "editor", payload)
+            except BusError:  # not attached: an ended session, or a review session
+                await self._write_review(
+                    queued.subject_id, queued.topic_id, [(TURN_FINISHED_KIND, "editor", payload)]
+                )
         except Exception as error:  # the log refused it: the request may be replayed once
             logger.warning(
                 "the turn of request %s of session %s was not recorded: %s",
@@ -817,17 +928,7 @@ class AssistantRequestConsumer:
                 return session_id
             except BusError:
                 logger.info("the session of %s/%s ended meanwhile", subject_id, topic_id)
-        review = await asyncio.to_thread(
-            _review_session,
-            vault,
-            subject_id,
-            topic_id,
-            self.sessions.host,
-            [(kind, origin, payload)],
-        )
-        if self.sessions.sync is not None:
-            self.sessions.sync.note_change()
-        return review
+        return await self._write_review(subject_id, topic_id, [(kind, origin, payload)])
 
     # -- typed messages --------------------------------------------------------------------------
 
@@ -879,13 +980,18 @@ class AssistantRequestConsumer:
                 _typed_request(n, message_id, text, request)
                 for n, request in enumerate(reported, start=1)
             ]
+            # Outstanding until each has its `turn.finished`, so a restart runs them (#423).
+            outstanding = {"request_ids": [r.request_id for r in requests]}
             review = await asyncio.to_thread(
                 _review_session,
                 vault,
                 subject_id,
                 topic_id,
                 self.sessions.host,
-                [(ASSISTANT_REQUEST_KIND, TYPED_ORIGIN, r.payload()) for r in requests],
+                [
+                    *((ASSISTANT_REQUEST_KIND, TYPED_ORIGIN, r.payload()) for r in requests),
+                    (REQUESTS_OUTSTANDING_KIND, "editor", outstanding),
+                ],
             )
             if self.sessions.sync is not None:
                 self.sessions.sync.note_change()
@@ -972,6 +1078,62 @@ def unanswered_requests(
         (n for n, request in enumerate(requests) if request.request_id in answered), default=-1
     )
     return [r for r in requests[last + 1 :] if r.request_id not in answered]
+
+
+def outstanding_requests(
+    vault: Vault, subject_id: str, topic_id: str
+) -> list[tuple[str, AssistantRequest]]:
+    """The topic's outstanding requests no turn answered, oldest first (#423, blocking):
+    `(session_id, request)` for each id a `requests.outstanding` event names with no
+    `turn.finished` of that request of that session anywhere in the topic, and no voice chat turn
+    whose transcript is it. A named request whose `assistant.request` cannot be found or read is
+    left out (logged)."""
+    reviews = {meta.id for meta in list_sessions(vault, subject_id, topic_id) if not meta.is_study}
+    requests: dict[tuple[str, str], dict[str, Any]] = {}
+    finished: set[tuple[str, str]] = set()
+    named: list[tuple[str, str]] = []
+    for session_id, event in read_topic_events(vault, subject_id, topic_id):
+        if event.kind == ASSISTANT_REQUEST_KIND:
+            request_id = event.payload.get("request_id")
+            if isinstance(request_id, str):
+                requests.setdefault((session_id, request_id), dict(event.payload))
+        elif event.kind == TURN_FINISHED_KIND:
+            request_id = event.payload.get("request_id")
+            of = event.payload.get("session_id", session_id)
+            if isinstance(request_id, str) and isinstance(of, str):
+                finished.add((of, request_id))
+        elif event.kind == REQUESTS_OUTSTANDING_KIND and session_id in reviews:
+            of = event.payload.get("session_id", session_id)
+            ids = event.payload.get("request_ids")
+            if isinstance(of, str) and isinstance(ids, list):
+                named.extend((of, i) for i in ids if isinstance(i, str))
+    pending = [key for key in dict.fromkeys(named) if key not in finished]
+    if not pending:
+        return []
+    finished |= {
+        (turn.transcript.session_id, turn.transcript.request_id)
+        for turn in chat_history(vault, subject_id, topic_id).turns
+        if turn.transcript is not None
+    }
+    found: list[tuple[str, AssistantRequest]] = []
+    for key in pending:
+        if key in finished:
+            continue
+        payload = requests.get(key)
+        try:
+            if payload is None:
+                raise LookupError("no such assistant.request")
+            found.append((key[0], AssistantRequest.model_validate(payload)))
+        except (LookupError, ValidationError) as error:
+            logger.warning(
+                "the outstanding request %s of session %s of %s/%s is left out: %s",
+                key[1],
+                key[0],
+                subject_id,
+                topic_id,
+                error,
+            )
+    return found
 
 
 def sources_lookup(sessions: SessionService) -> SourcesLookup:
@@ -1203,6 +1365,8 @@ def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
 __all__ = [
     "HANDLERS",
     "TURN_FINISHED_KIND",
+    "REQUESTS_OUTSTANDING_KIND",
+    "outstanding_requests",
     "request_context",
     "unanswered_requests",
     "sources_lookup",

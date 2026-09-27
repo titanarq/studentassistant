@@ -675,7 +675,8 @@ def test_a_replayed_session_builds_the_notes_and_studies_them(
     assert go_study["study"]["ended_session"] == session_id
     assert go_study["reply"].startswith("He cerrado la captura")
     [marked] = [data for name, data in events if name == "study.marked"]
-    [meta] = list_sessions(tmp_vault, SUBJECT, TOPIC)
+    # The study request's own turn ended its session: its record is in a review session (#423).
+    [meta] = [m for m in list_sessions(tmp_vault, SUBJECT, TOPIC) if m.is_study]
     assert meta.id == session_id and meta.ended_at is not None
     after_switch = seen["study_after_switch"]
     assert after_switch["study_version"]["version"] == marked["version"]

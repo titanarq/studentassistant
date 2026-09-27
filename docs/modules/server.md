@@ -606,8 +606,9 @@ Routes registered today:
   `turn.error` 422 with a Spanish `detail` (`UNKNOWN_KIND_DETAIL`).
 - **Requests survive a restart** (#408): every request whose turn ended in a result or an error
   (a busy topic, an unknown kind and a reached cap included) is recorded as a persisted
-  `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, turn_id, kind,
-  outcome: "result" | "error", status?, code?}`) in the request's session while it is attached
+  `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, session_id,
+  turn_id, kind, outcome: "result" | "error", status?, code?}`) in the request's session while
+  it is attached
   (written before `turn.result` is announced). On every `session.started` / `session.resumed` on
   the bus, and at `start()` for a session already attached, `AssistantRequestConsumer.replay`
   reads the session's `events.jsonl` and queues again through `submit`, oldest first,
@@ -620,9 +621,24 @@ Routes registered today:
   `(session_id, request_id)` once per process, so a request queued, running or replayed already
   is never queued twice (a reconnect's resume replays nothing). Shutdown gives running turns 5 s,
   then cancels them; the cancelled turns and the still-queued requests have no `turn.finished`,
-  so they run when the session is resumed on the restarted backend (the log names them). Not
-  replayed: a typed request kept in a review session (no capture session was open) and a request
-  whose session ended before its turn ran.
+  so they run when the session is resumed on the restarted backend (the log names them).
+- **Requests of an ended session survive a restart** (#423): a typed request kept in a review
+  session (no capture session was open) and a request whose session ended before its turn ran
+  are recorded as outstanding, in a `requests.outstanding` event (`REQUESTS_OUTSTANDING_KIND`,
+  origin `editor`, `{session_id?, request_ids}`; no `session_id`: the event's own session) of a
+  review session: `post_message` writes it in the review session of its typed requests, and a
+  `session.ended` on the bus writes it, in a new review session, for the ended session's
+  requests still queued or running (a `study` request ending its own session included). A
+  `turn.finished` (which now always carries the request's `session_id`) whose session is no
+  longer attached is written in a review session. Once the vault is open (`catch_up_vault`, a
+  `SessionService.add_on_open` hook, so after the restarted backend's first request that opens
+  it), every readable topic's `outstanding_requests(vault, subject, topic)` -- each named request
+  with no `turn.finished` of that session's request anywhere in the topic and no voice chat turn
+  of it -- is submitted again through `submit`, oldest first, announced and streamed as usual,
+  and answered exactly once (the `turn.finished` is written before `turn.result`). This reads
+  every event log of the vault once at start. Review sessions written before #423 hold no
+  `requests.outstanding`, so nothing older is run again. A named request whose
+  `assistant.request` cannot be read is left out with a warning.
   The request classifiers' context (`sources_lookup(sessions)`, `request_context`) is wired here
   into the detector and the typed classifier: the topic's `editor.source_status` rows and the
   open doubt last asked in the chat (`editor.doubts.doubt_chat_turns`).
