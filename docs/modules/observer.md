@@ -81,7 +81,8 @@ deterministic: no I/O, input never mutated, equal input gives an equal state (an
 item -- and `id`), `DuplicateIdError` (a merged pending id counts as taken),
 `PendingAlreadyResolvedError` (the item is closed). `apply_op(state, op, at, origin="observer")`
 returns the new state. `created_by` is the event's origin; a `resolve_pending` without `status`
-is `auto_resolved` from the observer and `resolved` from anyone else. An `add_pending` that
+is `auto_resolved` from the backend's own origins (`ops.AUTOMATIC_ORIGINS`: `observer` and
+`sources`, #360) and `resolved` from anyone else. An `add_pending` that
 duplicates an open item is merged into it (see the pending-review queue). `fold` never skips an op: it raises the error with `at` set to the event;
 `InvalidEventError` is a read kind with a malformed payload and `EventOrderError` events out of
 order.
@@ -155,7 +156,8 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
 - **Input** (`OBSERVER_KINDS`): `transcript.final`, `capture.stored`, `page.transcribed`
   (`PAGE_TRANSCRIPTION_KIND`: the page transcription, #50, MUST publish it with
   `payload.capture_id` and `payload.text`), `button`, `marker`, `command`, `observer.state_op` of
-  any origin but `observer` (shown as `student op`), and the lifecycle events. Each becomes one line
+  any origin but the backend's own (`ops.AUTOMATIC_ORIGINS`: `observer`, and `sources` for an
+  illegible page's `add_pending`, #360; shown as `student op`), and the lifecycle events. Each becomes one line
   of the pending batch (`context.batch_item`).
 - **Scope**: the first event of a session loads its topic's snapshot (`load_observer_snapshot`)
   and builds a fresh conversation: system = the `observer` prompt + the topic block (subject,
@@ -209,8 +211,9 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
   stored event the batch carried; the fold ignores it). When the loop opens a session (the first
   event of a start or resume, or a restart), `unanswered(events, session_id, before)` returns the
   topic's batch-kind events after the newest acknowledgement and before the opening event (which,
-  with what follows, comes on the bus; the observer's own ops are never returned). They are sent
-  first, as one batch headed `catch-up: N events of session ...`, at once, newest
+  with what follows, comes on the bus; the ops of `ops.AUTOMATIC_ORIGINS` -- the observer's and
+  the sources module's -- are never returned). They are sent first, as one batch headed
+  `catch-up: N events of session ...`, at once, newest
   `[observer] catch_up_max_items` kept (default 200; the rest are logged). So the last batch of a
   session whose call outlives the end hook's timeout (its ops and ack are refused by the ended
   session) is answered at the start of the topic's next session; the waiting items of a session

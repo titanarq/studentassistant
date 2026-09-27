@@ -19,7 +19,7 @@ the session's latest WebSocket `hello` (client time taken as backend time when t
 Then a persisted `capture.stored` event (origin `phone`) is published on the bus, which is also
 what later uploads read to recognise a repeated `capture_id` (`sessions.stored_captures`), and
 which the WebSocket gateway forwards to the connected client as its capture `ack`. Right after
-it, a persisted `capture.triaged` event (origin `observer`: ADR-0003 has no `sources` origin)
+it, a persisted `capture.triaged` event (origin `sources`, ADR-0003)
 carries the capture's triage (`sources.triage`: `capture_id`, `source_path`, `source_id`,
 `status`, `reasons`, `duplicate_of`, `decided_by`), and one more for an older capture the new one
 displaced as a sharper duplicate. With `[sources] triage_llm_check` the ambiguous checks are
@@ -95,6 +95,9 @@ DEFAULT_SOURCE_KIND = "notes"
 
 BUTTON_EVENT_KIND = "button"
 SWITCH_SOURCE = "switch_source"
+# ADR-0003: the triage the sources module decides on its own; the student's own set aside / restore
+# (`server.assistant_requests`) is `user`.
+TRIAGE_ORIGIN = "sources"
 # Protocol v1 `button.source` -> the vault source kind a capture is stored under.
 _SOURCE_KINDS = {"notes": "notes", "book": "book", "pdf": "pdf"}
 
@@ -489,7 +492,7 @@ async def _store(
 async def _publish_triage(
     request: Request, session: Session, capture_id: str, stored: StoredCapture
 ) -> None:
-    """`capture.triaged` (origin `observer`) for the new capture, then for each older capture
+    """`capture.triaged` (origin `sources`) for the new capture, then for each older capture
     whose triage it changed. A publish that fails is logged: the capture is stored already."""
     if stored.triage is None:
         return
@@ -508,7 +511,7 @@ async def _publish_triage(
     for change in changes:
         try:
             await request.app.state.bus.publish(
-                session.id, CAPTURE_TRIAGED_KIND, "observer", triaged_payload(change)
+                session.id, CAPTURE_TRIAGED_KIND, TRIAGE_ORIGIN, triaged_payload(change)
             )
         except (SessionNotAttachedError, SessionEndedError):
             logger.warning(

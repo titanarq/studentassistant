@@ -22,7 +22,8 @@ an unknown id is never skipped silently: `fold` raises the typed error.
 Pending items: an `add_pending` that duplicates an open item (`pending.find_duplicate`) is merged
 into it (refs joined, its id recorded in `merged_ids` and `pending_aliases`, so a later
 `resolve_pending` of either id closes the one item). `created_by` is the event's origin; a
-`resolve_pending` without a `status` is `auto_resolved` from the observer, `resolved` otherwise.
+`resolve_pending` without a `status` is `auto_resolved` from the observer or the sources module
+(`ops.AUTOMATIC_ORIGINS`), `resolved` otherwise.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from typing import Any, assert_never
 from pydantic import ValidationError
 
 from studentassistant.observer.ops import (
+    AUTOMATIC_ORIGINS,
     STATE_OP_EVENT_KIND,
     AddConcept,
     AddPending,
@@ -232,7 +234,7 @@ def _apply_in_place(state: TopicState, op: StateOp, at: EventRef, origin: Origin
             if op.status is not None:
                 item.status = op.status
             else:
-                item.status = "auto_resolved" if origin == "observer" else "resolved"
+                item.status = "auto_resolved" if origin in AUTOMATIC_ORIGINS else "resolved"
             item.resolution = op.resolution
             item.resolved_at = at
         case Note():

@@ -99,7 +99,7 @@ vault with its reason, never deleted, never transcribed, never given to the edit
   transcription; a pair at least `triage_same_content_min_similarity` alike sets aside the one
   with more `[[?` marks (ties: the less sharp, then the newer) as `same_content`, `duplicate_of`
   the other -- never a protected page. Transcriptions under five words are not compared. Each
-  change is published as `capture.triaged` (origin `observer`).
+  change is published as `capture.triaged` (origin `sources`).
 - **Student decision**: `set_capture_triage(vault, s, t, source_id, "set_aside" | "restore", *,
   reason=None, sync) -> TriageResult`: `decided_by: student`; restore is `kept` with no reasons;
   `reason` is kept in `reasons` when it is a triage reason, else as `note`; the previous decision
@@ -179,7 +179,9 @@ submodules.
      `page.transcribed` (`observer.context.PAGE_TRANSCRIPTION_KIND`) with `capture_id`, `text`,
      `path` (the `.md`), `source_path`, `page_path`, `source_context`, `page_number`,
      `original_sent`, `hint_segments`, `uncertain`, `pending_ids`, `model`, `prompt_hash`,
-     `attempts`. All of them have origin `observer` (ADR-0003 has no `sources` origin).
+     `attempts`. All of them have origin `sources` (ADR-0003: what the sources module produces
+     on its own, #360; logs written before carry `observer`, and the observer's readers treat
+     both alike, `observer.ops.AUTOMATIC_ORIGINS`).
   A failed attempt (an `LLMError`, a vault or OS error) is retried up to `transcription_attempts`
   times, `transcription_retry_seconds` apart, doubling. A reached cost cap (nothing sent) or a
   refusal is not retried. When a page is given up, `page.transcription_failed` (`capture_id`,
@@ -375,7 +377,7 @@ web no está disponible con el backend de Claude Code..."): a search is recorded
   web searches are priced at `[llm] web_search_usd_per_thousand`. At the end it records the
   results or the failure and, while the asking session is live, publishes
   `web.search_results` (`search_id`, `query`, `requested_by`, `results`, `model`) or
-  `web.search_failed` (`search_id`, `query`, `reason`, `message`) on it, origin `observer`. With
+  `web.search_failed` (`search_id`, `query`, `reason`, `message`) on it, origin `sources`. With
   `web_auto_keep` the `relevant` results are kept at once (`kept_by: assistant`).
   `keep(vault, s, t, search_id, index, *, kept_by="student", session_id=None) -> KeptWebSource`
   fetches and stores one result, records `search.kept`, calls `on_write` and publishes

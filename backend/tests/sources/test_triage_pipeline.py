@@ -220,6 +220,7 @@ async def test_a_transcription_like_another_page_sets_the_worse_one_aside(
     await idle(transcriber, session)
 
     assert len(events(session, PAGE_TRANSCRIBED_KIND)) == 2
+    assert [e.origin for e in events(session, CAPTURE_TRIAGED_KIND)] == ["sources"]
     triaged = [e.payload for e in events(session, CAPTURE_TRIAGED_KIND)]
     assert len(triaged) == 1
     assert triaged[0]["capture_id"] == "cap-2"

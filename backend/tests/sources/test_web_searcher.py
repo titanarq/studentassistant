@@ -100,7 +100,10 @@ async def _say(bus: SessionBus, session: Session, query: str | None, **extra: An
 
 
 def _kinds(session: Session, kind: str) -> list[dict[str, Any]]:
-    return [event.payload for event in session.read_events() if event.kind == kind]
+    events = [event for event in session.read_events() if event.kind == kind]
+    # ADR-0003: every event the searcher publishes is the sources module's own.
+    assert all(event.origin == "sources" for event in events)
+    return [event.payload for event in events]
 
 
 def _where(session: Session) -> tuple[Vault, str, str]:

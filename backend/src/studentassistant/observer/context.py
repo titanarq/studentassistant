@@ -22,7 +22,7 @@ from studentassistant.observer.fold import (
     SEGMENT_EVENT_KIND,
     SEGMENT_ID_KEY,
 )
-from studentassistant.observer.ops import STATE_OP_EVENT_KIND
+from studentassistant.observer.ops import AUTOMATIC_ORIGINS, STATE_OP_EVENT_KIND
 from studentassistant.observer.state import EventRef, PendingRefs, TopicState
 
 # The event kinds the observer reads besides the two the fold registers. The page transcription
@@ -84,8 +84,9 @@ def _compact(payload: Mapping[str, Any], drop: Iterable[str] = ()) -> str:
 def batch_item(kind: str, origin: str, t: int, payload: Mapping[str, Any]) -> BatchItem | None:
     """The batch line of one bus event, or `None` for an event the observer does not show.
 
-    The observer's own state ops are not shown (they are already in the conversation); a state
-    op of any other origin is, as a `student op`.
+    The backend's own state ops (`AUTOMATIC_ORIGINS`: the observer's, already in the
+    conversation, and the sources module's, whose `page.transcribed` the observer reads) are not
+    shown; a state op of any other origin is, as a `student op`.
     """
     at = f"{t / 1000:.1f} s"
     if kind == SEGMENT_EVENT_KIND:
@@ -118,7 +119,7 @@ def batch_item(kind: str, origin: str, t: int, payload: Mapping[str, Any]) -> Ba
         )
     if kind == COMMAND_KIND:
         return BatchItem(line=f"command [{at}] {_compact(payload)}")
-    if kind == STATE_OP_EVENT_KIND and origin != OBSERVER_ORIGIN:
+    if kind == STATE_OP_EVENT_KIND and origin not in AUTOMATIC_ORIGINS:
         return BatchItem(line=f"student op [{at}] {_compact(payload)}")
     return None
 

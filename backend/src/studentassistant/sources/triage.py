@@ -74,7 +74,7 @@ from studentassistant.vault import (
 )
 
 CAPTURE_TRIAGED_KIND = "capture.triaged"
-"""The persisted event of a triage decision (origin `observer`; `user` for a student decision)."""
+"""The persisted event of a triage decision (origin `sources`; `user` for a student decision)."""
 TRIAGE_KEY = "triage"
 """The sidecar key holding a page's triage."""
 CAPTURE_KINDS: tuple[str, ...] = ("notes", "book")

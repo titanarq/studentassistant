@@ -793,7 +793,7 @@ def test_each_capture_is_followed_by_its_triage_event(
         "capture.triaged",
     ]
     kept, blank = events[1], events[3]
-    assert kept.origin == "observer"
+    assert kept.origin == blank.origin == "sources"  # ADR-0003
     assert kept.payload == {
         "capture_id": C1,
         "source_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.jpg",
@@ -821,7 +821,9 @@ def test_a_sharper_repeat_publishes_the_older_capture_set_aside(
     assert response.status_code == 201, response.text
     assert upload(client, session_id, _page_burst(framed(written(3)), C2)).status_code == 201
 
-    triaged = [e.payload for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    events = [e for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    assert [e.origin for e in events] == ["sources"] * 3  # the displaced one too (ADR-0003)
+    triaged = [e.payload for e in events]
     assert [(p["capture_id"], p["status"]) for p in triaged] == [
         (C1, "kept"),
         (C2, "kept"),
