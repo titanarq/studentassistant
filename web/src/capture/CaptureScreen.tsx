@@ -22,6 +22,9 @@
  * subir» and goes up again after the reconnect; the page asks before being left while any upload
  * or queued frame is still pending.
  *
+ * A reconnect that lands on a backend restarted in the other STT mode switches the transcriber to
+ * the new mode's one (#447): the old one would send frames that backend refuses.
+ *
  * The capture runs only while the tab is visible (#425). A hidden tab stops sending: the camera and
  * the recognizer (or the audio stream) stop, the socket stays open and says `button: pause`, and the
  * page shows «Captura en pausa». Visible again, it says `resume` and starts both again. A session no
@@ -518,6 +521,11 @@ export default function CaptureScreen({
   const [paused, setPaused] = useState(false);
   /** The same, for the socket's events and the device start, which run outside a render. */
   const pausedRef = useRef(false);
+  /**
+   * Since #447: the running effect's answer to a reconnect's `hello.ack`, which may carry another
+   * STT mode than the one the devices run by (the backend restarted with another config).
+   */
+  const followAck = useRef<((ack: HelloAck) => void) | null>(null);
 
   const flash = useCallback(() => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
@@ -692,6 +700,7 @@ export default function CaptureScreen({
         if (stopped.current) return;
         // A new connection counts as sending until it hears otherwise: a hidden tab says so again.
         if (pausedRef.current) runtime.current.socket?.sendButton("pause", clock.current());
+        followAck.current?.(event.ack);
         clearOutage();
         setConnection("open");
         setBlocking((current) => (current === DISCONNECTED ? null : current));
@@ -766,7 +775,7 @@ export default function CaptureScreen({
       setCameraOn(false);
     };
     /** The camera, then the recognizer or the audio stream of the connection's STT mode. */
-    const startDevices = async (ack: HelloAck): Promise<void> => {
+    const startDevices = async (): Promise<void> => {
       const run = devices;
       const current = (): boolean => !disposed && run === devices && !pausedRef.current;
       try {
@@ -776,6 +785,15 @@ export default function CaptureScreen({
         if (current()) setTrouble(cameraMessage(problem));
       }
       if (!current()) return;
+      await startTranscriber();
+    };
+    /**
+     * The recognizer (client mode) or the audio stream (server mode) of the latest `hello.ack`:
+     * read when it starts, so a start still awaiting the camera follows a mode that changed.
+     */
+    const startTranscriber = async (): Promise<void> => {
+      const ack = acknowledged;
+      if (ack === null) return;
       const transcriber: ClientTranscriber =
         ack.stt_mode === "server"
           ? new AudioStreamTranscriber(
@@ -820,7 +838,24 @@ export default function CaptureScreen({
       }
       socket.sendButton("resume", clock.current());
       setCameraLost(null);
-      if (acknowledged !== null) void startDevices(acknowledged);
+      if (acknowledged !== null) void startDevices();
+    };
+    // Since #447 a reconnect may land on a backend that restarted in the other STT mode: the
+    // running transcriber would send frames that backend refuses (1008), so it gives way to the
+    // one of the new mode. The camera goes on. A hidden tab starts nothing (its devices are
+    // stopped); the visible tab starts the new mode's transcriber. A start still awaiting the
+    // camera reads the new ack itself.
+    followAck.current = (ack: HelloAck): void => {
+      const previous = acknowledged;
+      acknowledged = ack;
+      if (previous === null || previous.stt_mode === ack.stt_mode) return;
+      setSttMode(ack.stt_mode);
+      setSttWarning(null);
+      const running = runtime.current.transcriber;
+      if (running === null) return;
+      running.stop();
+      runtime.current.transcriber = null;
+      if (!pausedRef.current) void startTranscriber();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     // Leaving the page while a burst or a queued frame has not reached the backend loses it, so
@@ -877,12 +912,13 @@ export default function CaptureScreen({
       setSttMode(handshake.ack.stt_mode);
       vocabularyHints.current ??= handshake.ack.vocabulary_hints ?? [];
       acknowledged = handshake.ack;
-      if (!pausedRef.current) await startDevices(handshake.ack);
+      if (!pausedRef.current) await startDevices();
     })();
 
     return () => {
       disposed = true;
       stopped.current = true;
+      followAck.current = null;
       runtime.current.transcriber?.stop();
       runtime.current = { socket: null, camera: null, transcriber: null, wakeLock: null };
       document.removeEventListener("visibilitychange", onVisibilityChange);
