@@ -332,7 +332,9 @@ it("says an option is not generated yet and what to ask the chat, with no Genera
   const panel = screen.getByRole("region", { name: "Ejercicios" });
 
   expect(within(panel).getByText("Todavía no está generado.")).toBeInTheDocument();
-  expect(within(panel).getByText("Pídelo en el chat: «hazme ejercicios».")).toBeInTheDocument();
+  expect(within(panel).getByRole("button", { name: "hazme ejercicios" }).closest("p")).toHaveTextContent(
+    "Pídelo en el chat: «hazme ejercicios».",
+  );
   expect(within(panel).queryByRole("button", { name: /Generar/ })).toBeNull();
   expect(fetchMock).not.toHaveBeenCalledWith(`${BASE}/exam`);
 });
@@ -560,4 +562,85 @@ it("a question asked on the study screen streams its answer with chips into the 
   await waitFor(() => expect(block(/Contexto/)).toHaveClass("notes-focus"));
   const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
   expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ question: "¿Dónde empezó?", style: "written" });
+});
+
+// ---- Materials generated from the chat («hazme un quiz», #366, #367) ----
+
+function generation(option: string, kind: string, study: unknown, reply = "Listo: 10 preguntas. Ábrelo en «Quiz».") {
+  return sseResponse([
+    ["generation.started", { kind, option, text: "Preparando un quiz de 10 preguntas con tus apuntes v5…" }],
+    ["result", { kind: "generation", option, material_kind: kind, reply, items: 10, warnings: [], study }],
+  ]);
+}
+
+async function askInChat(text: string) {
+  const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+}
+
+it("a quiz generated from the chat turns its badge to Listo and «Abrir «Quiz»» opens it beside the document", async () => {
+  const { fetchMock } = renderPage({
+    [`${BASE}/study`]: jsonResponse(studyBody({ quiz: ["sin_generar", null] })),
+    [`POST ${BASE}/tutor`]: () => generation("quiz", "quiz", studyBody()),
+  });
+  await options();
+  expect(within(optionButton(/^Quiz/)).getByText("Sin generar")).toBeInTheDocument();
+
+  await askInChat("hazme un quiz");
+
+  await waitFor(() => expect(within(optionButton(/^Quiz/)).getByText("Listo")).toBeInTheDocument());
+  // The state came with the result: no second read.
+  expect(fetchMock.mock.calls.filter(([url]) => url === `${BASE}/study`)).toHaveLength(1);
+  expect(screen.queryByRole("region", { name: "Quiz" })).toBeNull();
+
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Abrir «Quiz»" }));
+
+  const panel = screen.getByRole("region", { name: "Quiz" });
+  expect(await within(panel).findByText("¿Dónde empezó la Revolución Industrial?")).toBeInTheDocument();
+  expect(optionButton(/^Quiz/)).toHaveAttribute("aria-expanded", "true");
+});
+
+it("a stale option regenerated from the chat drops its Desactualizado note and reads the material again", async () => {
+  const { fetchMock } = renderPage({
+    [`${BASE}/study`]: jsonResponse(MIXED),
+    [`POST ${BASE}/tutor`]: () =>
+      generation("quiz", "quiz", studyBody({ ejercicios: ["sin_generar", null], examen: ["sin_generar", null] })),
+  });
+  await options();
+  fireEvent.click(optionButton(/^Quiz/));
+  const panel = screen.getByRole("region", { name: "Quiz" });
+  await within(panel).findByText("¿Dónde empezó la Revolución Industrial?");
+  expect(within(panel).getByRole("note")).toHaveTextContent("Desactualizado");
+  const quizReads = () => fetchMock.mock.calls.filter(([url]) => url === `${BASE}/quiz`).length;
+  const before = quizReads();
+
+  await askInChat("hazme un quiz de nuevo");
+
+  await waitFor(() => expect(within(optionButton(/^Quiz/)).getByText("Listo")).toBeInTheDocument());
+  await waitFor(() => expect(within(screen.getByRole("region", { name: "Quiz" })).queryByRole("note")).toBeNull());
+  await waitFor(() => expect(quizReads()).toBeGreaterThan(before));
+  expect(within(optionButton(/^Ejercicios/)).getByText("Sin generar")).toBeInTheDocument();
+
+  // «Abrir» on the option already open reads it again too, and keeps it open.
+  const afterResult = quizReads();
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Abrir «Quiz»" }));
+  await waitFor(() => expect(quizReads()).toBeGreaterThan(afterResult));
+  expect(screen.getByRole("region", { name: "Quiz" })).toBeInTheDocument();
+});
+
+it("the phrase of an option's hint fills the chat's input without sending it", async () => {
+  const { fetchMock } = renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
+  await options();
+  fireEvent.click(optionButton(/^Ejercicios/));
+  const panel = screen.getByRole("region", { name: "Ejercicios" });
+  const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+
+  fireEvent.click(within(panel).getByRole("button", { name: "hazme ejercicios" }));
+
+  await waitFor(() => expect(input).toHaveValue("hazme ejercicios"));
+  expect(input).toHaveFocus();
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });

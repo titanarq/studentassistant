@@ -19,10 +19,22 @@ export const CHAT_REQUESTS: Record<OptionKey, string> = {
   tarjetas: "hazme tarjetas de memoria",
 };
 
-/** «Pídelo en el chat: "hazme un quiz"» (again, for a stale one). */
-export function chatHint(option: StudyOption): string {
+/**
+ * «Pídelo en el chat: «hazme un quiz».» ("de nuevo" for a stale option): its phrase is a button
+ * that puts it in the study chat's input (`onAsk`, no send), so the student sees what to ask.
+ */
+function ChatHint({ option, onAsk }: { option: StudyOption; onAsk?: (phrase: string) => void }) {
   const again = option.state === "stale" ? " de nuevo" : "";
-  return `Pídelo${again} en el chat: «${CHAT_REQUESTS[option.key]}».`;
+  const phrase = CHAT_REQUESTS[option.key];
+  return (
+    <p className="study-note">
+      Pídelo{again} en el chat: «
+      <button type="button" className="study-hint-phrase" title="Escribirlo en el chat" onClick={() => onAsk?.(phrase)}>
+        {phrase}
+      </button>
+      ».
+    </p>
+  );
 }
 
 /**
@@ -38,18 +50,21 @@ export default function OptionContent({
   option,
   onFocusAnchors,
   anchorLabel,
+  onAskInChat,
 }: {
   subjectId: string;
   topicId: string;
   option: StudyOption;
   onFocusAnchors: (anchors: string[]) => void;
   anchorLabel: (anchor: string) => string;
+  /** The hint's phrase was clicked: put it in the study chat's input. */
+  onAskInChat?: (phrase: string) => void;
 }) {
   if (option.state === "missing") {
     return (
       <div className="study-missing">
         <p>{NOT_GENERATED}</p>
-        <p className="study-note">{chatHint(option)}</p>
+        <ChatHint option={option} onAsk={onAskInChat} />
       </div>
     );
   }
@@ -61,7 +76,7 @@ export default function OptionContent({
           <p>
             <span className="badge badge-warn">Desactualizado</span> {option.staleReason}
           </p>
-          <p className="study-note">{chatHint(option)}</p>
+          <ChatHint option={option} onAsk={onAskInChat} />
         </div>
       )}
       {option.key === "esquema" && (

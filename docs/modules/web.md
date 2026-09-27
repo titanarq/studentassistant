@@ -366,6 +366,25 @@
     "Continuar igualmente" (the same question with `confirm_over_cap`); another question of the
     topic running (409) "Espera a que termine la respuesta anterior."; no notes (409) "Todavía
     no hay apuntes: constrúyelos en Construir."; anything else the backend's Spanish `detail`.
+  - **Generation turns** (#367, backend #366): a request such as «hazme un quiz» is detected by
+    the backend, which generates the material on the same `POST .../tutor` stream. The chat reads
+    it with `chat/api.ts`'s `askStudyChat` (`style: "written"`; `chat/api.ts`'s `streamTurn`
+    hands any other event to `onEvent`): `generation.started` `{kind, option, text}` replaces
+    "Pensando…" with its `text` and a busy indicator (the turn stays `aria-busy`, the input
+    disabled); a `result` with `kind: "generation"` `{option, material_kind, reply, items,
+    warnings, study}` becomes a finished turn: `reply`, each warning below it, and one button
+    **Abrir «<título de la opción>»** (titles from `STUDY_OPTIONS`; none for `diapositivas` or an
+    option the page does not know). A `result` without `kind` (or `kind: "answer"`) is an
+    ordinary answer, as before. Errors are the tutor's (cost cap with "Continuar igualmente",
+    which re-sends the same text confirmed; 409 busy; no notes; the backend's `detail`); a failed
+    generation leaves no turn. History: `GET .../tutor` turns with `kind: "generation"` (read as
+    `TutorTurn.generation` `{option, items}` in `tutor/api.ts`) show as finished generation
+    turns with **Abrir**, whatever their `style`; older turns read unchanged.
+  - The page (`StudyPage`) takes a generation's `result.study` as its `StudyState` (the badges
+    turn "Listo" without another `GET .../study`; a read in course is dropped) and, if the open
+    option shows that `material_kind`, remounts its content so it reads the new material.
+    **Abrir** opens that option's panel as a click in the list does, reloading its content when
+    it was already open.
   - Right: the document, `NotesView` read-only (no "¿Por qué?"), with its version and one link
     "Editar en Construir" (`.../workspace`); without notes "Todavía no hay apuntes: constrúyelos
     en Construir.". A provenance footnote opens `SourcePanel` in the slide-over place.
@@ -380,7 +399,8 @@
     "§ <section title>" chips). There is **no "Generar" button** (human decision: everything the
     student asks goes through the chat): an option "Sin generar" says "Todavía no está
     generado." and what to ask the chat (e.g. «Pídelo en el chat: «hazme un quiz».»); a
-    "Desactualizado" one shows its reason and the same hint above the material.
+    "Desactualizado" one shows its reason and the same hint above the material. The hint's
+    phrase is a button that puts it in the chat's input (no send) and shows the Estudiar column.
   - Highlight: `PracticePage`, `QuizPage`, `ExamPage` and `ExercisesView` take an optional
     `onFocusAnchors(anchors)`: the item shown (the current card or exercise; the quiz or exam
     question the focus is in; a chip's one anchor) reports its `anchors`, and the page passes the

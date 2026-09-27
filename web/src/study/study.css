@@ -421,3 +421,15 @@
     display: none;
   }
 }
+
+/* The phrase of an option's hint (#367): it fills the study chat's input. */
+.study-hint-phrase {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}

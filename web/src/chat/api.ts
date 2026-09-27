@@ -95,6 +95,8 @@ export interface StreamHandlers {
   onDelta?: (text: string, attempt: number) => void;
   /** The change was sent back to the editor: drop the reply streamed so far. */
   onRestart?: (attempt: number) => void;
+  /** Any other event before the `result` (e.g. the study chat's `generation.started`, #367). */
+  onEvent?: (event: string, payload: Record<string, unknown>) => void;
 }
 
 type Json = Record<string, unknown>;
@@ -268,6 +270,8 @@ export async function streamTurn<T>(
           detail === null
             ? { kind: "error", status }
             : { kind: "refused", status, detail, code, overCap: isOverCap(code) };
+      } else {
+        handlers.onEvent?.(event, payload);
       }
     });
   } catch {

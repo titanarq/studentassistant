@@ -33,9 +33,19 @@ export interface TutorAnswer {
   warning: string | null;
 }
 
-/** One earlier question and its answer. */
+/**
+ * A study-chat request that generated a study material (#366, #367): the option it was for (the
+ * study option key, or `diapositivas`) and how many items it made (null when not said).
+ */
+export interface TutorGeneration {
+  option: string;
+  items: number | null;
+}
+
+/** One earlier question and its answer; `generation` set when the turn generated a material. */
 export interface TutorTurn extends TutorAnswer {
   time: string;
+  generation: TutorGeneration | null;
 }
 
 export type TutorOutcome = StreamOutcome<TutorAnswer>;
@@ -67,13 +77,29 @@ export function readTutorAnswer(body: unknown): TutorAnswer | null {
   };
 }
 
+/** `items` of a generation: a count, or the list of items (its length). */
+export function readItems(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  return Array.isArray(value) ? value.length : null;
+}
+
+/** The generation of a history record (`kind: "generation"`); older records carry no `kind`. */
+function readGeneration(raw: unknown): TutorGeneration | null {
+  if (!isObject(raw) || raw.kind !== "generation") return null;
+  return { option: optionalText(raw.option) ?? "", items: readItems(raw.items) };
+}
+
 export function readTutorHistory(body: unknown): TutorTurn[] | null {
   if (!isObject(body) || !Array.isArray(body.turns)) return null;
   const turns: TutorTurn[] = [];
   for (const raw of body.turns) {
     const answer = readTutorAnswer(raw);
     if (answer === null) return null;
-    turns.push({ ...answer, time: isObject(raw) && typeof raw.time === "string" ? raw.time : "" });
+    turns.push({
+      ...answer,
+      time: isObject(raw) && typeof raw.time === "string" ? raw.time : "",
+      generation: readGeneration(raw),
+    });
   }
   return turns;
 }
