@@ -657,9 +657,11 @@ imported from `studentassistant.vault.purge`.
 | `folded_events` | `true` | the events the observer snapshot folded, replaced by that snapshot |
 | `generated_max_age_days` | unset (keep) | files under `generated/` last committed longer ago |
 
-Burst originals come from capture processing (`sources.process_burst`, #44): it stores the stills
-it did not keep as derived files `burst<K>.<ext>` of the page, in whichever `sources/<kind>/` the
-session was on, and the purge looks in every kind; the page itself (`page-NNN.<ext>`), its sidecar, its crop and its transcription are never candidates.
+Burst originals come from capture processing as it was before #426 (`sources.store_capture`,
+#44): it stored the stills it did not keep as derived files `burst<K>.<ext>` of the page, in
+whichever `sources/<kind>/` the session was on, and the purge looks in every kind. Captures
+stored since #426 keep only the chosen still, so `burst_originals` only matters for sessions
+stored before that change; the page itself (`page-NNN.<ext>`), its sidecar, its crop and its transcription are never candidates.
 
 **Never removed**: transcripts, `session.yaml`, `notes/` and its history (tags), sources other
 than burst originals, the editor conversation, and anything `notes/apuntes.md` names by a

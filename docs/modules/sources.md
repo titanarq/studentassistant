@@ -25,16 +25,20 @@ processing and triage, page transcription, textbook pages, web search and web pa
   order) and stores it through one `vault.put_source` call as a page of `sources/<kind>/`:
   - `page-NNN.jpg`: the sharpest still (variance of the Laplacian on a grayscale copy at a common
     1200 px long edge; ties go to the frame nearest the middle, `len // 2`, the earlier one when
-    two are equally near), downscaled to `capture_long_edge` and re-encoded as JPEG at
+    two are equally near; scored on the full-resolution decoded stills, in memory), downscaled
+    so its long side is at most `capture_long_edge` (never enlarged) and re-encoded as JPEG at
     `capture_jpeg_quality`. Stills that do not decode are skipped; if none decodes,
     `CaptureImageError` (Spanish message) and nothing is written.
   - `page-NNN.page.jpg`: the page image. The largest convex quadrilateral covering 20-98 % of
     the still, with at most one corner on the image border and clearly lighter than what surrounds
     it (Canny edges and an Otsu threshold both searched), is warped flat by a perspective
     transform; then a mild CLAHE contrast boost on lightness. No page found: the uncropped still
-    with the same contrast boost.
-  - `page-NNN.burst<K>.<ext>`: every other still exactly as uploaded, `K` its 1-based position in
-    the burst (the retention purge's `burst-original` target).
+    with the same contrast boost. It obeys the same `capture_long_edge` limit.
+  - No other still of the burst is written to the vault (human decision 2026-09-27): the
+    sidecar's `selected_image` and `sharpness` list keep the record of the burst. Sessions stored
+    before that change may hold `page-NNN.burst<K>.<ext>` files (every other still as uploaded,
+    `K` its 1-based position); they stay readable, the retention purge still removes them
+    (`burst_originals`) and `evals.import_session` still reads them back.
   - `page-NNN.yaml`: `meta` plus `width_px`/`height_px` (of `page-NNN.jpg`), `session_t_ms`,
     `transcript_window: {t_start, t_end}` (session ms; `capture_window_before_seconds` before to
     `capture_window_after_seconds` after, never below 0) -- the span of `transcript.jsonl` a page
@@ -417,7 +421,7 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `pdf_thumbnail_quality` | 85 | -- |
 | `pdf_transcription_long_edge` | 1568 px | a scanned PDF page is rendered at it for its vision transcription (Claude downscales larger images) |
 | `pdf_transcription_quality` | 90 | -- |
-| `capture_long_edge` | 2400 px | a captured still and its page image are downscaled to it |
+| `capture_long_edge` | 2000 px | the kept still of a capture and its page image are downscaled to it (never enlarged); ~170 dpi on an A4 page, ~3.8k image tokens (Opus/Sonnet read up to 2576 px) |
 | `capture_jpeg_quality` | 85 | -- |
 | `capture_window_before_seconds` | 20 | a capture's transcript window starts this long before it |
 | `capture_window_after_seconds` | 10 | ...and ends this long after it |

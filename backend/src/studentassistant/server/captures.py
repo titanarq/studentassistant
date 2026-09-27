@@ -10,8 +10,8 @@ declares is 422. Every refusal (`{"detail": "..."}`, Spanish) stores and publish
 
 The session must be the active one: unknown is 404, ended or not resumed is 409, a vault that
 cannot be opened is 503. The burst is processed and stored by `sources.store_capture` in a worker
-thread (the sharpest still downscaled as `page-NNN.jpg`, its cropped page `page-NNN.page.jpg`, the
-other stills as `page-NNN.burst<K>.<ext>`, the sidecar with the transcript window), under the
+thread (the sharpest still downscaled as `page-NNN.jpg`, its cropped page `page-NNN.page.jpg` and
+the sidecar with the transcript window; the other stills are not kept in the vault), under the
 session's current source context (`current_source_context`: the `source` of its latest
 `switch_source` button event, `notes` when there is none); a burst none of whose images decodes is
 422. The capture's session time is the burst's `client_time_ms` mapped through the clock offset of
