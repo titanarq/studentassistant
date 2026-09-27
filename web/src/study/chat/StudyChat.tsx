@@ -1,13 +1,8 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { describeFailure, topicPath } from "../../desk/api";
-import {
-  askTutor,
-  describeTutorFailure,
-  fetchTutorHistory,
-  type SectionRef,
-  type TutorOutcome,
-  type TutorTurn,
-} from "../../tutor/api";
+import { describeTutorFailure, fetchTutorHistory, type SectionRef, type TutorTurn } from "../../tutor/api";
+import { type OptionKey, STUDY_OPTIONS } from "../options";
+import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
 import ReplyView from "./ReplyView";
 import "../../chat/chat.css";
 import "./studyChat.css";
@@ -18,6 +13,11 @@ import "./studyChat.css";
  * #334). The answer streams, then its `[§anchor]` marks become section chips and its `[^label]`
  * marks source chips, inline where cited, handed to the page (`onOpenSection`, `onOpenSource`).
  * It never edits the notes: the only requests it sends are `GET` and `POST .../tutor`.
+ *
+ * A request such as «hazme un quiz» (#366, #367) makes the backend generate that material on the
+ * same stream: the turn shows the `generation.started` line with a busy indicator, then the
+ * generation's reply, its warnings and **Abrir «<opción>»**, which opens the option's panel
+ * (`onOpenOption`; none for the slides). The page gets the fresh study state (`onGenerated`).
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -37,6 +37,22 @@ export interface StudyChatProps {
   onOpenSection: (anchor: string) => void;
   /** A source chip: highlight the blocks citing `label` and open its source; `trigger` gets the focus back. */
   onOpenSource: (label: string, trigger: HTMLElement) => void;
+  /** A generation ended: the page refreshes its study state from `result.study`. */
+  onGenerated?: (result: GenerationResult) => void;
+  /** **Abrir «…»** of a generation turn: open that option's panel. */
+  onOpenOption?: (key: OptionKey) => void;
+  /** A phrase to put in the input (no send); a new `id` puts it again. */
+  suggestion?: { text: string; id: number } | null;
+}
+
+/** A turn as the chat shows it: warnings as a list, the generation (if any) it made. */
+type ChatTurn = TutorTurn & { warnings: string[] };
+
+const chatTurn = (turn: TutorTurn): ChatTurn => ({ ...turn, warnings: turn.warning === null ? [] : [turn.warning] });
+
+/** The option a generation turn opens; none for the slides or an option the page does not know. */
+function openableOption(option: string) {
+  return STUDY_OPTIONS.find((info) => info.key === option) ?? null;
 }
 
 type History = { state: "loading" } | { state: "ready" } | { state: "failed"; message: string };
@@ -44,6 +60,8 @@ type History = { state: "loading" } | { state: "ready" } | { state: "failed"; me
 interface Asking {
   question: string;
   reply: string;
+  /** The `generation.started` line, once the backend said it is generating a material. */
+  generating: string | null;
 }
 
 type Failure =
@@ -51,7 +69,7 @@ type Failure =
   | { kind: "busy" }
   | { kind: "no-notes" };
 
-function failureOf(outcome: Exclude<TutorOutcome, { kind: "ok" }>, question: string, hasNotes: boolean | null): Failure {
+function failureOf(outcome: Exclude<StudyChatOutcome, { kind: "ok" }>, question: string, hasNotes: boolean | null): Failure {
   if (outcome.kind === "refused") {
     if (outcome.overCap) return { kind: "message", message: outcome.detail, overCapQuestion: question };
     if (outcome.status === 409) {
@@ -62,9 +80,19 @@ function failureOf(outcome: Exclude<TutorOutcome, { kind: "ok" }>, question: str
   return { kind: "message", message: describeTutorFailure(outcome), overCapQuestion: null };
 }
 
-export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOpenSection, onOpenSource }: StudyChatProps) {
+export default function StudyChat({
+  subjectId,
+  topicId,
+  sections,
+  hasNotes,
+  onOpenSection,
+  onOpenSource,
+  onGenerated,
+  onOpenOption,
+  suggestion = null,
+}: StudyChatProps) {
   const [history, setHistory] = useState<History>({ state: "loading" });
-  const [turns, setTurns] = useState<TutorTurn[]>([]);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [asking, setAsking] = useState<Asking | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -84,7 +112,7 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
       if (cancelled) return;
       if (result.kind === "ok") {
         // The voice tutor's spoken turns are another conversation of the same file.
-        setTurns(result.value.filter((turn) => turn.style === "written"));
+        setTurns(result.value.filter((turn) => turn.style === "written" || turn.generation !== null).map(chatTurn));
         setHistory({ state: "ready" });
       } else if (result.kind === "not-found") {
         setHistory({ state: "ready" });
@@ -102,10 +130,12 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
       const text = question.trim();
       if (text === "" || asking !== null) return;
       setFailure(null);
-      setAsking({ question: text, reply: "" });
-      const outcome = await askTutor(subjectId, topicId, text, {
-        style: "written",
+      setAsking({ question: text, reply: "", generating: null });
+      const outcome = await askStudyChat(subjectId, topicId, text, {
         confirmOverCap,
+        onGenerationStarted: (started) => {
+          if (mounted.current) setAsking((now) => (now === null ? now : { ...now, reply: "", generating: started.text }));
+        },
         onDelta: (delta) => {
           if (mounted.current) setAsking((now) => (now === null ? now : { ...now, reply: now.reply + delta }));
         },
@@ -116,7 +146,28 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
       if (!mounted.current) return;
       setAsking(null);
       if (outcome.kind === "ok") {
-        setTurns((now) => [...now, { ...outcome.value, time: new Date().toISOString() }]);
+        const time = new Date().toISOString();
+        const reply = outcome.value;
+        if (reply.kind === "answer") {
+          setTurns((now) => [...now, chatTurn({ ...reply.answer, time, generation: null })]);
+        } else {
+          const { generation } = reply;
+          setTurns((now) => [
+            ...now,
+            {
+              time,
+              style: "written",
+              question: text,
+              reply: generation.reply,
+              refs: [],
+              sections: [],
+              warning: null,
+              warnings: generation.warnings,
+              generation: { option: generation.option, items: generation.items },
+            },
+          ]);
+          onGenerated?.(generation);
+        }
         setDraft("");
       } else {
         setDraft(text);
@@ -125,8 +176,15 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
       // The input was disabled while the answer came: give it the focus back.
       requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
     },
-    [asking, hasNotes, subjectId, topicId],
+    [asking, hasNotes, onGenerated, subjectId, topicId],
   );
+
+  // A hint of an option («Pídelo en el chat: …») puts its phrase in the input, not sent.
+  useEffect(() => {
+    if (suggestion === null) return;
+    setDraft(suggestion.text);
+    input.current?.focus({ preventScroll: true });
+  }, [suggestion]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -183,9 +241,18 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
             </p>
             <div className="chat-reply">
               <span className="chat-who">Asistente:</span>
-              <ReplyView text={turn.reply} {...chips(turn.sections)} />
+              {turn.generation === null ? (
+                <ReplyView text={turn.reply} {...chips(turn.sections)} />
+              ) : (
+                <p>{turn.reply}</p>
+              )}
             </div>
-            {turn.warning !== null && <p className="chat-warning">{turn.warning}</p>}
+            {turn.warnings.map((warning, w) => (
+              <p className="chat-warning" key={w}>
+                {warning}
+              </p>
+            ))}
+            {turn.generation !== null && <OpenButton option={turn.generation.option} onOpen={onOpenOption} />}
           </li>
         ))}
         {asking !== null && (
@@ -195,7 +262,16 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
             </p>
             <div className="chat-reply">
               <span className="chat-who">Asistente:</span>
-              {asking.reply === "" ? <p>{THINKING}</p> : <ReplyView text={asking.reply} {...chips([])} />}
+              {asking.generating !== null ? (
+                <p className="study-chat-progress">
+                  <span className="study-chat-spinner" aria-hidden="true" />
+                  {asking.generating}
+                </p>
+              ) : asking.reply === "" ? (
+                <p>{THINKING}</p>
+              ) : (
+                <ReplyView text={asking.reply} {...chips([])} />
+              )}
             </div>
           </li>
         )}
@@ -242,5 +318,18 @@ export default function StudyChat({ subjectId, topicId, sections, hasNotes, onOp
         </button>
       </form>
     </section>
+  );
+}
+
+/** **Abrir «Quiz»** of a generation turn; nothing for the slides (they download from the topic). */
+function OpenButton({ option, onOpen }: { option: string; onOpen?: (key: OptionKey) => void }) {
+  const info = openableOption(option);
+  if (info === null) return null;
+  return (
+    <p className="study-chat-open">
+      <button type="button" onClick={() => onOpen?.(info.key)}>
+        Abrir «{info.title}»
+      </button>
+    </p>
   );
 }

@@ -152,7 +152,7 @@ export default function TutorScreen({
       setAsking(null);
       if (outcome.kind === "ok") {
         const answer = outcome.value;
-        setTurns((now) => [...now, { ...answer, time: new Date().toISOString() }]);
+        setTurns((now) => [...now, { ...answer, time: new Date().toISOString(), generation: null }]);
         setDraft("");
         const spoken = spokenText(answer.reply);
         if (readAloud && speech.supported && spoken !== "") {

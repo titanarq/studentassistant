@@ -10,6 +10,7 @@ import OptionContent from "./OptionContent";
 import OptionPanel, { OPTION_PANEL_ID } from "./OptionPanel";
 import { type OptionKey, STATE_LABELS, type StudyOption, studyOptions } from "./options";
 import ReviewsToday from "./ReviewsToday";
+import type { GenerationResult } from "./chat/api";
 import StudyChat from "./chat/StudyChat";
 import "../notes/notes.css";
 import "./study.css";
@@ -89,6 +90,11 @@ function OptionButton({
  * the sections the item shown is about are highlighted in the document and scrolled to. A
  * provenance footnote opens its source in the same place. Below 900 px the columns become one,
  * with the switch Estudiar | Documento.
+ *
+ * A material generated from the chat («hazme un quiz», #366, #367) replaces the study state with
+ * the one its `result` carries (the badges change without a reload), and its **Abrir «…»** opens
+ * that option's panel, reloading its content when it was already open. The phrase of an option's
+ * hint («Pídelo en el chat: …») fills the chat's input.
  */
 export default function StudyPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [topicName, setTopicName] = useState(topicId);
@@ -103,6 +109,9 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
   } | null>(null);
   const [focus, setFocus] = useState<string[]>([]);
   const [view, setView] = useState<StudyView>("study");
+  /** Bumped to remount the open option's content, so it reads the material again. */
+  const [reload, setReload] = useState(0);
+  const [suggestion, setSuggestion] = useState<{ text: string; id: number } | null>(null);
   const buttons = useRef(new Map<OptionKey, HTMLButtonElement>());
   const sourceTrigger = useRef<HTMLElement | null>(null);
   const pendingFocus = useRef<HTMLElement | null>(null);
@@ -189,6 +198,34 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
     setFocus([]);
     setView("study");
   }, [openKey]);
+
+  // A material generated from the chat: its state comes with the result (any read in course is
+  // dropped); an open option showing that material reads it again.
+  const onGenerated = useCallback(
+    (result: GenerationResult) => {
+      if (result.study !== null) {
+        reads.current += 1;
+        setStudy({ kind: "ok", value: result.study });
+      }
+      const shown = options.find((option) => option.key === openKey);
+      if (shown !== undefined && shown.kind === result.materialKind) setReload((n) => n + 1);
+    },
+    [options, openKey],
+  );
+
+  // **Abrir «…»** of a generation turn: as a click in the list, and the content read again.
+  const openGenerated = useCallback(
+    (key: OptionKey) => {
+      if (key === openKey) setReload((n) => n + 1);
+      openOption(key);
+    },
+    [openKey, openOption],
+  );
+
+  const askInChat = useCallback((phrase: string) => {
+    setSuggestion((now) => ({ text: phrase, id: (now?.id ?? 0) + 1 }));
+    setView("study");
+  }, []);
 
   const toggle = useCallback(
     (key: OptionKey) => {
@@ -301,6 +338,9 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
             hasNotes={notes === null ? null : notes.kind !== "not-found"}
             onOpenSection={openChatSection}
             onOpenSource={openChatSource}
+            onGenerated={onGenerated}
+            onOpenOption={openGenerated}
+            suggestion={suggestion}
           />
         </div>
         <section className="study-right" aria-label="Documento" data-panel={overlay ? "open" : undefined}>
@@ -336,12 +376,13 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
           {open !== null && (
             <OptionPanel title={open.title} onClose={closeOption} hidden={source !== null}>
               <OptionContent
-                key={open.key}
+                key={`${open.key}-${reload}`}
                 subjectId={subjectId}
                 topicId={topicId}
                 option={open}
                 onFocusAnchors={setFocus}
                 anchorLabel={anchorLabel}
+                onAskInChat={askInChat}
               />
             </OptionPanel>
           )}

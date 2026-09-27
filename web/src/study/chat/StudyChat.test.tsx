@@ -33,11 +33,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderChat(routes: Record<string, Response | (() => Response) | Error>, hasNotes: boolean | null = true) {
+function renderChat(
+  routes: Record<string, Response | (() => Response) | Error>,
+  hasNotes: boolean | null = true,
+  suggestion: { text: string; id: number } | null = null,
+) {
   const fetchMock = stubApi({ [TUTOR]: jsonResponse({ turns: [] }), ...routes });
   const onOpenSection = vi.fn();
   const onOpenSource = vi.fn();
-  render(
+  const onGenerated = vi.fn();
+  const onOpenOption = vi.fn();
+  const chat = (value: { text: string; id: number } | null) => (
     <StudyChat
       subjectId="historia"
       topicId="revolucion-industrial"
@@ -45,9 +51,20 @@ function renderChat(routes: Record<string, Response | (() => Response) | Error>,
       hasNotes={hasNotes}
       onOpenSection={onOpenSection}
       onOpenSource={onOpenSource}
-    />,
+      onGenerated={onGenerated}
+      onOpenOption={onOpenOption}
+      suggestion={value}
+    />
   );
-  return { fetchMock, onOpenSection, onOpenSource };
+  const { rerender } = render(chat(suggestion));
+  return {
+    fetchMock,
+    onOpenSection,
+    onOpenSource,
+    onGenerated,
+    onOpenOption,
+    suggest: (value: { text: string; id: number }) => rerender(chat(value)),
+  };
 }
 
 function log() {
@@ -212,4 +229,216 @@ it("says when the earlier questions could not be read", async () => {
   renderChat({ [TUTOR]: new Error("offline") });
 
   expect(await screen.findByRole("alert")).toHaveTextContent(/No se han podido cargar las preguntas anteriores/);
+});
+
+// ---- Generation requests («hazme un quiz», #366, #367) ----
+
+const STUDY = {
+  subject: "historia",
+  topic: "revolucion-industrial",
+  study_version: { version: 4, tag: "historia/revolucion-industrial/apuntes-v4" },
+  study_current: true,
+  options: [{ key: "quiz", kind: "quiz", state: "listo", stale_reason: null }],
+};
+
+function started(option = "quiz", text = "Preparando un quiz de 10 preguntas con tus apuntes v4…") {
+  return { kind: option === "tarjetas" ? "flashcards" : option, option, text };
+}
+
+function generated(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: "generation",
+    option: "quiz",
+    material_kind: "quiz",
+    reply: "Listo: 10 preguntas. Ábrelo en «Quiz».",
+    items: 10,
+    warnings: [],
+    study: STUDY,
+    ...overrides,
+  };
+}
+
+it("shows a generation's progress line, then its reply, warnings and «Abrir» into the option", async () => {
+  const stream = streamResponse();
+  const { onGenerated, onOpenOption } = renderChat({ [`POST ${TUTOR}`]: () => stream.response });
+
+  await askQuestion("hazme un quiz");
+  stream.push(sseEvent("generation.started", started()));
+
+  const progress = await within(log()).findByText("Preparando un quiz de 10 preguntas con tus apuntes v4…");
+  expect(progress.closest("li")).toHaveAttribute("aria-busy", "true");
+  expect(progress.querySelector(".study-chat-spinner")).not.toBeNull();
+  expect(screen.queryByText(THINKING)).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Tu pregunta" })).toBeDisabled();
+
+  stream.push(sseEvent("result", generated({ warnings: ["Dos preguntas citan poco los apuntes."] })));
+  stream.close();
+
+  expect(await within(log()).findByText("Listo: 10 preguntas. Ábrelo en «Quiz».")).toBeInTheDocument();
+  expect(within(log()).getByText("Dos preguntas citan poco los apuntes.")).toHaveClass("chat-warning");
+  expect(screen.queryByText(/Preparando un quiz/)).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Tu pregunta" })).toBeEnabled();
+  expect(onGenerated).toHaveBeenCalledTimes(1);
+  expect(onGenerated.mock.calls[0][0]).toMatchObject({
+    option: "quiz",
+    materialKind: "quiz",
+    items: 10,
+    study: { options: [{ key: "quiz", state: "ready" }] },
+  });
+
+  fireEvent.click(within(log()).getByRole("button", { name: "Abrir «Quiz»" }));
+  expect(onOpenOption).toHaveBeenCalledWith("quiz");
+});
+
+it("names the option in its title: «Abrir «Tarjetas de memoria»»", async () => {
+  renderChat({
+    [`POST ${TUTOR}`]: () =>
+      sseResponse([
+        ["generation.started", started("tarjetas", "Preparando tarjetas…")],
+        ["result", generated({ option: "tarjetas", material_kind: "flashcards", reply: "Listas: 20 tarjetas." })],
+      ]),
+  });
+
+  await askQuestion("hazme tarjetas de memoria");
+
+  expect(await within(log()).findByRole("button", { name: "Abrir «Tarjetas de memoria»" })).toBeInTheDocument();
+});
+
+it("gives the slides' reply without an «Abrir» button", async () => {
+  const { onGenerated } = renderChat({
+    [`POST ${TUTOR}`]: () =>
+      sseResponse([
+        ["generation.started", started("diapositivas", "Preparando las diapositivas…")],
+        [
+          "result",
+          generated({
+            option: "diapositivas",
+            material_kind: "diapositivas",
+            reply: "Listas las diapositivas: descárgalas desde la ficha del tema.",
+          }),
+        ],
+      ]),
+  });
+
+  await askQuestion("hazme diapositivas");
+
+  expect(await within(log()).findByText("Listas las diapositivas: descárgalas desde la ficha del tema.")).toBeInTheDocument();
+  expect(within(log()).queryByRole("button", { name: /^Abrir/ })).toBeNull();
+  expect(onGenerated).toHaveBeenCalledTimes(1);
+});
+
+it("past the cost cap, «Continuar igualmente» repeats the generation request confirmed", async () => {
+  let posts = 0;
+  const { fetchMock } = renderChat({
+    [`POST ${TUTOR}`]: () =>
+      ++posts === 1
+        ? sseResponse([
+            ["generation.started", started()],
+            ["error", { status: 409, detail: "Se ha alcanzado el tope de gasto de hoy.", code: "cost_cap_reached" }],
+          ])
+        : sseResponse([
+            ["generation.started", started()],
+            ["result", generated()],
+          ]),
+  });
+
+  await askQuestion("hazme un quiz");
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("Se ha alcanzado el tope de gasto de hoy.");
+  // A failed generation leaves no turn in the log.
+  expect(within(log()).queryByText(/Preparando/)).toBeNull();
+  fireEvent.click(within(alert).getByRole("button", { name: "Continuar igualmente" }));
+
+  expect(await within(log()).findByRole("button", { name: "Abrir «Quiz»" })).toBeInTheDocument();
+  const bodies = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(String(init?.body)));
+  expect(bodies).toEqual([
+    { question: "hazme un quiz", confirm_over_cap: false, style: "written" },
+    { question: "hazme un quiz", confirm_over_cap: true, style: "written" },
+  ]);
+});
+
+it("shows a failed generation's Spanish detail and keeps the request to send again", async () => {
+  const { onGenerated } = renderChat({
+    [`POST ${TUTOR}`]: () =>
+      sseResponse([
+        ["generation.started", started()],
+        ["error", { status: 502, detail: "No se pudo generar el quiz: inténtalo de nuevo." }],
+      ]),
+  });
+
+  await askQuestion("hazme un quiz");
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo generar el quiz: inténtalo de nuevo.");
+  expect(screen.queryByRole("button", { name: "Continuar igualmente" })).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Tu pregunta" })).toHaveValue("hazme un quiz");
+  expect(onGenerated).not.toHaveBeenCalled();
+});
+
+it("says to wait when the same material is already being generated", async () => {
+  renderChat({
+    [`POST ${TUTOR}`]: () => sseResponse([["error", { status: 409, detail: "Ya se está generando el quiz de este tema." }]]),
+  });
+
+  await askQuestion("hazme un quiz");
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(BUSY_SENTENCE);
+});
+
+it("shows a generation turn of the history finished, with «Abrir», and older answers unchanged", async () => {
+  const { onOpenOption } = renderChat({
+    [TUTOR]: jsonResponse({
+      turns: [
+        turn(),
+        {
+          time: "2026-09-26T19:10:00Z",
+          style: "written",
+          kind: "generation",
+          question: "hazme ejercicios",
+          reply: "Listo: 5 ejercicios. Ábrelo en «Ejercicios».",
+          option: "ejercicios",
+          items: 5,
+          refs: [],
+          sections: [],
+          warning: null,
+        },
+      ],
+    }),
+  });
+
+  expect(await within(log()).findByText("Listo: 5 ejercicios. Ábrelo en «Ejercicios».")).toBeInTheDocument();
+  expect(within(log()).getByText("hazme ejercicios")).toBeInTheDocument();
+  expect(within(log()).queryByText(/Preparando/)).toBeNull();
+  // The older answer keeps its chips.
+  expect(within(log()).getByRole("button", { name: "Ir a la sección 2. Causas" })).toBeInTheDocument();
+  expect(within(log()).getAllByRole("button", { name: /^Abrir/ })).toHaveLength(1);
+
+  fireEvent.click(within(log()).getByRole("button", { name: "Abrir «Ejercicios»" }));
+  expect(onOpenOption).toHaveBeenCalledWith("ejercicios");
+});
+
+it("reads a result with kind «answer» as an ordinary answer, with no «Abrir»", async () => {
+  const { onGenerated } = renderChat({ [`POST ${TUTOR}`]: () => sseResponse([["result", { ...answer(), kind: "answer" }]]) });
+
+  await askQuestion("¿Qué causas tuvo?");
+
+  expect(await within(log()).findByRole("button", { name: "Ir a la sección 2. Causas" })).toBeInTheDocument();
+  expect(within(log()).queryByRole("button", { name: /^Abrir/ })).toBeNull();
+  expect(onGenerated).not.toHaveBeenCalled();
+});
+
+it("puts a suggested phrase in the input without sending it", async () => {
+  const { fetchMock, suggest } = renderChat({});
+  const input = screen.getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+
+  suggest({ text: "hazme un quiz", id: 1 });
+
+  await waitFor(() => expect(input).toHaveValue("hazme un quiz"));
+  expect(input).toHaveFocus();
+  fireEvent.change(input, { target: { value: "" } });
+  // The same phrase again (a new id) puts it back.
+  suggest({ text: "hazme un quiz", id: 2 });
+  await waitFor(() => expect(input).toHaveValue("hazme un quiz"));
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });

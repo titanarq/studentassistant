@@ -93,3 +93,38 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* A generation in course (#367): its line with a busy indicator. */
+.study-chat-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.study-chat-spinner {
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: study-chat-spin 0.9s linear infinite;
+}
+
+@keyframes study-chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .study-chat-spinner {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.6;
+  }
+}
+
+.study-chat-open {
+  margin: var(--space-1) 0 0;
+}
