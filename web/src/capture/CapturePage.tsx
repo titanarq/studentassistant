@@ -61,6 +61,7 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange }:
       topicName={opened.topicName}
       now={now}
       onEnded={onEnded}
+      embedded={preset !== undefined}
     />
   );
 }

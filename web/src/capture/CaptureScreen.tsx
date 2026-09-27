@@ -13,6 +13,14 @@
  * The screen runs one session and stops it on the way out, whatever the reason: a component that
  * left a recognizer, a camera or a socket behind would keep a laptop's light on and a session open
  * after the student moved on.
+ *
+ * A dropped connection is not the end of the capture (#411). The socket reconnects on its own
+ * (resuming the session first, which a restarted backend needs) while the camera and the
+ * recognizer keep running and what the student says waits for the resume; the page says
+ * «Reconectando…» in its status line and only after a long outage (`LONG_OUTAGE_MS`) shows the
+ * blocking message. A burst whose upload failed on the network or a 5xx waits as «Pendiente de
+ * subir» and goes up again after the reconnect; the page asks before being left while any upload
+ * or queued frame is still pending.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,7 +32,7 @@ import type {
   TranscriptFinal,
   TranscriptPartial,
 } from "../protocol";
-import { type CapturesResult, endSession, uploadCaptures } from "./api";
+import { type CapturesResult, endSession, resumeSession, uploadCaptures } from "./api";
 import { AudioStreamTranscriber, audioStreamSupported } from "./audioStreamTranscriber";
 import {
   type BurstTrigger,
@@ -35,6 +43,7 @@ import {
 import { describeFailure } from "./failures";
 import {
   CAPTURE_CAPABILITIES,
+  type ResumeOutcome,
   SESSION_NOT_ACTIVE_CLOSE,
   SessionSocket,
   type SessionSocketEvent,
@@ -50,6 +59,15 @@ import "./capture.css";
 /** How long a burst's flash covers the preview: long enough to see, short enough to not miss. */
 export const FLASH_MS = 160;
 
+/** How long an outage stays a status line before the page says the connection is lost (#411). */
+export const LONG_OUTAGE_MS = 120_000;
+
+/** How long «Conexión recuperada» stays in the status line after a reconnect. */
+export const RECOVERED_MS = 5_000;
+
+/** How long a burst whose upload failed while the connection was up waits before it goes up again. */
+export const UPLOAD_RETRY_MS = 10_000;
+
 /**
  * The partial's muted grey and the final's full ink colour, as classes of `capture.css` so both
  * follow the light and dark themes of the design system (#296).
@@ -57,8 +75,11 @@ export const FLASH_MS = 160;
 const PARTIAL_CLASS = "capture-segment capture-segment-partial";
 const FINAL_CLASS = "capture-segment capture-segment-final";
 
-/** How a burst's upload is going, in the words the strip shows. */
-type BurstState = "subiendo" | "guardada" | "duplicada" | "error";
+/**
+ * How a burst's upload is going, in the words the strip shows. `pendiente` (#411) is an upload
+ * that failed on the network or the server's side and will be sent again; `error` is final.
+ */
+type BurstState = "subiendo" | "pendiente" | "guardada" | "duplicada" | "error";
 
 /**
  * The session's connection, in the four states the page shows: it is opening, the backend accepted
@@ -66,11 +87,12 @@ type BurstState = "subiendo" | "guardada" | "duplicada" | "error";
  * because a student who loaded the page from an address the browser does not trust has nothing to
  * reconnect to.
  */
-type ConnectionState = "connecting" | "open" | "lost" | "ended" | "unavailable";
+type ConnectionState = "connecting" | "open" | "reconnecting" | "lost" | "ended" | "unavailable";
 
 const CONNECTION_TEXT: Record<ConnectionState, string> = {
   connecting: "Conectando con el servidor…",
   open: "Conectado con el servidor",
+  reconnecting: "Reconectando…",
   lost: "Se ha perdido la conexión con el servidor",
   ended: "La sesión ha terminado",
   unavailable: "Esta página no puede abrir la sesión",
@@ -85,6 +107,7 @@ const STT_DEGRADED: Record<"reconnecting" | "unavailable", string> = {
 
 const BURST_LABELS: Record<BurstState, string> = {
   subiendo: "Subiendo…",
+  pendiente: "Pendiente de subir",
   guardada: "Guardada",
   // A `capture_id` the backend already had: the photographs are stored, so this is not a failure.
   duplicada: "Duplicada",
@@ -137,6 +160,15 @@ const DISCONNECTED: Blocking = {
 const ENDED_ELSEWHERE: Blocking = {
   message:
     "La sesión ha terminado en el servidor. Vuelve a la lista de sesiones para empezar o reanudar otra.",
+};
+
+/**
+ * The same inside the study workspace (#411), where there is no list of sessions to go back to:
+ * the topic goes on in Construir, where the page is, or in Estudiar.
+ */
+const ENDED_ELSEWHERE_EMBEDDED: Blocking = {
+  message:
+    "La sesión ha terminado en el servidor. Sigue con este tema en Construir, con el chat de esta pantalla, o pasa a Estudiar.",
 };
 
 const HANDSHAKE_REFUSED: Blocking = {
@@ -268,15 +300,53 @@ function thumbnailOf(blob: Blob | null): string | null {
   }
 }
 
-/** How one upload answer reads on the strip, and what the student is told when it failed. */
-function uploadOutcome(result: CapturesResult): { state: BurstState; trouble: string | null } {
+/**
+ * How one upload answer reads on the strip, and what the student is told when it failed. A failure
+ * of the network or the server's side (#411) is worth sending again: the burst keeps its
+ * `capture_id`, so a retry of one the backend did store is a duplicate, never a second copy. So is
+ * a 409 while the connection is down, which is a backend back from a restart that has not had the
+ * session resumed yet. Any other refusal is final.
+ */
+function uploadOutcome(
+  result: CapturesResult,
+  offline: boolean,
+): { state: BurstState; trouble: string | null } {
   if (result.kind === "ok") {
     return {
       state: result.value.status === "duplicate" ? "duplicada" : "guardada",
       trouble: null,
     };
   }
+  const retriable =
+    result.kind === "unreachable" ||
+    ((result.kind === "error" || result.kind === "refused") &&
+      (result.status >= 500 || (offline && result.status === 409)));
+  if (retriable) return { state: "pendiente", trouble: null };
   return { state: "error", trouble: describeFailure(UPLOAD_FAILURE, result) };
+}
+
+/**
+ * The resume a reconnect asks for first, read as the socket needs it: a backend that is not there
+ * (or not well) is asked again later, and a refusal means the session is over -- it ended, or
+ * another session is open instead (protocol/README.md, "Session lifecycle").
+ */
+async function resumeOutcome(
+  sessionId: string,
+  onResumed: (receivedCaptureIds: readonly string[]) => void,
+): Promise<ResumeOutcome> {
+  const result = await resumeSession(sessionId);
+  switch (result.kind) {
+    case "ok":
+      onResumed(result.value.received_capture_ids ?? []);
+      return { kind: "ok" };
+    case "refused":
+      return result.status >= 500 ? { kind: "retry" } : { kind: "ended", detail: result.detail };
+    case "error":
+      return result.status >= 500 ? { kind: "retry" } : { kind: "ended" };
+    case "unexpected":
+    case "unreachable":
+      return { kind: "retry" };
+  }
 }
 
 /**
@@ -334,6 +404,15 @@ export interface CaptureScreenProps {
   flashMs?: number;
   /** How often the notes generation is polled after "Terminar y preparar apuntes". */
   notesPollMs?: number;
+  /**
+   * Since #411: the screen is the study workspace's Captura tab, so a session that ended
+   * elsewhere points to Construir and Estudiar instead of the list of sessions.
+   */
+  embedded?: boolean;
+  /** How long an outage lasts before the blocking message; `LONG_OUTAGE_MS` by default. */
+  longOutageMs?: number;
+  /** The reconnect backoff of the session socket; its own default when left out. */
+  reconnectDelaysMs?: readonly number[];
 }
 
 export default function CaptureScreen({
@@ -345,6 +424,9 @@ export default function CaptureScreen({
   playShutter = shutterClick,
   flashMs = FLASH_MS,
   notesPollMs,
+  embedded = false,
+  longOutageMs = LONG_OUTAGE_MS,
+  reconnectDelaysMs,
 }: CaptureScreenProps) {
   const preview = useRef<HTMLVideoElement | null>(null);
   /** The three objects of a running session, so a press reaches the ones the effect built. */
@@ -373,6 +455,8 @@ export default function CaptureScreen({
    */
   const clock = useRef(now);
   clock.current = now;
+  const reconnectDelays = useRef(reconnectDelaysMs);
+  reconnectDelays.current = reconnectDelaysMs;
   /**
    * The session's latest vocabulary hints (protocol 1.4, #227): `hello.ack`'s list, replaced by
    * every `notice` that carries one. A ref, because a notice can arrive before the transcriber
@@ -381,6 +465,17 @@ export default function CaptureScreen({
    * is not overwritten by the older list of the ack.
    */
   const vocabularyHints = useRef<readonly string[] | null>(null);
+  /** Since #411: what the socket's events need of the props, read when the event comes. */
+  const settings = useRef({ embedded, longOutageMs });
+  settings.current = { embedded, longOutageMs };
+  /** The timer of the current outage's blocking message, and of «Conexión recuperada». */
+  const outageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recoveredTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploadRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The stills of every burst still to be stored, by key, so a retry sends the same burst. */
+  const unsent = useRef(new Map<number, CapturedBurst>());
+  /** The captures the last resume said the backend already has. */
+  const receivedCaptures = useRef<ReadonlySet<string>>(new Set());
 
   const [blocking, setBlocking] = useState<Blocking | null>(null);
   const [trouble, setTrouble] = useState<string | null>(null);
@@ -395,6 +490,8 @@ export default function CaptureScreen({
   const [bursts, setBursts] = useState<readonly BurstEntry[]>([]);
   const [flashing, setFlashing] = useState(false);
   const [ending, setEnding] = useState(false);
+  /** Since #411: «Conexión recuperada» shows for a moment after a reconnect. */
+  const [recovered, setRecovered] = useState(false);
   /**
    * Since #256: the Spanish sentence of a camera whose track ended mid-session, shown with the
    * **Reactivar cámara** button; null while the camera is fine or never started.
@@ -460,21 +557,68 @@ export default function CaptureScreen({
         state: "subiendo",
         thumb: thumbnailOf(burst.images.at(0)?.blob ?? null),
       });
-      const result = await uploadCaptures(session.session_id, burst.metadata, burst.images);
-      const outcome = uploadOutcome(result);
-      setBurstState(key, outcome.state);
-      if (outcome.trouble !== null) setTrouble(outcome.trouble);
+      unsent.current.set(key, burst);
+      await upload(key, burst);
       if (trigger.trigger === "command") socket.sendAck(trigger.commandId, now());
     },
     [addBurst, flash, now, playShutter, session.session_id, setBurstState],
   );
 
   /**
+   * One upload of a burst, the first or a retry, and what its answer means for the strip. A
+   * retriable failure keeps the burst for the next retry: after the reconnect when the connection
+   * is down, a little later when it is up.
+   */
+  async function upload(key: number, burst: CapturedBurst): Promise<void> {
+    const result = await uploadCaptures(session.session_id, burst.metadata, burst.images);
+    const outcome = uploadOutcome(result, runtime.current.socket?.reconnecting ?? false);
+    setBurstState(key, outcome.state);
+    if (outcome.state !== "pendiente") unsent.current.delete(key);
+    if (outcome.trouble !== null) setTrouble(outcome.trouble);
+    if (outcome.state === "pendiente" && !(runtime.current.socket?.reconnecting ?? true)) {
+      if (uploadRetryTimer.current === null) {
+        uploadRetryTimer.current = setTimeout(() => {
+          uploadRetryTimer.current = null;
+          void actions.current.retryUploads();
+        }, UPLOAD_RETRY_MS);
+      }
+    }
+  }
+
+  /**
+   * Sends every pending burst again, except those the last resume said are stored already, which
+   * simply become stored.
+   */
+  async function retryUploads(): Promise<void> {
+    const received = receivedCaptures.current;
+    const retries: Array<Promise<void>> = [];
+    for (const [key, burst] of unsent.current) {
+      if (burstsRef.current.find((entry) => entry.key === key)?.state !== "pendiente") continue;
+      if (received.has(burst.metadata.capture_id)) {
+        unsent.current.delete(key);
+        setBurstState(key, "guardada");
+        continue;
+      }
+      setBurstState(key, "subiendo");
+      retries.push(upload(key, burst));
+    }
+    await Promise.all(retries);
+  }
+
+  /**
    * The socket's events for one whole session. It is built once, so what it calls has to be read
    * through the ref that every render refreshes instead of closed over.
    */
-  const actions = useRef({ captureBurst });
-  actions.current = { captureBurst };
+  const actions = useRef({ captureBurst, retryUploads });
+  actions.current = { captureBurst, retryUploads };
+  /** The strip as last rendered, for the retry and the leave warning, which run outside a render. */
+  const burstsRef = useRef(bursts);
+  burstsRef.current = bursts;
+
+  const clearOutage = useCallback(() => {
+    if (outageTimer.current !== null) clearTimeout(outageTimer.current);
+    outageTimer.current = null;
+  }, []);
 
   const onSocketEvent = useCallback((event: SessionSocketEvent) => {
     switch (event.kind) {
@@ -514,6 +658,38 @@ export default function CaptureScreen({
           ),
         );
         break;
+      case "reconnecting":
+        if (stopped.current) return;
+        if (endingRef.current) {
+          // The end is on its way: this drop is part of it, or is shown if the end fails.
+          if (closedWhileEnding.current === undefined) closedWhileEnding.current = null;
+          return;
+        }
+        // The camera, the recognizer and the wake lock go on: this is an outage, not the end.
+        setConnection("reconnecting");
+        setRecovered(false);
+        if (outageTimer.current === null) {
+          outageTimer.current = setTimeout(() => {
+            outageTimer.current = null;
+            if (stopped.current) return;
+            setConnection("lost");
+            setBlocking(DISCONNECTED);
+          }, settings.current.longOutageMs);
+        }
+        break;
+      case "reconnected":
+        if (stopped.current) return;
+        clearOutage();
+        setConnection("open");
+        setBlocking((current) => (current === DISCONNECTED ? null : current));
+        setRecovered(true);
+        if (recoveredTimer.current !== null) clearTimeout(recoveredTimer.current);
+        recoveredTimer.current = setTimeout(() => {
+          recoveredTimer.current = null;
+          setRecovered(false);
+        }, RECOVERED_MS);
+        void actions.current.retryUploads();
+        break;
       case "closed":
       case "failed":
         if (stopped.current) return;
@@ -524,10 +700,13 @@ export default function CaptureScreen({
           }
           return;
         }
+        clearOutage();
+        setRecovered(false);
         runtime.current.wakeLock?.stop();
         if (event.kind === "closed" && event.code === SESSION_NOT_ACTIVE_CLOSE) {
           setConnection("ended");
-          setBlocking({ ...ENDED_ELSEWHERE, detail: event.reason || undefined });
+          const ended = settings.current.embedded ? ENDED_ELSEWHERE_EMBEDDED : ENDED_ELSEWHERE;
+          setBlocking({ ...ended, detail: event.reason || undefined });
           return;
         }
         setConnection("lost");
@@ -540,7 +719,7 @@ export default function CaptureScreen({
         setBlocking({ ...PROTOCOL_REFUSED, detail: event.problem });
         break;
     }
-  }, []);
+  }, [clearOutage]);
 
   useEffect(() => {
     if (insecureOrigin()) {
@@ -569,11 +748,34 @@ export default function CaptureScreen({
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
+    // Leaving the page while a burst or a queued frame has not reached the backend loses it, so
+    // the browser asks first -- then and only then.
+    const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+      if (stopped.current) return;
+      const uploading = burstsRef.current.some(
+        (entry) => entry.state === "subiendo" || entry.state === "pendiente",
+      );
+      const queued = (runtime.current.socket?.queuedCount ?? 0) > 0;
+      if (!uploading && !queued) return;
+      event.preventDefault();
+      // Older Chrome and Edge only ask when `returnValue` is set.
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    receivedCaptures.current = new Set();
     const socket = new SessionSocket({
       wsPath: session.ws_path,
       clientTimeMs: clock.current(),
       capabilities: captureCapabilities(),
       onEvent: onSocketEvent,
+      reconnect: {
+        resume: () =>
+          resumeOutcome(session.session_id, (received) => {
+            receivedCaptures.current = new Set(received);
+          }),
+        clock: () => clock.current(),
+        delaysMs: reconnectDelays.current,
+      },
     });
     runtime.current = { socket, camera, transcriber: null, wakeLock };
     vocabularyHints.current = null;
@@ -638,16 +840,20 @@ export default function CaptureScreen({
       runtime.current.transcriber?.stop();
       runtime.current = { socket: null, camera: null, transcriber: null, wakeLock: null };
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      clearOutage();
       wakeLock.stop();
       camera.stop();
       socket.close();
     };
-  }, [onSocketEvent, session.ws_path]);
+  }, [clearOutage, onSocketEvent, session.session_id, session.ws_path]);
 
   // Object URLs are the browser's to give back, and a strip of a hundred bursts is a hundred of them.
   useEffect(
     () => () => {
       if (flashTimer.current !== null) clearTimeout(flashTimer.current);
+      if (recoveredTimer.current !== null) clearTimeout(recoveredTimer.current);
+      if (uploadRetryTimer.current !== null) clearTimeout(uploadRetryTimer.current);
       for (const thumb of thumbs.current) {
         try {
           URL.revokeObjectURL(thumb);
@@ -733,7 +939,9 @@ export default function CaptureScreen({
     }
   }
 
-  const live = connection === "open" && blocking === null && !ending;
+  // An outage keeps the controls: a press waits for the resume and a burst for its retry.
+  const live =
+    (connection === "open" || connection === "reconnecting") && blocking === null && !ending;
   // Failures behind the scenes (#262): a discreet line each, only while something is wrong.
   const health = useSessionHealth(
     session.session_id,
@@ -776,8 +984,8 @@ export default function CaptureScreen({
           {subjectName} · {topicName}
         </p>
         <p className="capture-connection" data-connection={connection} role="status" aria-label="Estado de la conexión">
-          {CONNECTION_TEXT[connection]}
-          {live && modeLine !== null ? `. ${modeLine}` : ""}
+          {connection === "open" && recovered ? "Conexión recuperada" : CONNECTION_TEXT[connection]}
+          {connection === "open" && live && modeLine !== null ? `. ${modeLine}` : ""}
         </p>
       </header>
 
