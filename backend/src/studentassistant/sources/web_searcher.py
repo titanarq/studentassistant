@@ -11,7 +11,7 @@ capped and recorded like every other call.
 
 When a job ends it records `search.results` (or `search.failed` with `reason` `cost_cap` |
 `refused` | `error`) and, when the session that asked is still live, publishes
-`web.search_results` / `web.search_failed` on it (origin `observer`). With `[sources]
+`web.search_results` / `web.search_failed` on it (origin `sources`, ADR-0003). With `[sources]
 web_auto_keep`, the results Claude marked `relevant` are kept at once (`kept_by: assistant`).
 
 `keep(...)` keeps one offered result: it fetches the page (`web.snapshot_page`), stores it as
@@ -83,7 +83,7 @@ logger = logging.getLogger(__name__)
 
 VOICE_COMMAND_KIND = "voice.command"
 WEB_SEARCH_COMMAND = "web_search"
-ORIGIN = "observer"
+ORIGIN = "sources"
 
 ClientFactory = Callable[[LedgerBinding], LLMClient]
 

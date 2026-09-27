@@ -183,13 +183,14 @@ async def test_a_stored_page_is_transcribed_with_pending_items_and_an_event(
     kinds = [e.kind for e in events(session)]
     assert kinds[-3:] == [STATE_OP_EVENT_KIND, STATE_OP_EVENT_KIND, PAGE_TRANSCRIBED_KIND]
     [done] = events(session, PAGE_TRANSCRIBED_KIND)
-    assert done.origin == "observer"
+    assert done.origin == "sources"  # ADR-0003: what the sources module produces on its own
     assert done.payload["capture_id"] == "cap-1"
     assert done.payload["text"] == "# La célula\n\n- La [[?mitocondria]] produce [[?]]."
     assert done.payload["path"] == md
     assert done.payload["uncertain"] == 2
     assert done.payload["hint_segments"] == 1
     assert done.payload["attempts"] == 1
+    assert {e.origin for e in events(session, STATE_OP_EVENT_KIND)} == {"sources"}
     ops = [e.payload for e in events(session, STATE_OP_EVENT_KIND)]
     assert [op["pending_id"] for op in ops] == done.payload["pending_ids"]
     assert all(op["op"] == "add_pending" and op["kind"] == "illegible" for op in ops)
@@ -343,6 +344,7 @@ async def test_a_page_that_keeps_failing_is_reported_and_writes_nothing(
     source_path = await capture(bus, session, "cap-1")
     await idle(transcriber, session)
     [failed] = events(session, PAGE_TRANSCRIPTION_FAILED_KIND)
+    assert failed.origin == "sources"
     assert failed.payload["capture_id"] == "cap-1"
     assert failed.payload["reason"] == "error"
     assert failed.payload["attempts"] == 3

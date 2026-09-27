@@ -21,6 +21,12 @@ from studentassistant.vault import SourceKind
 # observer state ops uses this constant (documented in docs/modules/observer.md).
 STATE_OP_EVENT_KIND = "observer.state_op"
 
+# The origins whose state ops the backend emits on its own (ADR-0003): the observer's, and the
+# sources module's (an illegible page's `add_pending`, #360). Any other origin's op is a student's
+# (or the editor's) decision: the observer is told about it, and a `resolve_pending` from it is
+# `resolved`, not `auto_resolved`.
+AUTOMATIC_ORIGINS: frozenset[str] = frozenset({"observer", "sources"})
+
 # An id the observer gives to something it creates (a section, a concept, a pending item), or the
 # id another module gave to a segment or a capture.
 Id = Annotated[str, Field(min_length=1, max_length=200)]

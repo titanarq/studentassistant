@@ -30,9 +30,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from studentassistant.observer.context import BATCH_KINDS, OBSERVER_ORIGIN
+from studentassistant.observer.context import BATCH_KINDS
 from studentassistant.observer.fold import TopicEvent
-from studentassistant.observer.ops import STATE_OP_EVENT_KIND
+from studentassistant.observer.ops import AUTOMATIC_ORIGINS, STATE_OP_EVENT_KIND
 from studentassistant.observer.snapshot import ObserverSnapshot, snapshot_of
 from studentassistant.observer.state import EventRef
 
@@ -78,7 +78,8 @@ def unanswered(
 
     `before` is the event that opened `session_id` for the observer: it and everything after it
     reach the loop on the bus. With `before` unknown (a transient event), no event of `session_id`
-    is returned. The observer's own state ops are never returned (they are its answers).
+    is returned. The backend's own state ops (`AUTOMATIC_ORIGINS`: the observer's answers, the
+    sources module's `add_pending`) are never returned.
     """
     acknowledged = False
     through: EventRef | None = None
@@ -97,7 +98,7 @@ def unanswered(
             continue
         if event.kind not in BATCH_KINDS:
             continue
-        if event.kind == STATE_OP_EVENT_KIND and event.origin == OBSERVER_ORIGIN:
+        if event.kind == STATE_OP_EVENT_KIND and event.origin in AUTOMATIC_ORIGINS:
             continue
         candidates.append((event_session, event))
     if not acknowledged:

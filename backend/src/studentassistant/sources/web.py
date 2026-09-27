@@ -66,7 +66,7 @@ RESULTS = "search.results"
 FAILED = "search.failed"
 KEPT = "search.kept"
 
-# Session events (ADR-0003 envelope, origin `observer`): what the observer and the editor read.
+# Session events (ADR-0003 envelope, origin `sources`): what the observer and the editor read.
 WEB_SEARCH_RESULTS_KIND = "web.search_results"
 WEB_SEARCH_FAILED_KIND = "web.search_failed"
 WEB_SNAPSHOT_STORED_KIND = "web.snapshot_stored"

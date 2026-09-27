@@ -14,8 +14,8 @@ payload names the stored still, `source_path`, and its page image, `page_path`) 
    `conversations/transcriber-<session>.jsonl` (the images as vault paths, never their bytes),
    publish one `observer.state_op` `add_pending` (category `illegible`, the capture as its ref)
    per `[[?...]]` mark, then `page.transcribed` (`capture_id`, `text`, `path`, ...), which the
-   observer reads. Both have origin `observer`, ADR-0003's origin for what understands the
-   session.
+   observer reads. Both have origin `sources`, ADR-0003's origin for what the sources module
+   produces on its own (older recordings carry `observer` on them; readers treat both alike).
 
 A failed attempt (any `LLMError` but a reached cost cap or a refusal, or a vault error) is retried
 up to `transcription_attempts` times, `transcription_retry_seconds` apart (doubling each time).
@@ -45,7 +45,7 @@ already in the topic's log is never published again (the fold refuses a duplicat
 
 Triage (#324, `triage.py`): a capture set aside is never transcribed (checked in its sidecar
 before the call); after a page is transcribed, `triage.check_same_content` may set it or an alike
-page aside (`capture.triaged`, origin `observer`); a student's `capture.triaged` that restores a
+page aside (`capture.triaged`, origin `sources`); a student's `capture.triaged` that restores a
 page without a transcription transcribes it at once (`enqueue`).
 
 The transcriber reaches the bus only through the protocols below (it never imports
@@ -127,7 +127,7 @@ SEGMENT_KIND = "transcript.final"
 SESSION_STARTED = "session.started"
 SESSION_RESUMED = "session.resumed"
 SESSION_ENDED = "session.ended"
-ORIGIN = "observer"
+ORIGIN = "sources"
 CONVERSATION_PREFIX = "transcriber-"
 
 ClientFactory = Callable[[LedgerBinding], LLMClient]

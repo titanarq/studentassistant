@@ -22,7 +22,7 @@ EVENT_SCHEMA_VERSION = 1
 SESSION_ID_PATTERN = r"^\d{8}-\d{6}$"
 SESSION_ID_FORMAT = "%Y%m%d-%H%M%S"
 
-Origin = Literal["phone", "stt", "observer", "editor", "user"]
+Origin = Literal["phone", "stt", "observer", "editor", "sources", "user"]
 
 # `study`: a session the student ran with a capture client. `review`: one the backend opens and
 # ends at once only to hold events written outside a study session (a doubt's resolution, #191).

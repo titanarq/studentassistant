@@ -154,8 +154,8 @@ Routes registered today:
     client (see "Forwarded to the client" below). Answer: 201 `rest.sessions.captures.response`,
     `status: "stored"`, `image_count` the images in the burst, `received_at_ms` the backend
     clock.
-  - Right after `capture.stored`, a persisted `capture.triaged` event (#324, origin `observer`:
-    ADR-0003 has no `sources` origin; `sources.triage.CAPTURE_TRIAGED_KIND`, which the
+  - Right after `capture.stored`, a persisted `capture.triaged` event (#324, origin `sources`,
+    ADR-0003, #360: `captures.TRIAGE_ORIGIN`; `sources.triage.CAPTURE_TRIAGED_KIND`, which the
     observer's fold ignores) carries the capture's triage, stored in its sidecar by
     `store_capture`: `capture_id`, `source_path`, `source_id` (topic-relative), `status`
     (`kept` | `flagged` | `set_aside`), `reasons`, `duplicate_of`, `decided_by`,
@@ -1217,7 +1217,7 @@ WebSocket gateway publish and subscribe here.
   a queue holding only persisted events grows past its bound (`sub.overflowed`, one warning per
   episode).
 - `BusEvent` (frozen): `session_id`, `subject_id`, `topic_id`, `kind`, `origin` (`phone`, `stt`,
-  `observer`, `editor`, `user`), `t`, `payload` (shared by every subscriber: never mutate it),
+  `observer`, `editor`, `sources`, `user`), `t`, `payload` (shared by every subscriber: never mutate it),
   `seq` (`None` for a notice), `schema_version`, and `persisted`.
 
 ### CLI
