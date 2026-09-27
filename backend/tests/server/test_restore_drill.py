@@ -5,9 +5,15 @@ ADR-0002 promises that a new PC restores the whole state with install -> `studen
 
 1. **Build** a vault through the public paths only: the sample recording replayed through
    `create_app` (session WebSocket, capture upload, page transcriber, live observer), "prepárame
-   el tema" (`notes/generate`) and one editor chat revision turn (`notes/chat`). Claude is
-   `FakeClaude`, scripted per role; the app's `GitSync` pushes to a local bare repository that
-   stands in for GitHub, and the app's shutdown flushes the last commits.
+   el tema" (`notes/generate`) and one editor chat revision turn (`notes/chat`); then the
+   Construir and Estudiar state (#370): a pasted image saved into the notes (`sources/images`,
+   `PUT notes`), a second session of two blank captures the triage sets aside, one typed
+   workspace message that sets the book page aside and restores one blank page, one typed
+   message answered by an editor turn, the switch to Estudiar (`POST study`), one written study
+   chat question (`POST tutor`), a quiz and flashcards, one quiz result and one practice review,
+   and a last save that leaves the materials stale. Claude is `FakeClaude`, scripted per role;
+   the app's `GitSync` pushes to a local bare repository that stands in for GitHub, and the
+   app's shutdown flushes the last commits.
 2. **Restore**: `clone_vault` -- the code `setup --clone` runs -- clones that repository into a
    fresh directory with `LocalHost` as the GitHub host, and its `post_clone` rebuilds a fresh
    SQLite index, as the CLI's does (`SA_CONFIG` stays inside `tmp_path`: nothing touches
@@ -15,7 +21,10 @@ ADR-0002 promises that a new PC restores the whole state with install -> `studen
 3. **Compare** the original and the restored vault: the study desk (the subjects and topics
    listings, through the REST API and the vault), the observer fold per topic
    (`load_observer_snapshot`), `apuntes.md` and its version tags, the pending doubts, the cost
-   ledger totals and full-text search results.
+   ledger totals and full-text search results; then, over REST, the workspace chat, the sources
+   with their triage state and reason (and every source's meta and bytes, the pasted image
+   included), the study label and option states, the study chat history, the materials and their
+   staleness, the quiz results, the topic's practice queue and the practice summary.
 
 Every wait is bounded; the whole drill takes a few seconds.
 """
@@ -29,6 +38,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -45,13 +56,22 @@ from studentassistant.editor.contradictions import TOOL_NAME as CONTRADICTIONS_T
 from studentassistant.editor.doubts import list_doubts
 from studentassistant.editor.notes_format import page_provenance, transcript_provenance
 from studentassistant.editor.revise import EDIT_TOOL
+from studentassistant.generators.flashcards import TOOL_NAME as FLASHCARDS_TOOL
+from studentassistant.generators.quiz import TOOL_NAME as QUIZ_TOOL
 from studentassistant.llm import FakeClaude, LLMRequest, LLMResponse, Usage
 from studentassistant.observer import load_observer_snapshot
 from studentassistant.observer.live import TOOL_NAME
+from studentassistant.observer.requests import TOOL_NAME as REQUESTS_TOOL
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.recording import read_recording
-from studentassistant.server.replay import AsgiTransport, ReplayResult, replay
+from studentassistant.server.replay import (
+    AsgiTransport,
+    ReplayResult,
+    Response,
+    encode_multipart,
+    replay,
+)
 from studentassistant.vault import (
     GitSync,
     Vault,
@@ -63,6 +83,7 @@ from studentassistant.vault import (
 )
 from studentassistant.vault.index import VaultIndex, rebuild_index
 from studentassistant.vault.setup import clone_vault
+from triage_images import paper
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sessions" / "sample"
 SUBJECT, TOPIC = "biologia", "la-celula"
@@ -70,6 +91,48 @@ REPO = "estudiante/vault"
 LOCAL_BASE_URL = "http://localhost:8765"
 PAGE_TRANSCRIPTION = "# La célula\n\n- membrana, [[?citoplasma]] y núcleo\n"
 REVISION = "Robert Hooke describió la célula en 1665.[^t1]"
+BASE = f"/api/subjects/{SUBJECT}/topics/{TOPIC}"
+BOOK_PAGE = "sources/book/page-001.jpg"  # the sample's one capture, under `switch_source` book
+BLANK_PAGE = "sources/notes/page-001.jpg"  # the second session's blank pages
+BLANK_ASIDE = "sources/notes/page-002.jpg"
+BLANK_CAPTURE_IDS = ["0b7d3c1e-5a2f-4c8d-9e6b-1f2a3b4c5d6e", "4e1a9f2b-7c3d-4b5e-8a6f-9d0c1b2a3e4f"]
+CAPTURE_MS = 1_760_000_100_000
+LIST_ITEM = "- Membrana, citoplasma y núcleo.[^t2][^p1]"
+NUCLEUS = "El núcleo guarda el material genético.[^t2]"
+DEFINITION = "La célula es la unidad básica de los seres vivos."
+DEFINITION_EDITED = "La célula es la unidad básica de todos los seres vivos."
+QUIZ: list[dict[str, Any]] = [
+    {
+        "type": "multiple_choice",
+        "difficulty": "easy",
+        "question": "¿Qué envuelve la célula?",
+        "options": ["La membrana", "El núcleo", "El citoplasma"],
+        "answer": "la membrana",
+        "explanation": "La membrana es la parte exterior.",
+        "anchors": ["partes"],
+    },
+    {
+        "type": "true_false",
+        "difficulty": "medium",
+        "question": "La célula es la unidad básica de los seres vivos.",
+        "options": [],
+        "answer": "verdadero",
+        "explanation": "Así empiezan los apuntes.",
+        "anchors": ["definicion"],
+    },
+]
+CARDS: list[dict[str, Any]] = [
+    {
+        "front": "¿Qué es la célula?",
+        "back": "La unidad básica de los seres vivos.",
+        "anchors": ["definicion"],
+    },
+    {
+        "front": "¿Qué partes tiene?",
+        "back": "Membrana, citoplasma y núcleo.",
+        "anchors": ["partes"],
+    },
+]
 SEARCHES = ["célula", "nucleo", "membrana", "Hooke", "mitocondria"]
 # Generous bounds: they only keep a regression from hanging.
 REPLAY_TIMEOUT_S = 30
@@ -79,13 +142,17 @@ GIT_TIMEOUT_S = 30
 
 class ClaudeByRole:
     """A transport handing each request to the `FakeClaude` scripted for its role (the observer,
-    the transcriber and the editor share the app's transport and run concurrently)."""
+    the transcriber, the editor and the generators share the app's transport and run
+    concurrently). The typed-message classifier runs as the `observer` role too, so a request
+    offering its tool goes to the `classifier` fake: the live observer's script stays its own."""
 
     def __init__(self, **fakes: FakeClaude) -> None:
         self.fakes = fakes
 
     async def send(self, request: LLMRequest, **options: object) -> LLMResponse:
-        return await self.fakes[request.role].send(request, **options)  # type: ignore[arg-type]
+        tools = {tool.get("name") for tool in request.tools}
+        fake = self.fakes["classifier" if REQUESTS_TOOL in tools else request.role]
+        return await fake.send(request, **options)  # type: ignore[arg-type]
 
 
 async def _no_wait(_seconds: float) -> None:
@@ -123,7 +190,7 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
-def _scripted_claude() -> tuple[ClaudeByRole, FakeClaude]:
+def _scripted_claude() -> tuple[ClaudeByRole, dict[str, FakeClaude]]:
     observer = FakeClaude().reply_tool(
         TOOL_NAME,
         {
@@ -139,18 +206,182 @@ def _scripted_claude() -> tuple[ClaudeByRole, FakeClaude]:
         },
         usage=_usage(1200),
     )
-    for _ in range(8):  # more batches than the sample can make
+    for _ in range(16):  # more batches than the sample and the second session can make
         observer.reply_tool(TOOL_NAME, {"ops": []}, usage=_usage(300))
-    transcriber = FakeClaude().reply_text(PAGE_TRANSCRIPTION, usage=_usage(2500))
-    editor = FakeClaude()
-    return ClaudeByRole(observer=observer, transcriber=transcriber, editor=editor), editor
+    fakes = {
+        "observer": observer,
+        "transcriber": FakeClaude().reply_text(PAGE_TRANSCRIPTION, usage=_usage(2500)),
+        "editor": FakeClaude(),
+        "classifier": FakeClaude(),
+        "generator": FakeClaude(),
+    }
+    return ClaudeByRole(**fakes), fakes
+
+
+def _jpeg(image: Any) -> bytes:
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def _pasted_png() -> bytes:
+    image = np.full((24, 32, 3), 200, np.uint8)
+    cv2.rectangle(image, (4, 4), (20, 16), (30, 60, 90), -1)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return encoded.tobytes()
+
+
+class Api:
+    """The build's REST calls through the running app, each one bounded."""
+
+    def __init__(self, transport: AsgiTransport) -> None:
+        self.transport = transport
+
+    async def call(
+        self, method: str, path: str, body: Any = None, *, expect: int = 200
+    ) -> Response:
+        data = None if body is None else json.dumps(body).encode()
+        response = await asyncio.wait_for(
+            self.transport.request(
+                method, path, data, None if body is None else "application/json"
+            ),
+            REQUEST_TIMEOUT_S,
+        )
+        assert response.status == expect, (method, path, response.status, response.body)
+        return response
+
+    async def multipart(self, path: str, parts: list[tuple[str, str | None, str, bytes]]) -> Any:
+        body, content_type = encode_multipart(parts)
+        response = await asyncio.wait_for(
+            self.transport.request("POST", path, body, content_type), REQUEST_TIMEOUT_S
+        )
+        assert response.status == 201, (path, response.status, response.body)
+        return response.json()
+
+    async def save_notes(self, edit: Callable[[str], str]) -> None:
+        notes = (await self.call("GET", f"{BASE}/notes")).json()
+        text = edit(notes["text"])
+        assert text != notes["text"]
+        body = {"text": text, "base_revision": notes["revision"]}
+        saved = (await self.call("PUT", f"{BASE}/notes", body)).json()
+        assert saved["notes_changed"] is True, saved
+
+
+def _classified(fakes: dict[str, FakeClaude], *requests: dict[str, Any]) -> None:
+    fakes["classifier"].reply_tool(
+        REQUESTS_TOOL,
+        {"requests": [{"segment_ids": ["m1"], **request} for request in requests]},
+        usage=_usage(700),
+    )
+
+
+async def _blank_captures(api: Api) -> None:
+    """A second, short capture session of two blank pages: the triage sets both aside."""
+    started = await api.call(
+        "POST",
+        "/api/sessions",
+        {"subject_id": SUBJECT, "topic_id": TOPIC, "client_time_ms": CAPTURE_MS},
+        expect=201,
+    )
+    session_id = str(started.json()["session_id"])
+    for n, capture_id in enumerate(BLANK_CAPTURE_IDS, start=1):
+        at = CAPTURE_MS + 1_000 * n
+        image = {
+            "part": "image_0",
+            "content_type": "image/jpeg",
+            "width_px": 1280,
+            "height_px": 720,
+            "client_time_ms": at,
+        }
+        metadata = {
+            "capture_id": capture_id,
+            "trigger": "button",
+            "client_time_ms": at,
+            "images": [image],
+        }
+        await api.multipart(
+            f"/api/sessions/{session_id}/captures",
+            [
+                ("metadata", None, "application/json", json.dumps(metadata).encode()),
+                ("image_0", "page.jpg", "image/jpeg", _jpeg(paper(seed=6 + n))),
+            ],
+        )
+    ended = {"client_time_ms": CAPTURE_MS + 5_000, "reason": "button"}
+    await api.call("POST", f"/api/sessions/{session_id}/end", ended)
+
+
+async def _build_workspace_and_study(app: FastAPI, api: Api, fakes: dict[str, FakeClaude]) -> None:
+    """The Construir and Estudiar state on top of the replayed session, all through REST."""
+    editor, consumer = fakes["editor"], app.state.assistant_requests
+
+    # A pasted image, saved into the notes.
+    pasted = await api.multipart(
+        f"{BASE}/sources/images", [("file", "pegada.png", "image/png", _pasted_png())]
+    )
+    await api.save_notes(
+        lambda text: text.replace(LIST_ITEM, f"{LIST_ITEM}\n{pasted['markdown']}\n")
+    )
+
+    # Triage: two blank pages set aside at capture time; then one typed message sets the book
+    # page aside and restores the first blank one (the second stays aside, with its reason).
+    await _blank_captures(api)
+    _classified(
+        fakes,
+        {"kind": "set_aside", "summary": "Apartar la página del libro", "targets": [BOOK_PAGE]},
+        {"kind": "restore", "summary": "Recuperar la página en blanco", "targets": [BLANK_PAGE]},
+    )
+    typed = {"text": "aparta la del libro y recupera la página en blanco"}
+    await api.call("POST", f"{BASE}/workspace/messages", typed, expect=202)
+    await asyncio.wait_for(consumer.wait_idle(REQUEST_TIMEOUT_S), REQUEST_TIMEOUT_S)
+
+    # One typed message the editor answers with an edit turn.
+    _classified(fakes, {"kind": "edit", "summary": "Añadir qué hace el núcleo"})
+    editor.reply_tool(
+        EDIT_TOOL,
+        {
+            "summary": "Añado qué hace el núcleo",
+            "ops": [{"op": "insert_after", "section": "partes", "block": 1, "text": NUCLEUS}],
+        },
+        text="Añado qué hace el núcleo.",
+        usage=_usage(5000),
+    )
+    edit = {"text": "añade que el núcleo guarda el material genético"}
+    await api.call("POST", f"{BASE}/workspace/messages", edit, expect=202)
+    await asyncio.wait_for(consumer.wait_idle(REQUEST_TIMEOUT_S), REQUEST_TIMEOUT_S)
+
+    # Estudiar: the study version, one written question, a quiz and flashcards, their use.
+    await api.call("POST", f"{BASE}/study")
+    editor.reply_text("La membrana envuelve la célula [§partes].", usage=_usage(3000))
+    question = {"question": "¿Qué hace la membrana?", "style": "written"}
+    tutor = (await api.call("POST", f"{BASE}/tutor", question)).body.decode()
+    assert "event: result" in tutor, tutor
+    fakes["generator"].reply_tool(QUIZ_TOOL, {"questions": QUIZ}, usage=_usage(4000))
+    await api.call("POST", f"{BASE}/generated/quiz", {"options": {"size": 2}})
+    fakes["generator"].reply_tool(FLASHCARDS_TOOL, {"cards": CARDS}, usage=_usage(3500))
+    await api.call("POST", f"{BASE}/generated/flashcards", {})
+    quiz = (await api.call("GET", f"{BASE}/quiz")).json()
+    attempt = {
+        "built_at": quiz["built_at"],
+        "answers": [{"question": "q1", "given": "La membrana"}],
+        "duration_seconds": 20,
+    }
+    await api.call("POST", f"{BASE}/quiz/results", attempt)
+    queue = (await api.call("GET", f"{BASE}/practice")).json()["queue"]
+    review = {"item": queue[0]["item"]["key"], "rating": "good"}
+    await api.call("POST", f"{BASE}/practice/reviews", review)
+
+    # One more edit by hand: the materials are now stale.
+    await api.save_notes(lambda text: text.replace(DEFINITION, DEFINITION_EDITED))
 
 
 def _build_original(
     server: ServerSettings, codes: PairingCodes, tmp_path: Path, vault: Vault
 ) -> ReplayResult:
-    """Replay, generate and revise through one running app; its shutdown flushes to the remote."""
-    claude, editor = _scripted_claude()
+    """Replay, generate, revise, then build the workspace and study state through one running
+    app; its shutdown flushes to the remote."""
+    claude, fakes = _scripted_claude()
+    editor = fakes["editor"]
     app: FastAPI = create_app(
         static_dir=tmp_path / "no-web-build",
         server=server,
@@ -166,7 +397,7 @@ def _build_original(
             editor=EditorSettings(doubts_in_chat=False, prepare_mode="single"),
         ),
     )
-    base = f"/api/subjects/{SUBJECT}/topics/{TOPIC}/notes"
+    base = f"{BASE}/notes"
 
     async def main() -> ReplayResult:
         async with AsgiTransport(app) as transport:  # runs the lifespan: sync loop, shutdown flush
@@ -203,10 +434,14 @@ def _build_original(
                 REQUEST_TIMEOUT_S,
             )
             assert revised.status == 200
+            await _build_workspace_and_study(app, Api(transport), fakes)
             return result
 
     result = asyncio.run(main())
-    assert REVISION in (read_notes(vault, SUBJECT, TOPIC) or ""), "the revision turn was applied"
+    notes = read_notes(vault, SUBJECT, TOPIC) or ""
+    assert REVISION in notes, "the revision turn was applied"
+    assert NUCLEUS in notes and DEFINITION_EDITED in notes, "the workspace turn and the save"
+    assert all(fake.pending == 0 for fake in fakes.values() if fake is not fakes["observer"])
     return result
 
 
@@ -226,6 +461,59 @@ def _desk(client: TestClient) -> dict[str, Any]:
                 assert response.status_code == 200, (path, response.text)
                 desk[base + path] = response.json()
     return desk
+
+
+def _study(client: TestClient) -> dict[str, Any]:
+    """The Construir and Estudiar state over REST: the workspace chat, the sources and their
+    triage, the pasted image's bytes, the study label, the study chat, the materials and their
+    staleness, the quiz results and the spaced-repetition history."""
+    state: dict[str, Any] = {}
+    for path in (
+        "/notes/chat",
+        "/sources",
+        "/sources/status",
+        "/study",
+        "/tutor",
+        "/generated",
+        "/quiz/results",
+        "/practice",
+    ):
+        response = client.get(BASE + path)
+        assert response.status_code == 200, (path, response.text)
+        state[path] = response.json()
+    summary = client.get("/api/practice/summary")
+    assert summary.status_code == 200, summary.text
+    state["/api/practice/summary"] = summary.json()
+    for key in ("/practice", "/api/practice/summary"):
+        state[key].pop("now", None)  # the reading's clock, not vault content
+    for source in state["/sources"]["sources"]:
+        vault_id = source["vault_id"]
+        meta = client.get(f"/api/sources/{vault_id}/meta")
+        content = client.get(f"/api/sources/{vault_id}")
+        assert meta.status_code == content.status_code == 200, vault_id
+        state[f"meta:{vault_id}"] = meta.json()
+        state[f"bytes:{vault_id}"] = content.content
+    return state
+
+
+def _check_built(state: dict[str, Any]) -> None:
+    """The original really holds what the build phase made, so the comparison means something."""
+    status = {row["source_id"]: row for row in state["/sources/status"]["sources"]}
+    assert status[BOOK_PAGE]["state"] == "apartada", status
+    assert status[BLANK_PAGE]["state"] != "apartada", status
+    assert status[BLANK_ASIDE]["state"] == "apartada" and status[BLANK_ASIDE]["reason"], status
+    images = [key for key in state if key.startswith("bytes:") and "/images/" in key]
+    assert [state[key] for key in images] == [_pasted_png()]
+    turns = state["/notes/chat"]
+    assert "núcleo" in json.dumps(turns, ensure_ascii=False), turns
+    study = state["/study"]
+    assert study["study_version"] is not None and study["study_current"] is False, study
+    assert state["/tutor"]["turns"], state["/tutor"]
+    generated = json.dumps(state["/generated"], ensure_ascii=False)
+    assert "quiz" in generated and "flashcards" in generated, generated
+    assert [result["correct"] for result in state["/quiz/results"]] == [1]
+    assert state["/practice"]["counts"]["learned"] == 1, state["/practice"]
+    assert state["/api/practice/summary"], state["/api/practice/summary"]
 
 
 def _read_client(
@@ -266,7 +554,7 @@ def _searches(index: VaultIndex) -> dict[str, list[Any]]:
     return {query: index.search(query, limit=50) for query in SEARCHES}
 
 
-def test_a_cloned_vault_restores_the_desk_state_notes_and_search(
+def test_a_cloned_vault_restores_the_desk_notes_workspace_and_study_state(
     server: ServerSettings,
     codes: PairingCodes,
     tmp_path: Path,
@@ -340,5 +628,22 @@ def test_a_cloned_vault_restores_the_desk_state_notes_and_search(
         assert _searches(restored_index) == original_hits
         assert restored_index.note_versions() == original_index.note_versions()
         assert restored_index.pending() == original_index.pending()
-    [session] = list_sessions(restored, SUBJECT, TOPIC)
-    assert session.id == result.session_id and session.ended_at is not None
+    sessions = list_sessions(restored, SUBJECT, TOPIC)
+    assert sessions == list_sessions(tmp_vault, SUBJECT, TOPIC)
+    replayed = next(session for session in sessions if session.id == result.session_id)
+    assert replayed.ended_at is not None
+
+    # -- 4. the same workspace and study state -------------------------------------------------
+    original_study = _study(_read_client(server, codes, tmp_path, tmp_vault))
+    restored_study = _study(_read_client(server, codes, tmp_path, restored))
+    _check_built(original_study)
+    print(
+        json.dumps(
+            {k: v for k, v in original_study.items() if not k.startswith("bytes:")},
+            ensure_ascii=False,
+            indent=1,
+            default=str,
+        )[:12000]
+    )
+    for key, value in original_study.items():
+        assert restored_study[key] == value, key

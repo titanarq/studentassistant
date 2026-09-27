@@ -519,8 +519,18 @@ bare repository standing in for GitHub, cloned into a fresh directory with `clon
 `LocalHost`; `post_clone` rebuilds a fresh index, as the CLI's does), and compared with the
 original: the study desk over REST (subjects, topics, each topic's summary, sessions, doubts,
 notes versions and chat history), `load_observer_snapshot` per topic, `apuntes.md` and its tags,
-`list_doubts`, the cost ledger totals and `VaultIndex.search` results. Anything a future change
-stops committing (a file written outside the vault, a cache mistaken for content) fails it.
+`list_doubts`, the cost ledger totals and `VaultIndex.search` results. Since #370 the build also
+makes the Construir and Estudiar state through REST only -- a pasted image saved into the notes
+(`sources/images`, `PUT notes`), a second session of two blank captures the triage sets aside, a
+typed workspace message that sets the book page aside and restores one blank page, a typed
+message answered by an editor turn, the switch to Estudiar (`POST study`), one written study chat
+question (`POST tutor`), a quiz and flashcards, one quiz result, one practice review and a last
+save that leaves the materials stale -- and the compare covers it: the workspace chat
+(`notes/chat`), `sources` and `sources/status` (state and triage reason), every source's meta and
+bytes (the pasted image included), `study` (label, `study_current`, option states), `tutor`,
+`generated` (status and stale reasons), `quiz/results`, the topic's `practice` queue and
+`/api/practice/summary` (their `now` aside). Anything a future change stops committing (a file
+written outside the vault, a cache mistaken for content) fails it.
 
 ### Derived index -- `index.py`
 A SQLite database at `vault.index_path` (`VaultSettings.index_path`, `SA_VAULT__INDEX_PATH`,
