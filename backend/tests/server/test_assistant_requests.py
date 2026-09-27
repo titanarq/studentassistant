@@ -394,10 +394,6 @@ def test_prepare_notes_starts_a_generation(
     assert result["kind"] == "prepare_notes" and result["request_id"] == "req-1"
     assert result["draft"] is False and result["version"] is not None
     assert read_notes(topic.vault, topic.subject, topic.topic) == notes
-    status = client.get(
-        f"/api/subjects/{topic.subject}/topics/{topic.topic}/notes/generation"
-    ).json()
-    assert status["status"] == "done"
     assert fake.requests[0].role == "editor"
 
 

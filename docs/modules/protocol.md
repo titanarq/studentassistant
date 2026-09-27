@@ -9,11 +9,11 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 - REST: `POST /api/pair`, `GET /api/health`, subjects/topics listing and creation, session
   start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`),
   `GET /api/search` (the web's search over the vault index), `POST .../topics/{t}/web-pages`
-  (a web page by URL, #62). Since 1.6 the end body's optional `prepare_notes` asks the backend
-  to prepare the topic's notes in the background once the session has ended, the end response
-  then says `notes_generation` (`started` | `running` | `unavailable`), and
-  `GET .../topics/{t}/notes/generation` reports that generation's `status` (`idle` | `running` |
-  `done` | `failed` | `needs_confirmation`, `protocol/README.md` "Notes generation", #258).
+  (a web page by URL, #62). Protocol 1.6 (#258) added the end body's optional `prepare_notes`,
+  the end response's `notes_generation` and `GET .../topics/{t}/notes/generation`; since #440
+  (still 1.6) the backend accepts `prepare_notes` but ignores it, never sends
+  `notes_generation`, and the polling route and its `rest.topics.notes.generation.response`
+  schema are removed (`protocol/README.md` "Notes generation").
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
@@ -54,10 +54,10 @@ Everything below is re-exported from the package root; other modules import only
   `SubjectCreateRequest`, `Topic`, `TopicsListResponse`, `TopicCreateRequest`,
   `SessionStartRequest`, `Session` (start and resume response), `SessionEndRequest`,
   `SessionEndResponse`, `CaptureUploadRequest` (with `CaptureImage`), `CaptureUploadResponse`,
-  `SearchResponse` (with `SearchHit`), `WebPageAddRequest`, `WebPageAddResponse` (#62),
-  `NotesGenerationStatus` (1.6, with the literals `NotesGenerationState` and
-  `NotesGenerationStart`, the type of `SessionEndResponse.notes_generation`;
-  `SessionEndRequest.prepare_notes` is 1.6 too).
+  `SearchResponse` (with `SearchHit`), `WebPageAddRequest`, `WebPageAddResponse` (#62).
+  `SessionEndRequest.prepare_notes` (1.6) is accepted and ignored since #440;
+  `SessionEndResponse.notes_generation` and `NotesGenerationStatus` / `NotesGenerationState` /
+  `NotesGenerationStart` are removed (#440).
   `Topic` carries the optional `last_session_at_ms`,
   `pending_count` (1.1) and `digest_excerpt` (1.3, at most `DIGEST_EXCERPT_MAX` = 400 chars).
 - REST error codes: `ErrorCode` (a `StrEnum`: `COST_CAP_REACHED`, `DOUBT_CLOSED`,
@@ -73,8 +73,8 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.6"`: the end request's `prepare_notes` and the notes
-  generation status, #258, which no screen sends or reads yet; since 1.5 the capture page shows the server-side STT status, #222;
+- Version: `PROTOCOL_VERSION` (`"1.6"`: the end request's `prepare_notes`, #258, never
+  sent and ignored by the backend since #440, whose notes generation status types are removed; since 1.5 the capture page shows the server-side STT status, #222;
   since 1.4 it biases the browser recognizer towards the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
 - Client WS events: `ClientHello` (with `ClientCapabilities`, `AudioFormat`),
@@ -96,8 +96,8 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.6"`, for `SessionEndRequest.prepareNotes` and
-  `NotesGenerationStatus`, #258, not sent or read by any screen yet; 1.5 for the server-side STT status `SttStatus`, #222; the
+- Version: `PROTOCOL_VERSION` (`"1.6"`, for `SessionEndRequest.prepareNotes`, #258,
+  never sent and ignored by the backend since #440, which removed `NotesGenerationStatus`; 1.5 for the server-side STT status `SttStatus`, #222; the
   1.2 error `code` needs nothing from the app, which decodes no error body, only the HTTP status;
   the 1.4 `vocabulary_hints`, decoded as `HelloAck.vocabularyHints` /
   `Notice.vocabularyHints`, bias the client-side `SpeechRecognizer` on API 33+, #228),
@@ -112,8 +112,8 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
   `SerializationException` on an unknown or missing `type`, and `encodeClientEvent` /
   `encodeServerEvent` write it.
 - REST bodies: the same names as the Python models (`PairRequest`, `PairResponse`, ...,
-  `CaptureUploadRequest`, `CaptureUploadResponse`, `NotesGenerationStatus`); literal-valued
-  fields are Kotlin enums (`NotesGenerationStart`, `NotesGenerationState`, ...).
+  `CaptureUploadRequest`, `CaptureUploadResponse`); literal-valued
+  fields are Kotlin enums (`SessionEndReason`, `SttState`, ...).
 - `ProtocolJson`, the codec every class goes through: unknown fields rejected, absent optionals
   decoded as `null` and omitted on encode.
 - Registry: `MESSAGE_CODECS`, mapping each `protocol/<name>.schema.json` name to a `MessageCodec`

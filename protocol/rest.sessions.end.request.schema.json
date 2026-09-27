@@ -24,7 +24,7 @@
     },
     "prepare_notes": {
       "type": "boolean",
-      "description": "Since 1.6: once the session has ended, prepare the topic's notes in the background (GET .../notes/generation reports it)."
+      "description": "Since 1.6, ignored since #440: still accepted so an old client that sends it keeps working, but ending a session never prepares the notes."
     }
   }
 }

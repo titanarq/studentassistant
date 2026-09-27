@@ -159,8 +159,6 @@ def test_prepare_notes_runs_in_batches_on_the_workspace_stream(
         "source_ids": ["sources/notes/page-002.jpg"],
     }
     assert events[-1][1]["origin"] == "generation"
-    status = client.get(f"/api/subjects/{topic.subject}/topics/{topic.topic}/notes/generation")
-    assert status.json()["status"] == "done"
 
 
 def test_single_mode_keeps_the_whole_topic_call(
