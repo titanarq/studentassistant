@@ -94,8 +94,8 @@
   - `TutorScreen({subjectId, topicId, subjectName, topicName, onClose?, speech?, listen?,
     voiceSupported?})`: the last three are the seams tests use.
 - **Study workspace** (`/subjects/<s>/topics/<t>/workspace`, "Espacio de estudio", `src/workspace/`,
-  #312, epic #311): one screen for a topic, linked from the topic page ("Abrir espacio de
-  estudio"). The header has the crumbs, the topic name and the open-doubts counter ("N dudas
+  #312, epic #311): one screen for a topic, opened from the study desk (the topic's name, "Sesión
+  abierta", a created topic; #368) and from the topic page's **Construir**. The header has the crumbs, the topic name and the open-doubts counter ("N dudas
   pendientes", from `GET .../pending?status=open`, read again whenever the document changes,
   linking to the pending page). Two columns (a CSS grid):
   - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
@@ -401,7 +401,9 @@
 
 Spanish review UI served by the backend (localhost trusted; other LAN clients use the pairing
 token):
-- Study desk: subjects/topics, per-topic card (sources, sessions, minutes, pending, materials).
+- Study desk: subjects/topics, the entry into each topic's Construir (workspace) and Estudiar
+  (study screen), creating subjects and topics; per-topic card (sources, sessions, minutes,
+  pending, materials).
 - Notes viewer: rendered `apuntes.md`; clicking a provenance footnote opens the sources panel
   (zoomable page image + its transcription, transcript excerpt, book/PDF page, web snapshot);
   `[^ia]` content highlighted.
@@ -443,7 +445,9 @@ token):
   -> `App`); the backend's SPA fallback serves the app for every non-API path, so
   no router library is used.
 - `src/capture/` is the capture page. Nothing outside the directory imports it except
-  `src/Router.tsx` and the study workspace (`CapturePage` only), and inside it only `api.ts` and
+  `src/Router.tsx`, the study workspace (`CapturePage` only) and the study desk
+  (`src/desk/DeskCreate.tsx`: `createSubject` / `createTopic` of `api.ts` and `describeFailure` of
+  `failures.ts`, #368), and inside it only `api.ts` and
   `sessionSocket.ts` reach the network:
   - `CapturePage.tsx`: `CapturePage({now?, preset?, onRunningChange?})` -- shows `SessionPicker`
     until a session is open, then `CaptureScreen` keyed by `session_id`, so a second session in
@@ -543,12 +547,29 @@ token):
   (>= 1.1), so topics may carry `last_session_at_ms`, `pending_count` and (1.3)
   `digest_excerpt`; all stay optional, the desk does not show the excerpt (its topic summary
   does), and a topic without them shows only its name.
-- `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"): every subject (a region named
-  after it) with its topics, each a link to its topic page followed by "Sesión abierta", "Última
-  sesión: <fecha>" and "<n> dudas por revisar" when the list carries them ("Sesión abierta" is a
-  link to the live session view, `/live`); under each subject's name a "Guía de estilo" link to
-  its style guide page. Empty states: no
-  subjects, a subject without topics; a failing topic list is reported inside its subject only.
+- `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"), the single way into a topic's
+  Construir and Estudiar (#368, epic #365): every subject (a region named after it) with its
+  topics. Each topic's name links to `topicEntryPath(topic)` (Construir, `.../workspace`, by
+  default), followed by "Sesión abierta" (a link to the topic's `.../workspace`), "Última sesión:
+  <fecha>" and "<n> dudas por revisar" when the list carries them, then two small links,
+  **Estudiar** (`.../study`) and **Ficha** (the topic card page). Under each subject's name a
+  "Guía de estilo" link to its style guide page; below its topics **Nuevo tema** (an
+  `aria-expanded` toggle) shows a form "Nuevo tema de <subject>" (field "Nombre del tema",
+  **Crear**); below the subjects the block "Nueva asignatura" (field "Nombre de la asignatura",
+  **Crear**, shown once the subject list answered). Both post through `capture/api.ts`
+  `createSubject` / `createTopic` (`src/desk/DeskCreate.tsx`); an empty name says "Escribe el
+  nombre de la asignatura." / "Escribe el nombre del tema." and a failure is the capture picker's
+  sentence (`capture/failures.ts`: "No se ha podido crear la asignatura: <detail>" and so on). A
+  created subject is listed at once (without topics); a created topic opens in its
+  `.../workspace` (`App({navigate?})`, `window.location.assign` by default). The desk links
+  neither `/capture` nor `/live` any more; both keep working (the Android WebView, bookmarks).
+  Empty states: no subjects ("Crea la primera en «Nueva asignatura» y dale un tema."), a subject
+  without topics; a failing topic list is reported inside its subject only.
+- `src/desk/entry.ts` (#368): `topicEntryPath(topic)` -- the one decision of where the desk
+  opens a topic (today `topicWorkspacePath`; the open product question of #368 may change it to
+  Estudiar when the topic has a study version, or to the topic card; only this function changes)
+  -- and the path builders `topicWorkspacePath`, `topicStudyPath`, `topicCardPath`, each over a
+  `TopicRef {subject_id, topic_id}` (any protocol `Topic` or practice-summary row).
   Under the heading, "Gasto de hoy" (`src/desk/DeskCost.tsx`, #260) reads `GET /api/cost` (with
   `subject`, `topic` and `session` of the first topic whose list entry carries `open_session_id`,
   once the lists answer) and shows "Hoy (UTC): <day_usd> USD de <max_usd_per_day> USD" ("(sin
@@ -562,7 +583,8 @@ token):
   topic has due or new items, a region named "Repasos para hoy" with the totals ("13 pendientes,
   5 nuevas en 2 temas.") and one row per such topic in the backend's order ("Historia · La
   Revolución Francesa — 12 pendientes, 5 nuevas", a zero count left out), the name linking to
-  `<topic path>/practice`; with practice material but nothing to review, "Nada que repasar hoy.
+  the topic's study screen (`.../study`, #368), which shows its reviews and opens the practice
+  queue from **Tarjetas de memoria**; with practice material but nothing to review, "Nada que repasar hoy.
   Próximo repaso: <fecha>." (the earliest `next_due`); without any practice material (no topics
   and no warnings) the block is not rendered. The response's `warnings` are listed (a list named
   "Avisos de los repasos"); a failed read is one plain Spanish line (no alert) and the rest of
@@ -580,7 +602,9 @@ token):
   -> the `ReadResult` of `desk/api.ts` (whose `getJson` it reuses); `formatUsd` ("0,1234 USD",
   four decimals, always labelled USD, never euros) and `formatTokens`.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer) shows `TopicCard`, `PrepareTopic`,
+  <subject name>", the ids until the lists answer), reached from the desk's **Ficha** link, has at
+  the top the pair **Construir** (`.../workspace`) / **Estudiar** (`.../study`), plain links in a
+  `nav` "Abrir el tema" (#368; it replaced the single "Abrir espacio de estudio" link), then shows `TopicCard`, `PrepareTopic`,
   `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
   `WebSearchPanel`, `WebPageForm`, `BookTitleForm` and `TopicCostBlock` (below the phone
   breakpoint, 48rem, `topic/topic.css` on `main.topic-page`: one column, full-width fields,

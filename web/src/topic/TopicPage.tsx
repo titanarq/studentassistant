@@ -6,8 +6,8 @@ import {
   fetchTopicSummary,
   type ReadResult,
   type TopicSummary,
-  topicPath,
 } from "../desk/api";
+import { topicStudyPath, topicWorkspacePath } from "../desk/entry";
 import MaterialsPanel from "../materials/MaterialsPanel";
 import BookTitleForm from "./BookTitleForm";
 import PdfUploadForm from "./PdfUploadForm";
@@ -21,6 +21,7 @@ import "./topic.css";
 /**
  * `/subjects/<subject>/topics/<topic>`: the topic page, reached from the study desk. It shows
  * "<subject> / <topic>" (names from the subject and topic lists, ids until they arrive), the
+ * pair **Construir** (the workspace) / **Estudiar** (the study screen) at the top (#368), the
  * topic card from the read API's summary, "Material de estudio" (`MaterialsPanel`, #79: generate,
  * preview and download each material; a generation reloads the card), and the PDF upload (#149), after which the card is
  * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
@@ -61,6 +62,7 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
   }, [subjectId, topicId, reload]);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
+  const ref = { subject_id: subjectId, topic_id: topicId };
 
   return (
     <main className="topic-page">
@@ -69,9 +71,10 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
       </p>
       <h1>Tema {topicName}</h1>
       <p className="page-context">Asignatura {subjectName}</p>
-      <p className="topic-workspace-link">
-        <a href={`${topicPath(subjectId, topicId)}/workspace`}>Abrir espacio de estudio</a>
-      </p>
+      <nav className="topic-modes" aria-label="Abrir el tema">
+        <a href={topicWorkspacePath(ref)}>Construir</a>
+        <a href={topicStudyPath(ref)}>Estudiar</a>
+      </nav>
       {summary === null && <p>Cargando el tema…</p>}
       {summary !== null && summary.kind === "ok" && <TopicCard summary={summary.value} />}
       {summary !== null && summary.kind !== "ok" && (

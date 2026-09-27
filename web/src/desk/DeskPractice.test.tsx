@@ -52,11 +52,11 @@ it("lists the totals and one linked row per topic with due or new items", async 
   expect(rows[1]).toHaveTextContent("Matemáticas · Derivadas — 1 pendiente");
   expect(within(rows[0]).getByRole("link")).toHaveAttribute(
     "href",
-    "/subjects/historia/topics/revolucion-francesa/practice",
+    "/subjects/historia/topics/revolucion-francesa/study",
   );
   expect(within(rows[1]).getByRole("link", { name: "Matemáticas · Derivadas" })).toHaveAttribute(
     "href",
-    "/subjects/mates/topics/derivadas/practice",
+    "/subjects/mates/topics/derivadas/study",
   );
   expect(within(block).queryByText(/Límites/)).not.toBeInTheDocument();
 });

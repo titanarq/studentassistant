@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import TopicPage from "./TopicPage";
@@ -140,13 +140,19 @@ it("shows the study materials and reloads the card after generating one", async 
   await vi.waitFor(() => expect(summaries).toBe(2));
 });
 
-it("links to the topic's study workspace", () => {
+it("opens the topic in Construir or Estudiar from the top of the page", () => {
   stubApi({});
 
   renderPage();
 
-  expect(screen.getByRole("link", { name: "Abrir espacio de estudio" })).toHaveAttribute(
+  const modes = screen.getByRole("navigation", { name: "Abrir el tema" });
+  expect(within(modes).getByRole("link", { name: "Construir" })).toHaveAttribute(
     "href",
     "/subjects/historia/topics/revolucion-francesa/workspace",
   );
+  expect(within(modes).getByRole("link", { name: "Estudiar" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/study",
+  );
+  expect(screen.queryByRole("link", { name: "Abrir espacio de estudio" })).not.toBeInTheDocument();
 });

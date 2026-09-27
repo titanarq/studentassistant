@@ -7,6 +7,42 @@
   --page-width: 52rem;
 }
 
+/* Construir / Estudiar (#368): the topic's two screens, the page's first, most visible choice. */
+.topic-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+}
+
+.topic-modes a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-m);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.topic-modes a:hover {
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.topic-modes a + a {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.topic-modes a + a:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* Every tool on the page is a panel. */
 .topic-page > section,
 .topic-page > form {
