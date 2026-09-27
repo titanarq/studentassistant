@@ -637,13 +637,5 @@ def test_a_cloned_vault_restores_the_desk_notes_workspace_and_study_state(
     original_study = _study(_read_client(server, codes, tmp_path, tmp_vault))
     restored_study = _study(_read_client(server, codes, tmp_path, restored))
     _check_built(original_study)
-    print(
-        json.dumps(
-            {k: v for k, v in original_study.items() if not k.startswith("bytes:")},
-            ensure_ascii=False,
-            indent=1,
-            default=str,
-        )[:12000]
-    )
     for key, value in original_study.items():
         assert restored_study[key] == value, key
