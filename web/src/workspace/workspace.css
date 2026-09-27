@@ -123,8 +123,12 @@
     overflow: hidden;
   }
 
+  /* #458: Captura/Recursos gets half the column on a 720 px-high screen and a fluidly smaller share
+     as the screen grows taller (a third of every extra pixel of height is taken off), down to 38 %
+     from about 1080 px on; never under 8rem. The chat takes the rest. */
   .workspace-sources {
-    flex: 3 1 0;
+    --workspace-sources-share: clamp(38%, calc(50% - (100dvh - 45rem) / 3), 50%);
+    flex: 0 0 var(--workspace-sources-share);
     min-height: 8rem;
     display: flex;
     flex-direction: column;
@@ -150,13 +154,17 @@
     overscroll-behavior: contain;
   }
 
-  /* Never shorter than its heading and form (the log alone shrinks to nothing and scrolls), so the
-     input and **Enviar** are always on screen; the tabs' panel gives way instead. */
+  /* The rest of the column (#458): its heading and form keep their height, so the input and
+     **Enviar** are always on screen, and only the log shrinks and scrolls. (Before #458 a
+     `min-height: min-content` here let a long log push the tabs down to their 8rem floor and the
+     form off the screen.) */
   .workspace-chat {
-    flex: 2 1 0;
-    min-height: min-content;
+    flex: 1 1 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
+    position: relative;
+    overflow: hidden;
   }
 
   .workspace-chat > .ws-chat {
@@ -166,6 +174,26 @@
 
   .workspace-chat .ws-chat-log {
     max-height: none;
+  }
+
+  /* #458: a tighter chat so its log keeps a useful height under the taller Captura/Recursos box;
+     the input's label stays for screen readers (the heading and placeholder say it on screen). */
+  .workspace-chat > .ws-chat {
+    gap: var(--space-2);
+  }
+
+  .workspace-chat .ws-chat-form {
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+
+  .workspace-chat .ws-chat-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   /* A two-line input to start with (it grows by hand), so the log keeps more of the column. */
