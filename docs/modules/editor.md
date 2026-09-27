@@ -764,12 +764,21 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   `cited_sections(document, reply) -> (sections, unknown)`), `warning` (empty or cut answer, and in
   the written style the cited anchors the notes lack, `§a, §b`; warnings are joined), `model`.
 - `tutor_history(vault, subject, topic) -> TutorHistory` (blocking, reads only): `turns`
-  (`TutorTurn`: `time`, `style`, `question`, `reply`, `refs`, `sections`, `warning`), oldest first,
-  both styles. Records written before #334 read as `style: "spoken"`, `sections: []`.
+  (`TutorTurn`: `time`, `kind`, `style`, `question`, `reply`, `refs`, `sections`, `warning`,
+  `option`, `items`), oldest first, both styles. Records written before #334 read as
+  `style: "spoken"`, `sections: []`; `kind` is `answer` for every `tutor.answer` record
+  (`option`/`items` null) and `generation` for a `tutor.generation` one.
+- `record_generation(vault, subject, topic, TutorGeneration, *, sync=None)` (#366): appends a
+  study chat generation turn ("hazme un quiz", matched and run by the server, not by the editor)
+  as a `tutor.generation` record (`TutorGeneration`: `style` `written`, `question`, `reply` the
+  Spanish sentence, `option` the study option, `material_kind`, `items`, `warnings`, `model`);
+  it reads back as a `generation` turn (its `warnings` joined into `warning`) and, like the
+  answers, as history for the next written question. A failure to record is logged, never
+  raised.
 - **Conversation** `conversations/tutor.jsonl`, apart from `editor.jsonl` (the editor chat's
   history and undo never see the tutor): `context` (reason `tutor` plus the input summary),
   `user`, `assistant`, then one `tutor.answer` record (the `TutorAnswer`); `sync.note_change()`
-  lets the sync loop commit it.
+  lets the sync loop commit it. Generation turns add one `tutor.generation` record each.
 - Errors: `InvalidMessageError` (empty, or over `MAX_QUESTION_CHARS` = 1000), `NotesMissingError`
   (nothing sent); `RefusalError` (the records of the call kept, no `tutor.answer`),
   `CostConfirmationRequiredError` and the llm errors as in `generate_notes`.

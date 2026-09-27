@@ -232,7 +232,10 @@ Full quiz attempts (`quiz-results.jsonl`) do not feed the schedule. REST:
   the files, the notes version and the warnings; the commit is local and the server's sync pushes
   it. Values of `-o` are JSON when they parse (`size=10`, `split=true`), text otherwise.
 - REST (`server/generators_routes.py`, see `docs/modules/server.md`): `GET /api/generators`,
-  `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`.
+  `GET .../topics/{t}/generated`, `POST .../topics/{t}/generated/{kind}`; the study chat's
+  "hazme un quiz / esquema / examen / ejercicios / tarjetas" (#366, `server/study_requests.py`)
+  runs the same `run_generator` path through `generators_routes.generate_material`, mapping the
+  counts and quiz difficulty it hears to the options models above (clamped to their bounds).
 
 ## Outline -- kind `esquema` (#74)
 

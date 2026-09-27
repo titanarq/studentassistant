@@ -700,9 +700,46 @@ Routes registered today:
     anchors the notes lack), `model` -- or `error` `{"status", "detail", "code"?}` (a reached cost cap
     409 `cost_cap_reached` until `confirm_over_cap`; a Claude refusal or failure 502). The
     question runs in its own task; the answer is appended to `conversations/tutor.jsonl`.
-  - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, style, question, reply, refs, sections,
-    warning}`, oldest first, both styles; turns recorded before #334 are `spoken` with no
-    `sections`). Reads only; works without `llm_transport`.
+  - **Generation requests** (#366, `server/study_requests.py`): a `written` question is first
+    matched, deterministically (no LLM call), by `match_generation(text, *, registry) ->
+    GenerationRequest | None` against a small Spanish grammar: a verb (`hazme`, `haz`,
+    `genera(me)`, `prepára(me)`, `crea(me)`, `quiero`, `dame`; accents and a separate `me`
+    optional; `otra vez` / `de nuevo` ignored) then one material: `esquema` -> kind `esquema`;
+    `ejercicios` -> `examen` (option `ejercicios`); `examen` / `simulacro` -> `examen` (option
+    `examen`); `quiz` / `test` / `preguntas` -> `quiz`; `tarjetas (de memoria)` / `flashcards` ->
+    `flashcards` (option `tarjetas`); `diapositivas` -> `diapositivas` (kinds from the generator
+    modules' `KIND`; a kind the registry lacks is no match). A count (digits or Spanish words:
+    "de 10 preguntas", "20 tarjetas", "5 ejercicios", "un examen de 4 preguntas", "un quiz de
+    10") sets `QuizOptions.size`, `FlashcardsOptions.size`, `ExamOptions.exercises` /
+    `questions` or `SlidesOptions.size`, clamped to the bounds of the registry's options model
+    (the lines say so: "Como mucho pueden ser 30 preguntas: preparo 30."); `fácil(es)`,
+    `media(s)`, `difícil(es)` set `QuizOptions.difficulty`. A bare request uses the generator's
+    defaults and the progress line states them. Anything else -- "¿qué es un quiz?", "explícame
+    el esquema de la página 3" -- goes to the tutor as before, and `spoken` questions are never
+    matched. A match runs `generators_routes.generate_material` -- the same code path as
+    `POST .../generated/{kind}` (the `MaterialGenerators` claim of the topic and kind, a
+    `generator` client on the topic's ledger, `[generators] grounding_min_support`) with the
+    body's `confirm_over_cap` -- and not the tutor's lock. Its stream, instead of the tutor's:
+    - `generation.started` `{kind, option, text}`: `option` the study option key (`esquema`,
+      `ejercicios` or `examen` for kind `examen`, `quiz`, `tarjetas`, `diapositivas`), `text` a
+      Spanish line, e.g. "Preparando un quiz de 10 preguntas de dificultad variada con tus
+      apuntes v4…" (the newest `apuntes-vN`, none when untagged);
+    - then `result` `{kind: "generation", option, material_kind, question, reply, items,
+      warnings, study}`: `reply` e.g. "Listo: 10 preguntas. Ábrelo en «Quiz»." (slides: "Listas
+      las diapositivas: descárgalas desde la ficha del tema."), `items` the material's item
+      count, `warnings` the generation's (Spanish), `study` the fresh `StudyState` of
+      `GET .../study`;
+    - or `error` `{status, detail, code?}` as the tutor's: a reached cap 409 `cost_cap_reached`
+      ("Confirma para generar el material igualmente."), the same material being generated 409,
+      no notes 409, a Claude refusal or failure 502. For a match these are all in the stream
+      (after `generation.started`), not before it.
+    The turn is appended to `conversations/tutor.jsonl` (`editor.tutor.record_generation`, a
+    `tutor.generation` record); a failed generation is not saved.
+  - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, kind, style, question, reply, refs,
+    sections, warning, option, items}`, oldest first, both styles; `kind` `answer` (the default:
+    turns recorded before #366 read so) or `generation` (with `option` and `items`, `reply` the
+    result sentence, `warning` its warnings joined); turns recorded before #334 are `spoken`
+    with no `sections`). Reads only; works without `llm_transport`.
   - Errors before the stream, Spanish `detail`: no `llm_transport` 503, a vault that cannot be
     opened 503, an unknown topic 404, no notes yet 409, another question of the topic running
     409, an empty or too long question 422. Needs the bearer check like every non-exempt route.
@@ -770,7 +807,9 @@ Routes registered today:
     `files`, `meta`). No Claude call: works without `llm_transport`.
   - `POST .../generated/{kind}`, optional body `{"options": {...}, "confirm_over_cap": false}` ->
     `GenerateResult`. Needs `llm_transport` (503 otherwise; `MaterialGenerators`, one run per
-    topic and kind); a `generator` client bound to the topic's ledger.
+    topic and kind); a `generator` client bound to the topic's ledger. The run itself is
+    `generate_material(service, vault, sync, subject, topic, kind, *, registry, options,
+    confirm_over_cap)`, which the study chat's generation requests share (#366).
   - `GET .../generated/files/{name}` -> the bytes of `generated/<name>` (subdirectories allowed)
     as a download: `Content-Disposition: attachment; filename="<topic>-<file>"`, the media type
     by extension (`.apkg` octet-stream, `.csv` `text/csv; charset=utf-8`...); 404 when there is
