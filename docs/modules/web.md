@@ -114,6 +114,19 @@
     `onInterim`, `onFinal`, `onProblem(VoiceProblemCode)`, `onEnd`; returns `{stop()}`),
     `voiceQuestionSupported()`; the recognition constructor comes from
     `capture/webSpeechTranscriber.ts`.
+  - `VoiceInputButton.tsx` (#428): the chats' microphone button on top of `listenForQuestion`
+    (props `value`, `onChange`, `onFinal`, `disabled`, and the seams `listen` / `voiceSupported`),
+    used by the Estudiar chat and the idle Construir chat. Idle it reads **Hablar**
+    (`aria-label` "Dictar el mensaje por voz"); listening "Escuchando… (pulsa para parar)" with
+    `aria-pressed="true"`, and a press calls `stop()` (what was said so far is kept). The interim
+    text goes into the chat's input; the final text is handed to `onFinal`, which each chat sends
+    through its typed path (no voice mark). No result puts back the text from before and shows one
+    line of `CHAT_VOICE_PROBLEMS` (the tutor's `VOICE_PROBLEMS` reworded for a message, e.g. "No te
+    he oído. Pulsa «Hablar» y habla."), cleared on the next press or when the student types. A
+    browser without recognition gets a disabled button with `title` and a visible hint "Este
+    navegador no reconoce la voz: escribe tu mensaje." (its `aria-describedby`). Unmounting, or
+    `disabled` turning true, stops a running recognition; what arrives after unmounting is dropped.
+    Styles in `voiceInput.css`.
   - `speech.ts`: `SpeechOutput {supported, speak(text, onEnd?), cancel()}`,
     `browserSpeechOutput()` (`speechSynthesis`, `es-ES`, a Spanish voice when the browser lists
     one), `spokenText(reply)` and `shownText(reply)`.
@@ -311,10 +324,14 @@
       spoken request has a `title` and an `aria-describedby` text ("Muestra la transcripción de lo
       que dijiste y cuándo lo dijiste"). `WorkspaceChatSlot` takes `capturing` (the page's
       Captura state) and passes it to `ChatPanel`: the placeholder says "Escribe o habla: «pon un
-      ejemplo aquí»…" only while a capture runs, else "Escribe: «pon un ejemplo aquí»…" (a doubt:
-      "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…" / "Responde a la duda o
-      escribe otra cosa…"), and so do the empty-chat hint and a doubt's hint: the panel has no
-      microphone of its own.
+      ejemplo aquí»…" while a capture runs, else "Escribe o pulsa «Hablar»: «pon un ejemplo
+      aquí»…" (a doubt: "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…" /
+      "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…"), and so do the
+      empty-chat hint and a doubt's hint. **Microphone (#428):** while no capture runs,
+      `VoiceInputButton` (**Hablar**) sits next to **Enviar**; the spoken message goes through the
+      same `send` as a typed one, and one arriving while the assistant is busy stays in the input,
+      unsent. While a capture runs the button is absent (the capture's speech already reaches the
+      chat); a capture starting removes it and stops its recognition, as unmounting the panel does.
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
     **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
@@ -422,7 +439,10 @@
     topic's earlier **written** turns of `GET .../tutor` (the voice tutor's spoken ones are left
     out), then the fixed line "Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve
     a Construir." (a link to `.../workspace`) and a text input ("Pregunta sobre el documento…",
-    label "Tu pregunta", up to 1000 characters, Enter or "Preguntar"). A question is `askTutor(...,
+    label "Tu pregunta", up to 1000 characters, Enter or "Preguntar") with **Hablar** next to it
+    (`VoiceInputButton`, #428; disabled while an answer comes, which stops a running recognition):
+    the interim text shows in the input and the final text, trimmed to 1000 characters, is asked
+    exactly as a typed question; one arriving while an answer comes stays in the input. A question is `askTutor(...,
     {style: "written"})`: "Pensando…" until the first delta, then the reply streams; the answer is
     light Markdown rendered by `chat/ReplyView.tsx` through the notes' `parseNotes`/`parseInline`
     (no raw HTML). **Citation chips**, inline where cited: every `[§anchor]` is a button "§

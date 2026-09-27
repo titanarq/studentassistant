@@ -1,0 +1,16 @@
+/* The microphone button of a chat input (#428). */
+
+.voice-input-button[aria-pressed="true"] {
+  background: var(--correction);
+  border-color: var(--correction);
+  color: var(--surface);
+}
+
+/* A problem or the unsupported hint: its own line under the input's row of buttons. */
+.voice-input-line {
+  flex-basis: 100%;
+  order: 1;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
