@@ -49,6 +49,7 @@ from studentassistant.llm import (
     get_client,
     load_prompt,
 )
+from studentassistant.sources.catchup import readable_topics
 from studentassistant.sources.pdf import (
     PdfImportError,
     original_page,
@@ -71,8 +72,6 @@ from studentassistant.vault import (
     append_conversation_record,
     get_subject,
     get_topic,
-    list_subjects,
-    list_topics,
     put_page_transcription,
     read_source,
 )
@@ -433,15 +432,14 @@ def _transcribed(vault: Vault, pdf_path: str, page: int) -> bool:
 def _owed_in_vault(vault: Vault) -> list[tuple[str, str, list[PageKey]]]:
     """Per topic of the vault, its scanned PDF pages without transcription (blocking)."""
     plan: list[tuple[str, str, list[PageKey]]] = []
-    for subject in list_subjects(vault):
-        for topic in list_topics(vault, subject.slug):
-            try:
-                pages = scanned_pages_without_transcription(vault, subject.slug, topic.slug)
-            except VaultError:
-                logger.exception("cannot list the PDFs of %s/%s", subject.slug, topic.slug)
-                continue
-            if pages:
-                plan.append((subject.slug, topic.slug, pages))
+    for subject_slug, topic_slug in readable_topics(vault):
+        try:
+            pages = scanned_pages_without_transcription(vault, subject_slug, topic_slug)
+        except VaultError:
+            logger.exception("cannot list the PDFs of %s/%s", subject_slug, topic_slug)
+            continue
+        if pages:
+            plan.append((subject_slug, topic_slug, pages))
     return plan
 
 

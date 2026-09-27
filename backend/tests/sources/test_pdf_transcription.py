@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ from studentassistant.vault import (
     put_page_transcription,
     read_conversation,
     read_ledger,
+    subject_directory,
+    topic_directory,
 )
 
 WAIT = 10.0
@@ -265,6 +268,31 @@ def test_the_catch_up_queues_every_scanned_page_left_without_markdown(
     assert _md(tmp_vault, pdf_path, 2).is_file() and _md(tmp_vault, second_path, 2).is_file()
     assert not _md(tmp_vault, pdf_path, 1).exists()
     assert scanned_pages_without_transcription(tmp_vault, *topic) == []
+
+
+def test_the_catch_up_skips_a_half_created_subject_or_topic(
+    tmp_vault: Vault, topic: tuple[str, str], pdf_path: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # #388: a subject (and a topic) being created as the vault opens: directory, no YAML yet.
+    subject_directory(tmp_vault, "a-medias").mkdir(parents=True)
+    topic_directory(tmp_vault, topic[0], "a-medias").mkdir(parents=True)
+    fake = FakeClaude().reply_text("# Uno")
+    worker = _worker(fake)
+
+    async def main() -> None:
+        try:
+            worker.catch_up_vault(tmp_vault)
+            await asyncio.wait_for(worker.wait_idle(), WAIT)
+        finally:
+            await asyncio.wait_for(worker.stop(), WAIT)
+
+    _run(main())
+    assert len(fake.requests) == 1
+    assert _md(tmp_vault, pdf_path, 2).is_file()
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    skipped = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("a-medias" in m and "subject" in m for m in skipped)
+    assert any(f"{topic[0]}/a-medias" in m for m in skipped)
 
 
 def test_a_stopped_runner_queues_nothing(
