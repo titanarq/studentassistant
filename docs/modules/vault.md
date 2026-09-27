@@ -504,6 +504,12 @@ defaulting to the repository owner, which is also what it takes unattended), run
 (a new file is `0600`, `NEW_CONFIG_MODE`), writing nothing else, and leaving the file untouched when it already holds those values: re-running `setup` with
 the same answers changes nothing and exits 0. `vault.repo` (`VaultSettings.repo`, optional,
 `SA_VAULT__REPO`) is the `owner/name` of the vault's GitHub repository.
+The repository prompt proposes `<login>/studentassistant-vault` (`DEFAULT_VAULT_REPO_NAME`), where
+`<login>` is `github.github_login()`: one `gh api user -q .login` bounded by
+`LOGIN_LOOKUP_TIMEOUT_SECONDS`. When `gh` is missing, not logged in, fails or times out the prompt
+has no default: no owner is guessed, and the Linux user name is never used as one (it need not be
+a GitHub account). The CLI reaches it through `cli._github_login`, which tests replace; an
+unattended `setup --vault-repo ...` never looks it up.
 
 **Restore drill** (`backend/tests/server/test_restore_drill.py`, #261): the promise "a new PC
 restores everything with setup + clone + index rebuild" is tested end to end. A vault is built

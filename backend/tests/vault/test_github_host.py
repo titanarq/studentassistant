@@ -20,6 +20,7 @@ from studentassistant.vault.github import (
     GhCliHost,
     GitHubHostError,
     TokenHost,
+    github_login,
     select_host,
     token_from_environment,
 )
@@ -182,3 +183,44 @@ def test_gh_host_reads_the_visibility_of_a_repository(fake_gh: Path, github_root
 
 def test_token_host_cannot_tell_the_visibility() -> None:
     assert TokenHost(GITHUB_PAT).repo_is_private("ana/vault") is None
+
+
+# --- github_login ------------------------------------------------------------------------------
+
+
+def script_gh(tmp_path: Path, body: str) -> str:
+    """A throwaway `gh` running `body` (sh); its arguments land in `gh.args`."""
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir(parents=True, exist_ok=True)
+    gh.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/gh.args"\n{body}\n', encoding="utf-8")
+    gh.chmod(0o755)
+    return str(gh)
+
+
+def test_github_login_asks_gh_for_the_authenticated_user(tmp_path: Path) -> None:
+    gh = script_gh(tmp_path, "echo MatillaM")
+
+    assert github_login(gh=gh, timeout=5) == "MatillaM"
+    assert (tmp_path / "gh.args").read_text(encoding="utf-8").split() == [
+        "api",
+        "user",
+        "-q",
+        ".login",
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "echo 'gh auth login' >&2; exit 4",  # not logged in
+        "echo",  # nothing printed
+        "echo 'not a login'",  # something else printed
+        "sleep 5",  # hangs: the timeout bounds it
+    ],
+)
+def test_github_login_is_none_when_gh_cannot_tell(tmp_path: Path, body: str) -> None:
+    assert github_login(gh=script_gh(tmp_path, body), timeout=0.5) is None
+
+
+def test_github_login_is_none_without_gh(tmp_path: Path) -> None:
+    assert github_login(gh=str(tmp_path / "missing-gh"), timeout=1) is None

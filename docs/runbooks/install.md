@@ -47,7 +47,9 @@ Te pregunta, en este orden:
 
 1. **Vault**: si quieres *crear* uno nuevo (un repositorio privado nuevo en GitHub) o *clonar* el
    que ya tienes, el repositorio (`propietario/nombre`) y la carpeta local
-   (por defecto `~/StudentAssistant/vault`). Queda anotado en
+   (por defecto `~/StudentAssistant/vault`). Si `gh` ha iniciado sesión, propone como repositorio
+   `<tu usuario de GitHub>/studentassistant-vault` (Enter lo acepta); si no, no propone nada y
+   tienes que escribirlo tú (el propietario es tu usuario de GitHub, no el de Linux). Queda anotado en
    `~/.config/studentassistant/config.toml`.
 2. **Clave de la API de Anthropic**: no se ve mientras la escribes. Se guarda en
    `~/.config/studentassistant/secrets.env`, un archivo que solo puede leer tu usuario
