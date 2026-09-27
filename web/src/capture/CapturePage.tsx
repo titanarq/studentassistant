@@ -38,9 +38,14 @@ export interface CapturePageProps {
   preset?: { subjectId: string; topicId: string };
   /** Called with true when a session's screen takes over and false when it gives way. */
   onRunningChange?: (running: boolean) => void;
+  /**
+   * Since #450: the host hides the page (the workspace shows **Recursos**), so a running capture
+   * pauses its camera and microphone until it turns false again (`CaptureScreen`'s `suspended`).
+   */
+  suspended?: boolean;
 }
 
-export default function CapturePage({ now = Date.now, preset, onRunningChange }: CapturePageProps) {
+export default function CapturePage({ now = Date.now, preset, onRunningChange, suspended = false }: CapturePageProps) {
   const [opened, setOpened] = useState<OpenedSession | null>(null);
   const running = opened !== null;
   useEffect(() => {
@@ -78,6 +83,7 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange }:
       now={now}
       onEnded={onEnded}
       embedded={!standalone}
+      suspended={suspended}
     />
   );
 }

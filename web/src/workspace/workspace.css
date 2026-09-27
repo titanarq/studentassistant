@@ -2,71 +2,80 @@
    document on the right -- and one column with a three-way switch below 900 px (56.25rem). */
 
 .workspace {
-  max-width: var(--width-full);
-  margin: 0 auto;
-  padding: var(--space-4) var(--gutter) var(--space-6);
+  /* #450: the whole screen width, a 16px side gutter. */
+  max-width: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-4) var(--space-4);
   overflow-wrap: anywhere;
 }
 
-.workspace-header h1 {
-  margin-bottom: var(--space-1);
-}
+/* ---- Header (#450): one compact bar ---- */
 
-.workspace-header .page-context {
-  margin-bottom: var(--space-2);
-}
-
-.workspace-meta {
+.workspace-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-3);
-  margin: 0 0 var(--space-3);
-  font-size: var(--step--1);
-  color: var(--ink-muted);
-}
-
-.workspace-meta p {
-  margin: 0;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-2);
   min-width: 0;
 }
 
-.workspace-pending a,
-.workspace-versions a {
+.workspace-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--step-1);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.workspace-title a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* Right-aligned: the versions link and the way back; room stays for settings and the profile. */
+.workspace-bar-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin-left: auto;
+  font-size: var(--step--1);
+}
+
+.workspace-bar-end a {
   color: var(--ink-muted);
 }
 
-.workspace-cost {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-2);
+.workspace-bar-end a:hover {
+  color: var(--accent);
 }
 
-.workspace-cost [title] {
-  cursor: help;
-  text-decoration: underline dotted;
-}
-
-.workspace-cost-cap {
-  padding: 0 var(--space-1);
-  border: 1px solid var(--warn-line);
-  border-radius: 0.25rem;
-  background: var(--warn-soft);
-  color: var(--warn);
-}
+/* ---- Columns ---- */
 
 .workspace-columns {
   display: grid;
-  grid-template-columns: minmax(20rem, 1fr) minmax(0, 1.25fr);
-  gap: var(--space-5);
+  /* #450: the chat/resources side gets 50 % at 900 px and shrinks linearly to 25 % at 1200 px
+     and beyond (never below 18rem); the document takes the rest. */
+  --workspace-side: clamp(max(18rem, 25%), calc(50% - (100vw - 56.25rem) * 0.97), 50%);
+  grid-template-columns: var(--workspace-side) minmax(0, 1fr);
+  gap: var(--space-4);
   align-items: start;
 }
 
 .workspace-left {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -83,18 +92,19 @@
   overflow-y: auto;
 }
 
-/* Two columns on a screen tall enough (#412): the page is one viewport high, the header on top
-   and each column scrolling inside its share. On the left the tabs' panel (camera, transcript,
-   photos) scrolls or shrinks, and the chat below keeps a minimum height with its input pinned at
-   the bottom, so the reply to what the student just said is read without scrolling the page. */
-@media (min-width: 56.3125rem) and (min-height: 40rem) {
+/* Two columns on a screen tall enough (#412, #450): the page is exactly one viewport high and never
+   scrolls; the header on top, each column scrolling inside its share. On the left the tabs stay
+   put above their panel, which alone scrolls (camera, transcript, photos, resources), and the chat
+   below keeps its input and **Enviar** pinned at the bottom, only its log scrolling. */
+@media (min-width: 56.3125rem) and (min-height: 30rem) {
   .workspace {
     display: flex;
     flex-direction: column;
     height: 100vh;
     height: 100dvh;
     box-sizing: border-box;
-    padding-bottom: var(--space-3);
+    overflow: hidden;
+    padding-bottom: var(--space-2);
   }
 
   .workspace-header {
@@ -110,19 +120,41 @@
 
   .workspace-left {
     min-height: 0;
-    gap: var(--space-3);
+    overflow: hidden;
   }
 
   .workspace-sources {
-    flex: 0 1 auto;
-    min-height: 7rem;
+    flex: 3 1 0;
+    min-height: 8rem;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* The tab list stays; only the active panel scrolls. */
+  .workspace-sources > .workspace-tabs {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace-sources .workspace-tablist {
+    flex: none;
+  }
+
+  .workspace-sources .workspace-tabpanel {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
   }
 
+  /* Never shorter than its heading and form (the log alone shrinks to nothing and scrolls), so the
+     input and **Enviar** are always on screen; the tabs' panel gives way instead. */
   .workspace-chat {
-    flex: 1 0 18rem;
-    min-height: 18rem;
+    flex: 2 1 0;
+    min-height: min-content;
     display: flex;
     flex-direction: column;
   }
@@ -134,6 +166,12 @@
 
   .workspace-chat .ws-chat-log {
     max-height: none;
+  }
+
+  /* A two-line input to start with (it grows by hand), so the log keeps more of the column. */
+  .workspace-chat .ws-chat-form textarea {
+    height: 3.5rem;
+    min-height: 2.5rem;
   }
 
   .workspace-document {
@@ -158,7 +196,12 @@
   display: flex;
   gap: var(--space-1);
   border-bottom: 1px solid var(--line);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
+  /* #450: outside the one-viewport layout the tabs still stay on screen while the page scrolls. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--paper);
 }
 
 .workspace-tab {
@@ -181,6 +224,13 @@
 
 .workspace-live {
   color: var(--correction);
+  font-size: var(--step--1);
+  font-weight: 400;
+}
+
+/* #450: a capture paused while Recursos is shown. */
+.workspace-paused {
+  color: var(--ink-muted);
   font-size: var(--step--1);
   font-weight: 400;
 }
@@ -430,9 +480,12 @@
 
 .resource-grid {
   display: grid;
-  /* #432: thumbnails large enough to recognize the page (at least about 14rem wide). */
-  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
-  gap: var(--space-3);
+  /* #432 made thumbnails large enough to recognize the page; #450 makes them smaller (at least
+     8rem wide, filling the column), so two or three share a row of the narrower side column and
+     about four show at once. */
+  grid-template-columns: repeat(auto-fill, minmax(min(8rem, 100%), 1fr));
+  gap: var(--space-2);
+  align-items: start;
   margin: 0 0 var(--space-3);
   padding: 0;
   list-style: none;
@@ -448,7 +501,7 @@
   border-radius: var(--radius-m);
 }
 
-.resource-card button {
+.resource-open {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -464,28 +517,28 @@
   text-align: left;
 }
 
-.resource-card button:hover {
+.resource-open:hover {
   border-color: var(--line);
   background: var(--surface);
 }
 
+/* #450: the column's width and the page's own height -- the natural aspect ratio, no empty band
+   above or below, never cropped. */
 .resource-thumb {
   display: block;
   box-sizing: border-box;
   width: 100%;
   height: auto;
-  aspect-ratio: 3 / 4;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   background: var(--surface-sunken);
-  /* The whole page, never cropped to a strip. */
-  object-fit: contain;
 }
 
 .resource-thumb-empty {
   display: flex;
   align-items: center;
   justify-content: center;
+  aspect-ratio: 4 / 3;
   color: var(--external);
   font-size: var(--step--1);
   font-weight: 700;
@@ -495,7 +548,7 @@
   opacity: 0.6;
 }
 
-/* #432: the selection checkbox, over the thumbnail's corner, and the selected card. */
+/* #432, #450: the selection checkbox over the thumbnail's top-left corner, and the selected card. */
 
 .resource-check {
   position: absolute;
@@ -505,11 +558,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  box-sizing: border-box;
   border: 2px solid var(--line-strong);
   border-radius: var(--radius-s);
-  background: var(--paper);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 18%);
   cursor: pointer;
 }
 
@@ -548,6 +603,82 @@
   outline: 3px solid var(--accent);
   outline-offset: 1px;
   background: var(--accent-soft);
+}
+
+/* #450: the trash button over the thumbnail's top-right corner, and its inline confirmation. */
+
+.resource-delete {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  min-width: 0;
+  height: 1.75rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 18%);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.resource-delete:hover,
+.resource-delete:focus-visible {
+  border-color: var(--correction);
+  color: var(--correction);
+}
+
+.resource-confirm {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  left: var(--space-1);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--correction-line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+  font-size: var(--step--1);
+}
+
+.resource-confirm p {
+  margin: 0;
+  font-weight: 700;
+}
+
+.resource-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.resource-confirm-actions button {
+  min-height: 2rem;
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--step--1);
+}
+
+.resource-confirm-yes {
+  border-color: var(--correction);
+  background: var(--correction);
+  color: var(--on-accent);
+}
+
+.resource-confirm .resource-delete-failed {
+  color: var(--correction);
+  font-weight: 400;
 }
 
 .resources-selection {

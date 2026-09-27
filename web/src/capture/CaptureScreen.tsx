@@ -27,7 +27,8 @@
  *
  * The capture runs only while the tab is visible (#425). A hidden tab stops sending: the camera and
  * the recognizer (or the audio stream) stop, the socket stays open and says `button: pause`, and the
- * page shows «Captura en pausa». Visible again, it says `resume` and starts both again. A session no
+ * page shows «Captura en pausa». Visible again, it says `resume` and starts both again. Since #450
+ * the workspace pauses it the same way while its **Recursos** tab is shown (`suspended`). A session no
  * client sends to for a while is ended by the backend itself, which the page reads as «La sesión
  * terminó por inactividad».
  */
@@ -199,6 +200,9 @@ const PROTOCOL_REFUSED: Blocking = {
  * purpose, and starts again when the tab is back.
  */
 const PAUSED_NOTICE = "Captura en pausa: la pestaña está oculta";
+
+/** The same while the workspace shows **Recursos** instead (#450). */
+const SUSPENDED_NOTICE = "Captura en pausa: vuelve a la pestaña Captura para seguir";
 
 /**
  * What the backend's close reason ends with when it ended the session itself because no capture
@@ -426,13 +430,19 @@ export interface CaptureScreenProps {
    * The screen is the study workspace's Captura tab: since #411 a session that ended elsewhere
    * points to Construir and Estudiar instead of the list of sessions, and since #413 the screen is
    * a section with an `h2` (the workspace has the page's `main` and `h1`) and has no doubts line
-   * of its own (the workspace header counts them, and the doubts are asked in the chat).
+   * of its own (the doubts are asked in the workspace chat).
    */
   embedded?: boolean;
   /** How long an outage lasts before the blocking message; `LONG_OUTAGE_MS` by default. */
   longOutageMs?: number;
   /** The reconnect backoff of the session socket; its own default when left out. */
   reconnectDelaysMs?: readonly number[];
+  /**
+   * Since #450: the host hides the screen (the workspace shows **Recursos**), so the capture pauses
+   * as in a hidden browser tab (#425) -- camera and microphone stop, the socket says `pause` -- and
+   * resumes when it turns false again.
+   */
+  suspended?: boolean;
 }
 
 export default function CaptureScreen({
@@ -446,6 +456,7 @@ export default function CaptureScreen({
   embedded = false,
   longOutageMs = LONG_OUTAGE_MS,
   reconnectDelaysMs,
+  suspended = false,
 }: CaptureScreenProps) {
   const preview = useRef<HTMLVideoElement | null>(null);
   /** The three objects of a running session, so a press reaches the ones the effect built. */
@@ -521,6 +532,11 @@ export default function CaptureScreen({
   const [paused, setPaused] = useState(false);
   /** The same, for the socket's events and the device start, which run outside a render. */
   const pausedRef = useRef(false);
+  /** Since #450: the host's `suspended`, read by the running effect. */
+  const suspendedRef = useRef(suspended);
+  suspendedRef.current = suspended;
+  /** The running effect's pause/resume, called again when `suspended` changes. */
+  const syncPause = useRef<(() => void) | null>(null);
   /**
    * Since #447: the running effect's answer to a reconnect's `hello.ack`, which may carry another
    * STT mode than the one the devices run by (the backend restarted with another config).
@@ -824,10 +840,12 @@ export default function CaptureScreen({
       }
     };
     // Since #425 the capture runs only while the tab is visible: hidden, nothing is sent and the
-    // backend is told `pause`; visible again, `resume` and the devices start again.
+    // backend is told `pause`; visible again, `resume` and the devices start again. Since #450 the
+    // host's `suspended` (the workspace's Recursos tab) pauses it the same way.
+    const shouldPause = (): boolean => document.visibilityState === "hidden" || suspendedRef.current;
     const onVisibilityChange = (): void => {
       if (stopped.current) return;
-      const hidden = document.visibilityState === "hidden";
+      const hidden = shouldPause();
       if (hidden === pausedRef.current) return;
       pausedRef.current = hidden;
       setPaused(hidden);
@@ -858,6 +876,7 @@ export default function CaptureScreen({
       if (!pausedRef.current) void startTranscriber();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
+    syncPause.current = onVisibilityChange;
     // Leaving the page while a burst or a queued frame has not reached the backend loses it, so
     // the browser asks first -- then and only then.
     const onBeforeUnload = (event: BeforeUnloadEvent): void => {
@@ -891,9 +910,9 @@ export default function CaptureScreen({
     vocabularyHints.current = null;
 
     let disposed = false;
-    pausedRef.current = document.visibilityState === "hidden";
+    pausedRef.current = shouldPause();
     setPaused(pausedRef.current);
-    // A screen opened in a hidden tab says so right after its `hello`.
+    // A screen opened in a hidden (or suspended) tab says so right after its `hello`.
     if (pausedRef.current) socket.sendButton("pause", clock.current());
     void (async () => {
       const handshake = await socket.handshake;
@@ -919,6 +938,7 @@ export default function CaptureScreen({
       disposed = true;
       stopped.current = true;
       followAck.current = null;
+      syncPause.current = null;
       runtime.current.transcriber?.stop();
       runtime.current = { socket: null, camera: null, transcriber: null, wakeLock: null };
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -929,6 +949,11 @@ export default function CaptureScreen({
       socket.close();
     };
   }, [clearOutage, onSocketEvent, session.session_id, session.ws_path]);
+
+  // Since #450: the host hid the screen (or showed it again); pause or resume as a hidden tab does.
+  useEffect(() => {
+    syncPause.current?.();
+  }, [suspended]);
 
   // Object URLs are the browser's to give back, and a strip of a hundred bursts is a hundred of them.
   useEffect(
@@ -1067,7 +1092,7 @@ export default function CaptureScreen({
       {trouble !== null && <p role="alert">{trouble}</p>}
       {paused && !ending && connection !== "ended" && connection !== "lost" && (
         <p role="status" aria-label="Captura en pausa">
-          {PAUSED_NOTICE}
+          {suspended ? SUSPENDED_NOTICE : PAUSED_NOTICE}
         </p>
       )}
       {sttWarning !== null && (

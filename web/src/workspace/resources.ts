@@ -17,6 +17,7 @@
 import { getJson, topicPath, type ReadResult, type SourceCounts } from "../desk/api";
 import { array, id, object, str, type Decoder } from "../protocol/decode";
 import type { NotesTree } from "../notes/markdown";
+import { sourceUrl } from "../notes/api";
 import { parseProvenance, type Provenance } from "../notes/provenance";
 
 /** One source of `GET /api/subjects/{s}/topics/{t}/sources` (`TopicSourceItem`). */
@@ -44,6 +45,41 @@ export const decodeTopicSources: Decoder<TopicSources> = object({
 
 export function fetchTopicSources(subjectId: string, topicId: string): Promise<ReadResult<TopicSources>> {
   return getJson(`/api${topicPath(subjectId, topicId)}/sources`, decodeTopicSources);
+}
+
+/** What `deleteSource` got back. */
+export type DeleteOutcome =
+  | { kind: "ok" }
+  /** The backend has no delete route yet (405/501): the card says so and keeps the source. */
+  | { kind: "unsupported" }
+  | { kind: "failed"; message: string };
+
+/** What the card says when the backend cannot delete sources yet. */
+export const DELETE_UNSUPPORTED = "Este servidor todavía no permite borrar fuentes.";
+
+/**
+ * `DELETE /api/sources/{vault_id}` (#450): removes one stored source of the topic, the same path
+ * `GET /api/sources/{vault_id}` serves. A refusal carries the backend's Spanish `detail`.
+ */
+export async function deleteSource(vaultId: string): Promise<DeleteOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(sourceUrl(vaultId), { method: "DELETE" });
+  } catch {
+    return { kind: "failed", message: "No se pudo conectar con el servidor." };
+  }
+  if (response.ok) return { kind: "ok" };
+  if (response.status === 405 || response.status === 501) return { kind: "unsupported" };
+  let detail: string | null = null;
+  try {
+    const body: unknown = await response.json();
+    if (typeof body === "object" && body !== null && typeof (body as { detail?: unknown }).detail === "string") {
+      detail = (body as { detail: string }).detail;
+    }
+  } catch {
+    // No JSON body: the status says enough.
+  }
+  return { kind: "failed", message: detail ?? `El servidor respondió con un error (${response.status}).` };
 }
 
 export type ResourceGroupKind = "notes" | "book" | "pdf" | "web" | "images" | "transcript";
