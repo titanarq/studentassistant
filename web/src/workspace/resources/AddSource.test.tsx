@@ -72,7 +72,7 @@ function openChoice(name: string) {
 it("opens three choices, each showing its form, and Cancelar closes the panel", async () => {
   stubApi({ [`${BASE}/sources`]: sourceList([PAGE], [PAGE]).route, [`${BASE}/book`]: jsonResponse({ title: null }) });
   renderTab();
-  await screen.findByRole("button", { name: /Página 1/ });
+  await screen.findByRole("button", { name: /^Página 1/ });
 
   fireEvent.click(screen.getByRole("button", { name: "Añadir fuente" }));
   const choices = within(screen.getByRole("group", { name: "Tipo de fuente" }));
@@ -110,7 +110,7 @@ it("a PDF upload closes the panel, re-reads the list and the PDF appears", async
     },
   });
   renderTab();
-  await screen.findByRole("button", { name: /Página 1/ });
+  await screen.findByRole("button", { name: /^Página 1/ });
   expect(listCalls(fetchMock)).toBe(1);
 
   openChoice("PDF");
@@ -122,7 +122,7 @@ it("a PDF upload closes the panel, re-reads the list and the PDF appears", async
   expect(screen.queryByRole("form")).toBeNull();
   await waitFor(() => expect(listCalls(fetchMock)).toBe(2));
   const kept = await screen.findByRole("list", { name: "Fuentes del tema" });
-  await waitFor(() => expect(within(kept).getAllByRole("button")).toHaveLength(2));
+  await waitFor(() => expect(within(kept).getAllByRole("button").filter((b) => b.classList.contains("resource-open"))).toHaveLength(2));
 });
 
 it("a web page by URL closes the panel, re-reads the list and the page appears", async () => {
@@ -135,7 +135,7 @@ it("a web page by URL closes the panel, re-reads the list and the page appears",
     },
   });
   renderTab();
-  await screen.findByRole("button", { name: /Página 1/ });
+  await screen.findByRole("button", { name: /^Página 1/ });
 
   openChoice("Página web");
   fireEvent.change(screen.getByLabelText("Dirección de la página"), { target: { value: ADDED.url } });
@@ -144,7 +144,7 @@ it("a web page by URL closes the panel, re-reads the list and the page appears",
   expect(await screen.findByText("Página «La Bastilla» guardada como fuente.")).toBeInTheDocument();
   expect(screen.queryByRole("form")).toBeNull();
   await waitFor(() => expect(listCalls(fetchMock)).toBe(2));
-  expect(await screen.findByRole("button", { name: /La Bastilla/ })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: /^Web: La Bastilla|^La Bastilla/ })).toBeInTheDocument();
 });
 
 it("a book title closes the panel and re-reads the list", async () => {
@@ -154,7 +154,7 @@ it("a book title closes the panel and re-reads the list", async () => {
     [`PUT ${BASE}/book`]: jsonResponse({ title: "Historia 4.º ESO" }),
   });
   renderTab();
-  await screen.findByRole("button", { name: /Página 1/ });
+  await screen.findByRole("button", { name: /^Página 1/ });
 
   openChoice("Libro de texto");
   await screen.findByText("Este tema aún no tiene libro de texto.");
@@ -175,7 +175,7 @@ it("a refused add keeps the panel open with the form's Spanish error and does no
     [`POST ${BASE}/web-pages`]: jsonResponse({ detail: "No se pudo descargar la página." }, 502),
   });
   renderTab();
-  await screen.findByRole("button", { name: /Página 1/ });
+  await screen.findByRole("button", { name: /^Página 1/ });
 
   openChoice("PDF");
   fireEvent.click(screen.getByRole("button", { name: "Añadir PDF" }));

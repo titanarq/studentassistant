@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CapturePage from "../capture/CapturePage";
 import { fetchTopics, topicPath } from "../desk/api";
 import { parseNotes } from "../notes/markdown";
-import { fetchPending } from "../pending/api";
 import DocumentPanel from "./DocumentPanel";
 import { SourceSelectionContext, useSourceSelection } from "./resources/selection";
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
-import WorkspaceCost from "./WorkspaceCost";
 import WorkspaceTabs from "./WorkspaceTabs";
 import ModeSwitch from "../study/ModeSwitch";
 import "../notes/notes.css";
@@ -19,9 +17,6 @@ type Tab = "capture" | "resources";
 export type NarrowView = "document" | "left" | "chat";
 
 export { EMPTY_NOTES } from "./DocumentPanel";
-
-/** The doubts counter's tooltip (#413): where the doubts are answered. */
-export const DOUBTS_TOOLTIP = "Las dudas te las pregunta el chat de este espacio; contéstalas allí.";
 
 const VIEWS: Array<[NarrowView, string]> = [
   ["document", "Documento"],
@@ -34,10 +29,12 @@ const VIEWS: Array<[NarrowView, string]> = [
  * screen with, on the left, the tabs **Captura** (the capture flow, preset to this topic) and
  * **Recursos** (the topic's sources and the sources viewer) above the chat, and on the right the
  * topic's document (`apuntes.md`), which the student can also edit (`DocumentPanel`, #316). A
- * provenance footnote opens its source in **Recursos**. The capture tab stays mounted while hidden, so a running session goes on.
- * The header also carries the doubts counter (plain text since #413: the doubts are asked in the
- * chat, never on the legacy `/pending` page, epic #311), a **Versiones** link to the notes' history and the
- * spend of the open session or of the topic (`WorkspaceCost`, #372).
+ * provenance footnote opens its source in **Recursos**. The capture tab stays mounted while hidden,
+ * so a running session goes on, but since #450 it is paused (camera and microphone off, the socket
+ * says `pause`) while **Recursos** is shown, and resumes back on **Captura**.
+ * The header (#450) is one compact bar: the switch **Construir · Estudiar** and the topic's name on
+ * the left, the **Versiones** link and the way back to the study desk on the right (no doubts
+ * counter and no spend line since #450: the doubts are asked in the chat).
  * The sources ticked in **Recursos** (#432) are the page's selection (`SourceSelectionContext`):
  * chips above the chat input, sent with the next message.
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat.
@@ -48,40 +45,24 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   const selection = useSourceSelection();
   const { notes } = state;
   const [topicName, setTopicName] = useState(topicId);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("capture");
   const [view, setView] = useState<NarrowView>("document");
   const [capturing, setCapturing] = useState(false);
   const [open, setOpen] = useState<OpenResource | null>(null);
   const [resourcesShown, setResourcesShown] = useState(0);
-  const [pending, setPending] = useState<number | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
 
-  // Read again when a capture starts or ends here, for the open session the cost line follows.
   useEffect(() => {
     let cancelled = false;
     void fetchTopics(subjectId).then((result) => {
       const topic = result.kind === "ok" ? result.value.find((t) => t.topic_id === topicId) : undefined;
       if (cancelled || !topic) return;
       setTopicName(topic.name);
-      setSessionId(topic.open_session_id ?? null);
     });
     return () => {
       cancelled = true;
     };
-  }, [subjectId, topicId, capturing]);
-
-  // The doubts counter is read again whenever the document changed.
-  const notesKey = notes.kind === "ready" ? `${notes.revision ?? ""}:${notes.text.length}:${notes.version}` : notes.kind;
-  useEffect(() => {
-    let cancelled = false;
-    void fetchPending(subjectId, topicId, "open").then((result) => {
-      if (!cancelled && result.kind === "ok") setPending(result.value.open_count);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [subjectId, topicId, notesKey, state.doubtsKey]);
+  }, [subjectId, topicId]);
 
   const tree = useMemo(() => (notes.kind === "ready" ? parseNotes(notes.text) : null), [notes]);
 
@@ -118,37 +99,30 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   return (
     <WorkspaceContext.Provider value={state}>
       <SourceSelectionContext.Provider value={selection}>
-        <main className="workspace" data-view={view}>
+        <main className="workspace" data-view={view} aria-label="Espacio de estudio">
           <header className="workspace-header">
-            <p className="crumbs">
-              <a href={base}>← Tema {topicName}</a>
-              <a className="crumbs-home" href="/">
-                Mesa de estudio
-              </a>
-            </p>
-            <h1>Espacio de estudio</h1>
-            <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
-            <p className="page-context">Tema {topicName}</p>
-            <div className="workspace-meta">
-              <p
-                className="workspace-pending"
-                role="status"
-                aria-label="Dudas pendientes"
-                title={pending === null ? undefined : DOUBTS_TOOLTIP}
-              >
-                {pending === null ? null : pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
-              </p>
-              {notes.kind === "ready" && (
-                <p className="workspace-versions">
+            <div className="workspace-bar">
+              <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
+              <h1 className="workspace-title">
+                <a href={base} title="Abrir la página del tema">
+                  {topicName}
+                </a>
+              </h1>
+              {/* Right-aligned; room is left here for the settings and the profile. */}
+              <nav className="workspace-bar-end" aria-label="Más">
+                {notes.kind === "ready" && (
                   <a
+                    className="workspace-versions"
                     href={`${base}/versions`}
                     aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
                   >
-                    Versiones
+                    Versiones{notes.version === null ? "" : ` · v${notes.version}`}
                   </a>
-                </p>
-              )}
-              <WorkspaceCost subjectId={subjectId} topicId={topicId} sessionId={sessionId} refreshKey={notesKey} />
+                )}
+                <a className="workspace-home" href="/">
+                  Mesa de estudio
+                </a>
+              </nav>
             </div>
             <div className="workspace-switch" role="group" aria-label="Qué mostrar">
               {VIEWS.map(([key, label]) => (
@@ -175,12 +149,14 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
                           {capturing && (
                             <>
                               {" "}
-                              <span className="workspace-live">en curso</span>
+                              <span className={tab === "capture" ? "workspace-live" : "workspace-paused"}>
+                                {tab === "capture" ? "en curso" : "en pausa"}
+                              </span>
                             </>
                           )}
                         </>
                       ),
-                      panel: <CapturePage preset={preset} onRunningChange={setCapturing} />,
+                      panel: <CapturePage preset={preset} onRunningChange={setCapturing} suspended={tab !== "capture"} />,
                     },
                     {
                       key: "resources",
@@ -201,7 +177,8 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
                 />
               </section>
               <section className="workspace-chat" aria-label="Chat">
-                <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing} />
+                {/* A capture paused on Recursos (#450) hears nothing: the chat offers its own microphone. */}
+                <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing && tab === "capture"} />
               </section>
             </div>
             <section className="workspace-document" aria-label="Documento">

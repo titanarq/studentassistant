@@ -628,6 +628,48 @@ describe("a hidden tab pauses the capture (#425)", () => {
     expect(socket().closeCalls).toEqual([]);
   });
 
+  it("pauses the same way while the host suspends the screen, and resumes when it stops (#450)", async () => {
+    const view = renderScreen({ embedded: true });
+    await open();
+    const recognition = fakes.recognitions[0];
+
+    await act(async () => {
+      view.rerender(
+        <CaptureScreen session={SESSION} subjectName="Biología" topicName="Fotosíntesis" now={() => NOW} playShutter={shutter} embedded suspended />,
+      );
+    });
+
+    expect(buttons()).toEqual(["pause"]);
+    expect(fakes.videoTrack.readyState).toBe("ended");
+    expect(recognition.abortCount + recognition.stopCount).toBeGreaterThan(0);
+    expect(screen.getByRole("status", { name: "Captura en pausa" })).toHaveTextContent(
+      "Captura en pausa: vuelve a la pestaña Captura para seguir",
+    );
+    expect(socket().closeCalls).toEqual([]);
+
+    // A hidden browser tab meanwhile changes nothing more: it is paused already.
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+    await act(async () => {
+      restores.push(setVisibility("visible"));
+    });
+    expect(buttons()).toEqual(["pause"]);
+
+    await act(async () => {
+      view.rerender(
+        <CaptureScreen session={SESSION} subjectName="Biología" topicName="Fotosíntesis" now={() => NOW} playShutter={shutter} embedded />,
+      );
+    });
+    expect(buttons()).toEqual(["pause", "resume"]);
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
+    );
+    await waitFor(() => expect(fakes.recognitions).toHaveLength(2));
+    expect(screen.queryByRole("status", { name: "Captura en pausa" })).toBeNull();
+    expect(socket().closeCalls).toEqual([]);
+  });
+
   it("stops the audio stream in server mode and starts it again", async () => {
     renderScreen();
     await open("server");

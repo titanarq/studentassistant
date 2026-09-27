@@ -99,7 +99,7 @@
   session ended elsewhere says to go on in Construir or Estudiar instead of the list of sessions.
 - **Embedded capture in the workspace's Captura tab** (#413): `CaptureScreen` `embedded` is a
   `section` ("Captura en curso") with an `h2`, not a `main` with an `h1` (the workspace owns
-  both), and shows no "Dudas pendientes" line (the workspace header counts them; the doubts are
+  both), and shows no "Dudas pendientes" line (since #450 the workspace has no counter either; the doubts are
   asked in the chat). Its buttons are **Capturar**, **Importante**, **Libro** / **Apuntes** and
   **Terminar**, the voice commands' buttons (VISION §5.3); the whole topic is prepared by asking
   the chat («prepárame el tema»), never by a button. The standalone `/capture` keeps its `main`,
@@ -152,25 +152,25 @@
     voiceSupported?})`: the last three are the seams tests use.
 - **Study workspace** (`/subjects/<s>/topics/<t>/workspace`, "Espacio de estudio", `src/workspace/`,
   #312, epic #311): one screen for a topic, opened from the study desk (the row's **Construir**, "Sesión
-  abierta", a created topic; #368) and from the topic page's **Construir**. The header has the crumbs, the topic name and the open-doubts counter ("N dudas
-  pendientes", from `GET .../pending?status=open`, read again whenever the document changes;
-  plain text since #413, not a link to the legacy pending page, with the tooltip
-  `DOUBTS_TOOLTIP` saying the doubts are asked and answered in the chat, epic #311). The page's
-  root is its `main` (#413), so the embedded capture has none of its own. Next to it, in one wrapping row (`.workspace-meta`, also below
-  900 px, no horizontal scroll; #372): a **Versiones** link to `.../versions` (`VersionsPage`),
-  shown once the notes are read, whose accessible name carries the current `vN`; and the spend
-  line (`WorkspaceCost`): "Esta sesión: <importe>" (`GET /api/cost` with the topic's open
-  session, `open_session_id` of the topic list, read again when a capture starts or ends here)
-  or else "Este tema: <importe>" (`GET .../cost` total, plus `GET /api/cost` for the caps),
-  amounts as `formatUsd`. A reached cap adds a badge with `DeskCost`'s `PAUSED_BANNER` wording;
-  unpriced calls put `UNPRICED_WARNING` in the line's `title`. It is read again whenever the
-  document changes (the same key as the doubts counter; no polling) and shows nothing while
-  loading or when the read fails. Two columns (a CSS grid):
+  abierta", a created topic; #368) and from the topic page's **Construir**. The page uses the whole
+  screen width (16 px side gutter, #450). The header is one compact bar (#450): on the left the
+  switch **Construir · Estudiar** (`ModeSwitch`) immediately followed by the topic's name (the
+  page's `h1`, a link to the topic page); right-aligned (`.workspace-bar-end`, where the settings
+  and the profile will go) a **Versiones · vN** link to `.../versions` (`VersionsPage`), shown
+  once the notes are read, whose accessible name carries the current `vN`, and **Mesa de
+  estudio** (`/`). There is no doubts counter and no spend line since #450 (the doubts are asked
+  in the chat; `WorkspaceCost` is gone). The page's root is its `main` (#413), so the embedded
+  capture has none of its own. The split follows with a minimal gap. Two columns (a CSS grid):
   - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
     with wrap-around, Home/End) with **Captura** and **Recursos**. Both panels stay mounted and
-    the inactive one is only `hidden`, so switching to **Recursos** never stops a running capture
-    (camera, recognizer and socket keep running); while a session runs the tab reads "Captura en
-    curso". **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
+    the inactive one is only `hidden`. Since #450 showing **Recursos** pauses a running capture
+    exactly like a hidden browser tab (#425): `CapturePage`/`CaptureScreen` get `suspended`, the
+    camera and the recognizer (or the audio stream) stop, the still-open socket says `button:
+    pause`, and the tab reads "Captura en pausa"; back on **Captura** the socket says `resume` and
+    the camera and microphone start again ("Captura en curso"). The session is not ended, but the
+    backend's idle auto-end (#425, `[server] capture_idle_end_seconds`, 5 min by default) ends a
+    session left paused that long. While paused the chat is told no capture runs, so it offers
+    its own **Hablar**. **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
     **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
     "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by
     `resourceList(sources, tree)` (`resources.ts`) from the topic's source list
@@ -201,7 +201,14 @@
     group (a disclosure button with `aria-expanded`); above them the counts "N pendientes · M
     incorporadas · K apartadas" and the hint (`RESOURCES_HINT`) to select pages and ask the
     assistant in the chat («Selecciona páginas y pídeselo al asistente en el chat (p. ej.
-    «incorpora el texto de estas»).»): there are no action buttons. Cited transcript
+    «incorpora el texto de estas»).»). The only per-card action is **delete** (#450): a trash
+    button over the thumbnail's top-right corner («Borrar <title>») opens an inline confirmation
+    over the card («¿Borrar esta fuente?» with **Borrar** / **Cancelar**, focus on Cancelar,
+    Escape cancels and gives the focus back; never `window.confirm`); **Borrar** calls
+    `deleteSource(vaultId)` (`resources.ts`, `DELETE /api/sources/{vault_id}`) and on success the
+    list is read again. A 405/501 says «No se pudo borrar: Este servidor todavía no permite borrar
+    fuentes.» (the backend route is #451, not built yet), any other refusal its `detail`, with
+    **Cerrar**. Cited transcript
     spans follow, without a state. The metadata is read by `useSourceMetas`
     (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
     source; every listed source is read again each time the tab is shown and after each change
@@ -209,11 +216,11 @@
     source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
     (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
     the list.
-    **Large thumbnails and the selection (#432).** The grids are `minmax(min(14rem, 100%), 1fr)`
-    columns (two at most below 36rem, no horizontal scroll) and each thumbnail keeps the page's
-    aspect ratio (`aspect-ratio: 3 / 4`, `object-fit: contain`, never cropped). Each stored-source
-    card (kept and set-aside; transcript spans are not selectable) has a checkbox over the
-    thumbnail's corner, apart from the button that opens it, labelled «Seleccionar <title>»: a
+    **Thumbnails and the selection (#432, #450).** The grids are `minmax(min(8rem, 100%), 1fr)`
+    columns (two at most below 36rem, no horizontal scroll) and each thumbnail fills its column's
+    width at the image's natural aspect ratio (no empty band above or below, never cropped).
+    Each stored-source card (kept and set-aside; transcript spans are not selectable) has a
+    checkbox over the thumbnail's top-left corner, apart from the button that opens it, labelled «Seleccionar <title>»: a
     click or Space toggles it, Shift-click sets the range from the last toggled card in the
     visible order (kept, then the set-aside ones when shown) to the state the clicked one takes.
     A selected card shows a checkmark and an outline. While N > 0 a bar above the grid reads «N
@@ -346,11 +353,16 @@
     - The request's rendering is one switch on the entry's origin (`Request` in `ChatPanel.tsx`:
       voice, typed, or `system` for what the assistant does on its own), the reply's on its kind
       (`Reply`, `DoubtEntry`).
-    - **Input on screen, log following the newest turn (#412).** On a wide screen at least 40rem
-      tall (`workspace.css`, `min-width: 56.3125rem and min-height: 40rem`) the page is one
-      viewport high: the header on top, each column scrolling inside its share. On the left the
-      tabs' panel (`.workspace-sources`: camera preview, controls, transcript, photos) shrinks and
-      scrolls, and the chat below keeps at least 18rem with its form pinned at the bottom; the
+    - **Input on screen, log following the newest turn (#412, #450).** On a wide screen at least
+      30rem tall (`workspace.css`, `min-width: 56.3125rem and min-height: 30rem`) the page is
+      exactly one viewport high and never scrolls: the header on top, each column scrolling inside
+      its share. The columns' proportions are fluid (#450): the left column is 50 % at 900 px and
+      shrinks linearly to 25 % at 1200 px and wider (`clamp(max(18rem, 25%), calc(50% - (100vw -
+      56.25rem) * 0.97), 50%)`), the document takes the rest. On the left the tabs' list stays put
+      and only the active panel (`.workspace-tabpanel`: camera preview, controls, transcript,
+      photos, resources) scrolls (the list is also `position: sticky` outside this layout), and
+      the chat below (3:2 split with the tabs) is never shorter than its heading and form, so
+      the input and **Enviar** are always visible and only the log scrolls; the
       capture preview is capped at 32vh and the transcript at 20vh there, scoped to `.workspace`
       so `/capture` is unchanged. The log (`.ws-chat-log`) is its own scroll area (60vh at most
       outside that layout) and follows the newest turn through `src/chat/useFollowLog.ts`

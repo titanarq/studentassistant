@@ -70,7 +70,7 @@ it("renders the study workspace at the topic's /workspace path", () => {
 
   render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />);
 
-  expect(screen.getByRole("heading", { name: "Espacio de estudio" })).toBeInTheDocument();
+  expect(screen.getByRole("main", { name: "Espacio de estudio" })).toBeInTheDocument();
   expect(screen.getByRole("tablist", { name: "Captura o recursos" })).toBeInTheDocument();
 });
 

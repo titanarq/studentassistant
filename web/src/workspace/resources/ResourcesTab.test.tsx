@@ -97,8 +97,11 @@ function renderTab(notes = NOTES, refreshKey = 0, onOpen = vi.fn()) {
   };
 }
 
+/** The button that opens a card (not its trash button, #450, whose name also carries the title). */
 function card(name: RegExp) {
-  return screen.getByRole("button", { name });
+  const buttons = screen.getAllByRole("button", { name }).filter((b) => b.classList.contains("resource-open"));
+  expect(buttons).toHaveLength(1);
+  return buttons[0];
 }
 
 function metaCalls(fetchMock: ReturnType<typeof stubApi>, file: string) {
@@ -115,7 +118,7 @@ it("shows each source's state, the reasons, the counts and the hint", async () =
   // The counts do not wait for page 3's metadata (flagged stays pending): wait for its warning.
   await waitFor(
     () =>
-      expect(within(kept).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      expect(within(kept).getAllByRole("button").filter((b) => b.classList.contains("resource-open")).map((b) => b.textContent)).toEqual([
         "Página 1 · apuntesIncorporada",
         "Página 2 · apuntesPendiente",
         "Página 3 · apuntesPendienteAviso: Puede estar cortada",
@@ -131,7 +134,7 @@ it("shows each source's state, the reasons, the counts and the hint", async () =
   fireEvent.click(toggle);
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(setAside).toBeVisible();
-  expect(within(setAside).getAllByRole("button").map((b) => b.textContent)).toEqual([
+  expect(within(setAside).getAllByRole("button").filter((b) => b.classList.contains("resource-open")).map((b) => b.textContent)).toEqual([
     "Página 4 · apuntesApartada En blanco",
     "Página 5 · apuntesApartada Repetida de la página 2",
     "Página 6 · apuntesApartada Mismo contenido que la página 1 (la apartaste tú)",
@@ -384,5 +387,72 @@ describe("the selection (#432)", () => {
     renderTab();
     await screen.findByText("2 pendientes · 1 incorporada · 4 apartadas");
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  });
+});
+
+describe("deleting a source (#450)", () => {
+  const PAGE_1 = `DELETE ${SOURCES}/notes/page-001.jpg`;
+
+  it("asks inline, deletes on «Borrar» and reads the list again", async () => {
+    let summaries = 0;
+    const fetchMock = stubApi({
+      ...ROUTES,
+      [SUMMARY]: () => (summaries++ === 0 ? summary(2) : summary(1)),
+      [PAGE_1]: () => new Response(null, { status: 204 }),
+    });
+    renderTab();
+    await screen.findByRole("button", { name: /^Página 2/ });
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" }));
+
+    const ask = screen.getByRole("group", { name: "Borrar Página 1 · apuntes" });
+    expect(ask).toHaveTextContent("¿Borrar esta fuente?");
+    expect(within(ask).getByRole("button", { name: "Cancelar" })).toHaveFocus();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    fireEvent.click(within(ask).getByRole("button", { name: "Borrar" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path, init]) => `${init?.method} ${path}` === PAGE_1)).toBe(true));
+    await waitFor(() => expect(summaries).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("group", { name: /^Borrar/ })).toBeNull());
+  });
+
+  it("cancels with «Cancelar» or Escape, giving the focus back to the trash button", async () => {
+    const fetchMock = stubApi({ ...ROUTES, [SUMMARY]: summary(2) });
+    renderTab();
+    const trash = await screen.findByRole("button", { name: "Borrar Página 1 · apuntes" });
+
+    fireEvent.click(trash);
+    fireEvent.click(within(screen.getByRole("group", { name: "Borrar Página 1 · apuntes" })).getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("group", { name: "Borrar Página 1 · apuntes" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Cancelar" }), { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Borrar Página 1 · apuntes" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" })).toHaveFocus();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
+  it("says when the server cannot delete sources yet, and the backend's detail of a refusal", async () => {
+    stubApi({
+      ...ROUTES,
+      [SUMMARY]: summary(2),
+      [PAGE_1]: () => jsonResponse({ detail: "Method Not Allowed" }, 405),
+      [`DELETE ${SOURCES}/notes/page-002.jpg`]: () => jsonResponse({ detail: "Los apuntes citan esta página." }, 409),
+    });
+    renderTab();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Borrar Página 1 · apuntes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Borrar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo borrar: Este servidor todavía no permite borrar fuentes.");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 2 · apuntes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Borrar" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo borrar: Los apuntes citan esta página.");
+    // The source stays listed.
+    expect(card(/^Página 2/)).toBeInTheDocument();
   });
 });

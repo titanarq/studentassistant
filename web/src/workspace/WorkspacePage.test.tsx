@@ -6,7 +6,7 @@ import { NOTES } from "../notes/testNotes";
 import { PROTOCOL_VERSION } from "../protocol";
 import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi";
 import { resourceList } from "./resources";
-import WorkspacePage, { DOUBTS_TOOLTIP, EMPTY_NOTES } from "./WorkspacePage";
+import WorkspacePage, { EMPTY_NOTES } from "./WorkspacePage";
 import { parseNotes } from "../notes/markdown";
 import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
@@ -91,21 +91,22 @@ function tab(name: RegExp | string) {
   return screen.getByRole("tab", { name });
 }
 
-it("shows the two columns: tabs above the chat, the notes on the right, and the doubts counter", async () => {
-  renderPage();
+it("shows the two columns: tabs above the chat, the notes on the right, under a compact header", async () => {
+  const fetchMock = renderPage();
 
-  expect(screen.getByRole("heading", { name: "Espacio de estudio" })).toBeInTheDocument();
+  // #450: one bar -- Construir · Estudiar, then the topic's name; no doubts counter, no spend.
+  const header = screen.getByRole("banner");
+  expect(await within(header).findByRole("heading", { level: 1, name: "La Revolución Industrial" })).toBeInTheDocument();
+  expect(within(header).getByRole("navigation", { name: "Modo del tema" })).toBeInTheDocument();
+  expect(within(header).getByRole("link", { name: "Mesa de estudio" })).toHaveAttribute("href", "/");
   expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "false");
   expect(within(screen.getByRole("region", { name: "Chat" })).getByRole("heading", { name: "Chat con el asistente" })).toBeInTheDocument();
   const doc = screen.getByRole("region", { name: "Documento" });
   expect(await within(doc).findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
-  // Since #413 the counter is plain text: the doubts are asked in the chat, not on /pending.
-  const counter = screen.getByRole("status", { name: "Dudas pendientes" });
-  await waitFor(() => expect(counter).toHaveTextContent("3 dudas pendientes"));
-  expect(within(counter).queryByRole("link")).toBeNull();
-  expect(counter).toHaveAttribute("title", DOUBTS_TOOLTIP);
-  expect(screen.queryByRole("link", { name: /dudas pendientes/ })).toBeNull();
+  expect(screen.queryByRole("status", { name: "Dudas pendientes" })).toBeNull();
+  expect(within(header).queryByText(/dudas pendientes|Este tema:|Esta sesión:/)).toBeNull();
+  expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/pending") || String(path).includes("/cost"))).toBe(false);
   // The capture flow is preset to the topic: no subject or topic picker.
   expect(await screen.findByRole("button", { name: "Empezar una sesión nueva" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Asignatura" })).toBeNull();
@@ -127,7 +128,7 @@ it("moves between the tabs with the arrow keys", async () => {
   await screen.findByRole("button", { name: "Empezar una sesión nueva" });
 }, PAGE_TEST_TIMEOUT);
 
-it("keeps a running capture mounted when switching to Recursos, and marks it as running", async () => {
+it("pauses a running capture on Recursos and resumes it back on Captura (#450)", async () => {
   renderPage();
 
   fireEvent.click(await screen.findByRole("button", { name: "Empezar una sesión nueva" }));
@@ -154,7 +155,7 @@ it("keeps a running capture mounted when switching to Recursos, and marks it as 
   expect(screen.getAllByRole("main")).toHaveLength(1);
   const captureTab = document.getElementById("workspace-panel-capture")!;
   expect(within(captureTab).queryByRole("heading", { level: 1 })).toBeNull();
-  expect(screen.getAllByRole("status", { name: "Dudas pendientes" })).toHaveLength(1);
+  expect(screen.queryByRole("status", { name: "Dudas pendientes" })).toBeNull();
   expect(screen.getByRole("button", { name: "Terminar" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /preparar apuntes/ })).toBeNull();
 
@@ -163,14 +164,30 @@ it("keeps a running capture mounted when switching to Recursos, and marks it as 
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
   const capturePanel = document.getElementById("workspace-panel-capture")!;
   expect(capturePanel).not.toBeVisible();
+  // Still mounted and connected, but the camera and the recognizer stop and the backend hears `pause`.
   expect(within(capturePanel).getByRole("button", { name: "Capturar", hidden: true })).toBeInTheDocument();
   expect(socket.readyState).toBe(WebSocket.OPEN);
-  expect(fakes.videoTrack.readyState).toBe("live");
-  expect(fakes.recognitions.every((r) => r.stopCount === 0 && r.abortCount === 0)).toBe(true);
-  expect(tab("Captura en curso")).toBeInTheDocument();
+  await waitFor(() => expect(fakes.videoTrack.readyState).toBe("ended"));
+  expect(fakes.recognitions.some((r) => r.stopCount > 0 || r.abortCount > 0)).toBe(true);
+  const buttons = () =>
+    socket.sent
+      .filter((frame) => frame.kind === "text")
+      .map((frame) => JSON.parse(String(frame.text)) as { type: string; button?: string })
+      .filter((m) => m.type === "button")
+      .map((m) => m.button);
+  expect(buttons()).toEqual(["pause"]);
+  expect(tab("Captura en pausa")).toBeInTheDocument();
+  expect(within(capturePanel).getByRole("status", { name: "Captura en pausa", hidden: true })).toHaveTextContent(
+    "vuelve a la pestaña Captura",
+  );
 
-  fireEvent.click(tab("Captura en curso"));
+  fireEvent.click(tab("Captura en pausa"));
   expect(screen.getByRole("button", { name: "Capturar" })).toBeVisible();
+  expect(buttons()).toEqual(["pause", "resume"]);
+  await waitFor(() =>
+    expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
+  );
+  expect(tab("Captura en curso")).toBeInTheDocument();
   expect(fakes.sockets).toHaveLength(1);
 }, PAGE_TEST_TIMEOUT);
 
@@ -202,7 +219,7 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
   // metadata arrive on their own, so wait for the whole list.
   await waitFor(
     () =>
-      expect(within(pages).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+      expect(within(pages).getAllByRole("button").filter((b) => b.classList.contains("resource-open")).map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
         "Página 1 · apuntes",
         "Página 2 · apuntes",
         "Libro, página 1",
@@ -216,7 +233,7 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
     await within(resources).findByText("Hay 1 web guardada que los apuntes todavía no citan.", {}, { timeout: 5000 }),
   ).toBeInTheDocument();
 
-  fireEvent.click(within(pages).getByRole("button", { name: /Página 1 · apuntes/ }));
+  fireEvent.click(within(pages).getByRole("button", { name: /^Página 1 · apuntes/ }));
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
   expect(await within(dialog).findByText("Gran Bretaña, s. XVIII")).toBeInTheDocument();
 }, PAGE_TEST_TIMEOUT);
@@ -264,22 +281,14 @@ it("refreshes the document after the chat applied a change", async () => {
   expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/notes`)).toHaveLength(2);
 }, PAGE_TEST_TIMEOUT);
 
-it("reads the doubts counter again on a doubt of the chat and opens a contradiction's source in Recursos", async () => {
-  // The counter is also read when the notes load, so it drops to 2 only once the doubt is asked:
-  // "2 dudas pendientes" then proves the read the doubt triggered.
-  let asked = false;
+it("opens a contradiction's source of a chat doubt in Recursos", async () => {
   const stream = streamResponse();
-  const fetchMock = renderPage({
+  renderPage({
     ...ROUTES,
     [`${BASE}/workspace/stream`]: () => stream.response,
-    [`${BASE}/pending?status=open`]: () =>
-      jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", open_count: asked ? 2 : 3, items: [] }),
   });
   await screen.findByRole("heading", { name: /Contexto/ });
-  await waitFor(() => expect(screen.getByRole("status", { name: "Dudas pendientes" })).toHaveTextContent("3 dudas pendientes"));
-  const readsBefore = fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length;
 
-  asked = true;
   act(() =>
     stream.push(
       sseEvent("doubt.asked", {
@@ -294,12 +303,6 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
       }),
     ),
   );
-  // The counter and the chat's doubt card render from independent paths: await each on its own.
-  await waitFor(() => expect(screen.getByRole("status", { name: "Dudas pendientes" })).toHaveTextContent("2 dudas pendientes"), {
-    timeout: 5000,
-  });
-  expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length).toBeGreaterThan(readsBefore);
-
   fireEvent.click(await screen.findByRole("button", { name: "Ver la fuente: página 2" }, { timeout: 5000 }));
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
   const resources = document.getElementById("workspace-panel-resources")!;
@@ -309,7 +312,7 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
 
 it("switches the single column between document, capture/resources and chat", async () => {
   renderPage();
-  const root = screen.getByRole("heading", { name: "Espacio de estudio" }).closest(".workspace")!;
+  const root = screen.getByRole("banner").closest(".workspace")!;
   const group = screen.getByRole("group", { name: "Qué mostrar" });
 
   expect(root).toHaveAttribute("data-view", "document");
@@ -364,7 +367,7 @@ it("lists every stored source from the topic's source list, uncited webs include
   // the uncited web too. The list first shows the notes' citations alone: wait for the listing.
   await waitFor(
     () =>
-      expect(within(cards).getAllByRole("button").map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
+      expect(within(cards).getAllByRole("button").filter((b) => b.classList.contains("resource-open")).map((b) => b.querySelector(".resource-title")?.textContent)).toEqual([
         "Página 1 · apuntes",
         "Página 3 · apuntes",
         "Página 2 · apuntes",
@@ -378,7 +381,7 @@ it("lists every stored source from the topic's source list, uncited webs include
   expect(within(resources).queryByText(/todavía no citan/)).toBeNull();
   expect(fetchMock.mock.calls.some(([path]) => path === `${BASE}/summary`)).toBe(false);
 
-  fireEvent.click(within(cards).getByRole("button", { name: /El telar mecánico/ }));
+  fireEvent.click(within(cards).getByRole("button", { name: /^(Web: )?El telar mecánico/ }));
   const dialog = within(resources).getByRole("dialog", { name: "Web: El telar mecánico" });
   expect(await within(dialog).findByText(/Texto de la web/)).toBeInTheDocument();
 });
@@ -424,77 +427,11 @@ it("builds the resource list from the counts and the notes' citations", () => {
   expect(resourceList(null, null)).toEqual({ groups: [], uncitedWebs: 0 });
 });
 
-function costStatus(overrides: Record<string, unknown> = {}) {
-  return jsonResponse({
-    session_usd: 0,
-    day_usd: 0,
-    max_usd_per_session: null,
-    max_usd_per_day: null,
-    observer_paused: false,
-    editor_needs_confirmation: false,
-    unpriced_session_calls: 0,
-    unpriced_day_calls: 0,
-    unpriced_models: [],
-    ...overrides,
-  });
-}
-
-function topicCost(usd: number) {
-  const totals = { usd, tokens: 10, input_tokens: 5, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, calls: 1, unpriced_calls: 0 };
-  return jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", total: totals, sessions: [], no_session: totals });
-}
-
 it("links the notes' versions from the header, naming the current version", async () => {
   renderPage();
 
   const header = screen.getByRole("banner");
   const link = await within(header).findByRole("link", { name: "Versiones (actual: v2)" });
   expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/versions");
-  expect(link).toHaveTextContent("Versiones");
-});
-
-it("shows the topic's spend in the header and reads it again after the notes changed", async () => {
-  let costs = 0;
-  let reads = 0;
-  const stream = streamResponse();
-  renderPage({
-    ...ROUTES,
-    [`${BASE}/notes`]: () => (reads++ === 0 ? notes() : notes(NOTES, { revision: "c".repeat(64), version: 3 })),
-    [`${BASE}/workspace/stream`]: () => stream.response,
-    [`${BASE}/cost`]: () => topicCost(costs++ === 0 ? 0.01 : 0.05),
-    "/api/cost": costStatus(),
-  });
-  const header = screen.getByRole("banner");
-  await within(header).findByRole("link", { name: "Versiones (actual: v2)" });
-  expect(await within(header).findByText(/^Este tema: /)).toBeInTheDocument();
-
-  act(() => {
-    stream.push(sseEvent("notes.changed", { revision: "c".repeat(64), origin: "editor", summary: "Ampliado", turn_id: null }));
-  });
-
-  // The cost and the notes reload independently after notes.changed; await each on its own.
-  expect(await within(header).findByText("Este tema: 0,0500 USD", {}, { timeout: 5000 })).toBeInTheDocument();
-  expect(
-    await within(header).findByRole("link", { name: "Versiones (actual: v3)" }, { timeout: 5000 }),
-  ).toBeInTheDocument();
-});
-
-it("shows the open session's spend when the topic has a session open", async () => {
-  renderPage({
-    ...ROUTES,
-    "/api/subjects/historia/topics": jsonResponse({
-      subject_id: "historia",
-      topics: [
-        {
-          topic_id: "revolucion-industrial",
-          subject_id: "historia",
-          name: "La Revolución Industrial",
-          open_session_id: "s-20260926-1000",
-        },
-      ],
-    }),
-    "/api/cost?subject=historia&topic=revolucion-industrial&session=s-20260926-1000": costStatus({ session_usd: 0.25 }),
-  });
-
-  expect(await within(screen.getByRole("banner")).findByText("Esta sesión: 0,2500 USD")).toBeInTheDocument();
+  expect(link).toHaveTextContent("Versiones · v2");
 });

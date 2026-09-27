@@ -1,10 +1,10 @@
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary } from "../desk/api";
 import type { NotesTree } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
 import { sourceUrl } from "../notes/api";
 import AddSource from "./resources/AddSource";
-import { fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
+import { DELETE_UNSUPPORTED, deleteSource, fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
 import { countsText, resourceStates, STATE_LABELS, type SourceEntry, thumbnailOf } from "./resources/state";
 import { chipTitle, type SelectedSource, type SourceSelection, topicSourceId, useSelection } from "./resources/selection";
 import { useSourceMetas } from "./resources/useSourceMetas";
@@ -76,14 +76,120 @@ interface CardSelection {
   onToggle: (shift: boolean) => void;
 }
 
+/** The trash button's glyph (an outline bin), hidden from assistive technology. */
+function TrashIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 14h10l1-14" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+/** Where a card's delete is: idle, asking (the inline confirmation), running, or refused. */
+type Deletion = { kind: "idle" } | { kind: "asking" } | { kind: "deleting" } | { kind: "failed"; message: string };
+
+/**
+ * The card's trash button and its inline confirmation (#450): «¿Borrar esta fuente?» with
+ * **Borrar** and **Cancelar** over the thumbnail, never a browser dialog. Escape cancels; the
+ * focus goes to **Cancelar** when asking and back to the trash button after cancelling.
+ */
+function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: () => void }) {
+  const [deletion, setDeletion] = useState<Deletion>({ kind: "idle" });
+  const trash = useRef<HTMLButtonElement | null>(null);
+  const cancel = useRef<HTMLButtonElement | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const asking = deletion.kind !== "idle";
+  // The trash button is back only after the render that closes the confirmation.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (deletion.kind === "asking" || deletion.kind === "failed") cancel.current?.focus();
+    if (deletion.kind === "idle" && refocus.current) {
+      refocus.current = false;
+      trash.current?.focus();
+    }
+  }, [deletion.kind]);
+
+  const close = () => {
+    refocus.current = true;
+    setDeletion({ kind: "idle" });
+  };
+  const confirm = () => {
+    setDeletion({ kind: "deleting" });
+    void deleteSource(entry.vaultId).then((outcome) => {
+      if (!mounted.current) return;
+      if (outcome.kind === "ok") {
+        setDeletion({ kind: "idle" });
+        onDeleted();
+        return;
+      }
+      setDeletion({ kind: "failed", message: outcome.kind === "unsupported" ? DELETE_UNSUPPORTED : outcome.message });
+    });
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape" && deletion.kind !== "deleting") {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  return (
+    <>
+      {!asking && (
+        <button
+          ref={trash}
+          type="button"
+          className="resource-delete"
+          aria-label={`Borrar ${entry.title}`}
+          title="Borrar esta fuente"
+          onClick={() => setDeletion({ kind: "asking" })}
+        >
+          <TrashIcon />
+        </button>
+      )}
+      {asking && (
+        <div className="resource-confirm" role="group" aria-label={`Borrar ${entry.title}`} onKeyDown={onKeyDown}>
+          {deletion.kind === "failed" ? (
+            <p className="resource-delete-failed" role="alert">
+              No se pudo borrar: {deletion.message}
+            </p>
+          ) : (
+            <p>{deletion.kind === "deleting" ? "Borrando…" : "¿Borrar esta fuente?"}</p>
+          )}
+          <div className="resource-confirm-actions">
+            {deletion.kind !== "failed" && (
+              <button type="button" className="resource-confirm-yes" onClick={confirm} disabled={deletion.kind === "deleting"}>
+                Borrar
+              </button>
+            )}
+            <button ref={cancel} type="button" onClick={close} disabled={deletion.kind === "deleting"}>
+              {deletion.kind === "failed" ? "Cerrar" : "Cancelar"}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SourceCard({
   entry,
   onOpen,
   selection,
+  onDeleted,
 }: {
   entry: SourceEntry;
   onOpen: (resource: OpenResource) => void;
   selection: CardSelection | null;
+  onDeleted: () => void;
 }) {
   const chip = entry.state === "incorporated" ? "badge badge-ok" : entry.state === "pending" ? "badge badge-warn" : "badge";
   const reasons = entry.reasons.join(", ");
@@ -106,7 +212,8 @@ function SourceCard({
           </span>
         </label>
       )}
-      <button type="button" onClick={() => onOpen({ label: entry.label, definition: entry.definition })}>
+      <DeleteControl entry={entry} onDeleted={onDeleted} />
+      <button type="button" className="resource-open" onClick={() => onOpen({ label: entry.label, definition: entry.definition })}>
         <Thumbnail entry={entry} />
         <span className="resource-title">{entry.title}</span>
         <span className="resource-state">
@@ -135,9 +242,9 @@ function cardSelection(selection: SourceSelection | null, entry: SourceEntry, vi
  * **Incorporada** (cited by the current notes) or **Apartada** (set aside by the capture triage
  * or by the student, with the reason) -- kept ones first in source order, then a collapsed
  * "Apartadas (N)" group. Above the list, «Añadir fuente» (`AddSource`, #384) adds a PDF, a web
- * page or the textbook's title and then the list is read again. There are no per-source action
- * buttons: incorporating, setting aside and restoring
- * are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
+ * page or the textbook's title and then the list is read again. The only per-source action is the
+ * trash button over each thumbnail (#450, `DELETE /api/sources/{id}` after an inline
+ * confirmation); incorporating, setting aside and restoring are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
  * workspace's selection (`resources/selection.ts`), shown as chips above the chat input and sent
  * with the next message; Shift-click ticks a range, «Quitar selección» clears it. Choosing a source (here or from a footnote of the document) shows it in
  * the sources viewer (`SourcePanel`) in the list's place; "Cerrar" goes back to the list. The
@@ -188,6 +295,8 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
   }
 
   const total = states.kept.length + states.setAside.length;
+  // A deleted source (#450) leaves the list when it is read again; the selection drops it then.
+  const onDeleted = () => setAdded((count) => count + 1);
   const setAsideId = "workspace-resources-set-aside";
 
   return (
@@ -217,7 +326,13 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
       {states.kept.length > 0 && (
         <ul className="resource-grid" aria-label="Fuentes del tema">
           {states.kept.map((entry) => (
-            <SourceCard key={entry.key} entry={entry} onOpen={onOpen} selection={cardSelection(selection, entry, visible)} />
+            <SourceCard
+                key={entry.key}
+                entry={entry}
+                onOpen={onOpen}
+                selection={cardSelection(selection, entry, visible)}
+                onDeleted={onDeleted}
+              />
           ))}
         </ul>
       )}
@@ -236,7 +351,13 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
           </h3>
           <ul id={setAsideId} className="resource-grid" aria-label="Fuentes apartadas" hidden={!showSetAside}>
             {states.setAside.map((entry) => (
-              <SourceCard key={entry.key} entry={entry} onOpen={onOpen} selection={cardSelection(selection, entry, visible)} />
+              <SourceCard
+                key={entry.key}
+                entry={entry}
+                onOpen={onOpen}
+                selection={cardSelection(selection, entry, visible)}
+                onDeleted={onDeleted}
+              />
             ))}
           </ul>
         </section>
