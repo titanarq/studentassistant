@@ -443,6 +443,12 @@ def replay_command(
         f"{result.captures_stored} capturas guardadas"
         + (f" ({result.captures_duplicate} repetidas)" if result.captures_duplicate else "")
         + "."
+        + (
+            " La sesión la terminó el asistente antes del final de la grabación (se pidió"
+            " estudiar); lo que venía después no se ha enviado."
+            if result.ended_by_backend
+            else ""
+        )
     )
 
 

@@ -15,6 +15,13 @@ client takes, and nothing else:
    (the protocol's `encode_frame`, `seq` from 0, each due when its last sample was captured);
 4. `POST /api/sessions/{id}/end`, due at the last recorded time, then close the socket.
 
+The backend may end the session itself before the recording's last step (the spoken "ya está,
+quiero estudiar" runs the `study` turn, which ends it). The replay then finds the socket closed as
+not active, or a capture upload or the end refused with 409; before failing on either it reads the
+topic's session listing (`GET /api/subjects/{s}/topics/{t}/sessions`), and when that lists the
+session as ended it stops sending and returns a `ReplayResult` with `ended_by_backend` set and the
+listing's end time as `ended_at_ms`.
+
 Every message carries the client times it was recorded with, and `hello` the recording's start
 time: the backend's clock offset then maps them to the session times they had when recorded,
 whatever the replay speed.
@@ -48,6 +55,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, Self
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -169,6 +177,9 @@ class ReplayResult:
     audio_frames_resent: int
     reconnects: int
     ended_at_ms: int
+    # The backend ended the session before the recording's last step (the `study` turn of a
+    # spoken "ya está, quiero estudiar"): the replay stopped sending there and did not end it.
+    ended_by_backend: bool = False
 
 
 # -- the replay ------------------------------------------------------------------------------
@@ -238,9 +249,13 @@ async def replay(
     `subject`/`topic` override the manifest's (the `--topic` of the CLI). `speed` divides every
     recorded offset: 4 replays a twenty-minute session in five.
 
+    A session the backend ended itself mid-replay is not a failure: the replay stops there and
+    returns with `ended_by_backend` set.
+
     Raises:
-        ReplayError: when the backend refuses a request or closes the socket, or the recording's
-            STT mode is not the backend's, or a server-mode socket kept dropping.
+        ReplayError: when the backend refuses a request or closes the socket (the session not
+            ended), or the recording's STT mode is not the backend's, or a server-mode socket kept
+            dropping.
     """
     if speed <= 0:
         raise ValueError(f"speed must be positive, got {speed}")
@@ -257,6 +272,10 @@ async def replay(
             expect=(201,),
         )
     )
+
+    async def ended_at() -> int | None:
+        return await _ended_at_ms(transport, subject_id, topic_id, session.session_id)
+
     client = _Client(
         transport,
         session.ws_path,
@@ -264,11 +283,13 @@ async def replay(
         stt_provider=manifest.stt_provider,
         confirm_timeout_s=confirm_timeout_s,
         ack_timeout_s=ack_timeout_s,
+        ended_at=ended_at,
     )
+    partials = finals = events = stored = duplicates = 0
+    ended_by_backend = False
     try:
         await client.connect(start_ms)
         started = clock()
-        partials = finals = events = stored = duplicates = 0
         end_ms = start_ms
         for step in timeline(recording):
             delay = started + (step.client_time_ms - start_ms) / 1000 / speed - clock()
@@ -300,8 +321,18 @@ async def replay(
             SessionEndRequest(client_time_ms=end_ms, reason="button"),
             expect=(200,),
         )
+        ended_at_ms = int(ended["ended_at_ms"])
+    except _EndedByBackendError as error:
+        ended_by_backend, ended_at_ms = True, error.ended_at_ms
+    except ReplayError:
+        backend_end = await ended_at()
+        if backend_end is None:
+            raise
+        ended_by_backend, ended_at_ms = True, backend_end
     finally:
         await client.close()
+    if ended_by_backend:
+        logger.info("the backend ended session %s itself; the replay stopped", session.session_id)
     return ReplayResult(
         session_id=session.session_id,
         subject_id=subject_id,
@@ -314,8 +345,33 @@ async def replay(
         audio_frames_sent=len(client.audio_sent),
         audio_frames_resent=client.audio_resent,
         reconnects=client.reconnects,
-        ended_at_ms=int(ended["ended_at_ms"]),
+        ended_at_ms=ended_at_ms,
+        ended_by_backend=ended_by_backend,
     )
+
+
+class _EndedByBackendError(Exception):
+    """The backend has ended the session: the replay stops sending."""
+
+    def __init__(self, ended_at_ms: int) -> None:
+        super().__init__(f"the backend ended the session at {ended_at_ms}")
+        self.ended_at_ms = ended_at_ms
+
+
+async def _ended_at_ms(
+    transport: ReplayTransport, subject_id: str, topic_id: str, session_id: str
+) -> int | None:
+    """When the topic's session listing says `session_id` ended (epoch ms), else `None`."""
+    path = f"/api/subjects/{quote(subject_id)}/topics/{quote(topic_id)}/sessions"
+    try:
+        listing = await _get_json(transport, path)
+    except ReplayError:
+        return None
+    for summary in (listing or {}).get("sessions", []):
+        if summary.get("session_id") == session_id and summary.get("ended_at"):
+            ended = datetime.fromisoformat(str(summary["ended_at"]))
+            return int(ended.timestamp() * 1000)
+    return None
 
 
 class _Client:
@@ -331,8 +387,12 @@ class _Client:
         stt_provider: str,
         confirm_timeout_s: float,
         ack_timeout_s: float,
+        ended_at: Callable[[], Awaitable[int | None]] | None = None,
     ) -> None:
         self.transport = transport
+        # When the backend ended the session (epoch ms); a dropped socket of an ended session is
+        # not reconnected.
+        self.ended_at = ended_at
         self.ws_path = ws_path
         self.stt_mode = stt_mode
         self.stt_provider = stt_provider
@@ -416,6 +476,8 @@ class _Client:
                 raise ReplayError(
                     f"the session socket dropped {self.reconnects + 1} times; last {self.socket}"
                 )
+            if self.ended_at is not None and (ended_ms := await self.ended_at()) is not None:
+                raise _EndedByBackendError(ended_ms)
             self.reconnects += 1
             logger.warning("the session socket dropped (%s); reconnecting", self.socket)
             await self._drop()

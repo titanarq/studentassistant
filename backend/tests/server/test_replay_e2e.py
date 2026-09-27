@@ -199,6 +199,70 @@ def test_a_refused_start_is_a_replay_error(
         asyncio.run(main())
 
 
+# -- a session the backend ends itself (the spoken "ya está, quiero estudiar") ----------------
+
+
+class EndsTheSession(VirtualTime):
+    """A virtual clock whose `sleep` makes the backend end the active session, as the `study`
+    turn does, once the replay's recorded offset (speed 1) passes `at_s`."""
+
+    def __init__(self, app: FastAPI, at_s: float) -> None:
+        super().__init__()
+        self.app = app
+        self.end_at = self.now + at_s
+        self.ended_ms: int | None = None
+
+    async def sleep(self, seconds: float) -> None:
+        await super().sleep(seconds)
+        if self.ended_ms is None and self.now >= self.end_at:
+            # The study turn runs after what was said reached the backend: let it catch up.
+            await asyncio.sleep(0.2)
+            sessions = self.app.state.sessions
+            ended = await sessions.end(
+                sessions.active.session_id, client_time_ms=1_760_000_000_000, reason="command"
+            )
+            self.ended_ms = ended.ended_at_ms
+
+
+@pytest.mark.parametrize(
+    ("at_s", "captures_stored"),
+    [
+        # Before the capture burst (9.5 s): its upload is refused with 409.
+        (9.0, 0),
+        # After it, before the last transcript messages: the socket closes as not active.
+        (10.0, 1),
+    ],
+)
+def test_a_session_the_backend_ended_stops_the_replay(
+    replay_app: FastAPI,
+    recording: Recording,
+    tmp_vault: Vault,
+    at_s: float,
+    captures_stored: int,
+) -> None:
+    time = EndsTheSession(replay_app, at_s)
+
+    result = run_replay(replay_app, recording, time)
+
+    assert result.ended_by_backend
+    assert result.ended_at_ms == time.ended_ms
+    assert result.captures_stored == captures_stored
+    [meta] = list_sessions(tmp_vault, "biologia", "la-celula")
+    assert meta.id == result.session_id
+    assert meta.ended_at is not None
+    assert int(meta.ended_at.timestamp() * 1000) == result.ended_at_ms
+    # The steps after the end reached nothing: only the two finals before it were stored.
+    events = session_events(tmp_vault, "biologia", "la-celula", result.session_id)
+    assert len([e for e in events if e.kind == "transcript.final"]) == 2
+    assert [e.kind for e in events].count("session.ended") == 1
+
+
+def test_a_replay_the_backend_did_not_end_is_not_marked(
+    replay_app: FastAPI, recording: Recording
+) -> None:
+    assert not run_replay(replay_app, recording, VirtualTime(), speed=4).ended_by_backend
+
+
 # -- server mode: audio frames into the fake STT provider -------------------------------------
 
 AUDIO_SECONDS = 3
@@ -409,3 +473,23 @@ def test_a_socket_that_keeps_dropping_is_a_replay_error(
 
     with pytest.raises(ReplayError, match="dropped"):
         asyncio.run(main())
+
+
+def test_a_server_mode_session_the_backend_ended_is_not_reconnected(
+    audio_app: FastAPI, audio_recording: Recording, tmp_vault: Vault
+) -> None:
+    time = EndsTheSession(audio_app, 1.5)
+
+    async def main() -> tuple[ReplayResult, int]:
+        async with AsgiTransport(audio_app) as asgi:
+            transport = DroppingTransport(asgi, drop_after=1 << 30)
+            result = await replay(audio_recording, transport, sleep=time.sleep, clock=time.clock)
+            return result, transport.connections
+
+    result, connections = asyncio.run(main())
+
+    assert result.ended_by_backend
+    assert (connections, result.reconnects) == (1, 0)
+    assert result.ended_at_ms == time.ended_ms
+    [meta] = list_sessions(tmp_vault, "biologia", "la-celula")
+    assert meta.ended_at is not None
