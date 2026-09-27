@@ -17,6 +17,7 @@ from studentassistant.vault import (
     get_subject,
     list_subjects,
     subject_directory,
+    subject_slugs,
 )
 from studentassistant.vault.files import read_yaml
 from studentassistant.vault.models import Subject
@@ -207,3 +208,25 @@ def test_every_subject_refusal_is_a_vault_error_a_caller_can_catch_as_one_type()
     assert issubclass(SubjectError, VaultError)
     assert issubclass(SubjectNotFoundError, SubjectError)
     assert issubclass(SubjectFileError, SubjectError)
+
+
+def test_subject_slugs_of_a_vault_that_has_no_subject_yet_is_empty(tmp_vault: Vault) -> None:
+    assert subject_slugs(tmp_vault) == []
+
+
+def test_subject_slugs_lists_the_slugs_sorted_not_in_creation_order(tmp_vault: Vault) -> None:
+    create_subject(tmp_vault, "Química")
+    create_subject(tmp_vault, "Biología")
+    create_subject(tmp_vault, "Matemáticas II")
+
+    assert subject_slugs(tmp_vault) == ["biologia", "matematicas-ii", "quimica"]
+
+
+def test_subject_slugs_lists_a_directory_whose_subject_yaml_is_not_written_yet(
+    tmp_vault: Vault,
+) -> None:
+    create_subject(tmp_vault, "Química")
+    subject_directory(tmp_vault, "a-medias").mkdir(parents=True)
+    (tmp_vault.path / SUBJECTS_DIRNAME / "not-a-directory").write_text("x", encoding="utf-8")
+
+    assert subject_slugs(tmp_vault) == ["a-medias", "quimica"]

@@ -96,6 +96,16 @@ def list_subjects(vault: Vault) -> list[StoredSubject]:
     return [get_subject(vault, slug) for slug in sorted(_taken_slugs(vault))]
 
 
+def subject_slugs(vault: Vault) -> list[str]:
+    """The sorted slugs of the directories under `subjects/`, without reading any `subject.yaml`.
+
+    A half-created subject (its directory is there, its `subject.yaml` not yet) is listed, so a
+    caller that must not fail on one unreadable subject can read each slug itself. A vault with
+    no `subjects/` directory lists as empty.
+    """
+    return sorted(_taken_slugs(vault))
+
+
 def get_subject(vault: Vault, slug: str) -> StoredSubject:
     """Read the subject called `slug`, which is the whole of `subjects/<slug>/subject.yaml`.
 

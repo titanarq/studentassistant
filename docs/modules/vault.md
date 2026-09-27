@@ -73,6 +73,9 @@ a frozen dataclass of `slug` and `subject`. Refusals are a `SubjectError`: `Subj
 `set_style_guide(vault, slug, style_guide)` replaces the subject's `style_guide` (blank or `None`
 clears it), keeping the other fields; the editor's revision loop appends the student's general
 preferences with it.
+`subject_slugs(vault)` lists the sorted slugs of the directories under `subjects/` without reading
+any `subject.yaml` (a half-created subject is listed; no `subjects/` directory lists as empty), for a
+caller that reads each subject itself and must survive one it cannot read (the sources catch-up).
 
 ### Topics -- `topics.py`
 `create_topic(vault, subject_slug, title)` writes
@@ -85,6 +88,9 @@ preferences with it.
 (anything else `ValueError`) in `topic.yaml`, keeping the other fields. Refusals are a `TopicError`
 (`TopicNotFoundError`, `TopicFileError`), or the subject errors above when the subject the topic is
 asked for under is not there or not readable.
+`topic_slugs(vault, subject_slug)` lists the sorted slugs of the directories under the subject's
+`topics/` reading no YAML, neither `subject.yaml` nor any `topic.yaml` (a half-created topic is
+listed; no `topics/` directory lists as empty).
 
 ### Sessions -- `session_models.py`, `sessions.py`
 `start_session(vault, subject_slug, topic_slug, host, protocol_version)` creates
