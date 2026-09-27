@@ -304,8 +304,8 @@ it("names the option in its title: «Abrir «Tarjetas de memoria»»", async () 
   expect(await within(log()).findByRole("button", { name: "Abrir «Tarjetas de memoria»" })).toBeInTheDocument();
 });
 
-it("gives the slides' reply without an «Abrir» button", async () => {
-  const { onGenerated } = renderChat({
+it("gives the slides' reply with «Abrir «Diapositivas»»", async () => {
+  const { onGenerated, onOpenOption } = renderChat({
     [`POST ${TUTOR}`]: () =>
       sseResponse([
         ["generation.started", started("diapositivas", "Preparando las diapositivas…")],
@@ -314,7 +314,7 @@ it("gives the slides' reply without an «Abrir» button", async () => {
           generated({
             option: "diapositivas",
             material_kind: "diapositivas",
-            reply: "Listas las diapositivas: descárgalas desde la ficha del tema.",
+            reply: "Listas: 8 diapositivas. Ábrelas en «Diapositivas».",
           }),
         ],
       ]),
@@ -322,9 +322,10 @@ it("gives the slides' reply without an «Abrir» button", async () => {
 
   await askQuestion("hazme diapositivas");
 
-  expect(await within(log()).findByText("Listas las diapositivas: descárgalas desde la ficha del tema.")).toBeInTheDocument();
-  expect(within(log()).queryByRole("button", { name: /^Abrir/ })).toBeNull();
+  expect(await within(log()).findByText("Listas: 8 diapositivas. Ábrelas en «Diapositivas».")).toBeInTheDocument();
   expect(onGenerated).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(log()).getByRole("button", { name: "Abrir «Diapositivas»" }));
+  expect(onOpenOption).toHaveBeenCalledWith("diapositivas");
 });
 
 it("past the cost cap, «Continuar igualmente» repeats the generation request confirmed", async () => {

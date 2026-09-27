@@ -17,7 +17,7 @@ import "./studyChat.css";
  * A request such as «hazme un quiz» (#366, #367) makes the backend generate that material on the
  * same stream: the turn shows the `generation.started` line with a busy indicator, then the
  * generation's reply, its warnings and **Abrir «<opción>»**, which opens the option's panel
- * (`onOpenOption`; none for the slides). The page gets the fresh study state (`onGenerated`).
+ * (`onOpenOption`), «Diapositivas» included (#382). The page gets the fresh study state (`onGenerated`).
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -50,7 +50,7 @@ type ChatTurn = TutorTurn & { warnings: string[] };
 
 const chatTurn = (turn: TutorTurn): ChatTurn => ({ ...turn, warnings: turn.warning === null ? [] : [turn.warning] });
 
-/** The option a generation turn opens; none for the slides or an option the page does not know. */
+/** The option a generation turn opens; none for an option the page does not know. */
 function openableOption(option: string) {
   return STUDY_OPTIONS.find((info) => info.key === option) ?? null;
 }
@@ -321,7 +321,7 @@ export default function StudyChat({
   );
 }
 
-/** **Abrir «Quiz»** of a generation turn; nothing for the slides (they download from the topic). */
+/** **Abrir «Quiz»** of a generation turn; nothing for an option the page does not know. */
 function OpenButton({ option, onOpen }: { option: string; onOpen?: (key: OptionKey) => void }) {
   const info = openableOption(option);
   if (info === null) return null;

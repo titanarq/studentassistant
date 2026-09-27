@@ -2,13 +2,13 @@
  * The study options of the study screen (#333) and their state, from `GET .../study` (#335,
  * `api.ts`): **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`),
  * **Examen** (its `questions`), **Quiz** (kind `quiz`) and **Tarjetas de memoria** (the practice
- * queue, kind `flashcards`). The backend says whether each is "Listo", "Desactualizado" (with its
+ * queue, kind `flashcards`) and **Diapositivas** (kind `diapositivas`, #382). The backend says whether each is "Listo", "Desactualizado" (with its
  * reason) or "Sin generar"; an option it does not mention is "Sin generar".
  */
 
 import type { StudyOptionState, StudyState } from "./api";
 
-export type OptionKey = "esquema" | "ejercicios" | "examen" | "quiz" | "tarjetas";
+export type OptionKey = "esquema" | "ejercicios" | "examen" | "quiz" | "tarjetas" | "diapositivas";
 export type OptionState = StudyOptionState;
 
 export interface StudyOptionInfo {
@@ -30,6 +30,12 @@ export const STUDY_OPTIONS: readonly StudyOptionInfo[] = [
   { key: "examen", title: "Examen", description: "Simulacro con criterios de corrección", kind: "examen" },
   { key: "quiz", title: "Quiz", description: "Preguntas para comprobar lo que sabes", kind: "quiz" },
   { key: "tarjetas", title: "Tarjetas de memoria", description: "Repaso espaciado", kind: "flashcards" },
+  {
+    key: "diapositivas",
+    title: "Diapositivas",
+    description: "Presentación del tema para exponer o repasar",
+    kind: "diapositivas",
+  },
 ];
 
 export const STATE_LABELS: Record<OptionState, string> = {

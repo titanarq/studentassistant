@@ -38,7 +38,7 @@ export interface StudyState {
   options: StudyOptionStatus[];
 }
 
-const KEYS: readonly OptionKey[] = ["esquema", "ejercicios", "examen", "quiz", "tarjetas"];
+const KEYS: readonly OptionKey[] = ["esquema", "ejercicios", "examen", "quiz", "tarjetas", "diapositivas"];
 const STATES: Record<string, StudyOptionState> = { listo: "ready", desactualizado: "stale", sin_generar: "missing" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

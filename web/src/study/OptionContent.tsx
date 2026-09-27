@@ -3,6 +3,7 @@ import MaterialPreviewPage from "../materials/MaterialPreviewPage";
 import PracticePage from "../practice/PracticePage";
 import QuizPage from "../quiz/QuizPage";
 import ExercisesView from "./ExercisesView";
+import SlidesView from "./SlidesView";
 import type { OptionKey, StudyOption } from "./options";
 
 /** The file the outline generator writes under `generated/`. */
@@ -17,6 +18,7 @@ export const CHAT_REQUESTS: Record<OptionKey, string> = {
   examen: "hazme un examen",
   quiz: "hazme un quiz",
   tarjetas: "hazme tarjetas de memoria",
+  diapositivas: "hazme diapositivas",
 };
 
 /**
@@ -88,6 +90,7 @@ export default function OptionContent({
       {option.key === "examen" && <ExamPage {...props} />}
       {option.key === "quiz" && <QuizPage {...props} />}
       {option.key === "tarjetas" && <PracticePage {...props} anchorLabel={anchorLabel} />}
+      {option.key === "diapositivas" && <SlidesView subjectId={subjectId} topicId={topicId} />}
     </>
   );
 }

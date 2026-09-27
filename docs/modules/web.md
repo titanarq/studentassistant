@@ -360,7 +360,7 @@
   - Left, middle: the study options (`options.ts`, `studyOptions(studyState)`) in the order
     **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`), **Examen**
     (its `questions`), **Quiz** (kind `quiz`), **Tarjetas de memoria** (the practice queue, kind
-    `flashcards`); each a button with `aria-expanded` and a text badge of its `options[].state`
+    `flashcards`), **Diapositivas** (kind `diapositivas`, #382, backend #380); each a button with `aria-expanded` and a text badge of its `options[].state`
     from `GET .../study` (#337; no longer computed from `GET .../generated`): `listo` "Listo",
     `desactualizado` "Desactualizado" (its `stale_reason` as `title`, else a generic reason) or
     `sin_generar` "Sin generar" (also an option the answer does not list).
@@ -391,8 +391,8 @@
     "Pensando…" with its `text` and a busy indicator (the turn stays `aria-busy`, the input
     disabled); a `result` with `kind: "generation"` `{option, material_kind, reply, items,
     warnings, study}` becomes a finished turn: `reply`, each warning below it, and one button
-    **Abrir «<título de la opción>»** (titles from `STUDY_OPTIONS`; none for `diapositivas` or an
-    option the page does not know). A `result` without `kind` (or `kind: "answer"`) is an
+    **Abrir «<título de la opción>»** (titles from `STUDY_OPTIONS`, «Diapositivas» included since #382;
+    none for an option the page does not know). A `result` without `kind` (or `kind: "answer"`) is an
     ordinary answer, as before. Errors are the tutor's (cost cap with "Continuar igualmente",
     which re-sends the same text confirmed; 409 busy; no notes; the backend's `detail`); a failed
     generation leaves no turn. History: `GET .../tutor` turns with `kind: "generation"` (read as
@@ -414,7 +414,12 @@
     `ExercisesView` (the exercises of `examen.yaml` one at a time, "Ver solución", "Anterior" /
     "Siguiente"; `exam/api.ts`'s `StoredExam` now carries `exercises`), Examen -> `ExamPage`,
     Quiz -> `QuizPage`, Tarjetas de memoria -> `PracticePage` (its "En los apuntes:" links as
-    "§ <section title>" chips). There is **no "Generar" button** (human decision: everything the
+    "§ <section title>" chips), Diapositivas -> `SlidesView` (#382): **Descargar PDF** and
+    **Descargar PowerPoint** (`fileUrl` of `diapositivas.pdf` / `.pptx`; once `GET .../generated`
+    answers, an export its `diapositivas` artifact does not list shows "PDF: no se pudo
+    exportar." instead of a link) above `MaterialPreviewPage` of `diapositivas.md` (the deck's
+    Marp source, as on the topic card page); the preview reports no anchors, so the slides
+    highlight no section. There is **no "Generar" button** (human decision: everything the
     student asks goes through the chat): an option "Sin generar" says "Todavía no está
     generado." and what to ask the chat (e.g. «Pídelo en el chat: «hazme un quiz».»); a
     "Desactualizado" one shows its reason and the same hint above the material. The hint's
