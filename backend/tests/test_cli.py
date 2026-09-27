@@ -157,6 +157,7 @@ def github(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     host = LocalHost(tmp_path / "github")
     monkeypatch.setattr(cli_module, "_github_host", lambda: host)
+    monkeypatch.setattr(cli_module, "_github_login", lambda: None)  # never run the real `gh`
     return host
 
 
@@ -227,6 +228,64 @@ def test_setup_create_interactive_asks_the_name_and_reasks_a_bad_repo(
     assert "«mal» no es válido" in result.output
     assert "Tu nombre" in result.output
     assert Vault.open(vault_path).meta.student == "Ana García"
+
+
+def test_setup_proposes_the_gh_login_as_the_repository_owner(
+    runner: CliRunner,
+    config_toml: Path,
+    github: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import studentassistant.cli as cli_module
+    from studentassistant.vault.github import DEFAULT_VAULT_REPO_NAME
+
+    monkeypatch.setattr(cli_module, "_github_login", lambda: "MatillaM")
+    vault_path = tmp_path / "vault"
+    # Enter takes the proposed repository; the student's name defaults to its owner.
+    answers = f"crear\n\n{vault_path}\n\n\n\n"
+
+    result = runner.invoke(cli, ["setup"], input=answers)
+
+    assert result.exit_code == 0, result.output
+    repo = f"MatillaM/{DEFAULT_VAULT_REPO_NAME}"
+    assert f"Repositorio de GitHub (propietario/nombre) [{repo}]" in result.output
+    assert github.created == [repo]
+
+
+def test_setup_without_a_gh_login_proposes_no_owner(
+    runner: CliRunner, config_toml: Path, github: Any, tmp_path: Path
+) -> None:
+    # The Linux user name is never taken as the owner: with no login, nothing is proposed.
+    answers = f"crear\n\nana/vault\n{tmp_path / 'vault'}\nAna\n\n\n"
+
+    result = runner.invoke(cli, ["setup"], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "Repositorio de GitHub (propietario/nombre): " in result.output
+    assert "Repositorio de GitHub (propietario/nombre) [" not in result.output
+    assert github.created == ["ana/vault"]
+
+
+def test_unattended_setup_never_looks_up_the_login(
+    runner: CliRunner,
+    config_toml: Path,
+    github: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import studentassistant.cli as cli_module
+
+    def no_lookup() -> str | None:
+        raise AssertionError("the login is only looked up to propose a repository")
+
+    monkeypatch.setattr(cli_module, "_github_login", no_lookup)
+    args = ["setup", "--vault-repo", "ana/vault", "--path", str(tmp_path / "vault"), "--create"]
+
+    result = runner.invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    assert github.created == ["ana/vault"]
 
 
 def test_setup_failure_is_reported_in_spanish_and_writes_no_config(

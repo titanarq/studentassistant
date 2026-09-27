@@ -115,7 +115,13 @@ from studentassistant.vault import (
     require_topic,
     topic_directory,
 )
-from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
+from studentassistant.vault.github import (
+    DEFAULT_VAULT_REPO_NAME,
+    GitHubHost,
+    GitHubHostError,
+    github_login,
+    select_host,
+)
 from studentassistant.vault.index import IndexReport, VaultIndexError, rebuild_index
 from studentassistant.vault.purge import (
     REASON_TEXT,
@@ -560,9 +566,17 @@ def _github_host() -> GitHubHost:
     return select_host()
 
 
+def _github_login() -> str | None:
+    """The GitHub login `setup` proposes as the repository owner (tests replace this)."""
+    return github_login()
+
+
 def _ask_repo() -> str:
+    # The owner is the GitHub account `gh` is logged in as; without one no owner is guessed.
+    login = _github_login()
+    default = f"{login}/{DEFAULT_VAULT_REPO_NAME}" if login else None
     while True:
-        repo = typer.prompt("Repositorio de GitHub (propietario/nombre)").strip()
+        repo = typer.prompt("Repositorio de GitHub (propietario/nombre)", default=default).strip()
         try:
             return check_repo_name(repo)
         except ValueError:

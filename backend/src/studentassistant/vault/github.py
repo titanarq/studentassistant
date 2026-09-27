@@ -36,6 +36,10 @@ TOKEN_ENV_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 # The variable the token travels in to a git child process; its credential helper reads it.
 GIT_TOKEN_ENV_VAR = "STUDENTASSISTANT_GIT_TOKEN"
 DEFAULT_HOST_TIMEOUT_SECONDS = 120.0
+# `gh api user` is one small call; `setup` must not hang on it before asking anything.
+LOGIN_LOOKUP_TIMEOUT_SECONDS = 10.0
+# The repository name `setup` proposes after the GitHub login (`<login>/<name>`).
+DEFAULT_VAULT_REPO_NAME = "studentassistant-vault"
 
 NO_GH_CREATE_MESSAGE = (
     "Sin la herramienta `gh` no se puede crear un repositorio en GitHub. Instala `gh` y ejecuta"
@@ -259,6 +263,37 @@ class TokenHost:
 
     def credential_helper(self) -> None:
         return None  # the token never leaves the environment, so nothing can be persisted
+
+
+def github_login(gh: str = "gh", timeout: float = LOGIN_LOOKUP_TIMEOUT_SECONDS) -> str | None:
+    """The login of the user `gh` is authenticated as (`gh api user -q .login`), or `None`.
+
+    `None` when `gh` is missing, not logged in, fails, times out or prints something that is not
+    a GitHub login: `setup` then proposes no owner rather than guessing one (never the Linux user
+    name, which need not be a GitHub account).
+    """
+    if shutil.which(gh) is None:
+        return None
+    environment = {**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}
+    try:
+        completed = _run([gh, "api", "user", "-q", ".login"], environment, timeout)
+    except GitHubHostError:
+        return None
+    login = completed.stdout.strip()
+    if completed.returncode != 0 or not _is_login(login):
+        return None
+    return login
+
+
+def _is_login(login: str) -> bool:
+    """GitHub logins: letters, digits and single hyphens, not at either end, at most 39."""
+    return (
+        0 < len(login) <= 39
+        and all(c.isascii() and (c.isalnum() or c == "-") for c in login)
+        and not login.startswith("-")
+        and not login.endswith("-")
+        and "--" not in login
+    )
 
 
 def token_from_environment(environ: Mapping[str, str] | None = None) -> str | None:

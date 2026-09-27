@@ -47,6 +47,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def host(env: Path, monkeypatch: pytest.MonkeyPatch) -> LocalHost:
     local = LocalHost(env / "github")
     monkeypatch.setattr(cli_module, "_github_host", lambda: local)
+    monkeypatch.setattr(cli_module, "_github_login", lambda: None)  # never run the real `gh`
     return local
 
 
