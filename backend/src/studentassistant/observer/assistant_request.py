@@ -30,11 +30,13 @@ RequestKind = Literal[
     "set_aside",
     "restore",
     "doubt_answer",
+    "study",
 ]
 """`edit`: change the notes; `question`: answer something; `prepare_notes`: "prepárame el tema";
 `incorporate`: incorporate the `targets` into the notes; `set_aside` / `restore`: set the
 `targets` (captured pages) aside or restore them; `doubt_answer`: the student's `answer` to the
-doubt `pending_id` asked in the chat (#327)."""
+doubt `pending_id` asked in the chat (#327); `study`: "ya está, quiero estudiar", end the capture
+and switch the topic to Estudiar (#335)."""
 REQUEST_KINDS: tuple[RequestKind, ...] = (
     "edit",
     "question",
@@ -43,6 +45,7 @@ REQUEST_KINDS: tuple[RequestKind, ...] = (
     "set_aside",
     "restore",
     "doubt_answer",
+    "study",
 )
 TARGET_KINDS: frozenset[str] = frozenset({"incorporate", "set_aside", "restore"})
 """The kinds whose request names its sources in `targets`."""

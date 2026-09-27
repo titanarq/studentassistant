@@ -580,6 +580,15 @@ class SessionService:
                 return key
         return None
 
+    async def open_session_of(self, subject_id: str, topic_id: str) -> str | None:
+        """The id of the topic's unended session (active or left open), None when it has none.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+        """
+        await self._ready()
+        return self._open.get((subject_id, topic_id))
+
     # -- the active session, for the other routes ----------------------------------------------
 
     async def require_active(self, session_id: str) -> Session:

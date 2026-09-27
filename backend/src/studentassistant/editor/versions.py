@@ -14,15 +14,21 @@ through `GitSync` (`list_notes_tags`, `read_file_at`), so the vault's git stays 
   last section.
 - `restore_version` -- writes an older version back as `apuntes.md` and commits and tags it as the
   **next** version: nothing is rewound, so every version in between is still there.
+- `mark_study_version` -- labels the current notes as the "versión de estudio" (#335): the latest
+  version when the notes are exactly its text, else a new version tagged first. The label is
+  recorded in `study/version.yaml` (the latest label plus the history of every label), written
+  through the vault. A label, not a freeze: the notes stay editable, and `list_versions` says
+  whether they still equal it (`study_current`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -45,6 +51,8 @@ from studentassistant.vault import (
     read_notes,
     write_notes,
 )
+from studentassistant.vault.models import VaultFileModel
+from studentassistant.vault.study import read_study_file, write_study_file
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +79,15 @@ class NothingToRestoreError(VersionError):
     pass
 
 
+class NotesMissingError(VersionError):
+    """The topic has no notes to label as the study version."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Todavía no hay apuntes de este tema: prepáralos antes de pasar a estudiar."
+        )
+
+
 # -- models ----------------------------------------------------------------------------------------
 
 
@@ -88,6 +105,35 @@ class NotesVersion(_Strict):
     message: str = ""
     current: bool = False
     """The current `apuntes.md` is exactly this version's text."""
+    study: bool = False
+    """This version was labelled "versión de estudio" at some point (`mark_study_version`)."""
+
+
+class StudyLabel(VaultFileModel):
+    """One "versión de estudio" label: which version, its notes' SHA-256 and when."""
+
+    version: int
+    tag: str
+    notes_sha256: str
+    marked_at: datetime
+
+
+class StudyVersionFile(VaultFileModel):
+    """`study/version.yaml`: the latest study label and every label, oldest first."""
+
+    latest: StudyLabel
+    history: list[StudyLabel]
+
+
+class StudyVersion(_Strict):
+    """What `mark_study_version` labelled."""
+
+    version: int
+    tag: str
+    notes_sha256: str
+    marked_at: datetime
+    created_tag: bool
+    """A new `apuntes-vN` tag was made for it (the notes had changed since the latest one)."""
 
 
 class NotesVersions(_Strict):
@@ -98,6 +144,10 @@ class NotesVersions(_Strict):
     """`apuntes.md` exists."""
     changed_since_latest: bool
     """`apuntes.md` exists and differs from the latest version (a revision, a doubt's edit)."""
+    study_version: StudyLabel | None = None
+    """The latest "versión de estudio" label; `None` before the first."""
+    study_current: bool = False
+    """`apuntes.md` exists and its SHA-256 equals the study label's (nothing edited since)."""
 
 
 class VersionText(_Strict):
@@ -187,6 +237,24 @@ def _text_at(vault: Vault, sync: GitSync, subject: str, topic: str, tag: NotesTa
     return text
 
 
+STUDY_VERSION_FILE = "version"
+"""`study/version.yaml`: the study label of the topic."""
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_study_label(vault: Vault, subject: str, topic: str) -> StudyVersionFile | None:
+    """The topic's `study/version.yaml`, or `None` before the first label (blocking)."""
+    return read_study_file(vault, subject, topic, STUDY_VERSION_FILE, StudyVersionFile)
+
+
+def study_current(label: StudyLabel | None, notes: str | None) -> bool:
+    """Whether `notes` (the current `apuntes.md`) are still exactly the labelled ones."""
+    return label is not None and notes is not None and _sha256(notes) == label.notes_sha256
+
+
 def list_versions(vault: Vault, subject: str, topic: str, *, sync: GitSync) -> NotesVersions:
     """Every tagged version of the topic's notes, oldest first (blocking; reads only).
 
@@ -194,6 +262,8 @@ def list_versions(vault: Vault, subject: str, topic: str, *, sync: GitSync) -> N
     """
     get_topic(vault, subject, topic)
     current = read_notes(vault, subject, topic)
+    label = read_study_label(vault, subject, topic)
+    studied = {entry.tag for entry in label.history} if label is not None else set()
     relative = _relative_notes_path(vault, subject, topic)
     versions = []
     latest_text: str | None = None
@@ -207,14 +277,18 @@ def list_versions(vault: Vault, subject: str, topic: str, *, sync: GitSync) -> N
                 tagged_at=tag.tagged_at,
                 message=tag.message,
                 current=current is not None and latest_text == current,
+                study=tag.name in studied,
             )
         )
+    latest_label = label.latest if label is not None else None
     return NotesVersions(
         subject=subject,
         topic=topic,
         versions=versions,
         has_notes=current is not None,
         changed_since_latest=current is not None and bool(versions) and latest_text != current,
+        study_version=latest_label,
+        study_current=study_current(latest_label, current),
     )
 
 
@@ -459,15 +533,89 @@ async def restore_version(
     return result
 
 
+# -- study version ---------------------------------------------------------------------------------
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def mark_study_version(
+    vault: Vault,
+    subject: str,
+    topic: str,
+    *,
+    sync: GitSync,
+    clock: Callable[[], datetime] = _utc_now,
+) -> StudyVersion:
+    """Label the current notes as the "versión de estudio" (blocking; no Claude call).
+
+    When `apuntes.md` is exactly the latest `apuntes-vN` tag's text that version is labelled;
+    otherwise the notes are committed and tagged as the next version first ("Apuntes vN de
+    <s>/<t>: versión de estudio"). The label goes to `study/version.yaml` (latest + history) and
+    is committed. Calling it again with unchanged notes returns the same label and writes nothing.
+    Nothing locks the notes.
+
+    Raises:
+        NotesMissingError: the topic has no notes.
+        The vault's errors for an unknown topic.
+    """
+    get_topic(vault, subject, topic)
+    notes = read_notes(vault, subject, topic)
+    if notes is None or not notes.strip():
+        raise NotesMissingError
+    sha = _sha256(notes)
+    stored = read_study_label(vault, subject, topic)
+    tags = sync.list_notes_tags(subject, topic)
+    latest = tags[-1] if tags else None
+    relative = _relative_notes_path(vault, subject, topic)
+    tagged = latest is not None and sync.read_file_at(latest.commit, relative) == notes
+    if (
+        tagged
+        and stored is not None
+        and latest is not None
+        and stored.latest.tag == latest.name
+        and stored.latest.notes_sha256 == sha
+    ):
+        return StudyVersion(**stored.latest.model_dump(), created_tag=False)
+    created = False
+    if not tagged or latest is None:
+        version = (latest.version if latest else 0) + 1
+        message = f"Apuntes v{version} de {subject}/{topic}: versión de estudio"
+        sync.note_change()
+        sync.checkpoint(message)
+        latest = sync.create_notes_tag(subject, topic, message)
+        created = True
+    label = StudyLabel(version=latest.version, tag=latest.name, notes_sha256=sha, marked_at=clock())
+    history = [*(stored.history if stored is not None else []), label]
+    write_study_file(
+        vault,
+        subject,
+        topic,
+        STUDY_VERSION_FILE,
+        StudyVersionFile(latest=label, history=history),
+    )
+    sync.note_change()
+    sync.checkpoint(
+        f"Apuntes v{label.version} de {subject}/{topic}: marcada como versión de estudio"
+    )
+    return StudyVersion(**label.model_dump(), created_tag=created)
+
+
 __all__ = [
     "NOTES_RESTORED_KIND",
     "PREAMBLE_KEY",
+    "STUDY_VERSION_FILE",
     "FootnotesDiff",
+    "NotesMissingError",
     "NothingToRestoreError",
     "NotesVersion",
     "NotesVersions",
     "RestoreResult",
     "SectionDiff",
+    "StudyLabel",
+    "StudyVersion",
+    "StudyVersionFile",
     "UnknownVersionError",
     "VersionDiff",
     "VersionError",
@@ -475,6 +623,9 @@ __all__ = [
     "compare_notes",
     "diff_versions",
     "list_versions",
+    "mark_study_version",
+    "read_study_label",
     "read_version",
     "restore_version",
+    "study_current",
 ]

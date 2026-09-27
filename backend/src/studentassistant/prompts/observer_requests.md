@@ -43,7 +43,14 @@ A request is the student speaking TO the assistant about the notes or the topic,
 - «aparta la 9», «esa no vale, quítala», «descarta la que está borrosa» -> `set_aside`;
 - «recupera la 4», «la página 4 sí vale, vuelve a usarla» -> `restore`;
 - while a doubt is asked: «la segunda», «pone "escrita"», «es incremental», «la primera opción» ->
-  `doubt_answer`.
+  `doubt_answer`;
+- «ya está, quiero estudiar», «vamos a estudiar esto», «pasa a estudiar», «ya hemos terminado,
+  a estudiar» -> `study` (the student is done capturing the topic and wants to switch to studying
+  it: the capture ends and the notes are marked as the study version).
+
+A `study` request is only the student asking to switch to studying now. Talking about studying
+as part of the content («esto hay que estudiarlo para el examen»), a plan for later («mañana
+estudio esto») or asking for one kind of material («hazme un test») is not `study`.
 
 Not a request: reading the notes aloud, explaining the content, thinking aloud, talking to someone
 else, a question that is itself part of the content being dictated («¿por qué se divide la célula?

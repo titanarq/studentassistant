@@ -627,8 +627,11 @@ A version is a `<subject>/<topic>/apuntes-vN` tag (made by "prepárame el tema" 
 read through `GitSync.list_notes_tags` and `GitSync.read_file_at`. No Claude call.
 - `list_versions(vault, subject, topic, *, sync) -> NotesVersions` (blocking, reads only):
   `versions` oldest first (`NotesVersion`: `version`, `tag`, `commit`, `tagged_at`, `message`,
-  `current` -- the current `apuntes.md` is exactly its text), `has_notes`,
-  `changed_since_latest` (revisions or doubts edited the notes after the latest tag).
+  `current` -- the current `apuntes.md` is exactly its text; `study` -- it was labelled
+  "versión de estudio" at some point), `has_notes`, `changed_since_latest` (revisions or doubts
+  edited the notes after the latest tag), `study_version` (the latest study label, `StudyLabel`
+  `{version, tag, notes_sha256, marked_at}`, or null) and `study_current` (the current
+  `apuntes.md`'s SHA-256 equals the label's).
 - `read_version(vault, subject, topic, version, *, sync) -> VersionText` (`text` as tagged).
 - `diff_versions(vault, subject, topic, from_version, to_version=None, *, sync) -> VersionDiff`:
   `to_version=None` compares with the current `apuntes.md`. `compare_notes(before, after)` is the
@@ -648,13 +651,25 @@ read through `GitSync.list_notes_tags` and `GitSync.read_file_at`. No Claude cal
   (a purged source), but the restore is done anyway. `on_event("notes.restored", payload)` gets
   the result without `notes`. `RestoreResult`: `restored_version`, `version`, `tag`, `commit`,
   `path`, `diff` (from the notes before), `notes`, `revision`, `errors`, `warning`.
+- `mark_study_version(vault, subject, topic, *, sync, clock=...) -> StudyVersion` (blocking, #335):
+  labels the current notes "versión de estudio" when the topic switches to Estudiar. When
+  `apuntes.md` is exactly the latest `apuntes-vN` tag's text that version is labelled; otherwise
+  the notes are committed (`Apuntes vN de <s>/<t>: versión de estudio`) and tagged as the next
+  version first (`GitSync.create_notes_tag`). The label is recorded in `study/version.yaml`
+  (`StudyVersionFile`: `latest` plus the appended `history`, through
+  `vault.study.write_study_file`) and committed. Idempotent: with unchanged notes it returns the
+  same label and writes nothing. A **label, not a freeze**: nothing locks the notes; an edit
+  afterwards only makes `study_current` false (and the generated materials stale, as always).
+  `StudyVersion`: `version`, `tag`, `notes_sha256`, `marked_at`, `created_tag`.
+  `read_study_label` reads the file (None before the first label); `study_current(label, notes)`.
 - Errors (`VersionError`, Spanish): `UnknownVersionError` (no such version, or its file missing at
   the tag), `NothingToRestoreError` (the current notes already are that version; nothing
-  written), `VersionError` for a diff against notes that do not exist.
+  written), `NotesMissingError` (no notes to label), `VersionError` for a diff against notes that
+  do not exist.
 - A restore changes `apuntes.md`, so undoing an earlier chat turn afterwards is an
   `UndoConflictError`, like after a regeneration.
-- Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/notes/versions...`
-  (`docs/modules/server.md`).
+- Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/notes/versions...` and
+  `POST .../study` (`docs/modules/server.md`).
 
 ### "¿Por qué pusiste esto?" -- `explain.py`
 The editor explains one block of the notes from the sources it cites, looked at again; role

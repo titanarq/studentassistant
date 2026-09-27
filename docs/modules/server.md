@@ -584,6 +584,15 @@ Routes registered today:
     reply, then `doubt.resolved` (+ `notes.changed` when the notes changed) and the next doubt
     through the `DoubtChat`; `turn.result` is the `ResolutionResult`. A closed or unknown doubt is
     `turn.error` (409 `doubt_closed`, 404).
+  - `study` (#335, "ya está, quiero estudiar"): `study_routes.switch_to_study`, the same service
+    as `POST .../study` (below), under the consumer's notes lock: the topic's capture session is
+    ended (reason `command`) without "prepárame el tema" and the notes are labelled "versión de
+    estudio". One line is streamed as the reply («He cerrado la captura y marcado los apuntes v3
+    como versión de estudio.»; «He marcado ...» when no session was open) and `turn.result` is the
+    `StudyTurn` (`turn_id`, `origin`, `request`, `message`, `reply`, `action: {kind: "go_study",
+    path: "/subjects/<s>/topics/<t>/study"}`, `study`: the `StudyState`), which the web shows as
+    one "Ir a Estudiar" button (#337). Not recorded in the chat history. No notes is a
+    `turn.error` 409 with a Spanish `detail`.
   A failure is a `turn.error` with the status the same failure has over REST; the topic's next
   request runs anyway. A request stopped at the cost cap (`turn.error` `cost_cap_reached`) is kept
   in memory (the last `STOPPED_PER_TOPIC`, 32, of each topic, by the failed turn's `turn_id`) for
@@ -625,12 +634,13 @@ Routes registered today:
   - `request.detected` `{request_id, kind, summary, origin: voice|typed, transcript: {session_id,
     segment_ids, t_start_ms, t_end_ms, text}, targets?}`: a spoken or typed request was queued;
   - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind:
-    revise|prepare_notes|incorporate|set_aside|restore|doubt_answer}` (`incorporate`: one
+    revise|prepare_notes|incorporate|set_aside|restore|doubt_answer|study}` (`incorporate`: one
     incorporation, e.g. each batch of a batched "prepárame el tema", #326);
   - `reply.delta` `{turn_id, text, attempt}`, `reply.restart` `{turn_id, attempt}`;
   - `turn.result`: the `RevisionResult` (for `prepare_notes` the `GenerationResult`, for
     `incorporate` the `IncorporationResult`, for `set_aside`/`restore` the `TriageTurn`, for
-    `doubt_answer` the `ResolutionResult`) plus `turn_id`, `request_id` and `kind`;
+    `doubt_answer` the `ResolutionResult`, for `study` the `StudyTurn`) plus `turn_id`,
+    `request_id` and `kind`;
   - `turn.error` `{turn_id, request_id, status, detail, code?}`;
   - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
     notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that
@@ -643,7 +653,9 @@ Routes registered today:
   - `doubts.auto_resolved` `{pending_ids, summary}`: the editor settled those doubts from the
     sources itself; `summary` is the one short chat line;
   - `incorporation.progress` `{done, total, source_ids}`: a batched "prepárame el tema" finished
-    the batch `source_ids`; `done` of the `total` pending sources are incorporated (#326).
+    the batch `source_ids`; `done` of the `total` pending sources are incorporated (#326);
+  - `study.marked` `{version, tag}`: the topic switched to Estudiar and notes version `version`
+    is labelled "versión de estudio" (`POST .../study` or the chat's `study` request, #335).
   A slow subscriber never blocks a publisher: past 1024 queued events the oldest `reply.delta`
   (else the oldest event) is dropped. Errors before the stream: an unknown topic 404, a vault
   that cannot be opened 503. Needs the bearer check like every non-exempt route.
@@ -715,6 +727,27 @@ Routes registered today:
   - Errors, Spanish `detail`: a vault that cannot be opened 503, an unknown topic or version 404,
     a version below 1 or a diff without `from` 422, no current notes to diff with, the current
     notes already being that version, or another notes operation of the topic running 409.
+  - `NotesVersions` also carries `study` per version, `study_version` and `study_current` (#335).
+- **Switch to Estudiar** (`server/study_routes.py`, `study_router()`, #335): no Claude call, so
+  both routes work without `llm_transport`.
+  - `POST /api/subjects/{subject_id}/topics/{topic_id}/study`, no body -> 200 `StudyState`.
+    `switch_to_study` ends the topic's unended capture session if it has one
+    (`SessionService.open_session_of`, then `SessionService.end` as the capture page's end does:
+    end hooks, checkpoint and push) but **without** starting "prepárame el tema", then
+    `editor.mark_study_version` labels the notes (the latest `apuntes-vN` when the notes equal
+    it, else a new tag), recorded in `study/version.yaml`. A label, not a freeze. `study.marked`
+    `{version, tag}` goes on the workspace stream. Holds the topic's notes lock
+    (`NotesGenerator.claim` as a `TURN_HOLDER`, when the app has one) while it works. The answer
+    adds `created_tag` and `ended_session` (the session it ended, or null). Errors: `409
+    notes_busy` while the notes are being prepared or an editor turn runs, 409 with a Spanish
+    `detail` when the topic has no notes (nothing is ended then), 404 unknown topic, 503 vault.
+  - `GET .../study` -> `StudyState` (reads only): `study_version` (`{version, tag, marked_at}` or
+    null), `study_current` (the notes still equal the label) and `options`, one per study option
+    `{key: esquema|ejercicios|examen|quiz|tarjetas, kind, state: listo|desactualizado|sin_generar,
+    stale_reason, notes_version}` from `generators.materials_status` (ejercicios and examen both
+    from kind `examen`, tarjetas from `flashcards`; `notes_version` the `apuntes-vN` the material
+    was built from). Staleness is the generators' own: an edit after a material was built makes
+    it `desactualizado`. 404 unknown topic, 503 vault.
 - **The subject style guide API** (`server/style_guide_routes.py`, `style_guide_router()`),
   web-only, thin over `editor.style_guide` (`docs/modules/editor.md`), over the vault and
   `GitSync` of the `SessionService`; no Claude call. Each answers a `StyleGuide` (`subject`,
