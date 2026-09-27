@@ -1,6 +1,6 @@
 import { act, createRef } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { beforeAll, expect, it, vi } from "vitest";
 import NoteEditor, { type NoteEditorHandle, type UploadResult } from "./NoteEditor";
 
 const TEXT = `# Tema
@@ -11,6 +11,15 @@ Cada función se centra en un elemento.[^p3]
 
 [^p3]: [Apuntes, página 3](../sources/notes/page-003.jpg)
 `;
+
+// The editor loads Milkdown lazily (`import("./visualEditor")`); cold, that import transforms and
+// evaluates the whole Milkdown graph. Load it once here, outside any test's readiness wait.
+beforeAll(async () => {
+  await import("./visualEditor");
+}, 30_000);
+
+/** A bound for the editor to open on a loaded machine (it takes well under a second). */
+const READY_TIMEOUT = 5_000;
 
 function renderEditor(uploadImage = vi.fn(async (): Promise<UploadResult> => ({ kind: "failed", message: "no" }))) {
   const ref = createRef<NoteEditorHandle>();
@@ -28,9 +37,16 @@ function renderEditor(uploadImage = vi.fn(async (): Promise<UploadResult> => ({ 
   return { ref, onChange, uploadImage };
 }
 
+/**
+ * Waits until the visual editor is open. The probe is a cheap attribute check on the surface: a
+ * `getByRole` probe costs ~150 ms in jsdom and `waitFor` runs it on every DOM mutation while
+ * ProseMirror mounts, which starves the very promises it waits for (the flake of #363).
+ */
 async function visualReady() {
-  await waitFor(() => expect(screen.getByRole("button", { name: "Negrita" })).toBeEnabled());
-  return screen.getByLabelText("Apuntes en edición");
+  const surface = screen.getByLabelText("Apuntes en edición");
+  await waitFor(() => expect(surface).toHaveAttribute("aria-busy", "false"), { timeout: READY_TIMEOUT });
+  expect(screen.getByRole("button", { name: "Negrita" })).toBeEnabled();
+  return surface;
 }
 
 it("hides heading anchors in the visual editor but keeps them in the text", async () => {
