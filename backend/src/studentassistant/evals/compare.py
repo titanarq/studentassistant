@@ -28,6 +28,10 @@ SCORE_LABELS: dict[str, str] = {
     "request_precision": "peticiones (precisión)",
     "request_recall": "peticiones (exhaustividad)",
     "request_f1": "peticiones (F1)",
+    "triage_precision": "triaje (precisión)",
+    "triage_recall": "triaje (exhaustividad)",
+    "triage_f1": "triaje (F1)",
+    "triage_reasons": "triaje (motivos)",
     "kept": "conservado",
     "supported": "con fuente",
     "score": "global",
@@ -78,6 +82,7 @@ class RunComparison(BaseModel):
 def case_scores(result: CaseResult) -> dict[str, float | None]:
     """Every compared score of one case, keyed as `SCORE_LABELS`."""
     sections, notes, requests = result.sections, result.notes, result.requests
+    triage = result.triage
     return {
         "page_char_accuracy": result.page_char_accuracy,
         "page_word_accuracy": result.page_word_accuracy,
@@ -86,6 +91,10 @@ def case_scores(result: CaseResult) -> dict[str, float | None]:
         "request_precision": requests.precision if requests else None,
         "request_recall": requests.recall if requests else None,
         "request_f1": requests.f1 if requests else None,
+        "triage_precision": triage.precision if triage else None,
+        "triage_recall": triage.recall if triage else None,
+        "triage_f1": triage.f1 if triage else None,
+        "triage_reasons": triage.reason_accuracy if triage else None,
         "kept": notes.kept if notes else None,
         "supported": notes.supported if notes else None,
         "score": result.score,

@@ -52,6 +52,10 @@ the `studentassistant` console script.
 - `studentassistant eval compare <run-a> <run-b>` -- prints the comparison ("Evals",
   "Comparison") of two existing runs, each a name under `[eval] path`'s `runs/` or a directory;
   never calls Claude. Exit 1 when either report cannot be read.
+- `studentassistant eval import-session <subject> <topic> <session_id> [--out DIR]` -- turns a
+  session of the vault into a new eval case ("Evals", "Import") under `[eval] path` (default
+  directory `<subject>-<topic>-<session_id>`); only reads the vault. Exit 1 when the session is
+  unknown, the output exists, or the output is inside the vault (or holds it) or the checkout.
 
 ### Install (`studentassistant/install/`)
 The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/runbooks/install.md`.
@@ -144,9 +148,28 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
   `reference/notes.md` (required), `reference/pages/<capture_id>.md` and
   `reference/sections.yaml` (`sections: [{title, segments: [<segment_id>]}]`) and
   `reference/requests.yaml` (`requests: [{kind, segments: [<segment_id>], note?}]`, `kind` one of
-  `observer.REQUEST_KINDS`), all optional -- plus `runs/`. Every reference is checked against its
+  `observer.REQUEST_KINDS`) and `reference/triage.yaml` (`captures: [{capture_id, status,
+  reasons?, note?}]`, `status` kept/flagged/set_aside, `reasons` among
+  `sources.triage.TRIAGE_REASONS`; a capture the recording lacks or one listed twice is an
+  `EvalSetError`), all optional -- plus `runs/`. HTML comments are removed from every Markdown
+  reference on read; a reference whose first line carries `cases.DRAFT_MARKER` ("borrador sin
+  corregir", an uncorrected import stub) is listed in `EvalCase.drafts` and the report warns about it. Every reference is checked against its
   recording before anything runs (an unknown segment or kind is an `EvalSetError`). `eval run`
   refuses a path inside the vault (or holding it) or inside the source checkout it runs from.
+- **Import** (`import_session.py`, `import_session` / `SessionImportError`): rebuilds a
+  client-mode recording from a vault session through the public vault API only
+  (`list_sessions`, `read_session_transcript`, `read_topic_events`, `read_source`, `get_topic`;
+  nothing written into the vault). Start time: `session.started`'s `client_time_ms`, else
+  `started_at`. One `transcript.client.final` per `transcript.jsonl` segment (start + `t_start` /
+  `t_end`), with the session's own `segment_id` when a `transcript.final` event matches its
+  `t_start` and text (else `seg-<seq>`), and that event's provider and language (the manifest's
+  too; else `replay` / `[stt] language`). `button`/`marker` events at start + `t`. One burst per
+  `capture.stored` event of a `notes`/`book` page, at start + the sidecar's `session_t_ms`: the
+  kept still at `selected_image` plus every `page-NNN.burst<K>.*` still left, in burst order; a
+  capture that cannot be rebuilt is skipped and reported. Reference stubs, each marked
+  `DRAFT_MARKER`: `notes.md` (only the topic title), `pages/<capture_id>.md` (the stored page
+  transcription, when there is one) and `triage.yaml` (every capture with the triage its sidecar
+  holds, a comment naming its page and session time).
 - **Cost first** (`estimate.py`, `estimate_case`): calls and tokens per role from the recording
   alone (constants in the module), priced with `[llm.prices]` at the uncached input price; a
   model with no price is named and left out of the total. The request detector (`observer-requests`,
@@ -188,14 +211,23 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
     (not typed ones) against the reference; a detected request matches a reference one of the
     same kind sharing at least one segment, each matched once. Precision, recall and F1 overall
     and per kind; the report lists the missed and spurious requests (summary and text).
-  - *Global* per case: the mean of page character accuracy, section agreement, request F1, kept
-    and supported (those that exist; no notes counts kept and supported as 0).
+  - *Capture triage*, when `triage.yaml` exists (`score_triage`): the triage each listed capture's
+    page ended the run with -- the real `sources` triage the replay ran at capture time
+    (deterministic unless `[sources] triage_llm_check`, then through the run's transport),
+    `same_content` included, read from the run vault's sidecars (no `triage` block reads as
+    kept; a capture never stored as `missing`). "Set aside" is the positive class: precision,
+    recall and F1. Per reason (blank, duplicate, blurry, partial, same_content): accuracy, the
+    share of listed captures on which run and reference agree about that reason, and its mean
+    (`reason_accuracy`). The report lists the captures triaged otherwise than the reference.
+  - *Global* per case: the mean of page character accuracy, section agreement, request F1,
+    triage F1, kept and supported (those that exist; no notes counts kept and supported as 0).
 - **Comparison** (`compare.py`, `compare_reports` / `previous_report` / `render_comparison`;
   pure, no Claude). After a run, `run_eval` loads the most recent readable `report.json` among the
   sibling `runs/<UTC time>/` directories whose name sorts before its own; an unreadable one is
   named in a warning (log, CLI, `EvalReport.comparison_warnings`, the report) and skipped. Per
   case present in both runs and per score (page character/word accuracy, section
-  agreement/coverage, request precision/recall/F1, kept, supported, global): previous value, new value, delta (`None` when
+  agreement/coverage, request precision/recall/F1, triage precision/recall/F1/reason accuracy,
+  kept, supported, global): previous value, new value, delta (`None` when
   either is missing); a drop larger than `[eval] regression_margin` is a regression. Cases only in
   one run are listed as added/removed. Each run's request detector and notes path are shown
   (`None` for older reports, whose new fields are all optional). It is stored as `EvalReport.comparison` (`RunComparison`,

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from studentassistant.evals import scoring
 from studentassistant.evals.scoring import (
     RequestItem,
+    TriageItem,
     content_words,
     levenshtein,
     normalize,
@@ -13,8 +15,10 @@ from studentassistant.evals.scoring import (
     score_page,
     score_requests,
     score_sections,
+    score_triage,
     units,
 )
+from studentassistant.sources import triage
 
 
 def test_normalize_drops_markup_accents_and_unreadable_marks() -> None:
@@ -145,3 +149,60 @@ def test_the_wrong_kind_is_both_missed_and_spurious() -> None:
 def test_no_requests_at_all_is_a_perfect_score() -> None:
     score = score_requests([], [])
     assert (score.precision, score.recall, score.f1) == (1.0, 1.0, 1.0) and score.per_kind == []
+
+
+def _item(capture_id: str, status: str, *reasons: str) -> TriageItem:
+    return TriageItem(capture_id=capture_id, status=status, reasons=list(reasons))
+
+
+def test_the_scored_reasons_are_the_triage_reasons() -> None:
+    assert scoring.TRIAGE_REASONS == triage.TRIAGE_REASONS
+
+
+def test_triage_scores_set_aside_captures_and_each_reason() -> None:
+    reference = [
+        _item("page", "kept"),
+        _item("blank", "set_aside", "blank"),
+        _item("again", "set_aside", "duplicate"),
+        _item("blurred", "set_aside", "blurry"),
+    ]
+    observed = {
+        "page": _item("page", "set_aside", "blurry"),  # set aside wrongly
+        "blank": _item("blank", "set_aside", "blank"),
+        "again": _item("again", "set_aside", "same_content"),  # right call, wrong reason
+        # "blurred" was never stored: it counts as kept.
+    }
+
+    score = score_triage(reference, observed)
+
+    assert (score.captures, score.reference_set_aside, score.set_aside, score.matched) == (
+        4,
+        3,
+        3,
+        2,
+    )
+    assert score.precision == pytest.approx(2 / 3, abs=1e-3)
+    assert score.recall == pytest.approx(2 / 3, abs=1e-3)
+    assert score.f1 == pytest.approx(2 / 3, abs=1e-3)
+    by_reason = {r.reason: r for r in score.per_reason}
+    assert list(by_reason) == ["blank", "duplicate", "blurry", "partial", "same_content"]
+    assert by_reason["blank"].accuracy == 1.0
+    assert by_reason["duplicate"].accuracy == 0.75 and by_reason["duplicate"].matched == 0
+    # "page" got blurry it should not have, "blurred" lacks the one it should: two of four wrong.
+    assert by_reason["blurry"].accuracy == 0.5
+    assert (by_reason["blurry"].reference, by_reason["blurry"].detected) == (1, 1)
+    assert by_reason["partial"].accuracy == 1.0
+    assert by_reason["same_content"].accuracy == 0.75
+    assert score.reason_accuracy == pytest.approx((1 + 0.75 + 0.5 + 1 + 0.75) / 5, abs=1e-3)
+    assert [(wanted.capture_id, got.status) for wanted, got in score.mismatches] == [
+        ("page", "set_aside"),
+        ("again", "set_aside"),
+        ("blurred", "missing"),
+    ]
+
+
+def test_triage_with_nothing_to_set_aside_and_nothing_set_aside_is_perfect() -> None:
+    score = score_triage([_item("page", "kept")], {"page": _item("page", "kept")})
+    assert (score.precision, score.recall, score.f1) == (1.0, 1.0, 1.0)
+    assert score.reason_accuracy == 1.0 and score.mismatches == []
+    assert score_triage([], {}).reason_accuracy is None

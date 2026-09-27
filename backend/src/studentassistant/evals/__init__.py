@@ -5,6 +5,8 @@ fidelity, scored.
 the code repository) through the whole pipeline with real Claude calls into a fresh vault of its
 own, then scores what came out against the student's reference (`scoring.py`, rubric in
 `docs/modules/infra.md`). The estimated cost is shown, and confirmed, before anything is sent.
+`studentassistant eval import-session` turns a session of the vault into a new case
+(`import_session.py`).
 """
 
 from studentassistant.evals.cases import (
@@ -15,6 +17,7 @@ from studentassistant.evals.cases import (
     EvalSetError,
     ReferenceRequest,
     ReferenceSection,
+    ReferenceTriage,
     read_case,
     read_eval_set,
 )
@@ -30,6 +33,12 @@ from studentassistant.evals.estimate import (
     RoleEstimate,
     estimate_case,
     run_settings,
+)
+from studentassistant.evals.import_session import (
+    ImportedCase,
+    SessionImportError,
+    default_case_name,
+    import_session,
 )
 from studentassistant.evals.run import (
     CaseOutput,
@@ -47,10 +56,13 @@ from studentassistant.evals.scoring import (
     RequestItem,
     RequestScore,
     SectionScore,
+    TriageItem,
+    TriageScore,
     score_notes,
     score_page,
     score_requests,
     score_sections,
+    score_triage,
 )
 
 __all__ = [
@@ -62,19 +74,26 @@ __all__ = [
     "CaseResult",
     "EvalCase",
     "EvalReport",
+    "ImportedCase",
     "EvalSetError",
     "KindScore",
     "NotesFidelity",
     "PageScore",
     "ReferenceRequest",
     "ReferenceSection",
+    "ReferenceTriage",
     "RequestItem",
     "RequestScore",
     "RoleEstimate",
     "RunComparison",
     "SectionScore",
+    "SessionImportError",
+    "TriageItem",
+    "TriageScore",
     "compare_reports",
+    "default_case_name",
     "estimate_case",
+    "import_session",
     "previous_report",
     "read_case",
     "read_eval_set",
@@ -88,5 +107,6 @@ __all__ = [
     "score_page",
     "score_requests",
     "score_sections",
+    "score_triage",
     "write_report",
 ]

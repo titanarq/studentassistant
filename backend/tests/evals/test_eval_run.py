@@ -7,12 +7,17 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 
 from eval_fixtures import CAPTURE_ID, PipelineClaude, make_case, write_requests
 from studentassistant.config import EditorSettings, EvalSettings, ObserverSettings, Settings
 from studentassistant.evals import read_case, run_eval, write_report
+from studentassistant.evals.compare import case_scores, read_report
 from studentassistant.evals.run import REPORT_JSON
+from studentassistant.protocol import CaptureImage, CaptureUploadRequest
+from studentassistant.server.recording import RecordingWriter, read_manifest
 
 RUN_TIMEOUT_S = 60
 
@@ -183,3 +188,74 @@ def test_the_request_detector_under_test_reaches_the_app(home: Path) -> None:
     assert report.request_detection == "wake_word"
     saved = json.loads(write_report(report, runs).with_name(REPORT_JSON).read_text("utf-8"))
     assert saved["request_detection"] == "wake_word" and saved["notes_path"] == "chat"
+
+
+BLANK_ID = "0b1a2c3d-0000-4000-8000-000000000001"
+AGAIN_ID = "0b1a2c3d-0000-4000-8000-000000000002"
+
+
+def _add_capture(case_dir: Path, capture_id: str, image: bytes, client_time_ms: int) -> None:
+    recording = case_dir / "recording"
+    writer = RecordingWriter(recording, read_manifest(recording))
+    metadata = CaptureUploadRequest(
+        capture_id=capture_id,
+        trigger="button",
+        client_time_ms=client_time_ms,
+        images=[
+            CaptureImage(
+                part="image_0",
+                content_type="image/jpeg",
+                width_px=240,
+                height_px=320,
+                client_time_ms=client_time_ms,
+            )
+        ],
+    )
+    writer.add_capture(metadata, {"image_0": image})
+
+
+def test_the_captures_triage_is_scored_against_the_reference_triage(home: Path) -> None:
+    directory = make_case(home / "evals")
+    sample = next((directory / "recording" / "captures").iterdir()).read_bytes()
+    ok, blank = cv2.imencode(".jpg", np.full((320, 240, 3), 250, np.uint8))
+    assert ok
+    # A blank sheet, then the sample page again, both before the recording ends.
+    _add_capture(directory, BLANK_ID, blank.tobytes(), 1760000010000)
+    _add_capture(directory, AGAIN_ID, sample, 1760000010500)
+    # The student says the repeated page is the same content, not a duplicate: right call,
+    # wrong reason.
+    (directory / "reference" / "triage.yaml").write_text(
+        "captures:\n"
+        f"  - capture_id: {CAPTURE_ID}\n    status: kept\n"
+        f"  - capture_id: {BLANK_ID}\n    status: set_aside\n    reasons: [blank]\n"
+        f"  - capture_id: {AGAIN_ID}\n    status: set_aside\n    reasons: [same_content]\n",
+        encoding="utf-8",
+    )
+    runs = home / "evals" / "runs" / "now"
+    claude = PipelineClaude(runs)
+    settings = Settings(observer=ObserverSettings(), editor=EditorSettings(prepare_mode="single"))
+
+    report = _run(runs, directory, claude, settings)
+
+    [result] = report.cases
+    assert result.error is None, result
+    assert len(claude.transcriber.requests) == 1  # the pages set aside are never transcribed
+    triage = result.triage
+    assert triage is not None
+    assert (triage.captures, triage.reference_set_aside, triage.set_aside) == (3, 2, 2)
+    assert (triage.precision, triage.recall, triage.f1) == (1.0, 1.0, 1.0)
+    by_reason = {r.reason: r for r in triage.per_reason}
+    assert by_reason["blank"].accuracy == 1.0
+    assert by_reason["duplicate"].accuracy == pytest.approx(2 / 3, abs=1e-3)
+    assert by_reason["same_content"].accuracy == pytest.approx(2 / 3, abs=1e-3)
+    [(wanted, got)] = triage.mismatches
+    assert wanted.capture_id == AGAIN_ID and got.reasons == ["duplicate"]
+
+    markdown = write_report(report, runs).read_text(encoding="utf-8")
+    assert "Triaje de capturas" in markdown and "mismo contenido" in markdown
+    assert "| triaje (F1) |" in markdown
+    saved = json.loads((runs / REPORT_JSON).read_text(encoding="utf-8"))
+    assert saved["cases"][0]["triage"]["f1"] == 1.0
+    scores = case_scores(read_report(runs).cases[0])
+    assert scores["triage_f1"] == 1.0
+    assert scores["triage_reasons"] == triage.reason_accuracy

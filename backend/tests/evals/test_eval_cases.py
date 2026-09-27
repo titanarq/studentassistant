@@ -23,6 +23,7 @@ from studentassistant.evals import (
     read_eval_set,
     run_settings,
 )
+from studentassistant.evals.cases import DRAFT_MARKER
 
 
 def test_a_case_holds_its_recording_and_every_reference(tmp_path: Path) -> None:
@@ -68,6 +69,61 @@ def test_a_wrong_requests_file_is_refused(tmp_path: Path, text: str, error: str)
     directory = make_case(tmp_path)
     (directory / "reference" / "requests.yaml").write_text(text, encoding="utf-8")
     with pytest.raises(EvalSetError, match=error):
+        read_case(directory)
+
+
+def test_the_reference_triage_is_read(tmp_path: Path) -> None:
+    directory = make_case(tmp_path)
+    (directory / "reference" / "triage.yaml").write_text(
+        f"captures:\n  - capture_id: {CAPTURE_ID}\n    status: set_aside\n"
+        "    reasons: [blurry]\n    note: movida\n",
+        encoding="utf-8",
+    )
+    case = read_case(directory)
+    assert case.reference_triage is not None
+    [entry] = case.reference_triage
+    assert (entry.capture_id, entry.status, entry.reasons) == (CAPTURE_ID, "set_aside", ("blurry",))
+    assert read_case(make_case(tmp_path, "other")).reference_triage is None
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("captures:\n  - capture_id: nope\n    status: kept\n", "does not have"),
+        (f"captures:\n  - capture_id: {CAPTURE_ID}\n    status: gone\n", "not a triage file"),
+        (
+            f"captures:\n  - capture_id: {CAPTURE_ID}\n    status: kept\n    reasons: [ugly]\n",
+            "not a triage file",
+        ),
+        (
+            f"captures:\n  - capture_id: {CAPTURE_ID}\n    status: kept\n"
+            f"  - capture_id: {CAPTURE_ID}\n    status: kept\n",
+            "twice",
+        ),
+    ],
+)
+def test_a_wrong_triage_file_is_refused(tmp_path: Path, text: str, error: str) -> None:
+    directory = make_case(tmp_path)
+    (directory / "reference" / "triage.yaml").write_text(text, encoding="utf-8")
+    with pytest.raises(EvalSetError, match=error):
+        read_case(directory)
+
+
+def test_drafts_are_listed_and_comments_are_not_reference_text(tmp_path: Path) -> None:
+    directory = make_case(tmp_path)
+    reference = directory / "reference"
+    (reference / "notes.md").write_text(
+        f"<!-- {DRAFT_MARKER}: corrígeme -->\n{REFERENCE_NOTES}", encoding="utf-8"
+    )
+    page = reference / "pages" / f"{CAPTURE_ID}.md"
+    page.write_text("<!-- una nota mía -->\nmembrana\n", encoding="utf-8")
+    (reference / "triage.yaml").write_text(f"# {DRAFT_MARKER}\ncaptures: []\n", encoding="utf-8")
+    case = read_case(directory)
+    assert case.reference_notes == "\n" + REFERENCE_NOTES
+    assert case.reference_pages[CAPTURE_ID] == "\nmembrana\n"
+    assert case.drafts == ("notes.md", "triage.yaml")  # the page's comment is no draft marker
+    (reference / "notes.md").write_text(f"<!-- {DRAFT_MARKER} -->\n", encoding="utf-8")
+    with pytest.raises(EvalSetError, match="missing or empty"):
         read_case(directory)
 
 
