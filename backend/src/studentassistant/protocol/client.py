@@ -88,6 +88,10 @@ ButtonName = Literal[
     "web_search",
 ]
 SourceKind = Literal["book", "notes", "pdf"]
+PauseReason = Literal["hidden", "student"]
+"""Why a client paused (1.7, #454): `hidden` -- the page or app went to the background and stops
+sending, what a `pause` without reason means too --, or `student` -- the student put the capture
+aside in a client that stays in front of them (the web workspace's Recursos tab)."""
 
 
 class Button(ProtocolModel):
@@ -97,12 +101,16 @@ class Button(ProtocolModel):
     button: ButtonName
     # The source switched to; present exactly when `button` is `switch_source`.
     source: SourceKind | None = None
+    # Since 1.7 (#454): why the client paused; allowed only with `pause`, absent means `hidden`.
+    reason: PauseReason | None = None
     client_time_ms: EpochMs
 
     @model_validator(mode="after")
     def _source_only_on_switch(self) -> Self:
         if (self.button == "switch_source") != (self.source is not None):
             raise ValueError("source is required with switch_source and forbidden otherwise")
+        if self.reason is not None and self.button != "pause":
+            raise ValueError("reason is only allowed with pause")
         return self
 
 

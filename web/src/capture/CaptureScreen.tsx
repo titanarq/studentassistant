@@ -37,6 +37,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ClientCapabilities,
   HelloAck,
+  PauseReason,
   Session,
   SessionEndResponse,
   SourceKind,
@@ -532,6 +533,11 @@ export default function CaptureScreen({
   const [paused, setPaused] = useState(false);
   /** The same, for the socket's events and the device start, which run outside a render. */
   const pausedRef = useRef(false);
+  /**
+   * Why it is paused, as the backend was told (#454): `hidden` (a hidden tab: the backend's idle
+   * auto-end applies) or `student` (the Recursos tab: the page is still in front of the student).
+   */
+  const pauseReasonRef = useRef<PauseReason | null>(null);
   /** Since #450: the host's `suspended`, read by the running effect. */
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
@@ -715,7 +721,7 @@ export default function CaptureScreen({
       case "reconnected":
         if (stopped.current) return;
         // A new connection counts as sending until it hears otherwise: a hidden tab says so again.
-        if (pausedRef.current) runtime.current.socket?.sendButton("pause", clock.current());
+        if (pausedRef.current) runtime.current.socket?.sendPause(clock.current(), pauseReasonRef.current ?? "hidden");
         followAck.current?.(event.ack);
         clearOutage();
         setConnection("open");
@@ -842,16 +848,22 @@ export default function CaptureScreen({
     // Since #425 the capture runs only while the tab is visible: hidden, nothing is sent and the
     // backend is told `pause`; visible again, `resume` and the devices start again. Since #450 the
     // host's `suspended` (the workspace's Recursos tab) pauses it the same way.
-    const shouldPause = (): boolean => document.visibilityState === "hidden" || suspendedRef.current;
+    // Since #454 the backend is told why: a hidden tab (`hidden`, which wins) stops sending and
+    // the idle auto-end applies; the Recursos tab (`student`) keeps the session. A change between
+    // the two says `pause` again with the new reason.
+    const pauseReason = (): PauseReason | null =>
+      document.visibilityState === "hidden" ? "hidden" : suspendedRef.current ? "student" : null;
     const onVisibilityChange = (): void => {
       if (stopped.current) return;
-      const hidden = shouldPause();
-      if (hidden === pausedRef.current) return;
-      pausedRef.current = hidden;
-      setPaused(hidden);
-      if (hidden) {
-        stopDevices();
-        socket.sendButton("pause", clock.current());
+      const reason = pauseReason();
+      if (reason === pauseReasonRef.current) return;
+      const wasPaused = pausedRef.current;
+      pauseReasonRef.current = reason;
+      pausedRef.current = reason !== null;
+      setPaused(reason !== null);
+      if (reason !== null) {
+        if (!wasPaused) stopDevices();
+        socket.sendPause(clock.current(), reason);
         return;
       }
       socket.sendButton("resume", clock.current());
@@ -910,10 +922,12 @@ export default function CaptureScreen({
     vocabularyHints.current = null;
 
     let disposed = false;
-    pausedRef.current = shouldPause();
+    pauseReasonRef.current = pauseReason();
+    pausedRef.current = pauseReasonRef.current !== null;
     setPaused(pausedRef.current);
-    // A screen opened in a hidden (or suspended) tab says so right after its `hello`.
-    if (pausedRef.current) socket.sendButton("pause", clock.current());
+    // A screen opened in a hidden (or suspended) tab says so right after its `hello` (a bare
+    // `pause`: the version that takes its reason is not negotiated yet).
+    if (pauseReasonRef.current !== null) socket.sendPause(clock.current(), pauseReasonRef.current);
     void (async () => {
       const handshake = await socket.handshake;
       if (disposed) return;
@@ -931,6 +945,8 @@ export default function CaptureScreen({
       setSttMode(handshake.ack.stt_mode);
       vocabularyHints.current ??= handshake.ack.vocabulary_hints ?? [];
       acknowledged = handshake.ack;
+      // Now the reason can go out: a screen opened on the Recursos tab says it is only set aside.
+      if (pauseReasonRef.current === "student") socket.sendPause(clock.current(), "student");
       if (!pausedRef.current) await startDevices();
     })();
 

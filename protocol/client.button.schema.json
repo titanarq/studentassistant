@@ -34,29 +34,58 @@
       ],
       "description": "The source switched to; present exactly when button is switch_source."
     },
+    "reason": {
+      "enum": [
+        "hidden",
+        "student"
+      ],
+      "description": "Since 1.7: why the client paused; allowed only when button is pause. hidden: the page or app went to the background and stops sending (what a pause without reason means too); student: the student put the capture aside in a client still in front of them (the web workspace's Recursos tab), so the backend's idle auto-end keeps the session."
+    },
     "client_time_ms": {
       "type": "integer",
       "minimum": 0,
       "description": "Client clock, Unix epoch ms, when the button was pressed."
     }
   },
-  "if": {
-    "properties": {
-      "button": {
-        "const": "switch_source"
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "button": {
+            "const": "switch_source"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "source"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "source"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": {
+            "button": {
+              "const": "pause"
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "reason"
+          ]
+        }
       }
     }
-  },
-  "then": {
-    "required": [
-      "source"
-    ]
-  },
-  "else": {
-    "not": {
-      "required": [
-        "source"
-      ]
-    }
-  }
+  ]
 }

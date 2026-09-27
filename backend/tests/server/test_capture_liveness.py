@@ -99,8 +99,11 @@ def hello(socket: Any) -> None:
     assert json.loads(message["text"])["type"] == "hello.ack"
 
 
-def button(socket: Any, name: str) -> None:
-    socket.send_json({"type": "button", "button": name, "client_time_ms": HELLO_AT + 1})
+def button(socket: Any, name: str, reason: str | None = None) -> None:
+    message: dict[str, Any] = {"type": "button", "button": name, "client_time_ms": HELLO_AT + 1}
+    if reason is not None:
+        message["reason"] = reason
+    socket.send_json(message)
 
 
 _segments = iter(range(1, 10_000))
@@ -210,6 +213,52 @@ def test_a_paused_socket_past_the_grace_period_ends_the_session(live: Live) -> N
     assert ended.payload["idle_seconds"] == GRACE
     buttons = [e.payload["button"] for e in live.events() if e.kind == "button"]
     assert buttons == ["pause"]
+
+
+def test_a_socket_paused_by_the_student_keeps_the_session_while_connected(live: Live) -> None:
+    """The web workspace's Recursos tab (#454): paused, the page still in front of the student."""
+    session_id = live.start()
+    with live.connect() as socket:
+        hello(socket)
+        button(socket, "pause", "student")
+        sync(socket)
+        live.clock.advance(GRACE * 10)
+        assert live.tick() is None
+        assert live.liveness.idle_seconds(session_id) is None
+        # The tab goes hidden meanwhile: it stops sending, and the idle clock runs from now.
+        button(socket, "pause", "hidden")
+        sync(socket)
+        live.clock.advance(GRACE - 1)
+        assert live.tick() is None
+        # Back on the Recursos tab, before the grace period ran out: held again.
+        button(socket, "pause", "student")
+        sync(socket)
+        live.clock.advance(GRACE * 10)
+        assert live.tick() is None
+    assert live.ended() == []
+    pauses = [e.payload.get("reason") for e in live.events() if e.kind == "button"]
+    assert pauses == ["student", "hidden", "student"]
+
+
+def test_a_student_pause_counts_no_more_once_the_socket_closes(live: Live) -> None:
+    session_id = live.start()
+    with live.connect() as socket:
+        hello(socket)
+        button(socket, "pause", "student")
+        sync(socket)
+    live.clock.advance(GRACE)
+    assert live.tick() == session_id
+    assert live.ended()[0].payload["reason"] == "idle"
+
+
+def test_a_hidden_pause_ends_the_session_like_a_bare_one(live: Live) -> None:
+    session_id = live.start()
+    with live.connect() as socket:
+        hello(socket)
+        button(socket, "pause", "hidden")
+        sync(socket)
+        live.clock.advance(GRACE)
+        assert live.tick() == session_id
 
 
 def test_pause_then_resume_before_the_grace_period_keeps_the_session(live: Live) -> None:

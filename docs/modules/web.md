@@ -37,7 +37,7 @@
   (a refusal keeps the alert with its own sentence) while **Capturar** stays disabled; and none of them touches the socket, the transcript or the uploaded bursts. The capture runs
   only while the tab is visible (#425, replacing #256's "Aviso de pestaña oculta"): when
   `document.visibilityState` turns `hidden` the screen stops the camera and the recognizer (or the
-  audio stream), sends `button: pause` over the still-open socket and shows the status line
+  audio stream), sends `button: pause` (`reason: "hidden"` since #454) over the still-open socket and shows the status line
   "Captura en pausa" («Captura en pausa: la pestaña está oculta»); visible again it sends
   `resume` and starts the camera and the microphone again in the connection's STT mode. A screen
   opened in a hidden tab says `pause` right after `hello`, and a reconnect while hidden says it
@@ -170,9 +170,13 @@
     exactly like a hidden browser tab (#425): `CapturePage`/`CaptureScreen` get `suspended`, the
     camera and the recognizer (or the audio stream) stop, the still-open socket says `button:
     pause`, and the tab reads "Captura en pausa"; back on **Captura** the socket says `resume` and
-    the camera and microphone start again ("Captura en curso"). The session is not ended, but the
-    backend's idle auto-end (#425, `[server] capture_idle_end_seconds`, 5 min by default) ends a
-    session left paused that long. While paused the chat is told no capture runs, so it offers
+    the camera and microphone start again ("Captura en curso"). Since #454 (protocol 1.7) that
+    pause says `reason: "student"` (`SessionSocket.sendPause`; a bare `pause` right after `hello`,
+    repeated with the reason after `hello.ack`, and never a reason to a backend older than 1.7),
+    so the backend's idle auto-end (#425, `[server] capture_idle_end_seconds`, 5 min by default)
+    never ends the session while the page stays open on Recursos; a hidden browser tab says
+    `reason: "hidden"` (it wins over Recursos; each change between the two is a new `pause`) and
+    the auto-end applies to it as before. While paused the chat is told no capture runs, so it offers
     its own microphone button. **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
     **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
     "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by

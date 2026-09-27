@@ -580,6 +580,12 @@ describe("a hidden tab pauses the capture (#425)", () => {
       .filter((frame) => frame.type === "button")
       .map((frame) => String(frame.button));
   }
+  /** The `reason` of each `pause` sent (#454), `-` for a bare one. */
+  function reasons(): string[] {
+    return frames()
+      .filter((frame) => frame.type === "button" && frame.button === "pause")
+      .map((frame) => String(frame.reason ?? "-"));
+  }
 
   it("stops the camera and the recognizer, says pause and shows the paused state", async () => {
     renderScreen();
@@ -592,6 +598,8 @@ describe("a hidden tab pauses the capture (#425)", () => {
     });
 
     expect(buttons()).toEqual(["pause"]);
+    // A hidden tab stops sending: the backend's idle auto-end applies (#454).
+    expect(reasons()).toEqual(["hidden"]);
     expect(fakes.videoTrack.readyState).toBe("ended");
     expect(recognition.abortCount + recognition.stopCount).toBeGreaterThan(0);
     expect(screen.getByRole("status", { name: "Captura en pausa" })).toHaveTextContent(
@@ -640,6 +648,8 @@ describe("a hidden tab pauses the capture (#425)", () => {
     });
 
     expect(buttons()).toEqual(["pause"]);
+    // Only set aside, in a page still in front of the student: the backend keeps it (#454).
+    expect(reasons()).toEqual(["student"]);
     expect(fakes.videoTrack.readyState).toBe("ended");
     expect(recognition.abortCount + recognition.stopCount).toBeGreaterThan(0);
     expect(screen.getByRole("status", { name: "Captura en pausa" })).toHaveTextContent(
@@ -647,27 +657,57 @@ describe("a hidden tab pauses the capture (#425)", () => {
     );
     expect(socket().closeCalls).toEqual([]);
 
-    // A hidden browser tab meanwhile changes nothing more: it is paused already.
+    // A hidden browser tab meanwhile says so (the idle auto-end applies again), and back to
+    // Recursos it is only set aside again; the devices stay off throughout.
     await act(async () => {
       restores.push(setVisibility("hidden"));
     });
+    expect(reasons()).toEqual(["student", "hidden"]);
     await act(async () => {
       restores.push(setVisibility("visible"));
     });
-    expect(buttons()).toEqual(["pause"]);
+    expect(buttons()).toEqual(["pause", "pause", "pause"]);
+    expect(reasons()).toEqual(["student", "hidden", "student"]);
+    expect(fakes.devices.getUserMediaCalls.filter((call) => call.video)).toHaveLength(1);
 
     await act(async () => {
       view.rerender(
         <CaptureScreen session={SESSION} subjectName="Biología" topicName="Fotosíntesis" now={() => NOW} playShutter={shutter} embedded />,
       );
     });
-    expect(buttons()).toEqual(["pause", "resume"]);
+    expect(buttons()).toEqual(["pause", "pause", "pause", "resume"]);
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
     );
     await waitFor(() => expect(fakes.recognitions).toHaveLength(2));
     expect(screen.queryByRole("status", { name: "Captura en pausa" })).toBeNull();
     expect(socket().closeCalls).toEqual([]);
+  });
+
+  it("opened on the Recursos tab says pause at once and why once the version is agreed (#454)", async () => {
+    renderScreen({ embedded: true, suspended: true });
+
+    await open("client", false);
+
+    // Right after `hello` a bare pause (the reason cannot go out before `hello.ack`), then why.
+    expect(frames()[0].type).toBe("hello");
+    expect(frames()[1]).toMatchObject({ type: "button", button: "pause" });
+    expect(reasons()).toEqual(["-", "student"]);
+    expect(fakes.devices.getUserMediaCalls.filter((call) => call.video)).toHaveLength(0);
+  });
+
+  it("sends a bare pause to a backend older than protocol 1.7 (#454)", async () => {
+    const view = renderScreen({ embedded: true });
+    await open("client", true, { protocol_version: "1.6" });
+
+    await act(async () => {
+      view.rerender(
+        <CaptureScreen session={SESSION} subjectName="Biología" topicName="Fotosíntesis" now={() => NOW} playShutter={shutter} embedded suspended />,
+      );
+    });
+
+    expect(buttons()).toEqual(["pause"]);
+    expect(reasons()).toEqual(["-"]);
   });
 
   it("stops the audio stream in server mode and starts it again", async () => {

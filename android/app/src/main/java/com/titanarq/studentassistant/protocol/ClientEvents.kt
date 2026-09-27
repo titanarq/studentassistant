@@ -121,14 +121,37 @@ enum class SourceKind {
     PDF,
 }
 
-/** The student pressed a button; [source] is present exactly with `switch_source`. */
+/**
+ * Why a client paused (1.7, #454). This app never sends one: its background pause is a bare
+ * `pause`, which the backend reads as [HIDDEN].
+ */
+@Serializable
+enum class PauseReason {
+    /** The client went to the background and stops sending: the idle auto-end applies. */
+    @SerialName("hidden")
+    HIDDEN,
+
+    /** The student put the capture aside in a client still in front of them (web Recursos tab). */
+    @SerialName("student")
+    STUDENT,
+}
+
+/**
+ * The student pressed a button; [source] is present exactly with `switch_source`, [reason]
+ * (since 1.7) only with `pause`.
+ */
 @Serializable
 @SerialName("button")
 data class Button(
     val button: ButtonName,
     val source: SourceKind? = null,
     @SerialName("client_time_ms") val clientTimeMs: Long,
-) : ClientEvent
+    val reason: PauseReason? = null,
+) : ClientEvent {
+    init {
+        require(reason == null || button == ButtonName.PAUSE) { "reason is only allowed with pause" }
+    }
+}
 
 /** A point on the session timeline the student flagged, with an optional short label. */
 @Serializable

@@ -5,7 +5,7 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.6**.
+Current version: **`protocol_version` 1.7**.
 
 | version | change |
 |---|---|
@@ -17,6 +17,7 @@ Current version: **`protocol_version` 1.6**.
 | 1.5 | new server message `stt.status`: the server-side STT provider's state (see "STT status") |
 | 1.6 | `rest.sessions.end.request` gains the optional `prepare_notes`, `rest.sessions.end.response` the optional `notes_generation`; new `GET .../notes/generation` (see "Notes generation") |
 | 1.6 (#440) | no bump, nothing a client reads is added: `prepare_notes` is accepted but ignored, `notes_generation` is no longer sent (it was optional) and `GET .../notes/generation` and `rest.topics.notes.generation.response` are removed (see "Notes generation") |
+| 1.7 (#454) | `client.button` gains the optional `reason` (`hidden` \| `student`), only with `pause` (see "Pause reason") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -55,7 +56,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.6; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.7; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -250,7 +251,7 @@ time. `hello.ack.server_time_ms` is the backend clock when it answered.
 | `client.hello` | `hello` | `protocol_version`, `capabilities`, `client_time_ms` |
 | `client.transcript.client.partial` | `transcript.client.partial` | segment fields below |
 | `client.transcript.client.final` | `transcript.client.final` | segment fields below |
-| `client.button` | `button` | `button`, `source?`, `client_time_ms` |
+| `client.button` | `button` | `button`, `source?`, `reason?`, `client_time_ms` |
 | `client.marker` | `marker` | `client_time_ms`, `label?` (1-200 chars) |
 | `client.ack` | `ack` | `command_id`, `client_time_ms` |
 
@@ -265,9 +266,30 @@ time. `hello.ack.server_time_ms` is the backend clock when it answered.
 - `button`: the button equivalent of an ADR-0006 voice command: `next_page`, `important`,
   `switch_source`, `pause`, `resume`, `end_session`, `web_search`. `source` (`book` | `notes` |
   `pdf`) is required with `switch_source` and forbidden otherwise. Capture is not a button event:
-  the client takes the stills itself and uploads them with `trigger: button`.
+  the client takes the stills itself and uploads them with `trigger: button`. Since 1.7 a
+  `pause` may carry `reason` (forbidden with any other button): see "Pause reason".
 - `marker`: a point on the session timeline the student flagged.
 - `ack`: the client received the `command` with that `command_id` and acted on it.
+
+#### Pause reason
+
+Since 1.7 (#454) a `pause` may say why, which decides the backend's idle auto-end (#425: a
+session ends by itself after `[server] capture_idle_end_seconds` with no capture client sending):
+
+- `hidden`: the page or app went to the background and stops sending; the idle clock runs. A
+  `pause` without `reason` means the same, so a client that does not send one (the Android app,
+  any 1.6 client) keeps the behaviour it had.
+- `student`: the student put the capture aside in a client still in front of them (the web
+  workspace's Recursos tab). While that socket stays connected the backend never auto-ends the
+  session; a closed socket stops counting as always.
+
+A client sends `reason` only once `hello.ack` negotiated 1.7 or later (a 1.6 backend refuses the
+unknown field): the web sends a bare `pause` right after `hello` and repeats it with its reason
+after the ack. A change of reason is a new `pause`.
+
+```json
+{"type": "button", "button": "pause", "reason": "student", "client_time_ms": 1790251230000}
+```
 
 ### Server events
 
