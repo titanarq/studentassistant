@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { artifact, materialsBody } from "../materials/testMaterials";
 import { NOTES } from "../notes/testNotes";
 import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import StudyPage, { sectionTitles } from "./StudyPage";
@@ -9,7 +10,7 @@ const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const PAGE = "/subjects/historia/topics/revolucion-industrial";
 const BUILT_AT = "2026-09-25T18:00:00Z";
 
-const KINDS = { esquema: "esquema", ejercicios: "examen", examen: "examen", quiz: "quiz", tarjetas: "flashcards" };
+const KINDS = { esquema: "esquema", ejercicios: "examen", examen: "examen", quiz: "quiz", tarjetas: "flashcards", diapositivas: "diapositivas" };
 
 /** A `GET .../study` body: each option `listo` unless `states` says otherwise. */
 function studyBody(
@@ -39,6 +40,7 @@ const MIXED = studyBody({
   quiz: ["desactualizado", "Los apuntes cambiaron en la v3."],
   ejercicios: ["sin_generar", null],
   examen: ["sin_generar", null],
+  diapositivas: ["desactualizado", "Los apuntes cambiaron en la v4."],
 });
 
 function summary(topics: Record<string, unknown>[]) {
@@ -137,6 +139,10 @@ function routes(overrides: Record<string, Response | (() => Response)> = {}) {
     [`${BASE}/notes`]: jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", text: NOTES, version: 5 }),
     [`${BASE}/study`]: jsonResponse(READY),
     [`${BASE}/generated/files/esquema.md`]: new Response("# Esquema del tema\n\n- Contexto\n- Causas\n"),
+    [`${BASE}/generated/files/diapositivas.md`]: new Response("# Diapositivas del tema\n\n- La máquina de vapor\n"),
+    [`${BASE}/generated`]: jsonResponse(
+      materialsBody([artifact("diapositivas", "Diapositivas", ["diapositivas.md", "diapositivas.pdf", "diapositivas.pptx"])]),
+    ),
     "/api/practice/summary": summary([TOPIC_PRACTICE]),
     [`${BASE}/practice`]: practice(),
     [`${BASE}/quiz`]: quiz(),
@@ -205,7 +211,7 @@ it("shows the options, today's reviews, the question chat and the document in re
   expect(screen.getByRole("heading", { name: "La Revolución Industrial" })).toBeInTheDocument();
 
   const names = (await options()).map((button) => within(button).getByText(/^[A-Z]/, { selector: ".study-option-title" }).textContent);
-  expect(names).toEqual(["Esquema", "Ejercicios", "Examen", "Quiz", "Tarjetas de memoria"]);
+  expect(names).toEqual(["Esquema", "Ejercicios", "Examen", "Quiz", "Tarjetas de memoria", "Diapositivas"]);
 });
 
 it("names the versión de estudio in the header", async () => {
@@ -250,6 +256,10 @@ it("shows each option's state as a text badge: Listo, Desactualizado with its re
   expect(within(optionButton(/^Ejercicios/)).getByText("Sin generar")).toBeInTheDocument();
   expect(within(optionButton(/^Examen/)).getByText("Sin generar")).toBeInTheDocument();
   expect(within(optionButton(/^Tarjetas de memoria/)).getByText("Listo")).toBeInTheDocument();
+  expect(within(optionButton(/^Diapositivas/)).getByText("Desactualizado")).toHaveAttribute(
+    "title",
+    "Los apuntes cambiaron en la v4.",
+  );
 });
 
 it("reads the states from GET .../study, not from GET .../generated", async () => {
@@ -277,6 +287,7 @@ it.each([
   [/^Examen/, "Examen", "¿Qué mejoró Watt?"],
   [/^Quiz/, "Quiz", "¿Dónde empezó la Revolución Industrial?"],
   [/^Tarjetas de memoria/, "Tarjetas de memoria", "¿Qué recursos impulsaron la industria?"],
+  [/^Diapositivas/, "Diapositivas", "La máquina de vapor"],
 ])("opens %s in the panel over the document and closes it back to its button", async (name, title, content) => {
   renderPage();
   await options();
@@ -643,4 +654,72 @@ it("the phrase of an option's hint fills the chat's input without sending it", a
   await waitFor(() => expect(input).toHaveValue("hazme ejercicios"));
   expect(input).toHaveFocus();
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});
+
+// ---- Diapositivas, the sixth option (#382) ----
+
+it("Diapositivas shows the deck's preview with its PDF and PowerPoint downloads", async () => {
+  renderPage();
+  await options();
+
+  fireEvent.click(optionButton(/^Diapositivas/));
+
+  const panel = screen.getByRole("region", { name: "Diapositivas" });
+  expect(await within(panel).findByText("La máquina de vapor")).toBeInTheDocument();
+  expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toHaveAttribute(
+    "href",
+    `${BASE}/generated/files/diapositivas.pdf`,
+  );
+  expect(within(panel).getByRole("link", { name: "Descargar PowerPoint" })).toHaveAttribute(
+    "href",
+    `${BASE}/generated/files/diapositivas.pptx`,
+  );
+});
+
+it("Diapositivas says which export is missing instead of linking it", async () => {
+  renderPage({
+    [`${BASE}/generated`]: jsonResponse(materialsBody([artifact("diapositivas", "Diapositivas", ["diapositivas.md", "diapositivas.pdf"])])),
+  });
+  await options();
+
+  fireEvent.click(optionButton(/^Diapositivas/));
+
+  const panel = screen.getByRole("region", { name: "Diapositivas" });
+  expect(await within(panel).findByText("PowerPoint: no se pudo exportar.")).toBeInTheDocument();
+  expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toBeInTheDocument();
+  expect(within(panel).queryByRole("link", { name: "Descargar PowerPoint" })).toBeNull();
+});
+
+it("Diapositivas not generated says to ask «hazme diapositivas» in the chat", async () => {
+  renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({ diapositivas: ["sin_generar", null] })) });
+  await options();
+  expect(within(optionButton(/^Diapositivas/)).getByText("Sin generar")).toBeInTheDocument();
+
+  fireEvent.click(optionButton(/^Diapositivas/));
+
+  const panel = screen.getByRole("region", { name: "Diapositivas" });
+  expect(within(panel).getByText("Todavía no está generado.")).toBeInTheDocument();
+  const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.click(within(panel).getByRole("button", { name: "hazme diapositivas" }));
+  await waitFor(() => expect(input).toHaveValue("hazme diapositivas"));
+});
+
+it("slides generated from the chat turn the badge to Listo and «Abrir «Diapositivas»» opens them", async () => {
+  renderPage({
+    [`${BASE}/study`]: jsonResponse(studyBody({ diapositivas: ["sin_generar", null] })),
+    [`POST ${BASE}/tutor`]: () =>
+      generation("diapositivas", "diapositivas", studyBody(), "Listas: 8 diapositivas. Ábrelas en «Diapositivas»."),
+  });
+  await options();
+
+  await askInChat("hazme diapositivas");
+
+  await waitFor(() => expect(within(optionButton(/^Diapositivas/)).getByText("Listo")).toBeInTheDocument());
+  fireEvent.click(await within(chatRegion()).findByRole("button", { name: "Abrir «Diapositivas»" }));
+
+  const panel = screen.getByRole("region", { name: "Diapositivas" });
+  expect(await within(panel).findByText("La máquina de vapor")).toBeInTheDocument();
+  expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toBeInTheDocument();
+  expect(optionButton(/^Diapositivas/)).toHaveAttribute("aria-expanded", "true");
 });
