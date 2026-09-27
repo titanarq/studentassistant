@@ -15,8 +15,8 @@
  * after the student moved on.
  *
  * A dropped connection is not the end of the capture (#411). The socket reconnects on its own
- * (resuming the session first, which a restarted backend needs) while the camera and the
- * recognizer keep running and what the student says waits for the resume; the page says
+ * (resuming the session first, which a restarted backend needs), in either STT mode (#419),
+ * while the camera and the recognizer (or the audio stream) keep running and what the student says waits for the resume; the page says
  * «Reconectando…» in its status line and only after a long outage (`LONG_OUTAGE_MS`) shows the
  * blocking message. A burst whose upload failed on the network or a 5xx waits as «Pendiente de
  * subir» and goes up again after the reconnect; the page asks before being left while any upload

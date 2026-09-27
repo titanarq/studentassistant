@@ -32,6 +32,7 @@ import {
   type TranscriptFinal,
   type TranscriptPartial,
 } from "../protocol";
+import { AUDIO_HEADER_SIZE } from "./audioFrames";
 
 /** The recognizer `hello` announces: the browser's own Web Speech API (ADR-0008). */
 export const WEB_SPEECH_PROVIDER = "web-speech";
@@ -195,8 +196,8 @@ const FINAL_CLOSE_CODES: ReadonlySet<number> = new Set([
 /**
  * The client messages an outage keeps and sends after the resume, in order: what the student
  * said (finals; a partial is superseded by its final anyway), pressed, marked or acknowledged.
- * Audio is never kept, and a socket in server STT mode does not reconnect at all: the backend
- * expects its frames contiguous from where it left off, which a restarted backend no longer knows.
+ * Audio is never kept: in server STT mode the audio of an outage is lost, and the frames after it
+ * are numbered from where the backend stands (`SessionSocket.sendAudio`, #419).
  */
 const KEPT_WHILE_OFFLINE: ReadonlySet<ClientEvent["type"]> = new Set([
   "transcript.client.final",
@@ -216,12 +217,22 @@ type Phase = "connecting" | "live" | "reconnecting" | "closed";
  * and reports the failure through `handshake`. `handshake` says how the negotiation ended and the accessors
  * keep what `hello.ack` fixed; `onEvent` reports the session from then on, and `close()` ends it.
  *
- * With `reconnect` (#411), a session that was running in client STT mode survives a close that
+ * With `reconnect` (#411; server STT mode too since #419), a running session survives a close that
  * is not final (`FINAL_CLOSE_CODES`): the socket reports `reconnecting` once, then, after each
  * backoff delay, asks `resume` and dials again with a new `hello`, until a `hello.ack` answers
  * (`reconnected`, after the frames the outage kept went out in order) or the session turns out to
  * be over (`closed` with `SESSION_NOT_ACTIVE_CLOSE`). The backend drops a final whose
  * `segment_id` it already handled, so a frame sent twice around the drop is harmless.
+ *
+ * In server STT mode the socket numbers the audio frames itself (#419). The backend feeds frames
+ * contiguously from its own next `seq`, which a restarted backend starts again at 0 and a
+ * backend that kept the session knows from the frames that reached it; the frames sent into a
+ * dying connection may or may not have. So every `hello.ack` starts the numbering over at 0, and
+ * a server `ack` whose `audio_seq` is at or past the next number moves it to `audio_seq + 1`: a
+ * backend that kept the session sends that ack right after `hello.ack` (docs/modules/server.md,
+ * "Resume"), and a frame sent before it arrived is dropped by the backend as a duplicate and
+ * answered with the same ack. In a running connection an `ack` never reaches the next number, so
+ * the rule only ever acts after a (re)connect. Audio of the outage itself is not kept.
  */
 export class SessionSocket {
   /** The absolute URL this socket dials. */
@@ -245,6 +256,8 @@ export class SessionSocket {
   /** True once this side ended the socket or refused the backend: no reconnect after that. */
   private final = false;
   private attempts = 0;
+  /** The `seq` the next audio frame goes out with, on the current connection (#419). */
+  private audioSeq = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private settled = false;
   private resolveHandshake!: (result: HandshakeResult) => void;
@@ -319,11 +332,13 @@ export class SessionSocket {
 
   /**
    * Sends one encoded audio frame in the layout protocol/README.md defines (`audioFrames.ts`
-   * builds them), which only the backend's server STT mode uses.
+   * builds them), which only the backend's server STT mode uses. The frame goes out with the
+   * `seq` the backend expects next (see the class comment), whatever `seq` it was built with; the
+   * caller's bytes are never changed. A frame sent during an outage is dropped.
    */
   sendAudio(frame: Uint8Array<ArrayBuffer>): void {
     if (this.phase === "reconnecting") return;
-    this.transmit(frame);
+    if (this.transmit(withSeq(frame, this.audioSeq))) this.audioSeq += 1;
   }
 
   /**
@@ -417,6 +432,9 @@ export class SessionSocket {
         this.notify({ kind: "sttStatus", event: decoded });
         break;
       case "ack":
+        if (decoded.audio_seq !== undefined && decoded.audio_seq >= this.audioSeq) {
+          this.audioSeq = decoded.audio_seq + 1;
+        }
         this.notify({ kind: "ack", event: decoded });
         break;
     }
@@ -434,6 +452,9 @@ export class SessionSocket {
     this.version = version;
     this.ack = ack;
     this.acknowledged = true;
+    // A new connection may be a restarted backend, which expects frame 0; one that kept the
+    // session says where it stands in the ack that follows (see the class comment).
+    this.audioSeq = 0;
     if (this.phase === "reconnecting") {
       this.phase = "live";
       this.attempts = 0;
@@ -450,8 +471,7 @@ export class SessionSocket {
     return (
       this.reconnectOptions !== null &&
       !this.final &&
-      (this.phase === "live" || this.phase === "reconnecting") &&
-      this.ack?.stt_mode === "client"
+      (this.phase === "live" || this.phase === "reconnecting")
     );
   }
 
@@ -588,10 +608,12 @@ export class SessionSocket {
    * A frame goes out while the socket is open, waits in `pending` while it connects, and is
    * dropped once the socket is closing or closed.
    */
-  private transmit(frame: string | Uint8Array<ArrayBuffer>): void {
+  private transmit(frame: string | Uint8Array<ArrayBuffer>): boolean {
     const { readyState } = this.socket;
     if (readyState === this.socket.OPEN) this.socket.send(frame);
     else if (readyState === this.socket.CONNECTING) this.pending.push(frame);
+    else return false;
+    return true;
   }
 
   private shut(code: number): void {
@@ -599,6 +621,23 @@ export class SessionSocket {
     if (this.socket.readyState === this.socket.CLOSED) return;
     this.socket.close(code);
   }
+}
+
+/** Where an audio frame's `seq` sits: a big-endian u32 after the magic and the version bytes. */
+const AUDIO_SEQ_OFFSET = 6;
+
+/**
+ * The frame with `seq` in its header: the very bytes when it already carries it, otherwise a copy
+ * (the caller keeps its own frame). Anything shorter than a header goes out as it is, for the
+ * backend to refuse.
+ */
+function withSeq(frame: Uint8Array<ArrayBuffer>, seq: number): Uint8Array<ArrayBuffer> {
+  if (frame.byteLength < AUDIO_HEADER_SIZE) return frame;
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  if (view.getUint32(AUDIO_SEQ_OFFSET, false) === seq) return frame;
+  const copy = new Uint8Array(frame);
+  new DataView(copy.buffer).setUint32(AUDIO_SEQ_OFFSET, seq, false);
+  return copy;
 }
 
 /** The head of a frame that is not protocol v1, for the log the `rejected` problem ends up in. */
