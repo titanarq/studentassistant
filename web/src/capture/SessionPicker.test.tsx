@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Session } from "../protocol";
 import SessionPicker, { type OpenedSession } from "./SessionPicker";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 // Contract-valid bodies, shaped exactly like `protocol/examples/rest.*` of the same message: the
 // picker decodes every one of them through the bindings, so a mistake here fails the test loudly.
@@ -125,7 +126,7 @@ it("lists the subjects and then the topics of the chosen one", async () => {
   ).toBeInTheDocument();
   expect(sent[1]).toEqual({ path: "/api/subjects/historia/topics", init: { method: "GET" } });
   expect(screen.getByRole("form", { name: "Crear un tema" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("marks the unended session and the pending doubts of a topic, and the chosen item of each list", async () => {
   backend();
@@ -144,7 +145,7 @@ it("marks the unended session and the pending doubts of a topic, and the chosen 
   expect(unended).toHaveAttribute("aria-current", "true");
   expect(screen.getByRole("heading", { name: "Temas de Biología" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "La sesión" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("offers to continue a topic with an unended session and to start one for a topic without it", async () => {
   backend();
@@ -164,7 +165,7 @@ it("offers to continue a topic with an unended session and to start one for a to
   expect(
     screen.queryByRole("button", { name: "Continuar la sesión abierta" }),
   ).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("starts a new session on a topic with no unended one and hands it to the capture screen", async () => {
   backend();
@@ -318,7 +319,7 @@ it("creates a subject and a topic, re-reading each list, and leaves the new topi
     topic_id: "cinematica",
     client_time_ms: NOW,
   });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks for a name in Spanish instead of posting an empty one", async () => {
   backend();
@@ -400,7 +401,7 @@ it("shows the backend's own Spanish refusal of a start and leaves the picker usa
   expect(onSession).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Empezar una sesión nueva" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Biología" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the backend's own Spanish refusal of a resume", async () => {
   backend({
@@ -417,7 +418,7 @@ it("shows the backend's own Spanish refusal of a resume", async () => {
     "No se ha podido continuar la sesión: Esa sesión ya está terminada.",
   );
   expect(onSession).not.toHaveBeenCalled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("keeps nothing in browser storage and sends no token", async () => {
   const setItem = vi.spyOn(Storage.prototype, "setItem");

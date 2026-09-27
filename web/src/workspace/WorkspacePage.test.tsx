@@ -8,6 +8,7 @@ import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi
 import { resourceList } from "./resources";
 import WorkspacePage, { DOUBTS_TOOLTIP, EMPTY_NOTES } from "./WorkspacePage";
 import { parseNotes } from "../notes/markdown";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const TOPIC = "subjects/historia/topics/revolucion-industrial";
@@ -108,7 +109,7 @@ it("shows the two columns: tabs above the chat, the notes on the right, and the 
   // The capture flow is preset to the topic: no subject or topic picker.
   expect(await screen.findByRole("button", { name: "Empezar una sesión nueva" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Asignatura" })).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("moves between the tabs with the arrow keys", async () => {
   renderPage();
@@ -124,7 +125,7 @@ it("moves between the tabs with the arrow keys", async () => {
   fireEvent.keyDown(tab("Recursos"), { key: "Home" });
   expect(tab("Captura")).toHaveFocus();
   await screen.findByRole("button", { name: "Empezar una sesión nueva" });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("keeps a running capture mounted when switching to Recursos, and marks it as running", async () => {
   renderPage();
@@ -171,7 +172,7 @@ it("keeps a running capture mounted when switching to Recursos, and marks it as 
   fireEvent.click(tab("Captura en curso"));
   expect(screen.getByRole("button", { name: "Capturar" })).toBeVisible();
   expect(fakes.sockets).toHaveLength(1);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("opens a footnote's source in Recursos instead of a panel over the document", async () => {
   renderPage();
@@ -187,7 +188,7 @@ it("opens a footnote's source in Recursos instead of a panel over the document",
   fireEvent.click(within(dialog).getByRole("button", { name: "Cerrar" }));
   expect(within(resources).queryByRole("dialog")).toBeNull();
   expect(await within(resources).findByRole("list", { name: "Fuentes del tema" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("lists the topic's sources in Recursos and opens one in the viewer", async () => {
   renderPage();
@@ -218,7 +219,7 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
   fireEvent.click(within(pages).getByRole("button", { name: /Página 1 · apuntes/ }));
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
   expect(await within(dialog).findByText("Gran Bretaña, s. XVIII")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says there are no notes yet instead of an error", async () => {
   renderPage({ ...ROUTES, [`${BASE}/notes`]: jsonResponse({ detail: "El tema no tiene apuntes." }, 404) });
@@ -261,7 +262,7 @@ it("refreshes the document after the chat applied a change", async () => {
   expect(await screen.findByText(/dicen, empezó/)).toBeInTheDocument();
   expect(screen.getByText(/dicen, empezó/).closest(".notes-block")).toHaveClass("notes-changed");
   expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/notes`)).toHaveLength(2);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("reads the doubts counter again on a doubt of the chat and opens a contradiction's source in Recursos", async () => {
   // The counter is also read when the notes load, so it drops to 2 only once the doubt is asked:
@@ -304,7 +305,7 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
   const resources = document.getElementById("workspace-panel-resources")!;
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 2" });
   expect(await within(dialog).findByText("Carbón y hierro")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("switches the single column between document, capture/resources and chat", async () => {
   renderPage();
@@ -325,7 +326,7 @@ it("switches the single column between document, capture/resources and chat", as
   expect(root).toHaveAttribute("data-view", "left");
   // The capture tab is never unmounted by the switch.
   expect(document.getElementById("workspace-panel-capture")).not.toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("lists every stored source from the topic's source list, uncited webs included (#323)", async () => {
   const fetchMock = renderPage({

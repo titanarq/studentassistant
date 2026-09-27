@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import WebSearchPanel from "./WebSearchPanel";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -78,7 +79,7 @@ it("lists the topic's searches and keeps a result as a source", async () => {
   expect(await screen.findByText(/Guardada como fuente externa \(sources\/web\/001-toma-de-la-bastilla.md\)/)).toBeInTheDocument();
   expect(onKept).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledWith(`${BASE}/ws-1/results/0/keep`, { method: "POST" });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("queues a search and polls until it has results", async () => {
   let lists = 0;

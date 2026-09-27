@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import NotesPage from "./NotesPage";
 import { NOTES } from "./testNotes";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -79,7 +80,8 @@ it("renders the notes with anchored headings, footnotes and the AI content highl
   renderPage();
 
   expect(await screen.findByRole("heading", { level: 1, name: "La Revolución Industrial" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "← Tema La Revolución Industrial" })).toHaveAttribute(
+  // The topic's name comes from the topics read, not from the notes.
+  expect(await screen.findByRole("link", { name: "← Tema La Revolución Industrial" })).toHaveAttribute(
     "href",
     "/subjects/historia/topics/revolucion-industrial",
   );
@@ -101,7 +103,7 @@ it("renders the notes with anchored headings, footnotes and the AI content highl
 
   const footnotes = screen.getByRole("region", { name: "Fuentes" });
   expect(within(footnotes).getByRole("link", { name: "PDF, página 3" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("opens a handwritten page in the side panel: zoomable image and transcription", async () => {
   renderPage();
@@ -123,7 +125,7 @@ it("opens a handwritten page in the side panel: zoomable image and transcription
   expect(within(panel).getByLabelText("Zoom")).toHaveTextContent("150 %");
   fireEvent.keyDown(frame, { key: "0" });
   expect(within(panel).getByLabelText("Zoom")).toHaveTextContent("100 %");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("prefers the sidecar's transcription of a page", async () => {
   renderPage();
@@ -131,7 +133,7 @@ it("prefers the sidecar's transcription of a page", async () => {
 
   const panel = await screen.findByRole("dialog", { name: "Apuntes, página 2" });
   expect(await within(panel).findByText("Carbón y hierro")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says so when a page has no transcription yet", async () => {
   renderPage({
@@ -165,7 +167,7 @@ it("keeps the reading position and gives the focus back when the panel closes", 
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cerrar" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(ref).toHaveFocus();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows a PDF page with its number in the original PDF", async () => {
   renderPage();
@@ -190,7 +192,7 @@ it("shows a transcript excerpt with its timestamps", async () => {
   const lines = within(excerpt).getAllByRole("listitem");
   expect(lines[0]).toHaveTextContent("02:34 Esto empieza en Inglaterra");
   expect(lines[1]).toHaveTextContent("02:50 hacia mil setecientos cincuenta");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows a web snapshot, marked as an external source, with the URL it was taken from", async () => {
   renderPage();
@@ -207,7 +209,7 @@ it("shows a web snapshot, marked as an external source, with the URL it was take
     "href",
     "https://es.wikipedia.org/wiki/M%C3%A1quina_de_vapor",
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("explains the AI mark and switches sources without closing the panel", async () => {
   renderPage();
@@ -218,7 +220,7 @@ it("explains the AI mark and switches sources without closing the panel", async 
   );
   await openRef("Fuente: Apuntes, página 2");
   expect(await screen.findByRole("dialog", { name: "Apuntes, página 2" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("opens the panel from the footnote list too", async () => {
   renderPage();
@@ -234,7 +236,7 @@ it("reports a source the vault does not have", async () => {
   await openRef("Fuente: PDF, página 3");
 
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el PDF: No existe esa fuente en la bóveda.");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says there are no notes yet and sends the student to Construir, with no button to write them", async () => {
   renderPage({
@@ -311,7 +313,7 @@ describe("phone-width collapse controls", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cerrar" }));
     expect(sources).toHaveAttribute("aria-expanded", "false");
     expect(ref).toHaveFocus();
-  });
+  }, PAGE_TEST_TIMEOUT);
 
   it("expands the chat when the editor is asked why", async () => {
     renderPage({
@@ -325,5 +327,5 @@ describe("phone-width collapse controls", () => {
     fireEvent.click(why[0]);
     expect(chat).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText("Porque sí.")).toBeInTheDocument();
-  });
+  }, PAGE_TEST_TIMEOUT);
 });

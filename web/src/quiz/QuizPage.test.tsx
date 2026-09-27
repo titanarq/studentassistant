@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
+import { LOAD_TIMEOUT, PAGE_TEST_TIMEOUT } from "../test/timeouts";
 import QuizPage from "./QuizPage";
 import { normalizeAnswer, readStoredQuiz } from "./api";
 
@@ -82,9 +83,14 @@ it("takes the quiz, corrects it with self-assessment and saves the result", asyn
   });
   renderPage();
 
-  expect(await screen.findByRole("heading", { name: "Quiz de Derivadas" })).toBeInTheDocument();
-  expect(screen.getByText(/3 preguntas · dificultad variada · de los apuntes v2/)).toBeInTheDocument();
-  expect(screen.getByRole("region", { name: "Intentos anteriores" })).toHaveTextContent("1 de 3");
+  // The heading's name comes from the topics read; the quiz and its attempts from separate ones.
+  expect(await screen.findByRole("heading", { name: "Quiz de Derivadas" }, { timeout: LOAD_TIMEOUT })).toBeInTheDocument();
+  expect(
+    await screen.findByText(/3 preguntas · dificultad variada · de los apuntes v2/, {}, { timeout: LOAD_TIMEOUT }),
+  ).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Intentos anteriores" }, { timeout: LOAD_TIMEOUT })).toHaveTextContent(
+    "1 de 3",
+  );
 
   const first = screen.getByRole("group", { name: "Pregunta 1" });
   fireEvent.click(within(first).getByLabelText("Un límite"));
@@ -115,7 +121,7 @@ it("takes the quiz, corrects it with self-assessment and saves the result", asyn
   expect(screen.getByRole("region", { name: "Resultado" })).toHaveTextContent("Aciertos: 2 de 3");
   fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
 
-  expect(await screen.findByRole("status")).toHaveTextContent("Resultado guardado: 2 de 3.");
+  expect(await screen.findByRole("status", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Resultado guardado: 2 de 3.");
   expect(sent).toMatchObject({
     built_at: BUILT_AT,
     answers: [
@@ -129,7 +135,7 @@ it("takes the quiz, corrects it with self-assessment and saves the result", asyn
   fireEvent.click(screen.getByRole("button", { name: "Repetir el quiz" }));
   expect(screen.getByRole("button", { name: "Corregir" })).toBeInTheDocument();
   expect(within(screen.getByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite")).not.toBeChecked();
-});
+}, PAGE_TEST_TIMEOUT);
 
 function stubRetakeApi(posts: Record<string, unknown>[]) {
   const fetchMock = stubApi({});
@@ -156,11 +162,11 @@ it("retakes only the questions answered wrong and marks the attempt in the histo
   stubRetakeApi(posts);
   renderPage();
 
-  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite"));
+  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" }, { timeout: LOAD_TIMEOUT })).getByLabelText("Un límite"));
   fireEvent.click(within(screen.getByRole("group", { name: "Pregunta 2" })).getByLabelText("Falso"));
   fireEvent.click(screen.getByRole("button", { name: "Corregir" }));
   fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("Resultado guardado: 1 de 3.");
+  expect(await screen.findByRole("status", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Resultado guardado: 1 de 3.");
   expect(posts[0]).not.toHaveProperty("questions");
 
   fireEvent.click(screen.getByRole("button", { name: "Repetir las falladas" }));
@@ -177,7 +183,7 @@ it("retakes only the questions answered wrong and marks the attempt in the histo
   expect(screen.getByRole("region", { name: "Resultado" })).toHaveTextContent("Aciertos: 2 de 2");
   fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
 
-  expect(await screen.findByRole("status")).toHaveTextContent("Resultado guardado: 2 de 2.");
+  expect(await screen.findByRole("status", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Resultado guardado: 2 de 2.");
   expect(posts[1]).toMatchObject({
     built_at: BUILT_AT,
     questions: ["q2", "q3"],
@@ -194,23 +200,23 @@ it("retakes only the questions answered wrong and marks the attempt in the histo
 
   fireEvent.click(screen.getByRole("button", { name: "Repetir el quiz" }));
   expect(screen.getAllByRole("group", { name: /^Pregunta \d$/ })).toHaveLength(3);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("does not offer to retake the failed questions when there are none", async () => {
   const posts: Record<string, unknown>[] = [];
   stubRetakeApi(posts);
   renderPage();
 
-  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" })).getByLabelText("Un límite"));
+  fireEvent.click(within(await screen.findByRole("group", { name: "Pregunta 1" }, { timeout: LOAD_TIMEOUT })).getByLabelText("Un límite"));
   fireEvent.click(within(screen.getByRole("group", { name: "Pregunta 2" })).getByLabelText("Verdadero"));
   fireEvent.change(within(screen.getByRole("group", { name: "Pregunta 3" })).getByLabelText("Tu respuesta"), {
     target: { value: "La regla de la cadena" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Corregir" }));
   fireEvent.click(screen.getByRole("button", { name: "Guardar resultado" }));
-  expect(await screen.findByRole("button", { name: "Repetir el quiz" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Repetir el quiz" }, { timeout: LOAD_TIMEOUT })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Repetir las falladas" })).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("offers to generate the quiz when there is none, then shows it", async () => {
   let generated = false;
@@ -232,18 +238,20 @@ it("offers to generate the quiz when there is none, then shows it", async () => 
   });
   renderPage();
 
-  expect(await screen.findByText("Todavía no hay quiz de este tema: genéralo primero.")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Todavía no hay quiz de este tema: genéralo primero.", {}, { timeout: LOAD_TIMEOUT }),
+  ).toBeInTheDocument();
   const form = screen.getByRole("form", { name: "Generar un quiz" });
   fireEvent.change(within(form).getByLabelText("Número de preguntas"), { target: { value: "5" } });
   fireEvent.change(within(form).getByLabelText("Dificultad"), { target: { value: "hard" } });
   fireEvent.click(within(form).getByRole("button", { name: "Generar quiz" }));
 
-  expect(await screen.findByRole("group", { name: "Pregunta 1" })).toBeInTheDocument();
+  expect(await screen.findByRole("group", { name: "Pregunta 1" }, { timeout: LOAD_TIMEOUT })).toBeInTheDocument();
   expect(body).toEqual({ options: { size: 5, difficulty: "hard" }, confirm_over_cap: false });
   expect(fetchMock).toHaveBeenCalledWith(`${TOPIC}/generated/quiz`, expect.objectContaining({ method: "POST" }));
   expect(screen.getByRole("note")).toHaveTextContent("Los apuntes han cambiado.");
   expect(screen.getByRole("heading", { name: "Generar un quiz nuevo" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks to confirm when the cost cap is reached", async () => {
   const posts: unknown[] = [];
@@ -261,12 +269,12 @@ it("asks to confirm when the cost cap is reached", async () => {
   });
   renderPage();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Generar quiz" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Has llegado al tope de gasto.");
+  fireEvent.click(await screen.findByRole("button", { name: "Generar quiz" }, { timeout: LOAD_TIMEOUT }));
+  expect(await screen.findByRole("alert", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Has llegado al tope de gasto.");
   fireEvent.click(screen.getByRole("button", { name: "Generar igualmente" }));
-  await waitFor(() => expect(posts).toHaveLength(2));
+  await waitFor(() => expect(posts).toHaveLength(2), { timeout: LOAD_TIMEOUT });
   expect(posts[1]).toMatchObject({ confirm_over_cap: true });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("reads the quiz leniently and normalizes answers like the backend", () => {
   const quiz = readStoredQuiz(

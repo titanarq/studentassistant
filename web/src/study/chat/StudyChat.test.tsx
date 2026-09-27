@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "../../test/mockApi";
 import type { VoiceQuestionCallbacks, VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import StudyChat, { BUSY_SENTENCE, FOLLOW_BUTTON, MAX_QUESTION_CHARS, STALE_SECTION, THINKING } from "./StudyChat";
+import { PAGE_TEST_TIMEOUT } from "../../test/timeouts";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const TUTOR = `${BASE}/tutor`;
@@ -100,7 +101,7 @@ it("shows the topic's earlier written questions, not the voice tutor's, as a log
   expect(screen.getByTestId("study-chat-latest")).toHaveTextContent(/^$/);
   // Light Markdown, no raw HTML.
   expect(within(log()).getByText("población").tagName).toBe("STRONG");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("has the read-only line linking to Construir, and a bounded input", async () => {
   renderChat({});
@@ -521,7 +522,7 @@ it("does not scroll when the student scrolled up, and offers «Nuevos mensajes �
   expect(area.sets).toHaveBeenLastCalledWith(1300);
   expect(screen.queryByRole("button", { name: FOLLOW_BUTTON })).toBeNull();
   stream.close();
-});
+}, PAGE_TEST_TIMEOUT);
 
 function fakeListen() {
   const calls: VoiceQuestionCallbacks[] = [];

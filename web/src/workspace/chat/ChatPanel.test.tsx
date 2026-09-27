@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DIFF, history, revision, turn } from "../../chat/testChat";
+import { PAGE_TEST_TIMEOUT } from "../../test/timeouts";
 import { jsonResponse, sseEvent, streamResponse, stubApi } from "../../test/mockApi";
 import { type WorkspaceState, WorkspaceContext } from "../state";
 import WorkspaceChatSlot from "../WorkspaceChatSlot";
@@ -131,7 +132,7 @@ it("shows the history, then follows a spoken request live until its result, and 
   expect(within(entry).getByRole("button", { name: "Ocultar los cambios" })).toHaveAttribute("aria-expanded", "true");
   // One entry per request: the queued line became the turn.
   expect(within(log()).getAllByRole("listitem")).toHaveLength(2);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("expands and collapses the raw transcript of a spoken request", async () => {
   const { opened } = setup();

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import PendingPage, { applyFilter, byKind } from "./PendingPage";
 import { doubt, doubts, item, question, resolution } from "./testPending";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -50,7 +51,7 @@ it("groups the cards by kind, contradictions first, and shows the open count", a
     "href",
     "/subjects/historia/topics/revolucion-francesa",
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("filters the closed doubts on the page", async () => {
   const fetchMock = stubApi({

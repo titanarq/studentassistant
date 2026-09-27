@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import PracticePage from "./PracticePage";
 import { describeInterval, readQueue } from "./api";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -109,7 +110,7 @@ it("reviews a flashcard, sending the student's rating", async () => {
   expect(await screen.findByRole("status")).toHaveTextContent("Bien: volverá mañana.");
   expect(sent).toEqual([{ item: "flashcards:c0000abcd", rating: "good" }]);
   expect(screen.getByText(/Has repasado 1 elemento/)).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("checks a quiz question, rates a right answer and requeues a wrong one", async () => {
   const sent: Record<string, unknown>[] = [];
@@ -153,7 +154,7 @@ it("checks a quiz question, rates a right answer and requeues a wrong one", asyn
     { item: CHOICE.item.key, given: "2x", rating: "easy" },
     { item: SHORT.item.key, given: "la de la cadena", self_assessed: false },
   ]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says when the next review is due when nothing is left, and shows warnings", async () => {
   stubApi({

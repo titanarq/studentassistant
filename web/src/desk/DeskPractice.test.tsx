@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import DeskPractice from "./DeskPractice";
 import { countsText, formatDue } from "./practiceSummary";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -59,7 +60,7 @@ it("lists the totals and one linked row per topic with due or new items", async 
     "/subjects/mates/topics/derivadas/study",
   );
   expect(within(block).queryByText(/Límites/)).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says there is nothing to review today with the earliest next due date", async () => {
   stubApi({

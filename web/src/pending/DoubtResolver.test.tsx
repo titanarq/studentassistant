@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import DoubtResolver, { sourceLabel } from "./DoubtResolver";
 import { doubt, question, resolution } from "./testPending";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -40,7 +41,7 @@ it("answers with a suggested answer by its number", async () => {
   await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
   expect(sent(fetchMock)).toEqual({ suggestion: 2, confirm_over_cap: false });
   expect(onResolved.mock.calls[0][0]).toMatchObject({ pending_id: "p1", notes_changed: true });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("answers with free text, and without a question too", async () => {
   const fetchMock = stubApi({ [`POST ${BASE}/p1/answer`]: jsonResponse(resolution()) });

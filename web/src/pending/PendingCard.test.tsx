@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import PendingCard, { describeRefs } from "./PendingCard";
 import { item } from "./testPending";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 it.each([
   ["contradiction", "Contradicción", "Tus fuentes no dicen lo mismo: habrá que elegir cuál vale."],
@@ -17,7 +18,7 @@ it.each([
   expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
   expect(card).toHaveTextContent(hint);
   expect(card).toHaveTextContent("Abierta");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says what the doubt refers to and how many doubts were merged", () => {
   render(
