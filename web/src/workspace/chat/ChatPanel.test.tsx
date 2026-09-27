@@ -474,7 +474,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   });
   const stream = await opened();
   const input = screen.getByLabelText("Mensaje para el asistente");
-  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Chatea con el asistente…");
 
   act(() => stream.push(sseEvent("doubt.asked", ASKED)));
   const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
@@ -486,7 +486,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   expect(within(doubt).getByRole("button", { name: "Ver la fuente: página 3" })).toBeInTheDocument();
   // No answer buttons: it is answered by typing or saying it.
   expect(within(doubt).queryByRole("button", { name: /escrit/ })).toBeNull();
-  expect(input).toHaveAttribute("placeholder", "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…");
+  expect(input).toHaveAttribute("placeholder", "Responde a la duda (escribiendo o con el micrófono) o pide otra cosa…");
   expect(doubtsChanged).toHaveBeenCalledTimes(1);
 
   await type("la 2");
@@ -514,7 +514,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   expect(await within(answer).findByText("Pone «escrito».")).toBeInTheDocument();
   expect(await within(doubt).findByText("Respondida: Pone «escrito».")).toBeInTheDocument();
   expect(within(doubt).getByText("Duda resuelta")).toBeInTheDocument();
-  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Chatea con el asistente…");
   expect(doubtsChanged).toHaveBeenCalledTimes(2);
 });
 
@@ -634,7 +634,7 @@ it("merges the new turn kinds of the history after a reconnect without duplicate
   // A live entry keeps the diff it received.
   expect(within(incorporated).getByRole("button", { name: "Ver los cambios" })).toBeInTheDocument();
   expect(screen.getByText("He resuelto 2 dudas con las fuentes.")).toHaveClass("ws-chat-line");
-  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
+  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Chatea con el asistente…");
 });
 
 it("drops the reply streamed so far on reply.restart", async () => {
@@ -968,13 +968,13 @@ it("invites speaking only while a capture is running", async () => {
   const { opened, setCapturing } = setup({}, { capturing: true });
   await opened();
   const input = screen.getByLabelText("Mensaje para el asistente");
-  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Chatea con el asistente…");
   expect(await screen.findByText(/hablando o escribiendo/)).toBeInTheDocument();
 
   setCapturing(false);
-  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Chatea con el asistente…");
   expect(screen.queryByText(/hablando/)).toBeNull();
-  expect(screen.getByText(/escribiendo o con «Hablar»/)).toBeInTheDocument();
+  expect(screen.getByText(/escribiendo o con el micrófono/)).toBeInTheDocument();
 });
 
 it("describes the … of a spoken request in Spanish", async () => {
@@ -1051,6 +1051,7 @@ it("offers a disabled «Hablar» with a hint in a browser without speech recogni
   await opened();
   const speak = screen.getByRole("button", { name: "Dictar el mensaje por voz" });
   expect(speak).toBeDisabled();
+  expect(speak).not.toHaveTextContent("Hablar");
   expect(speak).toHaveAccessibleDescription("Este navegador no reconoce la voz: escribe tu mensaje.");
   const input = screen.getByLabelText("Mensaje para el asistente");
   fireEvent.change(input, { target: { value: "Pon un ejemplo" } });

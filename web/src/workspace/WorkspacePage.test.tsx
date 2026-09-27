@@ -101,7 +101,10 @@ it("shows the two columns: tabs above the chat, the notes on the right, under a 
   expect(within(header).getByRole("link", { name: "Mesa de estudio" })).toHaveAttribute("href", "/");
   expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
   expect(tab("Recursos")).toHaveAttribute("aria-selected", "false");
-  expect(within(screen.getByRole("region", { name: "Chat" })).getByRole("heading", { name: "Chat con el asistente" })).toBeInTheDocument();
+  const chatRegion = screen.getByRole("region", { name: "Chat" });
+  expect(within(chatRegion).getByRole("region", { name: "Chat con el asistente" })).toBeInTheDocument();
+  expect(within(chatRegion).queryByRole("heading")).toBeNull();
+  expect(within(chatRegion).getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Chatea con el asistente…");
   const doc = screen.getByRole("region", { name: "Documento" });
   expect(await within(doc).findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
   expect(screen.queryByRole("status", { name: "Dudas pendientes" })).toBeNull();

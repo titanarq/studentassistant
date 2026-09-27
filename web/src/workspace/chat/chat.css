@@ -7,11 +7,6 @@
   gap: var(--space-3);
 }
 
-.ws-chat-heading {
-  margin: 0;
-  font-size: var(--step-0);
-}
-
 .ws-chat-status,
 .ws-chat-hint {
   margin: 0;
@@ -313,7 +308,21 @@
 .ws-chat-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
+}
+
+/* #458: the microphone and «Deshacer el último cambio» as square icon buttons in Enviar's row. */
+.ws-chat-actions .ws-chat-icon-button,
+.ws-chat-actions .voice-input-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--target);
+  min-width: var(--target);
+  min-height: var(--target);
+  margin: 0;
+  padding: 0;
 }
 
 /* #329: incorporations, whole-topic runs, triage lines and doubts asked in the chat. */
