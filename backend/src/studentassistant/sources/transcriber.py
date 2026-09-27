@@ -86,6 +86,7 @@ from studentassistant.sources.catchup import (
     PAGE_TRANSCRIPTION_FAILED_KIND,
     PageRef,
     read_owed,
+    readable_topics,
     transcription_path,
 )
 from studentassistant.sources.transcription import (
@@ -116,8 +117,6 @@ from studentassistant.vault import (
     VaultError,
     append_conversation_record,
     list_sessions,
-    list_subjects,
-    list_topics,
     read_source,
 )
 
@@ -803,15 +802,22 @@ def _startup_plan(vault: Vault) -> list[tuple[str, str, list[str]]]:
     Review sessions (a doubt's resolution, #191) hold no captures, so they are left out.
     """
     plan: list[tuple[str, str, list[str]]] = []
-    for subject in list_subjects(vault):
-        for topic in list_topics(vault, subject.slug):
-            metas = [
-                meta for meta in list_sessions(vault, subject.slug, topic.slug) if meta.is_study
-            ]
-            if not metas:
-                continue
-            chosen = {meta.id for meta in metas if meta.ended_at is None} | {metas[-1].id}
-            plan.append((subject.slug, topic.slug, sorted(chosen)))
+    for subject_slug, topic_slug in readable_topics(vault):
+        try:
+            sessions = list_sessions(vault, subject_slug, topic_slug)
+        except (VaultError, OSError) as error:
+            logger.warning(
+                "catch-up skips topic %s/%s: its sessions cannot be read: %s",
+                subject_slug,
+                topic_slug,
+                error,
+            )
+            continue
+        metas = [meta for meta in sessions if meta.is_study]
+        if not metas:
+            continue
+        chosen = {meta.id for meta in metas if meta.ended_at is None} | {metas[-1].id}
+        plan.append((subject_slug, topic_slug, sorted(chosen)))
     return plan
 
 

@@ -18,9 +18,10 @@ once at server start.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from studentassistant.observer import (
     CAPTURE_EVENT_KIND,
@@ -34,10 +35,17 @@ from studentassistant.vault import (
     SourceError,
     SourceNotFoundError,
     Vault,
+    VaultError,
+    get_subject,
+    get_topic,
     read_source,
     read_topic_events,
+    subject_directory,
     topic_directory,
+    topics_directory,
 )
+
+logger = logging.getLogger(__name__)
 
 PAGE_TRANSCRIBED_KIND = "page.transcribed"
 PAGE_TRANSCRIPTION_FAILED_KIND = "page.transcription_failed"
@@ -188,6 +196,41 @@ def read_owed(
     return owed
 
 
+def readable_topics(vault: Vault) -> list[tuple[str, str]]:
+    """Every `(subject_slug, topic_slug)` of the vault that can be read, in slug order (blocking).
+
+    Unlike `list_subjects` / `list_topics`, one subject or topic that cannot be read -- typically
+    one being created right now, whose directory is there but whose YAML is not written yet
+    (#388) -- is skipped with a warning instead of failing the whole listing, so a startup
+    catch-up still reaches every other topic.
+    """
+    found: list[tuple[str, str]] = []
+    for subject_slug in _directory_names(subject_directory(vault, "_").parent):
+        try:
+            get_subject(vault, subject_slug)
+        except (VaultError, OSError) as error:
+            logger.warning("catch-up skips subject %s it cannot read: %s", subject_slug, error)
+            continue
+        for topic_slug in _directory_names(topics_directory(vault, subject_slug)):
+            try:
+                get_topic(vault, subject_slug, topic_slug)
+            except (VaultError, OSError) as error:
+                logger.warning(
+                    "catch-up skips topic %s/%s it cannot read: %s", subject_slug, topic_slug, error
+                )
+                continue
+            found.append((subject_slug, topic_slug))
+    return found
+
+
+def _directory_names(root: Path) -> list[str]:
+    """The sorted names of the directories under `root`; none when `root` is not a directory."""
+    try:
+        return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
 __all__ = [
     "CAPTURE_SESSION_KEY",
     "PAGE_TRANSCRIBED_KIND",
@@ -197,5 +240,6 @@ __all__ = [
     "RecordedPage",
     "owed_pages",
     "read_owed",
+    "readable_topics",
     "transcription_path",
 ]

@@ -6,6 +6,7 @@ A real `SessionBus` and `tmp_vault`, `FakeClaude` as the transcriber. Every wait
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -41,6 +42,8 @@ from studentassistant.vault import (
     put_page_transcription,
     resume_session,
     start_session,
+    subject_directory,
+    topic_directory,
 )
 
 pytestmark = pytest.mark.anyio
@@ -256,6 +259,37 @@ async def test_server_start_transcribes_and_the_next_session_records_the_events(
     ops = events(new, STATE_OP_EVENT_KIND)
     assert [op.payload["pending_id"] for op in ops] == done.payload["pending_ids"]
     assert pending_of(tmp_vault, topic) == done.payload["pending_ids"]
+
+
+async def test_server_start_skips_a_half_created_subject_or_topic(
+    tmp_vault: Vault, topic: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    # #388: an owed page, plus a subject and a topic being created as the vault opens.
+    first = SessionBus()
+    old = start_session(tmp_vault, *topic, "pc", PROTOCOL_VERSION)
+    first.attach(old)
+    source_path = await capture(first, old, "cap-1")
+    end(first, old)
+    subject_directory(tmp_vault, "a-medias").mkdir(parents=True)
+    topic_directory(tmp_vault, topic[0], "a-medias").mkdir(parents=True)
+
+    bus = SessionBus()
+    fake = FakeClaude().reply_text(MARKED)
+    worker = _transcriber(bus, fake)
+    worker.start()
+    try:
+        worker.catch_up_vault(tmp_vault)
+        await asyncio.wait_for(worker.wait_startup(), WAIT)
+        await asyncio.wait_for(worker.wait_idle(old.id), WAIT)
+    finally:
+        await asyncio.wait_for(worker.stop(), WAIT)
+
+    assert len(fake.requests) == 1
+    assert (tmp_vault.path / transcription_path(source_path)).is_file()
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    skipped = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("a-medias" in m and "subject" in m for m in skipped)
+    assert any(f"{topic[0]}/a-medias" in m for m in skipped)
 
 
 # -- a session-end timeout -------------------------------------------------------------------------
