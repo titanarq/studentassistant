@@ -6,7 +6,7 @@ import { NOTES } from "../notes/testNotes";
 import { PROTOCOL_VERSION } from "../protocol";
 import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi";
 import { resourceList } from "./resources";
-import WorkspacePage, { EMPTY_NOTES } from "./WorkspacePage";
+import WorkspacePage, { DOUBTS_TOOLTIP, EMPTY_NOTES } from "./WorkspacePage";
 import { parseNotes } from "../notes/markdown";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
@@ -99,10 +99,12 @@ it("shows the two columns: tabs above the chat, the notes on the right, and the 
   expect(within(screen.getByRole("region", { name: "Chat" })).getByRole("heading", { name: "Chat con el asistente" })).toBeInTheDocument();
   const doc = screen.getByRole("region", { name: "Documento" });
   expect(await within(doc).findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
-  expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toHaveAttribute(
-    "href",
-    "/subjects/historia/topics/revolucion-industrial/pending",
-  );
+  // Since #413 the counter is plain text: the doubts are asked in the chat, not on /pending.
+  const counter = screen.getByRole("status", { name: "Dudas pendientes" });
+  await waitFor(() => expect(counter).toHaveTextContent("3 dudas pendientes"));
+  expect(within(counter).queryByRole("link")).toBeNull();
+  expect(counter).toHaveAttribute("title", DOUBTS_TOOLTIP);
+  expect(screen.queryByRole("link", { name: /dudas pendientes/ })).toBeNull();
   // The capture flow is preset to the topic: no subject or topic picker.
   expect(await screen.findByRole("button", { name: "Empezar una sesión nueva" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Asignatura" })).toBeNull();
@@ -146,6 +148,14 @@ it("keeps a running capture mounted when switching to Recursos, and marks it as 
     expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
   );
   expect(tab("Captura en curso")).toBeInTheDocument();
+  // The embedded capture (#413): the page's one main is the workspace's, the capture has no h1
+  // of its own, no second doubts counter and no «Terminar y preparar apuntes».
+  expect(screen.getAllByRole("main")).toHaveLength(1);
+  const captureTab = document.getElementById("workspace-panel-capture")!;
+  expect(within(captureTab).queryByRole("heading", { level: 1 })).toBeNull();
+  expect(screen.getAllByRole("status", { name: "Dudas pendientes" })).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Terminar" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /preparar apuntes/ })).toBeNull();
 
   fireEvent.click(tab("Recursos"));
 
@@ -265,7 +275,7 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
       jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", open_count: asked ? 2 : 3, items: [] }),
   });
   await screen.findByRole("heading", { name: /Contexto/ });
-  expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("status", { name: "Dudas pendientes" })).toHaveTextContent("3 dudas pendientes"));
   const readsBefore = fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length;
 
   asked = true;
@@ -284,7 +294,9 @@ it("reads the doubts counter again on a doubt of the chat and opens a contradict
     ),
   );
   // The counter and the chat's doubt card render from independent paths: await each on its own.
-  expect(await screen.findByRole("link", { name: "2 dudas pendientes" }, { timeout: 5000 })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("status", { name: "Dudas pendientes" })).toHaveTextContent("2 dudas pendientes"), {
+    timeout: 5000,
+  });
   expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length).toBeGreaterThan(readsBefore);
 
   fireEvent.click(await screen.findByRole("button", { name: "Ver la fuente: página 2" }, { timeout: 5000 }));

@@ -100,6 +100,11 @@ código vale 5 minutos y un solo uso. Para esta prueba en el portátil no hace f
    "Guardada"). Las páginas guardadas aparecen en la pestaña **Recursos**; cambiar de pestaña no
    para la captura.
 7. **Libro** / **Apuntes** indican de qué es la página siguiente; **Importante** marca el momento.
+8. **Terminar** cierra la sesión de captura. En la web no hay botón «Terminar y preparar
+   apuntes» (solo lo tiene la app Android): los apuntes del tema se piden en el chat
+   («prepárame el tema», paso 6). Si capturas desde la página suelta `/capture`, al pulsar
+   **Terminar** verás «Sesión terminada» con el enlace **Abrir en Construir**, que lleva al
+   espacio de estudio del tema.
 
 Decir "mira aquí", "mira esto", "captura" o "haz foto" también dispara una captura, igual que
 "siguiente" o "pasamos página" pasa a la página siguiente. El resto de frases de la gramática
