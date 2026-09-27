@@ -6,13 +6,13 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from typer.testing import CliRunner
 
 from studentassistant.cli import cli
 from studentassistant.server.network import is_lan
+from studentassistant.server.serving import AppServer
 
 ClientAt = Callable[[str], TestClient]
 
@@ -74,7 +74,14 @@ def test_no_address_is_not_lan() -> None:
 
 def test_serve_binds_the_configured_host_and_port(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
+
+    def record(self: AppServer, sockets: Any = None) -> None:
+        config = self.config
+        calls.append(
+            {"host": config.host, "port": config.port, "proxy_headers": config.proxy_headers}
+        )
+
+    monkeypatch.setattr(AppServer, "run", record)
     monkeypatch.setenv("SA_SERVER__HOST", "192.168.1.20")
     monkeypatch.setenv("SA_SERVER__PORT", "9200")
 

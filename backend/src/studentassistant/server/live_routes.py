@@ -36,6 +36,7 @@ from studentassistant.observer import (
 )
 from studentassistant.server.bus import SessionBus, Subscription
 from studentassistant.server.revise_routes import sse
+from studentassistant.server.serving import until_shutdown
 from studentassistant.server.sessions import (
     SESSION_ENDED,
     OpenSession,
@@ -346,7 +347,10 @@ def live_router() -> APIRouter:
     @router.get("/live", response_class=StreamingResponse)
     async def live(request: Request) -> StreamingResponse:
         return StreamingResponse(
-            live_events(request.app.state.sessions, request.app.state.bus),
+            until_shutdown(
+                live_events(request.app.state.sessions, request.app.state.bus),
+                request.app.state.shutdown,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

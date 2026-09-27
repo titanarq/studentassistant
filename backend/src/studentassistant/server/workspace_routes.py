@@ -66,6 +66,7 @@ from studentassistant.server.assistant_requests import (
     check_selection,
 )
 from studentassistant.server.revise_routes import sse
+from studentassistant.server.serving import until_shutdown
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.server.workspace import WorkspaceClosedError, WorkspaceHub
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, get_topic
@@ -158,7 +159,10 @@ def workspace_router() -> APIRouter:
         hub: WorkspaceHub = request.app.state.workspace
         keepalive: float = getattr(request.app.state, "workspace_keepalive", KEEPALIVE_SECONDS)
         return StreamingResponse(
-            workspace_events(hub, subject_id, topic_id, keepalive=keepalive),
+            until_shutdown(
+                workspace_events(hub, subject_id, topic_id, keepalive=keepalive),
+                request.app.state.shutdown,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

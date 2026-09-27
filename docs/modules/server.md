@@ -1432,7 +1432,7 @@ WebSocket gateway publish and subscribe here.
 ### CLI
 
 - `studentassistant serve [--record]`: runs the app on `server.host`:`server.port` (uvicorn with
-  `proxy_headers=False`). `--record` gives the app a `SessionRecorder` over
+  `proxy_headers=False`, through `serving.serve_app`; see "Shutdown" below). `--record` gives the app a `SessionRecorder` over
   `server.recordings_dir` and records every session there (see "Recording and replay"); it exits
   with code 1 when that directory is inside the vault. Without `--record` nothing is recorded.
 - `studentassistant replay <dir> [--speed 1.0] [--topic <subject>/<topic>] [--url <base url>]`:
@@ -1450,6 +1450,35 @@ WebSocket gateway publish and subscribe here.
 - `studentassistant devices` / `devices list`: the paired devices (id, name, paired-at; never a
   token). `studentassistant devices revoke <id>` removes one, and its token stops being accepted.
 
+### Shutdown on SIGTERM/SIGINT -- `server/serving.py` (#466)
+
+Uvicorn's shutdown closes the listening sockets, asks every connection to close (a capture
+WebSocket gets close code 1012 and its handler returns), waits for every running request task to
+finish and only then runs the lifespan shutdown (the bounded consumer stops of #408 and
+`SessionService.shutdown()`, the final vault commit and push). An SSE stream never finishes on its
+own, and what used to end it (`WorkspaceHub.close()`, closing the bus) runs in that lifespan
+shutdown, so one open review-UI tab held the process until systemd's `TimeoutStopSec` SIGKILLed
+it, skipping the final commit and push. Now:
+
+- `serve` runs `AppServer`, a `uvicorn.Server` whose `shutdown` first sets the app's
+  `ShutdownSignal` (`app.state.shutdown`, `begin_shutdown(app)`; the lifespan `finally` sets it too,
+  for a `TestClient`). The open-ended streams -- `GET .../workspace/stream` and `GET /api/live` --
+  are wrapped in `until_shutdown(stream, signal)`, which cancels the step the stream is parked on
+  and closes its generator (releasing its subscription) the moment the signal is set, so uvicorn's
+  wait for the request tasks returns at once. The bounded LLM streams (tutor, revise) are not
+  wrapped; they end on their own or under the bound below.
+- `[server] graceful_shutdown_seconds` (default 5) is uvicorn's `timeout_graceful_shutdown`: a
+  request still running after it (a tutor turn still streaming, a slow upload) is cancelled, and
+  the lifespan shutdown -- the final commit and push -- still runs after it.
+
+Measured with `serve` on a temporary vault, an open capture WebSocket plus an open workspace
+stream, and a marker event sent just before SIGTERM: before, the process was still alive 60 s
+after SIGTERM; after, it exits in about 0.3 s with that event committed and pushed.
+`tests/server/test_shutdown.py` runs the real `AppServer` on a loopback port with the workspace
+stream, the live stream and a capture WebSocket open and asserts shutdown takes under 3 s (with a
+60 s uvicorn bound, so the cancel backstop is not what passes it) and that
+`SessionService.shutdown()` still ran.
+
 ### Config keys (`[server]`, or `SA_SERVER__*`)
 
 | key | default | meaning |
@@ -1463,4 +1492,5 @@ WebSocket gateway publish and subscribe here.
 | `max_capture_images` | `5` | most images one capture burst may hold (413 beyond) |
 | `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
 | `capture_idle_end_seconds` | `300` | a capture session with no capture client connected and sending for this long is ended by the backend (`reason: "idle"`, nothing generated, #425); `> 0` |
+| `graceful_shutdown_seconds` | `5` | on SIGTERM the open streams end at once; a request still running after this long is cancelled before the lifespan shutdown (final vault commit and push) runs (#466); `> 0` |
 | `recordings_dir` | `~/.cache/studentassistant/recordings` | where `serve --record` writes one recording directory per session id (`~` expanded); must not be inside the vault |
