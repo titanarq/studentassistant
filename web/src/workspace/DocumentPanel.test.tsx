@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { parseNotes } from "../notes/markdown";
 import { UPLOADING } from "../noteEditor/NoteEditor";
 import { jsonResponse, stubApi } from "../test/mockApi";
@@ -24,6 +24,15 @@ Truco para recordarlas.[^est]
 `;
 
 const THEIRS = TEXT.replace("Cada función", "Cada una de las funciones");
+
+// The editor loads Milkdown lazily (`import("./visualEditor")`); cold, that import transforms and
+// evaluates the whole Milkdown graph. Load it once here, outside any test's readiness wait (#389).
+beforeAll(async () => {
+  await import("../noteEditor/visualEditor");
+}, 30_000);
+
+/** A bound for the visual editor to open on a loaded machine (it takes well under a second). */
+const READY_TIMEOUT = 5_000;
 
 function workspace(notes: WorkspaceNotes, reloadNotes = vi.fn(async () => undefined)): WorkspaceState {
   return { subjectId: "lengua", topicId: "la-comunicacion", notes, changedSections: new Set(), reloadNotes, doubtsKey: 0, doubtsChanged: vi.fn() };
@@ -71,10 +80,13 @@ it("opens the visual editor with fixed provenance chips and saves an untouched d
   expect(screen.getByText("v4 · guardado")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Editar" }));
   expect(await screen.findByText("Editando sobre v4")).toBeInTheDocument();
+  // Cheap readiness probe (an attribute on an element captured once), bounded: a `getByRole` probe
+  // costs ~150 ms in jsdom and `waitFor` reruns it on every mutation while ProseMirror mounts (#363).
   const surface = screen.getByLabelText("Apuntes en edición");
-  await waitFor(() => expect(within(surface).getByLabelText("Escrito por ti")).toHaveTextContent("tú"));
+  await waitFor(() => expect(surface).toHaveAttribute("aria-busy", "false"), { timeout: READY_TIMEOUT });
+  expect(within(surface).getByLabelText("Escrito por ti")).toHaveTextContent("tú");
   expect(within(surface).getByLabelText("Fuente p3")).toHaveAttribute("contenteditable", "false");
-  await waitFor(() => expect(screen.getByRole("button", { name: "Negrita" })).toBeEnabled());
+  expect(screen.getByRole("button", { name: "Negrita" })).toBeEnabled();
 
   fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
   await waitFor(() => expect(reloadNotes).toHaveBeenCalledWith(["funciones"]));
