@@ -442,8 +442,11 @@ it("shows the topic's spend in the header and reads it again after the notes cha
     stream.push(sseEvent("notes.changed", { revision: "c".repeat(64), origin: "editor", summary: "Ampliado", turn_id: null }));
   });
 
-  expect(await within(header).findByText("Este tema: 0,0500 USD")).toBeInTheDocument();
-  expect(within(header).getByRole("link", { name: "Versiones (actual: v3)" })).toBeInTheDocument();
+  // The cost and the notes reload independently after notes.changed; await each on its own.
+  expect(await within(header).findByText("Este tema: 0,0500 USD", {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(
+    await within(header).findByRole("link", { name: "Versiones (actual: v3)" }, { timeout: 5000 }),
+  ).toBeInTheDocument();
 });
 
 it("shows the open session's spend when the topic has a session open", async () => {
