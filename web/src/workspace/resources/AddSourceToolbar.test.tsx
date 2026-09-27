@@ -64,43 +64,45 @@ function listCalls(fetchMock: ReturnType<typeof stubApi>) {
   return fetchMock.mock.calls.filter(([path, init]) => path === `${BASE}/sources` && (init?.method ?? "GET") === "GET").length;
 }
 
-function openChoice(name: string) {
-  fireEvent.click(screen.getByRole("button", { name: "Añadir fuente" }));
-  fireEvent.click(within(screen.getByRole("group", { name: "Tipo de fuente" })).getByRole("button", { name }));
+/** The toolbar under the list (#461). */
+function toolbar() {
+  return within(screen.getByRole("group", { name: "Añadir fuentes" }));
 }
 
-it("opens three choices, each showing its form, and Cancelar closes the panel", async () => {
+it("is a bottom icon toolbar after the list, with Spanish names and tooltips, and no «Añadir fuente» panel", async () => {
   stubApi({ [`${BASE}/sources`]: sourceList([PAGE], [PAGE]).route, [`${BASE}/book`]: jsonResponse({ title: null }) });
   renderTab();
-  await screen.findByRole("button", { name: /^Página 1/ });
+  const kept = await screen.findByRole("list", { name: "Fuentes del tema" });
 
-  fireEvent.click(screen.getByRole("button", { name: "Añadir fuente" }));
-  const choices = within(screen.getByRole("group", { name: "Tipo de fuente" }));
-  expect(choices.getAllByRole("button").map((button) => button.textContent)).toEqual([
-    "PDF",
-    "Página web",
-    "Libro de texto",
-    "Cancelar",
+  const group = screen.getByRole("group", { name: "Añadir fuentes" });
+  // After the list in the DOM, outside it.
+  expect(kept.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(kept).not.toContainElement(group);
+  expect(toolbar().getAllByRole("button").map((b) => [b.getAttribute("aria-label"), b.getAttribute("title")])).toEqual([
+    ["Añadir una página web", "Añadir una página web (URL)"],
+    ["Subir archivos PDF", "Subir archivos PDF"],
+    ["Libro de texto", "Título del libro de texto"],
   ]);
+  expect(screen.queryByRole("button", { name: "Añadir fuente" })).toBeNull();
   expect(screen.queryByRole("form")).toBeNull();
 
-  fireEvent.click(choices.getByRole("button", { name: "PDF" }));
-  expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
-  expect(choices.getByRole("button", { name: "PDF" })).toHaveAttribute("aria-pressed", "true");
-  fireEvent.click(choices.getByRole("button", { name: "Página web" }));
-  expect(screen.getByRole("form", { name: "Añadir una página web" })).toBeInTheDocument();
-  expect(screen.queryByRole("form", { name: "Añadir un PDF" })).toBeNull();
-  fireEvent.click(choices.getByRole("button", { name: "Libro de texto" }));
+  // The web popover opens with the address focused; Escape closes it and gives the focus back.
+  fireEvent.click(toolbar().getByRole("button", { name: "Añadir una página web" }));
+  expect(toolbar().getByRole("button", { name: "Añadir una página web" })).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByLabelText("Dirección de la página")).toHaveFocus();
+  fireEvent.keyDown(screen.getByLabelText("Dirección de la página"), { key: "Escape" });
+  expect(screen.queryByRole("form")).toBeNull();
+  expect(toolbar().getByRole("button", { name: "Añadir una página web" })).toHaveFocus();
+
+  // The book popover shows the topic's book form; pressing its button again closes it.
+  fireEvent.click(toolbar().getByRole("button", { name: "Libro de texto" }));
   expect(screen.getByRole("form", { name: "Libro de texto" })).toBeInTheDocument();
   expect(await screen.findByText("Este tema aún no tiene libro de texto.")).toBeInTheDocument();
-
-  fireEvent.click(choices.getByRole("button", { name: "Cancelar" }));
-  expect(screen.queryByRole("group", { name: "Tipo de fuente" })).toBeNull();
+  fireEvent.click(toolbar().getByRole("button", { name: "Libro de texto" }));
   expect(screen.queryByRole("form")).toBeNull();
-  expect(screen.getByRole("button", { name: "Añadir fuente" })).toBeInTheDocument();
 });
 
-it("a PDF upload closes the panel, re-reads the list and the PDF appears", async () => {
+it("uploads the chosen PDFs one by one, re-reads the list once and logs nothing", async () => {
   const list = sourceList([PAGE], [PAGE, PDF]);
   const fetchMock = stubApi({
     [`${BASE}/sources`]: list.route,
@@ -113,19 +115,26 @@ it("a PDF upload closes the panel, re-reads the list and the PDF appears", async
   await screen.findByRole("button", { name: /^Página 1/ });
   expect(listCalls(fetchMock)).toBe(1);
 
-  openChoice("PDF");
-  const file = new File(["%PDF-1.7"], "Tema 4.pdf", { type: "application/pdf" });
-  fireEvent.change(screen.getByLabelText("Archivo PDF"), { target: { files: [file] } });
-  fireEvent.click(screen.getByRole("button", { name: "Añadir PDF" }));
+  const files = [
+    new File(["%PDF-1.7"], "Tema 4.pdf", { type: "application/pdf" }),
+    new File(["%PDF-1.7"], "Tema 5.pdf", { type: "application/pdf" }),
+  ];
+  const input = screen.getByTestId("resources-upload-input");
+  expect(input).toHaveAttribute("multiple");
+  fireEvent.change(input, { target: { files } });
 
-  expect(await screen.findByText("PDF «Tema 4.pdf» añadido.")).toBeInTheDocument();
-  expect(screen.queryByRole("form")).toBeNull();
   await waitFor(() => expect(listCalls(fetchMock)).toBe(2));
+  const posted = fetchMock.mock.calls
+    .filter(([, init]) => init?.method === "POST")
+    .map(([, init]) => ((init!.body as FormData).get("file") as File).name);
+  expect(posted).toEqual(["Tema 4.pdf", "Tema 5.pdf"]);
   const kept = await screen.findByRole("list", { name: "Fuentes del tema" });
   await waitFor(() => expect(within(kept).getAllByRole("button").filter((b) => b.classList.contains("resource-open"))).toHaveLength(2));
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect(screen.queryByText(/añadido/)).toBeNull();
 });
 
-it("a web page by URL closes the panel, re-reads the list and the page appears", async () => {
+it("adds a web page by URL: the popover closes, the list is read again and the page appears", async () => {
   const list = sourceList([PAGE], [PAGE, WEB]);
   const fetchMock = stubApi({
     [`${BASE}/sources`]: list.route,
@@ -137,17 +146,17 @@ it("a web page by URL closes the panel, re-reads the list and the page appears",
   renderTab();
   await screen.findByRole("button", { name: /^Página 1/ });
 
-  openChoice("Página web");
+  fireEvent.click(toolbar().getByRole("button", { name: "Añadir una página web" }));
   fireEvent.change(screen.getByLabelText("Dirección de la página"), { target: { value: ADDED.url } });
-  fireEvent.click(screen.getByRole("button", { name: "Guardar como fuente" }));
+  fireEvent.click(screen.getByRole("button", { name: "Añadir" }));
 
-  expect(await screen.findByText("Página «La Bastilla» guardada como fuente.")).toBeInTheDocument();
-  expect(screen.queryByRole("form")).toBeNull();
   await waitFor(() => expect(listCalls(fetchMock)).toBe(2));
-  expect(await screen.findByRole("button", { name: /^Web: La Bastilla|^La Bastilla/ })).toBeInTheDocument();
+  expect(screen.queryByRole("form")).toBeNull();
+  expect(await screen.findByRole("button", { name: /^Web: La Bastilla/ })).toBeInTheDocument();
+  expect(screen.queryByText(/guardada como fuente/)).toBeNull();
 });
 
-it("a book title closes the panel and re-reads the list", async () => {
+it("saves the book title from its popover and closes it", async () => {
   const fetchMock = stubApi({
     [`${BASE}/sources`]: sourceList([PAGE], [PAGE]).route,
     [`GET ${BASE}/book`]: jsonResponse({ title: null }),
@@ -156,19 +165,18 @@ it("a book title closes the panel and re-reads the list", async () => {
   renderTab();
   await screen.findByRole("button", { name: /^Página 1/ });
 
-  openChoice("Libro de texto");
+  fireEvent.click(toolbar().getByRole("button", { name: "Libro de texto" }));
   await screen.findByText("Este tema aún no tiene libro de texto.");
   fireEvent.change(screen.getByLabelText("Título del libro"), { target: { value: "Historia 4.º ESO" } });
   fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
 
-  expect(await screen.findByText("Libro de texto: «Historia 4.º ESO».")).toBeInTheDocument();
-  expect(screen.queryByRole("form")).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
   await waitFor(() => expect(listCalls(fetchMock)).toBe(2));
   const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
   expect(JSON.parse(put![1]!.body as string)).toEqual({ title: "Historia 4.º ESO" });
 });
 
-it("a refused add keeps the panel open with the form's Spanish error and does not re-read", async () => {
+it("keeps a refusal in Spanish in the popover and does not re-read", async () => {
   const fetchMock = stubApi({
     [`${BASE}/sources`]: sourceList([PAGE], [PAGE]).route,
     [`POST ${BASE}/sources/pdf`]: jsonResponse({ detail: "El PDF pesa demasiado (máximo 50 MB)." }, 413),
@@ -177,22 +185,20 @@ it("a refused add keeps the panel open with the form's Spanish error and does no
   renderTab();
   await screen.findByRole("button", { name: /^Página 1/ });
 
-  openChoice("PDF");
-  fireEvent.click(screen.getByRole("button", { name: "Añadir PDF" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Elige primero un PDF.");
   const file = new File(["%PDF-1.7"], "Enorme.pdf", { type: "application/pdf" });
-  fireEvent.change(screen.getByLabelText("Archivo PDF"), { target: { files: [file] } });
-  fireEvent.click(screen.getByRole("button", { name: "Añadir PDF" }));
-  expect(await screen.findByText("No se ha añadido el PDF: El PDF pesa demasiado (máximo 50 MB).")).toBeInTheDocument();
-  expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
+  fireEvent.change(screen.getByTestId("resources-upload-input"), { target: { files: [file] } });
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se ha añadido «Enorme.pdf»: El PDF pesa demasiado (máximo 50 MB).");
+  fireEvent.click(screen.getByRole("button", { name: "Cerrar" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(toolbar().getByRole("button", { name: "Subir archivos PDF" })).toHaveFocus();
 
-  fireEvent.click(screen.getByRole("button", { name: "Página web" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Añadir una página web" }));
   fireEvent.change(screen.getByLabelText("Dirección de la página"), { target: { value: "no es una url" } });
-  fireEvent.click(screen.getByRole("button", { name: "Guardar como fuente" }));
-  expect(await screen.findByText(/Pega la dirección completa de la página/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Añadir" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/Pega la dirección completa de la página/);
   fireEvent.change(screen.getByLabelText("Dirección de la página"), { target: { value: ADDED.url } });
-  fireEvent.click(screen.getByRole("button", { name: "Guardar como fuente" }));
-  expect(await screen.findByText(/^No se ha guardado la página:/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Añadir" }));
+  expect(await screen.findByText("No se ha guardado la página: No se pudo descargar la página.")).toBeInTheDocument();
   expect(screen.getByRole("form", { name: "Añadir una página web" })).toBeInTheDocument();
 
   expect(listCalls(fetchMock)).toBe(1);

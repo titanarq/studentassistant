@@ -296,7 +296,7 @@
   margin: 0;
 }
 
-.workspace-resources-note {
+.workspace-resources-empty {
   color: var(--ink-muted);
   font-size: var(--step--1);
 }
@@ -495,18 +495,6 @@
 }
 
 /* ---- Recursos: source states (#328) ---- */
-
-.resources-counts {
-  margin: 0 0 var(--space-1);
-  color: var(--ink-muted);
-  font-size: var(--step--1);
-}
-
-.resources-hint {
-  margin: 0 0 var(--space-3);
-  color: var(--ink-faint);
-  font-size: var(--step--1);
-}
 
 .resource-grid {
   display: grid;
@@ -724,20 +712,18 @@
   font-weight: 700;
 }
 
+/* #461: one short line under the thumbnail, the whole title in the button's name. */
 .resource-title {
+  overflow: hidden;
   font-size: var(--step--1);
-  font-weight: 700;
+  font-weight: 400;
+  color: var(--ink-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .resource-set-aside .resource-title {
   color: var(--ink-muted);
-}
-
-.resource-state {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
 }
 
 .resource-reason {
@@ -782,31 +768,139 @@
   content: "▾ ";
 }
 
-/* ---- Recursos: «Añadir fuente» (#384) ---- */
+/* ---- Recursos: the corner badges (#461) ---- */
 
-.add-source {
-  margin: 0 0 var(--space-3);
+.resource-thumb-box {
+  position: relative;
+  display: block;
 }
 
-.add-source-panel {
-  padding: var(--space-3);
+.resource-badge {
+  position: absolute;
+  bottom: var(--space-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.resource-badge-in {
+  right: var(--space-1);
+  background: var(--ok);
+  color: var(--on-accent);
+}
+
+.resource-badge-warn {
+  left: var(--space-1);
+  background: var(--warn);
+  color: var(--on-accent);
+}
+
+/* ---- Recursos: the bottom toolbar to add sources (#461) ---- */
+
+.workspace-resources {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.workspace-resources-list {
+  flex: 1 1 auto;
+}
+
+.resources-toolbar-wrap {
+  /* Outside the one-viewport layout it stays at the bottom of the screen while the list scrolls. */
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  flex: none;
+  background: var(--paper);
+}
+
+.resources-toolbar {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--line);
+}
+
+.resources-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  min-width: 0;
+  height: 2.25rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink-muted);
 }
 
-.add-source-choices {
+.resources-tool:hover,
+.resources-tool[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.resources-popover {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
-  margin: 0 0 var(--space-2);
-}
-
-.add-source-panel h2 {
-  font-size: var(--step-0, 1rem);
-}
-
-.add-source-done {
-  margin: var(--space-1) 0 0;
-  color: var(--ink-muted);
+  margin-bottom: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
   font-size: var(--step--1);
+}
+
+.resources-popover p {
+  margin: 0;
+}
+
+.resources-popover input[type="url"] {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.resources-popover button {
+  min-height: 2rem;
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--step--1);
+}
+
+.resources-popover-error {
+  flex: 1 1 100%;
+  color: var(--correction);
+}
+
+/* The book form keeps its own heading off screen: the popover and its button say what it is. */
+.resources-popover-book h2 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.resources-popover-book form p {
+  margin: 0 0 var(--space-1);
 }

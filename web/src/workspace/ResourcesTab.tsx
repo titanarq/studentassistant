@@ -3,9 +3,10 @@ import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary 
 import type { NotesTree } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
 import { sourceUrl } from "../notes/api";
-import AddSource from "./resources/AddSource";
+import AddSourceToolbar from "./resources/AddSourceToolbar";
 import { DELETE_UNSUPPORTED, deleteSource, fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
-import { countsText, resourceStates, STATE_LABELS, type SourceEntry, thumbnailOf } from "./resources/state";
+import { resourceStates, type SourceEntry, sourceRefOf, thumbnailOf } from "./resources/state";
+import { sourceVaultId } from "../notes/provenance";
 import { chipTitle, type SelectedSource, type SourceSelection, topicSourceId, useSelection } from "./resources/selection";
 import { useSourceMetas } from "./resources/useSourceMetas";
 
@@ -36,8 +37,8 @@ async function loadSources(subjectId: string, topicId: string): Promise<Loaded> 
   return fetchTopicSummary(subjectId, topicId);
 }
 
-export const RESOURCES_HINT =
-  "Selecciona páginas y pídeselo al asistente en el chat (p. ej. «incorpora el texto de estas»).";
+/** The corner badge of a source the current notes cite (#461). */
+export const INCORPORATED_LABEL = "Incorporada a los apuntes";
 
 /** «1 seleccionada», «3 seleccionadas». */
 export function selectedText(n: number): string {
@@ -96,7 +97,7 @@ type Deletion = { kind: "idle" } | { kind: "asking" } | { kind: "deleting" } | {
  * **Borrar** and **Cancelar** over the thumbnail, never a browser dialog. Escape cancels; the
  * focus goes to **Cancelar** when asking and back to the trash button after cancelling.
  */
-function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: () => void }) {
+function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: (vaultId: string) => void }) {
   const [deletion, setDeletion] = useState<Deletion>({ kind: "idle" });
   const trash = useRef<HTMLButtonElement | null>(null);
   const cancel = useRef<HTMLButtonElement | null>(null);
@@ -128,7 +129,7 @@ function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: ()
       if (!mounted.current) return;
       if (outcome.kind === "ok") {
         setDeletion({ kind: "idle" });
-        onDeleted();
+        onDeleted(entry.vaultId);
         return;
       }
       setDeletion({ kind: "failed", message: outcome.kind === "unsupported" ? DELETE_UNSUPPORTED : outcome.message });
@@ -180,6 +181,21 @@ function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: ()
   );
 }
 
+function IncorporatedIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  );
+}
+
+/**
+ * One source: the thumbnail with the selection checkbox (top left), the trash button (top right)
+ * and, in its bottom corners, a small badge when the notes already cite it (bottom right,
+ * «Incorporada a los apuntes») or when the triage flagged it (bottom left, «Aviso: …»); below, its
+ * short title and, for a set-aside source, why. No state chip (#461): a source without a badge is
+ * simply not in the notes yet.
+ */
 function SourceCard({
   entry,
   onOpen,
@@ -189,12 +205,12 @@ function SourceCard({
   entry: SourceEntry;
   onOpen: (resource: OpenResource) => void;
   selection: CardSelection | null;
-  onDeleted: () => void;
+  onDeleted: (vaultId: string) => void;
 }) {
-  const chip = entry.state === "incorporated" ? "badge badge-ok" : entry.state === "pending" ? "badge badge-warn" : "badge";
   const reasons = entry.reasons.join(", ");
   const detail = entry.state === "set_aside" ? [reasons, entry.byStudent ? "(la apartaste tú)" : ""].filter((part) => part !== "").join(" ") : "";
   const selected = selection?.selected === true;
+  const warning = entry.flagged && reasons !== "" ? `Aviso: ${reasons}` : null;
   return (
     <li className={`resource-card resource-${entry.state.replace("_", "-")}${selected ? " resource-selected" : ""}`}>
       {selection !== null && (
@@ -214,13 +230,21 @@ function SourceCard({
       )}
       <DeleteControl entry={entry} onDeleted={onDeleted} />
       <button type="button" className="resource-open" onClick={() => onOpen({ label: entry.label, definition: entry.definition })}>
-        <Thumbnail entry={entry} />
-        <span className="resource-title">{entry.title}</span>
-        <span className="resource-state">
-          <span className={chip}>{STATE_LABELS[entry.state]}</span>
-          {detail !== "" && <span className="resource-reason"> {detail}</span>}
+        <span className="resource-thumb-box">
+          <Thumbnail entry={entry} />
+          {entry.state === "incorporated" && (
+            <span className="resource-badge resource-badge-in" role="img" aria-label={INCORPORATED_LABEL} title={INCORPORATED_LABEL}>
+              <IncorporatedIcon />
+            </span>
+          )}
+          {warning !== null && (
+            <span className="resource-badge resource-badge-warn" role="img" aria-label={warning} title={warning}>
+              !
+            </span>
+          )}
         </span>
-        {entry.flagged && reasons !== "" && <span className="resource-warning">Aviso: {reasons}</span>}
+        <span className="resource-title">{entry.title}</span>
+        {detail !== "" && <span className="resource-reason">{detail}</span>}
       </button>
     </li>
   );
@@ -237,12 +261,13 @@ function cardSelection(selection: SourceSelection | null, entry: SourceEntry, vi
 }
 
 /**
- * The **Recursos** tab (#312, #328, #323): every source of the topic (`GET .../sources`, or the
- * summary's counts on an older backend) with its state -- **Pendiente**,
- * **Incorporada** (cited by the current notes) or **Apartada** (set aside by the capture triage
- * or by the student, with the reason) -- kept ones first in source order, then a collapsed
- * "Apartadas (N)" group. Above the list, «Añadir fuente» (`AddSource`, #384) adds a PDF, a web
- * page or the textbook's title and then the list is read again. The only per-source action is the
+ * The **Recursos** tab (#312, #328, #323, #461): every source of the topic (`GET .../sources`, or
+ * the summary's counts on an older backend) as a thumbnail -- the ones the current notes cite with
+ * a small corner badge, set-aside ones (by the capture triage or by the student, with the reason)
+ * in a collapsed "Apartadas (N)" group after the kept ones. Below the scrolling list, a bottom
+ * icon toolbar (`AddSourceToolbar`, #461) adds a web page, PDFs or the textbook's title and then
+ * the list is read again. A retired source (#451) is not listed, even when the notes cite it
+ * (#456). The only per-source action is the
  * trash button over each thumbnail (#450, `DELETE /api/sources/{id}` after an inline
  * confirmation); incorporating, setting aside and restoring are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
  * workspace's selection (`resources/selection.ts`), shown as chips above the chat input and sent
@@ -253,7 +278,7 @@ function cardSelection(selection: SourceSelection | null, entry: SourceEntry, vi
 export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, open, onOpen, onClose }: ResourcesTabProps) {
   const [summary, setSummary] = useState<Loaded | null>(null);
   const [showSetAside, setShowSetAside] = useState(false);
-  // Bumped after «Añadir fuente» added something: the list is read again, as `refreshKey` does.
+  // Bumped after the toolbar added something: the list is read again, as `refreshKey` does.
   const [added, setAdded] = useState(0);
 
   useEffect(() => {
@@ -272,10 +297,27 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
   const items = useMemo(() => list.groups.flatMap((group) => group.items), [list]);
   // A new object whenever the tab is shown or the notes change: every source is read again.
   const reloadKey = useMemo(() => ({ refreshKey, added, tree }), [refreshKey, added, tree]);
-  const first = useMemo(() => resourceStates(subjectId, topicId, items, tree, new Map()), [subjectId, topicId, items, tree]);
-  const vaultIds = useMemo(() => [...first.kept, ...first.setAside].map((entry) => entry.vaultId), [first]);
+  // Every stored source listed or cited, the ones only the notes cite too (#456: they wait for it).
+  const vaultIds = useMemo(
+    () => [
+      ...new Set(
+        items.flatMap((item) => {
+          const ref = sourceRefOf(item.label, item.definition);
+          return ref === null ? [] : [sourceVaultId(subjectId, topicId, ref.kind, ref.file)];
+        }),
+      ),
+    ],
+    [subjectId, topicId, items],
+  );
   const metas = useSourceMetas(vaultIds, reloadKey);
-  const states = useMemo(() => resourceStates(subjectId, topicId, items, tree, metas), [subjectId, topicId, items, tree, metas]);
+  // Sources retired from this tab (#451): gone at once, before the list and their metadata are read again.
+  const [retired, setRetired] = useState<ReadonlySet<string>>(new Set());
+  const states = useMemo(() => {
+    const all = resourceStates(subjectId, topicId, items, tree, metas);
+    if (retired.size === 0) return all;
+    const keep = (entry: SourceEntry) => !retired.has(entry.vaultId);
+    return { ...all, kept: all.kept.filter(keep), setAside: all.setAside.filter(keep) };
+  }, [subjectId, topicId, items, tree, metas, retired]);
   const selection = useSelection();
   // The visible order of the cards (kept, then set aside), for a shift-click range.
   const visible = useMemo(() => [...states.kept, ...(showSetAside ? states.setAside : [])].map(selectedOf), [states, showSetAside]);
@@ -296,61 +338,33 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
 
   const total = states.kept.length + states.setAside.length;
   // A deleted source (#450) leaves the list when it is read again; the selection drops it then.
-  const onDeleted = () => setAdded((count) => count + 1);
+  const onDeleted = (vaultId: string) => {
+    setRetired((current) => new Set(current).add(vaultId));
+    setAdded((count) => count + 1);
+  };
   const setAsideId = "workspace-resources-set-aside";
 
   return (
     <div className="workspace-resources">
-      <AddSource subjectId={subjectId} topicId={topicId} onAdded={() => setAdded((count) => count + 1)} />
-      {summary === null && <p>Cargando las fuentes…</p>}
-      {summary !== null && summary.kind !== "ok" && summary.kind !== "listed" && (
-        <p role="alert">No se pudieron cargar las fuentes del tema: {describeFailure(summary)}</p>
-      )}
-      {summary !== null && total === 0 && states.others.length === 0 && list.uncitedWebs === 0 && (
-        <p>Este tema todavía no tiene fuentes: captura páginas en la pestaña Captura.</p>
-      )}
-      {total > 0 && (
-        <>
-          <p className="resources-counts">{countsText(states.counts)}</p>
-          <p className="resources-hint">{RESOURCES_HINT}</p>
-        </>
-      )}
-      {selection !== null && selection.selected.length > 0 && (
-        <div className="resources-selection" role="group" aria-label="Selección">
-          <p aria-live="polite">{selectedText(selection.selected.length)}</p>
-          <button type="button" onClick={selection.clear}>
-            Quitar selección
-          </button>
-        </div>
-      )}
-      {states.kept.length > 0 && (
-        <ul className="resource-grid" aria-label="Fuentes del tema">
-          {states.kept.map((entry) => (
-            <SourceCard
-                key={entry.key}
-                entry={entry}
-                onOpen={onOpen}
-                selection={cardSelection(selection, entry, visible)}
-                onDeleted={onDeleted}
-              />
-          ))}
-        </ul>
-      )}
-      {states.setAside.length > 0 && (
-        <section className="resource-set-aside">
-          <h3>
-            <button
-              type="button"
-              className="resource-disclosure"
-              aria-expanded={showSetAside}
-              aria-controls={setAsideId}
-              onClick={() => setShowSetAside((shown) => !shown)}
-            >
-              Apartadas ({states.setAside.length})
+      <div className="workspace-resources-list">
+        {summary === null && <p>Cargando las fuentes…</p>}
+        {summary !== null && summary.kind !== "ok" && summary.kind !== "listed" && (
+          <p role="alert">No se pudieron cargar las fuentes del tema: {describeFailure(summary)}</p>
+        )}
+        {summary !== null && total === 0 && states.others.length === 0 && (
+          <p className="workspace-resources-empty">Este tema todavía no tiene fuentes: captura páginas en la pestaña Captura o añádelas abajo.</p>
+        )}
+        {selection !== null && selection.selected.length > 0 && (
+          <div className="resources-selection" role="group" aria-label="Selección">
+            <p aria-live="polite">{selectedText(selection.selected.length)}</p>
+            <button type="button" onClick={selection.clear}>
+              Quitar selección
             </button>
-          </h3>
-          <ul id={setAsideId} className="resource-grid" aria-label="Fuentes apartadas" hidden={!showSetAside}>
-            {states.setAside.map((entry) => (
+          </div>
+        )}
+        {states.kept.length > 0 && (
+          <ul className="resource-grid" aria-label="Fuentes del tema">
+            {states.kept.map((entry) => (
               <SourceCard
                 key={entry.key}
                 entry={entry}
@@ -360,35 +374,53 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
               />
             ))}
           </ul>
-        </section>
-      )}
-      {list.uncitedWebs > 0 && (
-        <p className="workspace-resources-note">
-          {list.uncitedWebs === 1
-            ? "Hay 1 web guardada que los apuntes todavía no citan."
-            : `Hay ${list.uncitedWebs} webs guardadas que los apuntes todavía no citan.`}
-        </p>
-      )}
-      {states.others.length > 0 && (
-        <section className="workspace-resource-group" aria-label={GROUP_TITLES.transcript}>
-          <h3>
-            {GROUP_TITLES.transcript} <span className="badge">{states.others.length}</span>
-          </h3>
-          <ul>
-            {states.others.map((item) => (
-              <li key={item.key}>
-                <button
-                  type="button"
-                  className="workspace-resource"
-                  onClick={() => onOpen({ label: item.label, definition: item.definition })}
-                >
-                  {item.title}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+        )}
+        {states.setAside.length > 0 && (
+          <section className="resource-set-aside">
+            <h3>
+              <button
+                type="button"
+                className="resource-disclosure"
+                aria-expanded={showSetAside}
+                aria-controls={setAsideId}
+                onClick={() => setShowSetAside((shown) => !shown)}
+              >
+                Apartadas ({states.setAside.length})
+              </button>
+            </h3>
+            <ul id={setAsideId} className="resource-grid" aria-label="Fuentes apartadas" hidden={!showSetAside}>
+              {states.setAside.map((entry) => (
+                <SourceCard
+                  key={entry.key}
+                  entry={entry}
+                  onOpen={onOpen}
+                  selection={cardSelection(selection, entry, visible)}
+                  onDeleted={onDeleted}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+        {states.others.length > 0 && (
+          <section className="workspace-resource-group" aria-label={GROUP_TITLES.transcript}>
+            <h3>{GROUP_TITLES.transcript}</h3>
+            <ul>
+              {states.others.map((item) => (
+                <li key={item.key}>
+                  <button
+                    type="button"
+                    className="workspace-resource"
+                    onClick={() => onOpen({ label: item.label, definition: item.definition })}
+                  >
+                    {item.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+      <AddSourceToolbar subjectId={subjectId} topicId={topicId} onAdded={() => setAdded((count) => count + 1)} />
     </div>
   );
 }

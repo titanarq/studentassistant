@@ -231,12 +231,12 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
       ]),
     { timeout: 5000 },
   );
-  expect(await within(resources).findByText("0 pendientes · 5 incorporadas · 0 apartadas", {}, { timeout: 5000 })).toBeInTheDocument();
-  expect(
-    await within(resources).findByText("Hay 1 web guardada que los apuntes todavía no citan.", {}, { timeout: 5000 }),
-  ).toBeInTheDocument();
+  // All five are cited by the notes: each has the «Incorporada a los apuntes» corner badge (#461),
+  // and no counts line or log-like note about uncited webs is shown.
+  expect(within(pages).getAllByRole("img", { name: "Incorporada a los apuntes" })).toHaveLength(5);
+  expect(within(resources).queryByText(/pendientes ·|todavía no citan/)).toBeNull();
 
-  fireEvent.click(within(pages).getByRole("button", { name: /^Página 1 · apuntes/ }));
+  fireEvent.click(within(pages).getAllByRole("button").find((b) => b.classList.contains("resource-open") && b.textContent === "Página 1 · apuntes")!);
   const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
   expect(await within(dialog).findByText("Gran Bretaña, s. XVIII")).toBeInTheDocument();
 }, PAGE_TEST_TIMEOUT);

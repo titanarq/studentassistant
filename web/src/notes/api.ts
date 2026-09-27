@@ -7,7 +7,7 @@
 
 import { type ReadResult, topicPath } from "../desk/api";
 import { type Decoder, ProtocolDecodeError } from "../protocol";
-import { array, id, int, object, str } from "../protocol/decode";
+import { array, bool, id, int, object, str } from "../protocol/decode";
 import { errorCode } from "../protocol/errors";
 
 export interface TopicNotes {
@@ -33,6 +33,8 @@ export interface SourceMeta {
   meta: Record<string, unknown> | null;
   /** The sidecar's `transcription` when it carries one as text. */
   transcription: string | null;
+  /** The student retired this source (#451): still served, so a citation resolves, but no listing shows it. */
+  removed?: boolean;
 }
 
 export interface TranscriptLine {
@@ -75,7 +77,7 @@ export const decodeSourceMeta: Decoder<SourceMeta> = object({
   size: int({ min: 0 }),
   meta: nullable(record),
   transcription: nullable(str()),
-});
+}, { removed: bool() });
 
 const ms = int({ min: 0 });
 
