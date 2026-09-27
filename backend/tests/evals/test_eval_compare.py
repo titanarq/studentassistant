@@ -19,7 +19,13 @@ from studentassistant.evals.compare import (
     render_comparison,
 )
 from studentassistant.evals.run import write_report
-from studentassistant.evals.scoring import NotesFidelity, PageScore, SectionScore
+from studentassistant.evals.scoring import (
+    NotesFidelity,
+    PageScore,
+    RequestItem,
+    SectionScore,
+    score_requests,
+)
 
 RUN_TIMEOUT_S = 30
 
@@ -221,3 +227,48 @@ def test_eval_compare_names_an_unreadable_run(evals: Path) -> None:
     result = CliRunner().invoke(cli, ["eval", "compare", "a", "missing"])
     assert result.exit_code == 1
     assert "No se puede leer el informe" in result.output and "missing" in result.output
+
+
+def test_request_scores_and_the_detector_are_compared(tmp_path: Path) -> None:
+    edit = RequestItem(kind="edit", segments=["seg-2"], summary="edit", text="")
+    question = RequestItem(kind="question", segments=["seg-4"], summary="question", text="")
+    before = _case("celula").model_copy(update={"requests": score_requests([edit, question], [])})
+    after = _case("celula").model_copy(
+        update={"requests": score_requests([edit, question], [edit])}
+    )
+    previous = _report(before).model_copy(update={"request_detection": "wake_word"})
+    current = _report(after).model_copy(
+        update={"request_detection": "observer", "notes_path": "chat"}
+    )
+    comparison = compare_reports(previous, current, margin=0.05, previous_run="a")
+    scores = _scores(comparison, "celula")
+    assert scores["request_recall"] == (0.0, 0.5, 0.5, False)
+    assert scores["request_f1"][2] == pytest.approx(0.6667, abs=1e-3)
+    assert (comparison.previous_request_detection, comparison.request_detection) == (
+        "wake_word",
+        "observer",
+    )
+    text = render_comparison(comparison)
+    assert "Detector de peticiones: `wake_word` antes, `observer` ahora" in text
+    assert "Apuntes: `—` antes, `chat` ahora" in text
+    assert "| peticiones (F1) | 0.0 % | 66.7 % |" in text
+
+
+def test_an_older_report_without_the_request_fields_still_compares(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    old = runs / "20260901-000000"
+    write_report(_report(_case("celula")), old)
+    text = (old / "report.json").read_text(encoding="utf-8")
+    for field in ('  "request_detection": null,\n', '  "notes_path": null,\n'):
+        assert field in text
+        text = text.replace(field, "")
+    assert '"requests": null' in text
+    (old / "report.json").write_text(text.replace('      "requests": null,\n', ""), "utf-8")
+    found = previous_report(runs / "20260902-000000", warn=pytest.fail)
+    assert found is not None
+    _, earlier = found
+    assert earlier.request_detection is None and earlier.cases[0].requests is None
+    current = _report(_case("celula")).model_copy(update={"request_detection": "observer"})
+    comparison = compare_reports(earlier, current, margin=0.05, previous_run="old")
+    assert _scores(comparison, "celula")["request_f1"] == (None, None, None, False)
+    assert "Detector de peticiones: `—` antes, `observer` ahora" in render_comparison(comparison)

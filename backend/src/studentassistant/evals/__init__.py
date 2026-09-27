@@ -1,4 +1,5 @@
-"""Eval set from real sessions: page-transcription, observer and editor fidelity, scored.
+"""Eval set from real sessions: page transcription, observer, request detection and editor
+fidelity, scored.
 
 `studentassistant eval run` replays each recorded session of the eval set (`[eval] path`, outside
 the code repository) through the whole pipeline with real Claude calls into a fresh vault of its
@@ -12,6 +13,7 @@ from studentassistant.evals.cases import (
     RUNS_DIR_NAME,
     EvalCase,
     EvalSetError,
+    ReferenceRequest,
     ReferenceSection,
     read_case,
     read_eval_set,
@@ -23,7 +25,12 @@ from studentassistant.evals.compare import (
     read_report,
     render_comparison,
 )
-from studentassistant.evals.estimate import CaseEstimate, RoleEstimate, estimate_case
+from studentassistant.evals.estimate import (
+    CaseEstimate,
+    RoleEstimate,
+    estimate_case,
+    run_settings,
+)
 from studentassistant.evals.run import (
     CaseOutput,
     CaseResult,
@@ -34,11 +41,15 @@ from studentassistant.evals.run import (
     write_report,
 )
 from studentassistant.evals.scoring import (
+    KindScore,
     NotesFidelity,
     PageScore,
+    RequestItem,
+    RequestScore,
     SectionScore,
     score_notes,
     score_page,
+    score_requests,
     score_sections,
 )
 
@@ -52,9 +63,13 @@ __all__ = [
     "EvalCase",
     "EvalReport",
     "EvalSetError",
+    "KindScore",
     "NotesFidelity",
     "PageScore",
+    "ReferenceRequest",
     "ReferenceSection",
+    "RequestItem",
+    "RequestScore",
     "RoleEstimate",
     "RunComparison",
     "SectionScore",
@@ -68,8 +83,10 @@ __all__ = [
     "render_report",
     "run_case",
     "run_eval",
+    "run_settings",
     "score_notes",
     "score_page",
+    "score_requests",
     "score_sections",
     "write_report",
 ]

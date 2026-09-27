@@ -3,9 +3,12 @@
 One case runs exactly as `tests/server/test_pipeline_e2e.py` wires the pipeline, with the real
 Claude transport instead of fakes: an in-process `create_app` (lifespan included) over a vault
 of the case's own under the run directory, the recording fed through `replay` (the session
-WebSocket, the capture upload, the page transcriber and the live observer), then "prepárame el
-tema" over REST. What the pipeline produced is then read back from that vault only through
-`studentassistant.vault` (and the observer's loader) and scored with `scoring.py`.
+WebSocket, the capture upload, the page transcriber, the live observer and the request detector),
+then "prepárame el tema" over REST -- or, with `[eval] notes_path = "chat"`, no generation: the
+notes scored are the ones the session's own requests built, once the turn queue has drained. The
+detector under test is `[eval] request_detection` (`estimate.run_settings`). What the pipeline
+produced is then read back from that vault only through `studentassistant.vault` (and the
+observer's loader) and scored with `scoring.py`.
 
     <[eval] path>/runs/<UTC time>/
       report.md        the Spanish report (`render_report`)
@@ -39,20 +42,25 @@ from studentassistant.evals.compare import (
     previous_report,
     render_comparison,
 )
-from studentassistant.evals.estimate import CaseEstimate, estimate_case
+from studentassistant.evals.estimate import CaseEstimate, estimate_case, run_settings
 from studentassistant.evals.scoring import (
     NotesFidelity,
     PageScore,
+    RequestItem,
+    RequestScore,
     SectionScore,
     score_notes,
     score_page,
+    score_requests,
     score_sections,
 )
 from studentassistant.llm import Transport
-from studentassistant.observer import load_observer_snapshot
+from studentassistant.observer import ASSISTANT_REQUEST_KIND, load_observer_snapshot
 from studentassistant.server.app import create_app
+from studentassistant.server.assistant_requests import AssistantRequestConsumer
 from studentassistant.server.replay import AsgiTransport, ReplayError, replay
 from studentassistant.vault import (
+    Event,
     GitSync,
     SourceNotFoundError,
     TranscriptSegment,
@@ -75,9 +83,14 @@ EVAL_STUDENT = "Evaluación"
 REPORT_MARKDOWN = "report.md"
 CASE_VAULT_DIR = "vault"
 TRANSCRIPT_FILE = "transcript.jsonl"
+EVENTS_FILE = "events.jsonl"
 # Bounds that only keep a stuck run from hanging: the replay gets its paced duration on top.
 REPLAY_MARGIN_S = 600.0
 GENERATE_TIMEOUT_S = 1_200.0
+# `notes_path = "chat"`: how long the session's queued turns may take after the replay, and how
+# long the queue must stay empty to count as drained (a request still on the bus is not queued).
+CHAT_TURNS_TIMEOUT_S = 1_800.0
+CHAT_SETTLE_S = 0.2
 
 
 @dataclass
@@ -96,6 +109,8 @@ class CaseOutput:
     notes_errors: list[str] = field(default_factory=list)
     generate_error: str | None = None
     actual_usd: float | None = None
+    # The spoken requests the detector published in the session (`assistant.request`).
+    requests: list[RequestItem] = field(default_factory=list)
 
 
 class CaseResult(BaseModel):
@@ -114,6 +129,8 @@ class CaseResult(BaseModel):
     notes_draft: bool = False
     notes_errors: list[str] = []
     generate_error: str | None = None
+    # `None` when the case has no `requests.yaml` (and in reports written before #371).
+    requests: RequestScore | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -128,10 +145,12 @@ class CaseResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def score(self) -> float | None:
-        """The mean of the case's headline scores: pages, sections, kept and supported."""
+        """The mean of the case's headline scores: pages, sections, requests, kept, supported."""
         parts = [self.page_char_accuracy]
         if self.sections is not None:
             parts.append(self.sections.pairwise_agreement)
+        if self.requests is not None:
+            parts.append(self.requests.f1)
         if self.notes is not None:
             parts += [self.notes.kept, self.notes.supported]
         elif self.error is None:
@@ -144,6 +163,10 @@ class EvalReport(BaseModel):
     finished_at: datetime
     models: dict[str, str]
     cases: list[CaseResult]
+    # The request detector under test and how the scored notes were made (`[eval]`); `None` in
+    # reports written before they were recorded.
+    request_detection: str | None = None
+    notes_path: str | None = None
     # Against the most recent earlier run of the eval set; `None` when there was none (and in
     # reports written before comparisons existed).
     comparison: RunComparison | None = None
@@ -199,6 +222,7 @@ async def produce_case(
     Raises:
         ReplayError: when the replay fails or does not finish in time.
     """
+    settings = run_settings(settings)
     vault = Vault.init(directory / CASE_VAULT_DIR, student=EVAL_STUDENT)
     vault_settings = VaultSettings(path=vault.path, index_path=directory / "index.sqlite3")
     app = create_app(
@@ -230,28 +254,56 @@ async def produce_case(
         output = CaseOutput(
             session_id=result.session_id, subject=result.subject_id, topic=result.topic_id
         )
-        # The eval already had its estimated cost confirmed: a reached cap does not stop it.
-        try:
-            generated = await asyncio.wait_for(
-                client.request(
-                    "POST",
-                    f"/api/subjects/{output.subject}/topics/{output.topic}/notes/generate",
-                    b'{"confirm_over_cap": true}',
-                    "application/json",
-                ),
-                GENERATE_TIMEOUT_S,
-            )
-        except TimeoutError:
-            output.generate_error = "la generación de los apuntes no terminó a tiempo"
+        if settings.eval.notes_path == "chat":
+            await _drain_turns(app.state.assistant_requests, output)
         else:
-            if generated.status == 200:
-                body = generated.json()
-                output.notes_draft = bool(body.get("draft"))
-                output.notes_errors = list(body.get("errors") or [])
-            else:
-                output.generate_error = f"{generated.status}: {generated.detail()}"
+            await _generate(client, output)
     _read_back(vault, output)
     return output
+
+
+async def _drain_turns(consumer: AssistantRequestConsumer | None, output: CaseOutput) -> None:
+    """Wait (bounded) until the session's requests have all run as editor turns."""
+    if consumer is None:
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CHAT_TURNS_TIMEOUT_S
+    while True:
+        try:
+            await consumer.wait_idle(max(0.0, deadline - loop.time()))
+        except TimeoutError:
+            output.generate_error = "los turnos del chat no terminaron a tiempo"
+            return
+        await asyncio.sleep(CHAT_SETTLE_S)
+        try:
+            await consumer.wait_idle(0.0)  # still idle: nothing arrived meanwhile
+        except TimeoutError:
+            continue
+        return
+
+
+async def _generate(client: AsgiTransport, output: CaseOutput) -> None:
+    """ "Prepárame el tema" over REST, as the button asks for it."""
+    # The eval already had its estimated cost confirmed: a reached cap does not stop it.
+    try:
+        generated = await asyncio.wait_for(
+            client.request(
+                "POST",
+                f"/api/subjects/{output.subject}/topics/{output.topic}/notes/generate",
+                b'{"confirm_over_cap": true}',
+                "application/json",
+            ),
+            GENERATE_TIMEOUT_S,
+        )
+    except TimeoutError:
+        output.generate_error = "la generación de los apuntes no terminó a tiempo"
+        return
+    if generated.status == 200:
+        body = generated.json()
+        output.notes_draft = bool(body.get("draft"))
+        output.notes_errors = list(body.get("errors") or [])
+    else:
+        output.generate_error = f"{generated.status}: {generated.detail()}"
 
 
 def _read_back(vault: Vault, output: CaseOutput) -> None:
@@ -259,6 +311,18 @@ def _read_back(vault: Vault, output: CaseOutput) -> None:
     transcript = sessions_directory(vault, subject, topic) / output.session_id / TRANSCRIPT_FILE
     if transcript.is_file():
         output.transcript = [s.text for s in read_jsonl(transcript, TranscriptSegment)]
+    events = transcript.with_name(EVENTS_FILE)
+    if events.is_file():
+        output.requests = [
+            RequestItem(
+                kind=str(event.payload.get("kind")),
+                segments=[str(s) for s in event.payload.get("segment_ids") or []],
+                summary=str(event.payload.get("summary") or ""),
+                text=str(event.payload.get("text") or ""),
+            )
+            for event in read_jsonl(events, Event)
+            if event.kind == ASSISTANT_REQUEST_KIND and event.payload.get("detector") != "typed"
+        ]
     for source in list_sources(vault, subject, topic):
         capture_id = (source.meta or {}).get("capture_id")
         if not capture_id:
@@ -295,6 +359,21 @@ def score_case(case: EvalCase, output: CaseOutput) -> CaseResult:
     if output.notes is not None:
         sources = [*output.transcript, *(t for t in output.pages.values() if t)]
         notes = score_notes(case.reference_notes, output.notes, sources)
+    requests = None
+    if case.reference_requests is not None:
+        finals = {m.segment_id: m.text for m in case.finals}
+        requests = score_requests(
+            [
+                RequestItem(
+                    kind=r.kind,
+                    segments=list(r.segments),
+                    summary=r.note or r.kind,
+                    text=" ".join(finals.get(s, "") for s in r.segments).strip(),
+                )
+                for r in case.reference_requests
+            ],
+            output.requests,
+        )
     return CaseResult(
         case=case.name,
         estimate=CaseEstimate(case=case.name, roles=[]),
@@ -306,6 +385,7 @@ def score_case(case: EvalCase, output: CaseOutput) -> CaseResult:
         notes_draft=output.notes_draft,
         notes_errors=output.notes_errors,
         generate_error=output.generate_error,
+        requests=requests,
     )
 
 
@@ -362,6 +442,7 @@ async def run_eval(
         results.append(result)
         if on_case is not None:
             on_case(result)
+    settings = run_settings(settings)
     roles = settings.llm.roles
     warnings: list[str] = []
 
@@ -380,6 +461,8 @@ async def run_eval(
             "editor": roles.editor.model,
         },
         cases=results,
+        request_detection=settings.observer.request_detection,
+        notes_path=settings.eval.notes_path,
     )
     previous = previous_report(directory, warn=warn)
     comparison = None
@@ -389,6 +472,12 @@ async def run_eval(
             earlier, report, margin=settings.eval.regression_margin, previous_run=name
         )
     return report.model_copy(update={"comparison": comparison, "comparison_warnings": warnings})
+
+
+NOTES_PATH_LABELS = {
+    "generate": "«prepárame el tema» tras la sesión",
+    "chat": "los que construyeron las peticiones de la sesión",
+}
 
 
 def _pct(value: float | None) -> str:
@@ -407,19 +496,22 @@ def render_report(report: EvalReport) -> str:
         f"- Inicio: {report.started_at:%Y-%m-%d %H:%M:%S %Z}",
         "- Modelos: " + ", ".join(f"{role} `{model}`" for role, model in report.models.items()),
         f"- Coste estimado: {_usd(report.estimated_usd)}; coste real: {_usd(report.actual_usd)}",
+        f"- Detector de peticiones: `{report.request_detection or '—'}`; apuntes:"
+        f" {NOTES_PATH_LABELS.get(report.notes_path or '', '—')}",
         "",
-        "| caso | páginas (caracteres) | páginas (palabras) | secciones | conservado | con fuente"
-        " | global | coste |",
-        "|---|---|---|---|---|---|---|---|",
+        "| caso | páginas (caracteres) | páginas (palabras) | secciones | peticiones (F1)"
+        " | conservado | con fuente | global | coste |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for case in report.cases:
         sections = case.sections.pairwise_agreement if case.sections else None
+        requests = case.requests.f1 if case.requests else None
         kept = case.notes.kept if case.notes else None
         supported = case.notes.supported if case.notes else None
         lines.append(
             f"| {case.case} | {_pct(case.page_char_accuracy)} | {_pct(case.page_word_accuracy)}"
-            f" | {_pct(sections)} | {_pct(kept)} | {_pct(supported)} | {_pct(case.score)}"
-            f" | {_usd(case.actual_usd)} |"
+            f" | {_pct(sections)} | {_pct(requests)} | {_pct(kept)} | {_pct(supported)}"
+            f" | {_pct(case.score)} | {_usd(case.actual_usd)} |"
         )
     for case in report.cases:
         lines += ["", f"## {case.case}", ""]
@@ -443,8 +535,12 @@ def render_report(report: EvalReport) -> str:
                 f" {s.assigned} de {s.segments} segmentos asignados ({_pct(s.coverage)}),"
                 f" {s.observer_sections} secciones frente a {s.reference_sections} de referencia"
             )
+        if case.requests is not None:
+            lines += _render_requests(case.requests)
         if case.generate_error is not None:
             lines.append(f"- Los apuntes no se han generado: {case.generate_error}")
+        elif case.notes is None:
+            lines.append("- No hay apuntes que puntuar: ninguna petición los ha escrito")
         if case.notes is not None:
             n = case.notes
             draft = " (borrador: no pasaron el validador)" if case.notes_draft else ""
@@ -462,6 +558,32 @@ def render_report(report: EvalReport) -> str:
                 lines += [f"  - {unit}" for unit in n.unsupported]
     lines += ["", render_comparison(report.comparison, report.comparison_warnings).rstrip("\n")]
     return "\n".join(lines) + "\n"
+
+
+def _request_line(request: RequestItem) -> str:
+    segments = ", ".join(f"`{s}`" for s in request.segments)
+    return f"  - {request.kind} ({segments}): {request.summary} — «{request.text}»"
+
+
+def _render_requests(score: RequestScore) -> list[str]:
+    lines = [
+        f"- Peticiones al asistente: precisión {_pct(score.precision)}, exhaustividad"
+        f" {_pct(score.recall)}, F1 {_pct(score.f1)} ({score.matched} acertadas de"
+        f" {score.reference} de referencia y {score.detected} detectadas)"
+    ]
+    for kind in score.per_kind:
+        lines.append(
+            f"  - {kind.kind}: precisión {_pct(kind.precision)}, exhaustividad"
+            f" {_pct(kind.recall)}, F1 {_pct(kind.f1)} ({kind.matched}/{kind.reference}"
+            f" de referencia, {kind.detected} detectadas)"
+        )
+    if score.missed:
+        lines.append("- Peticiones no detectadas:")
+        lines += [_request_line(r) for r in score.missed]
+    if score.spurious:
+        lines.append("- Peticiones detectadas que no estaban en la referencia:")
+        lines += [_request_line(r) for r in score.spurious]
+    return lines
 
 
 def write_report(report: EvalReport, directory: Path) -> Path:

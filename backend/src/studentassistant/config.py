@@ -737,6 +737,10 @@ DEFAULT_EVAL_SPEED = 4.0
 DEFAULT_EVAL_REGRESSION_MARGIN = 0.05
 
 
+EvalNotesPath = Literal["generate", "chat"]
+"""How `eval run` gets the notes it scores (`[eval] notes_path`)."""
+
+
 class EvalSettings(BaseModel):
     """`studentassistant eval run`: where the eval set lives and how its sessions are replayed."""
 
@@ -748,6 +752,12 @@ class EvalSettings(BaseModel):
     speed: float = Field(default=DEFAULT_EVAL_SPEED, gt=0)
     # A score that drops by more than this against the previous run is marked a regression.
     regression_margin: float = Field(default=DEFAULT_EVAL_REGRESSION_MARGIN, ge=0, le=1)
+    # The request detector under test: overrides `[observer] request_detection` for the run
+    # (unset: whatever the app config says), so `observer` and `wake_word` runs can be compared.
+    request_detection: RequestDetection | None = None
+    # Which notes are scored: `generate` calls "prepárame el tema" after the replay; `chat`
+    # scores the notes the session's own requests built (incorporation and edit turns).
+    notes_path: EvalNotesPath = "generate"
 
     @field_validator("path")
     @classmethod
