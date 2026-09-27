@@ -89,8 +89,8 @@ código vale 5 minutos y un solo uso. Para esta prueba en el portátil no hace f
 1. Abre `http://localhost:8765/` en Chrome: es la **Mesa de estudio**.
 2. Si todavía no tienes la asignatura, escríbela en **Nueva asignatura** y pulsa **Crear**.
 3. En su recuadro pulsa **Nuevo tema**, escribe el nombre y pulsa **Crear** (una sesión = un tema).
-   Se abre el espacio de estudio del tema (**Construir**). Un tema que ya existe se abre pulsando su
-   nombre en la mesa.
+   Se abre el espacio de estudio del tema (**Construir**). Cada tema de la mesa tiene dos botones,
+   **Construir** y **Estudiar**; para seguir con uno que ya existe pulsa **Construir**.
 4. En la pestaña **Captura** pulsa **Empezar una sesión nueva** (o **Continuar la sesión abierta**
    si el tema tiene una sin terminar) y **permite cámara y micrófono**.
 5. Habla con normalidad sobre lo que enseñas. La transcripción en directo aparece en gris
@@ -128,8 +128,8 @@ la derecha.
    captura, marca la versión de estudio y ofrece **Ir a Estudiar**, que abre la pantalla
    **Estudiar** (esquema, ejercicios, examen, quiz, tarjetas y preguntas sobre los apuntes). El
    selector **Construir · Estudiar** de la cabecera hace lo mismo.
-5. Desde la mesa, **Estudiar** abre directamente esa pantalla y **Ficha** la ficha del tema
-   (resumen, PDF, páginas web, libro de texto, coste y descargas).
+5. Desde la mesa, el botón **Estudiar** de cada tema abre directamente esa pantalla, y el nombre
+   del tema abre su ficha (resumen, PDF, páginas web, libro de texto, coste y descargas).
 
 ## 7. Coste
 
@@ -157,7 +157,7 @@ corto.
       fuente; lo que no se entendía está como duda, no rellenado.
 - [ ] **Coste**: `/api/cost` antes y después de "prepárame el tema"; anota el total de la sesión.
 - [ ] **Estudiar**: "ya está, quiero estudiar" abre la pantalla Estudiar con la versión de
-      estudio, y el tema se abre desde la mesa (su nombre, **Estudiar**).
+      estudio, y el tema se abre desde la mesa con sus botones **Construir** y **Estudiar**.
 - [ ] **Vault en GitHub**: `curl -s http://localhost:8765/api/vault/status` sin
       `last_push_failure`, y los commits en el repositorio privado.
 

@@ -94,7 +94,7 @@
   - `TutorScreen({subjectId, topicId, subjectName, topicName, onClose?, speech?, listen?,
     voiceSupported?})`: the last three are the seams tests use.
 - **Study workspace** (`/subjects/<s>/topics/<t>/workspace`, "Espacio de estudio", `src/workspace/`,
-  #312, epic #311): one screen for a topic, opened from the study desk (the topic's name, "Sesión
+  #312, epic #311): one screen for a topic, opened from the study desk (the row's **Construir**, "Sesión
   abierta", a created topic; #368) and from the topic page's **Construir**. The header has the crumbs, the topic name and the open-doubts counter ("N dudas
   pendientes", from `GET .../pending?status=open`, read again whenever the document changes,
   linking to the pending page). Two columns (a CSS grid):
@@ -569,10 +569,11 @@ token):
   does), and a topic without them shows only its name.
 - `src/App.tsx` is the study desk (`/`, heading "Mesa de estudio"), the single way into a topic's
   Construir and Estudiar (#368, epic #365): every subject (a region named after it) with its
-  topics. Each topic's name links to `topicEntryPath(topic)` (Construir, `.../workspace`, by
-  default), followed by "Sesión abierta" (a link to the topic's `.../workspace`), "Última sesión:
-  <fecha>" and "<n> dudas por revisar" when the list carries them, then two small links,
-  **Estudiar** (`.../study`) and **Ficha** (the topic card page). Under each subject's name a
+  topics. The desk never picks a topic's screen for the student (human decision): each row has
+  two explicit buttons, **Construir** (`.../workspace`) and **Estudiar** (`.../study`), and the
+  topic's name links to its topic card page (the Ficha), after "Sesión abierta" (a link to the
+  topic's `.../workspace`), "Última sesión: <fecha>" and "<n> dudas por revisar" when the list
+  carries them. Under each subject's name a
   "Guía de estilo" link to its style guide page; below its topics **Nuevo tema** (an
   `aria-expanded` toggle) shows a form "Nuevo tema de <subject>" (field "Nombre del tema",
   **Crear**); below the subjects the block "Nueva asignatura" (field "Nombre de la asignatura",
@@ -585,11 +586,10 @@ token):
   neither `/capture` nor `/live` any more; both keep working (the Android WebView, bookmarks).
   Empty states: no subjects ("Crea la primera en «Nueva asignatura» y dale un tema."), a subject
   without topics; a failing topic list is reported inside its subject only.
-- `src/desk/entry.ts` (#368): `topicEntryPath(topic)` -- the one decision of where the desk
-  opens a topic (today `topicWorkspacePath`; the open product question of #368 may change it to
-  Estudiar when the topic has a study version, or to the topic card; only this function changes)
-  -- and the path builders `topicWorkspacePath`, `topicStudyPath`, `topicCardPath`, each over a
-  `TopicRef {subject_id, topic_id}` (any protocol `Topic` or practice-summary row).
+- `src/desk/entry.ts` (#368): the path builders `topicWorkspacePath`, `topicStudyPath`,
+  `topicCardPath`, each over a `TopicRef {subject_id, topic_id}` (any protocol `Topic` or
+  practice-summary row). There is no state-based entry choice: the student moves between a
+  topic's screens with the rows' Construir / Estudiar buttons and the headers' switch.
   Under the heading, "Gasto de hoy" (`src/desk/DeskCost.tsx`, #260) reads `GET /api/cost` (with
   `subject`, `topic` and `session` of the first topic whose list entry carries `open_session_id`,
   once the lists answer) and shows "Hoy (UTC): <day_usd> USD de <max_usd_per_day> USD" ("(sin
@@ -622,7 +622,7 @@ token):
   -> the `ReadResult` of `desk/api.ts` (whose `getJson` it reuses); `formatUsd` ("0,1234 USD",
   four decimals, always labelled USD, never euros) and `formatTokens`.
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
-  <subject name>", the ids until the lists answer), reached from the desk's **Ficha** link, has at
+  <subject name>", the ids until the lists answer), reached from the topic's name on the desk, has at
   the top the pair **Construir** (`.../workspace`) / **Estudiar** (`.../study`), plain links in a
   `nav` "Abrir el tema" (#368; it replaced the single "Abrir espacio de estudio" link), then shows `TopicCard`, `PrepareTopic`,
   `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,

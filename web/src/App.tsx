@@ -9,7 +9,7 @@ import {
 import type { ActiveSession } from "./desk/costApi";
 import DeskCost from "./desk/DeskCost";
 import { NewSubject, NewTopic } from "./desk/DeskCreate";
-import { topicCardPath, topicEntryPath, topicStudyPath, topicWorkspacePath } from "./desk/entry";
+import { topicCardPath, topicStudyPath, topicWorkspacePath } from "./desk/entry";
 import DeskPractice from "./desk/DeskPractice";
 import type { Subject, Topic } from "./protocol";
 import { styleGuidePagePath } from "./styleGuide/api";
@@ -17,10 +17,10 @@ import "./desk/desk.css";
 
 /**
  * `/`: the study desk (docs/VISION.md §2), the way into a topic's Construir and Estudiar (#368).
- * Every subject with its topics; each topic's name opens it where `topicEntryPath` says (the
- * workspace, Construir, by default), followed by what the topic list carries (an open session,
- * linking to the workspace, the last session's date and the doubts waiting for review) and two
- * small links, **Estudiar** (the study screen) and **Ficha** (the topic card page). "Nueva
+ * Every subject with its topics; each topic's name links to its topic card page (the Ficha),
+ * followed by what the topic list carries (an open session, linking to the workspace, the last
+ * session's date and the doubts waiting for review) and two explicit buttons, **Construir** (the
+ * workspace) and **Estudiar** (the study screen); the desk never picks one of them. "Nueva
  * asignatura" and each subject's "Nuevo tema" create them; a created topic opens in its
  * workspace. "Gasto de hoy" (`DeskCost`, #260) shows today's spend against the caps, and the open
  * session's when there is one; "Repasos para hoy" (`DeskPractice`, #285) lists the topics with
@@ -61,7 +61,7 @@ function TopicRow({ topic }: { topic: Topic }) {
   }
   return (
     <li className="desk-topic">
-      <a className="desk-topic-name" href={topicEntryPath(topic)}>
+      <a className="desk-topic-name" href={topicCardPath(topic)}>
         {topic.name}
       </a>
       {topic.open_session_id !== undefined && (
@@ -73,9 +73,9 @@ function TopicRow({ topic }: { topic: Topic }) {
         </>
       )}
       {details.length > 0 && <span className="desk-topic-details"> · {details.join(" · ")}</span>}
-      <span className="desk-topic-links">
+      <span className="desk-topic-modes">
+        <a href={topicWorkspacePath(topic)}>Construir</a>
         <a href={topicStudyPath(topic)}>Estudiar</a>
-        <a href={topicCardPath(topic)}>Ficha</a>
       </span>
     </li>
   );

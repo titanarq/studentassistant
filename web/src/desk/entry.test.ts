@@ -1,11 +1,10 @@
 import { expect, it } from "vitest";
-import { topicCardPath, topicEntryPath, topicStudyPath, topicWorkspacePath } from "./entry";
+import { topicCardPath, topicStudyPath, topicWorkspacePath } from "./entry";
 
 const topic = { subject_id: "historia", topic_id: "revolución francesa" };
 
-it("opens a topic from the desk in Construir, the workspace, by default", () => {
-  expect(topicEntryPath(topic)).toBe(topicWorkspacePath(topic));
-  expect(topicEntryPath(topic)).toBe("/subjects/historia/topics/revoluci%C3%B3n%20francesa/workspace");
+it("builds the workspace path with quoted ids", () => {
+  expect(topicWorkspacePath(topic)).toBe("/subjects/historia/topics/revoluci%C3%B3n%20francesa/workspace");
 });
 
 it("builds the study screen and topic card paths with quoted ids", () => {
