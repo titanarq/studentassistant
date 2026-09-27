@@ -183,6 +183,7 @@ def test_a_spoken_request_becomes_a_voice_chat_turn_and_streams(
         "request_id": "req-1",
         "kind": "edit",
         "summary": "Petición 1: pon aquí la explicación del libro",
+        "origin": "voice",
         "transcript": {
             "session_id": session_id,
             "segment_ids": ["seg-1a", "seg-1b"],

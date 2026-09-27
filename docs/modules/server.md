@@ -541,27 +541,60 @@ Routes registered today:
     then adds the image's footnote). The sync loop commits it (`SessionService.note_change`).
     Errors: too large 413; not such an image, empty, another part or a malformed body 422; an
     unknown topic 404; a vault that cannot be opened 503.
-- **Spoken requests become editor turns** (`server/assistant_requests.py`,
-  `AssistantRequestConsumer`, #315): started in the app's lifespan when the app has an
+- **Spoken and typed requests become editor turns** (`server/assistant_requests.py`,
+  `AssistantRequestConsumer`, #315, #327): started in the app's lifespan when the app has an
   `llm_transport`; it subscribes to `assistant.request` on the bus (`observer.AssistantRequest`,
-  published by the observer's detector or the wake word) and, per topic, runs one request at a
-  time in arrival order. On arrival: `request.detected` on the workspace stream, then the request
+  published by the observer's detector, the wake word or a typed message) and, per topic, runs one
+  request at a time in arrival order. On arrival: `request.detected` on the workspace stream, then
+  the request
   is queued (in the backend: it survives a client that goes away, and the requests of a session
   that ended meanwhile are still processed). Its turn takes the topic's notes lock
   (`NotesGenerator.claim`), waiting while a typed turn, a generation, a restore or the doubts hold
   it (at most `CLAIM_TIMEOUT_SECONDS`, 600 s, then `turn.error` 409), then dispatches on the kind
-  through `HANDLERS` (a per-kind table later tasks extend):
+  through `HANDLERS`; the turn's `origin` is `voice`, or `typed` for a typed request (then no
+  `ChatRequestRef`: a typed chat turn):
   - `edit`, `question`: `editor.revise_notes` on the latest notes with the request's raw `text` as
     the message and a `ChatRequestRef` as `request` (a voice chat turn in `GET .../notes/chat`);
     `editor` role bound to the topic's ledger; `notes.edited` on the bus when the session is
     still active.
-  - `prepare_notes`: "prepárame el tema" through `NotesGenerator.generate`, the same generation
-    as the button, never with `confirm_over_cap`: a reached cap is `turn.error` 409 with code
-    `cost_cap_reached` (the student confirms through `POST .../notes/generate`), never a silent
-    spend.
+  - `prepare_notes`: "prepárame el tema" through `NotesGenerator.generate` (the batched mode of
+    #326 by default: each batch an `incorporate` turn), the same generation as the button, never
+    with `confirm_over_cap`: a reached cap is `turn.error` 409 with code `cost_cap_reached` (the
+    student confirms through `POST .../notes/generate`), never a silent spend.
+  - `incorporate`: `NotesGenerator.incorporate(targets)` (#326), a turn of kind `incorporate`; a
+    refused incorporation (a set-aside page, too many sources, an unknown one) is `turn.error` 422
+    with the editor's Spanish message.
+  - `set_aside` / `restore`: `sources.set_capture_triage` for each target not already in that
+    state, each change a `capture.triaged` (origin `user`) in the topic's live session -- the
+    transcriber then transcribes a restored page with no transcription -- or else in a review
+    session; one short Spanish chat entry is streamed as the reply («He apartado la página 3.»,
+    «He recuperado la página 3; se está transcribiendo.» / «...; se transcribirá en la próxima
+    sesión del tema.», «La página 1 no estaba apartada.») and recorded as a `triage` chat turn
+    (`editor.record_triage_turn`, `ChatTurn.kind` `triage`); `notes.changed` untouched;
+    `turn.result` is the `TriageTurn`. An unknown target is `turn.error` 404.
+  - `doubt_answer`: `editor.answer_doubt(pending_id, answer)` (#325; digits pick that suggestion,
+    anything else is the answer's words) under the notes lock, the resolution streamed as the
+    reply, then `doubt.resolved` (+ `notes.changed` when the notes changed) and the next doubt
+    through the `DoubtChat`; `turn.result` is the `ResolutionResult`. A closed or unknown doubt is
+    `turn.error` (409 `doubt_closed`, 404).
   A failure is a `turn.error` with the status the same failure has over REST; the topic's next
   request runs anyway. Shutdown gives running turns 5 s, then cancels them; still-queued requests
   are dropped with a log line (they stay in `events.jsonl`).
+  The request classifiers' context (`sources_lookup(sessions)`, `request_context`) is wired here
+  into the detector and the typed classifier: the topic's `editor.source_status` rows and the
+  open doubt last asked in the chat (`editor.doubts.doubt_chat_turns`).
+- **Typed workspace messages** (`server/workspace_routes.py`, #327):
+  `POST /api/subjects/{subject_id}/topics/{topic_id}/workspace/messages` `{text}` (1..4000
+  characters) -> 202 `{message_id, requests: [AssistantRequest], classified}`. The text is
+  classified by `observer.requests.MessageClassifier` (`app.state.message_classifier`, built with
+  an `llm_transport` whatever `[observer] request_detection` or `enabled` say) and each request is
+  persisted as `assistant.request` (origin `user`, `detector: "typed"`, id `req-t<n>`,
+  `message_id`) in the topic's live session -- the bus brings it to the consumer -- or in a review
+  session started and ended for it, then queued (`AssistantRequestConsumer.post_message`). A
+  message with no request, or a classifier failure (`classified: false`), becomes one `edit` (a
+  `question` when it has a `?`) with the raw text, so nothing typed is lost. Errors: an empty text
+  422, an unknown topic 404, a vault that cannot be opened 503, no `llm_transport` 503.
+  `POST .../notes/chat` stays for the old notes page.
 - **The workspace stream** (`server/workspace.py` `WorkspaceHub`, `server/workspace_routes.py`,
   #315), for the study workspace's chat and document:
   `GET /api/subjects/{subject_id}/topics/{topic_id}/workspace/stream` -> `text/event-stream`
@@ -572,14 +605,15 @@ Routes registered today:
   turns, typed turns, student saves, generations, restores and undos publish to; nothing is
   persisted or replayed (a reconnecting client reloads `GET .../notes/chat` and `GET .../notes`).
   Each event is `event: <name>` plus one line of JSON (the list is open; later tasks add kinds):
-  - `request.detected` `{request_id, kind, summary, transcript: {session_id, segment_ids,
-    t_start_ms, t_end_ms, text}}`: a spoken request was queued;
+  - `request.detected` `{request_id, kind, summary, origin: voice|typed, transcript: {session_id,
+    segment_ids, t_start_ms, t_end_ms, text}, targets?}`: a spoken or typed request was queued;
   - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind:
-    revise|prepare_notes|incorporate}` (`incorporate`: one incorporation, e.g. each batch of a
-    batched "prepárame el tema", #326);
+    revise|prepare_notes|incorporate|set_aside|restore|doubt_answer}` (`incorporate`: one
+    incorporation, e.g. each batch of a batched "prepárame el tema", #326);
   - `reply.delta` `{turn_id, text, attempt}`, `reply.restart` `{turn_id, attempt}`;
   - `turn.result`: the `RevisionResult` (for `prepare_notes` the `GenerationResult`, for
-    `incorporate` the `IncorporationResult`) plus `turn_id`, `request_id` and `kind`;
+    `incorporate` the `IncorporationResult`, for `set_aside`/`restore` the `TriageTurn`, for
+    `doubt_answer` the `ResolutionResult`) plus `turn_id`, `request_id` and `kind`;
   - `turn.error` `{turn_id, request_id, status, detail, code?}`;
   - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
     notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that

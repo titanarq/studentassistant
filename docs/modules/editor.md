@@ -489,7 +489,12 @@ mode, and the student's message.
   `applied` when its answer changed the notes) and `doubts_resolved` (a review's short line of
   auto-resolved doubts, from its `pending.reviewed` record's `summary`: `reply`, `pending_ids`).
   Since #326 also turns of kind `incorporate` (an `incorporation` record: `source_ids`, `message`,
-  `reply`, `summary`, `diff`, `commit`, `applied`, `warning`, undone like a revision turn). The explanations are also in the
+  `reply`, `summary`, `diff`, `commit`, `applied`, `warning`, undone like a revision turn).
+  Since #327 also turns of kind `triage`: captures set aside or restored from the chat, written
+  by the server with `record_triage_turn(vault, subject, topic, TriageTurn)` as a `triage` record
+  (`turn_id`, `origin`, `request`, `decision` -- also the turn's `summary` --, `source_ids`,
+  `message`, the short `reply`, `applied`); no notes change, nothing to undo; the editor's
+  conversation shows it as the student's message plus that line. The explanations are also in the
   conversation the editor is given on a turn, and so are the student's own edits (the
   `student_edit` records of `direct_edit.py`, as "El estudiante editó él mismo los apuntes
   (#anchors)" plus the diff, cut at `STUDENT_EDIT_DIFF_CHARS`); `chat_history` leaves those out.

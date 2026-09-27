@@ -149,6 +149,9 @@ EXPLANATION_RECORD = "explanation"
 INCORPORATION_RECORD = "incorporation"
 """The conversation record of an incorporation of a few sources (`incorporate.py`, #326): a chat
 turn of kind `incorporate`, undone like a revision turn."""
+TRIAGE_RECORD = "triage"
+"""The conversation record of captures set aside or restored from the chat (#327): a chat turn of
+kind `triage` (`record_triage_turn`); it changes no notes, so nothing undoes it."""
 MAX_REASKS = 2
 """How many times a change that fails the checks is sent back to the editor."""
 MAX_MESSAGE_CHARS = 4000
@@ -337,6 +340,9 @@ class ChatTurn(_Strict):
     `incorporate` is an incorporation of a few sources (`incorporate.py`, #326): `source_ids`
     (what was incorporated), `summary`, `reply`, `diff` and `commit`; undone like a `revise` turn.
 
+    `triage` is captures set aside or restored from the chat (#327): `source_ids`, `summary`
+    (`set_aside` or `restore`) and the short `reply` («He apartado la página 3.»).
+
     `doubt` is a doubt the chat asked (#325): `pending_id`, `question` (also the `reply`),
     `suggestions`, `options`, `refs` (the sources it is about), `status` (`open` until answered)
     and, once closed, `resolution` and `answer`. `doubts_resolved` is the short line reporting
@@ -346,7 +352,7 @@ class ChatTurn(_Strict):
 
     time: datetime
     kind: Literal[
-        "revise", "explain", "student_edit", "doubt", "doubts_resolved", "incorporate"
+        "revise", "explain", "student_edit", "doubt", "doubts_resolved", "incorporate", "triage"
     ] = "revise"
     turn_id: str | None = None
     origin: TurnOrigin = "typed"
@@ -409,6 +415,38 @@ class _IncorporationView(BaseModel):
     paths: list[str] = Field(default_factory=list)
     commit: str | None = None
     warning: str | None = None
+
+
+class TriageTurn(_Strict):
+    """Captures set aside or restored from the chat (#327); the `triage` conversation record."""
+
+    turn_id: str | None = None
+    origin: TurnOrigin = "typed"
+    request: ChatRequestRef | None = Field(
+        default=None, description="The spoken request it answers (`origin` `voice`)."
+    )
+    decision: Literal["set_aside", "restore"]
+    source_ids: list[str] = Field(default_factory=list)
+    message: str = Field(description="What was asked, as the chat shows it.")
+    reply: str = Field(description="The short Spanish line of what was done.")
+    applied: bool = Field(default=True, description="False when nothing changed.")
+
+
+def record_triage_turn(
+    vault: Vault, subject_slug: str, topic_slug: str, turn: TriageTurn, *, clock: Clock = _utc_now
+) -> None:
+    """Record `turn` in `conversations/editor.jsonl` so the chat shows it (blocking).
+
+    Raises:
+        SubjectNotFoundError, TopicNotFoundError, SecretRefused, OSError: the vault's errors.
+    """
+    append_conversation_record(
+        vault,
+        subject_slug,
+        topic_slug,
+        CONVERSATION_NAME,
+        ConversationRecord(time=clock(), kind=TRIAGE_RECORD, detail=turn.model_dump(mode="json")),
+    )
 
 
 class _UndoTarget(BaseModel):
@@ -515,6 +553,30 @@ def _read_turns(
                         pending_ids=[str(i) for i in ids],
                     )
                 )
+            continue
+        if record.kind == TRIAGE_RECORD and record.detail:
+            try:
+                triage = TriageTurn.model_validate(record.detail)
+            except ValidationError:
+                logger.warning(
+                    "ignoring a malformed triage record of %s/%s", subject_slug, topic_slug
+                )
+                continue
+            turns.append(
+                ChatTurn(
+                    time=record.time,
+                    kind="triage",
+                    turn_id=triage.turn_id,
+                    origin=triage.origin,
+                    request_summary=None if triage.request is None else triage.request.summary,
+                    transcript=triage.request,
+                    message=triage.message,
+                    reply=triage.reply,
+                    applied=triage.applied,
+                    summary=triage.decision,
+                    source_ids=triage.source_ids,
+                )
+            )
             continue
         if record.kind == INCORPORATION_RECORD and record.detail:
             try:
@@ -668,6 +730,11 @@ def _history_text(turns: list[ChatTurn]) -> str:
         if turn.kind == "incorporate":
             sources = ", ".join(turn.source_ids) or "(ninguna)"
             lines.append(f"[Incorporación de fuentes: {sources}]")
+        if turn.kind == "triage":
+            lines.append(f"Estudiante{said}: {turn.message}")
+            lines.append(f"[{turn.reply}]")
+            lines.append("")
+            continue
         lines.append(f"Estudiante{said}: {turn.message}")
         reply = turn.reply or "(sin respuesta)"
         lines.append(f"Editor: {reply}")
@@ -1210,6 +1277,7 @@ __all__ = [
     "REPLY_DELTA",
     "REPLY_RESTART",
     "STUDENT_EDIT_RECORD",
+    "TRIAGE_RECORD",
     "ChatHistory",
     "ChatRef",
     "ChatRequestRef",
@@ -1220,10 +1288,12 @@ __all__ = [
     "NothingToUndoError",
     "RevisionError",
     "RevisionResult",
+    "TriageTurn",
     "TurnOrigin",
     "UndoConflictError",
     "UndoResult",
     "chat_history",
+    "record_triage_turn",
     "revise_notes",
     "undo_last_revision",
 ]

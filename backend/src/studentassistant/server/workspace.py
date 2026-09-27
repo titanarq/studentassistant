@@ -11,15 +11,20 @@ and the notes are in the vault; a client that reconnects reloads `GET .../notes/
 
 The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
 
-- `request.detected` `{request_id, kind, summary, transcript}`: a spoken request was detected and
-  queued (`transcript`: `session_id`, `segment_ids`, `t_start_ms`, `t_end_ms`, `text`).
+- `request.detected` `{request_id, kind, summary, origin: voice|typed, transcript, targets?}`: a
+  request, spoken or typed (#327), was detected and queued (`transcript`: `session_id`,
+  `segment_ids`, `t_start_ms`, `t_end_ms`, `text`; `targets` the sources of an `incorporate`,
+  `set_aside` or `restore`).
 - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind}`: an editor turn starts
-  (`kind` `revise`, `prepare_notes` for "prepárame el tema", or `incorporate` for one
-  incorporation of a few sources, #326 -- each batch of a batched "prepárame el tema" is one).
+  (`kind` `revise`, `prepare_notes` for "prepárame el tema", `incorporate` for one
+  incorporation of a few sources, #326 -- each batch of a batched "prepárame el tema" is one --,
+  `set_aside` / `restore` for captures set aside or restored from the chat, `doubt_answer` for
+  the answer to the doubt asked, #327).
 - `reply.delta` `{turn_id, text, attempt}` and `reply.restart` `{turn_id, attempt}`: the reply as
   it is written.
 - `turn.result`: the turn's result (`RevisionResult`, `GenerationResult` for `prepare_notes`,
-  `IncorporationResult` for `incorporate`) plus `turn_id`, `request_id` and `kind`.
+  `IncorporationResult` for `incorporate`, `TriageTurn` for `set_aside`/`restore`,
+  `ResolutionResult` for `doubt_answer`) plus `turn_id`, `request_id` and `kind`.
 - `turn.error` `{turn_id, request_id, status, detail, code?}`: the turn failed (`status` as the
   same failure over REST; `code` e.g. `cost_cap_reached`).
 - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
@@ -77,7 +82,7 @@ WORKSPACE_EVENTS: tuple[str, ...] = (
 """The events the workspace stream carries today (open: later tasks add kinds)."""
 
 NotesOrigin = Literal["editor", "user", "generation", "restore"]
-TurnKind = Literal["revise", "prepare_notes", "incorporate"]
+TurnKind = Literal["revise", "prepare_notes", "incorporate", "set_aside", "restore", "doubt_answer"]
 
 DEFAULT_QUEUE_SIZE = 1024
 

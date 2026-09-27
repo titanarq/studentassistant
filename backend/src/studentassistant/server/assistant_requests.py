@@ -1,23 +1,27 @@
-"""Spoken requests to the assistant become editor turns: the `assistant.request` consumer.
+"""Requests to the assistant become editor turns: the `assistant.request` consumer.
 
 The observer's request detector (#314) -- or the wake word (#318) -- publishes an
 `assistant.request` session event (`observer.AssistantRequest`) whenever the student addresses the
-assistant. `AssistantRequestConsumer` (started in the app's lifespan when the app has an
-`llm_transport`) subscribes to that kind on the bus and, **per topic, runs one request at a time in
-arrival order**:
+assistant; a message typed in the workspace chat (`post_message`, `POST .../workspace/messages`,
+#327) is classified by the same prompt and becomes the same events (`detector: "typed"`).
+`AssistantRequestConsumer` (started in the app's lifespan when the app has an `llm_transport`)
+subscribes to that kind on the bus and, **per topic, runs one request at a time in arrival
+order**:
 
 - On arrival, the request is announced at once on the topic's workspace stream
-  (`request.detected` `{request_id, kind, summary, transcript}`, `workspace.py`) and queued. A
+  (`request.detected` `{request_id, kind, summary, origin, transcript, targets?}`,
+  `workspace.py`) and queued. A
   request arriving while a turn of the topic runs waits in the queue; the queue lives in the
   backend, not in a client, so it survives a client that goes away, and the requests of a session
   that ended meanwhile are still processed (they work on the vault, not the session).
 - When its turn comes, it takes the topic's notes lock (`NotesGenerator.claim`), waiting while
   something else holds it (a typed turn, "prepárame el tema", a restore; at most
-  `CLAIM_TIMEOUT_SECONDS`, then a `turn.error` 409), then `turn.started` (origin `voice`) and the
-  dispatch by kind (`HANDLERS`, a per-kind table later tasks extend):
+  `CLAIM_TIMEOUT_SECONDS`, then a `turn.error` 409), then `turn.started` (origin `voice`, or
+  `typed` for a typed request) and the dispatch by kind (`HANDLERS`):
   - `edit` and `question`: `editor.revise_notes` on the topic's latest notes, the request's raw
     `text` as the message and a `ChatRequestRef` (request id, summary, session, segments, times,
-    text) as `request`, so the turn is recorded as a voice chat turn (`GET .../notes/chat`). The
+    text) as `request`, so the turn is recorded as a voice chat turn (`GET .../notes/chat`); a
+    typed request is a typed turn (no `request`). The
     reply streams (`reply.delta`, `reply.restart`), then `turn.result` (the `RevisionResult`) and,
     when the notes changed, `notes.changed` (origin `editor`); `notes.edited` goes on the bus when
     the session is still active.
@@ -25,7 +29,20 @@ arrival order**:
     and with the same rule: never past a reached cost cap without the student's confirmation, so a
     reached cap is a `turn.error` with code `cost_cap_reached` (the student confirms through
     `POST .../notes/generate`), never a silent spend. A generation that wrote the notes is a
-    `notes.changed` (origin `generation`), then `turn.result` (the `GenerationResult`).
+    `notes.changed` (origin `generation`), then `turn.result` (the `GenerationResult`); in the
+    batched mode (#326) each batch is its own `incorporate` turn on the stream too.
+  - `incorporate` (#327): `NotesGenerator.incorporate` of the request's `targets` (one small
+    editor call, #326), a turn of kind `incorporate` (`turn.result` the `IncorporationResult`).
+  - `set_aside` / `restore`: `sources.set_capture_triage` per target (a target already in that
+    state is left alone), a `capture.triaged` event (origin `user`; in the topic's live session,
+    which makes the transcriber transcribe a restored page with no transcription, else in a review
+    session) per change, and one short chat entry streamed as the reply and recorded as a
+    `triage` chat turn («He apartado la página 3.», «He recuperado la página 3; se está
+    transcribiendo.»); `notes.changed` untouched. `turn.result` is the `TriageTurn`.
+  - `doubt_answer`: `editor.answer_doubt(pending_id, answer)` (#325; a number is the suggestion
+    picked, anything else the answer's words), the resolution streamed as the reply, then
+    `doubt.resolved` (and `notes.changed` when the notes changed) through the `DoubtChat`, which
+    asks the next doubt; `turn.result` is the `ResolutionResult`.
 - A failure is a `turn.error` `{turn_id, request_id, status, detail, code?}` with the status the
   same failure has over REST (a reached cap 409 `cost_cap_reached`, a Claude failure 502, ...).
   The next request of the topic runs anyway.
@@ -40,14 +57,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from studentassistant.editor.revise import ChatRequestRef, revise_notes
+from studentassistant.editor.doubts import (
+    DoubtAnswer,
+    DoubtClosedError,
+    DoubtError,
+    InvalidAnswerError,
+    OpenSessionError,
+    UnknownDoubtError,
+    answer_doubt,
+    doubt_chat_turns,
+)
+from studentassistant.editor.incorporate import IncorporationError, SourceStatus, source_status
+from studentassistant.editor.revise import (
+    REPLY_DELTA,
+    ChatRequestRef,
+    TriageTurn,
+    record_triage_turn,
+    revise_notes,
+)
 from studentassistant.llm import (
     CostConfirmationRequiredError,
     LedgerBinding,
@@ -55,7 +91,21 @@ from studentassistant.llm import (
     RefusalError,
     get_client,
 )
-from studentassistant.observer import ASSISTANT_REQUEST_KIND, AssistantRequest
+from studentassistant.observer import (
+    ASSISTANT_REQUEST_KIND,
+    AskedDoubtRef,
+    AssistantRequest,
+    RequestContext,
+    RequestSource,
+    SourcesLookup,
+)
+from studentassistant.observer.assistant_request import SUMMARY_MAX_CHARS, TYPED_REQUEST_PREFIX
+from studentassistant.observer.requests import (
+    MessageClassifier,
+    ReportedRequest,
+)
+from studentassistant.protocol import ErrorCode
+from studentassistant.protocol.version import PROTOCOL_VERSION
 from studentassistant.server.bus import BusError, SessionBus, Subscription
 from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import cost_cap_error
@@ -69,7 +119,26 @@ from studentassistant.server.notes_routes import (
 )
 from studentassistant.server.revise_routes import turn_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
-from studentassistant.server.workspace import REQUEST_DETECTED, TurnBroadcast, WorkspaceHub
+from studentassistant.server.workspace import (
+    REQUEST_DETECTED,
+    TurnBroadcast,
+    TurnKind,
+    WorkspaceHub,
+)
+from studentassistant.sources.triage import (
+    CAPTURE_TRIAGED_KIND,
+    change_for,
+    set_capture_triage,
+    triaged_payload,
+)
+from studentassistant.vault import (
+    Origin,
+    SourceError,
+    Vault,
+    end_session,
+    read_source,
+    start_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +152,20 @@ BUSY_DETAIL = (
     " apuntes de este tema."
 )
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
+UNKNOWN_SOURCE_DETAIL = "No encuentro esa página entre las fuentes del tema."
+
+TURN_KINDS: Mapping[str, TurnKind] = {
+    "edit": "revise",
+    "question": "revise",
+    "prepare_notes": "prepare_notes",
+    "incorporate": "incorporate",
+    "set_aside": "set_aside",
+    "restore": "restore",
+    "doubt_answer": "doubt_answer",
+}
+"""The workspace turn kind of each request kind."""
+TYPED_ORIGIN: Origin = "user"
+"""The origin of a typed message's `assistant.request` and of a student's `capture.triaged`."""
 
 
 class _BusyError(Exception):
@@ -109,12 +192,25 @@ class QueuedRequest:
             text=self.request.text,
         )
 
+    def chat_request(self) -> ChatRequestRef | None:
+        """The spoken request an editor turn answers; `None` for a typed one (a typed turn)."""
+        return None if self.request.typed else self.reference()
+
+
+class TypedMessageResult(BaseModel):
+    """The answer of `POST .../workspace/messages`: the message and the requests queued for it."""
+
+    message_id: str
+    requests: list[AssistantRequest]
+    classified: bool = True
+    """False when the classifier failed and the message was kept as one `edit`/`question`."""
+
 
 Handler = Callable[["AssistantRequestConsumer", QueuedRequest, TurnBroadcast], Awaitable[BaseModel]]
 
 
 class AssistantRequestConsumer:
-    """Runs each topic's spoken requests as editor turns, in order (see the module docstring)."""
+    """Runs each topic's requests as editor turns, in order (see the module docstring)."""
 
     def __init__(
         self,
@@ -126,15 +222,20 @@ class AssistantRequestConsumer:
         claim_poll: float = CLAIM_POLL_SECONDS,
         claim_timeout: float = CLAIM_TIMEOUT_SECONDS,
         doubts: DoubtChat | None = None,
+        transcribing: bool = False,
     ) -> None:
         self.bus, self.sessions, self.generator, self.hub = bus, sessions, generator, hub
         self.doubts = doubts
         """Asks the next doubt after a turn that changed the notes (#325); None: nothing asked."""
+        self.transcribing = transcribing
+        """Whether the app transcribes captures (a restored page is then transcribed at once)."""
         self.claim_poll, self.claim_timeout = claim_poll, claim_timeout
         self._subscription: Subscription | None = None
         self._reader: asyncio.Task[None] | None = None
         self._queues: dict[tuple[str, str], deque[QueuedRequest]] = {}
         self._workers: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._typed_lock = asyncio.Lock()
+        self._typed_counts: dict[str, int] = {}
 
     # -- lifecycle -------------------------------------------------------------------------------
 
@@ -211,10 +312,12 @@ class AssistantRequestConsumer:
                 "request_id": request.request_id,
                 "kind": request.kind,
                 "summary": request.summary,
+                "origin": "typed" if request.typed else "voice",
                 "transcript": reference.model_dump(
                     mode="json",
                     include={"session_id", "segment_ids", "t_start_ms", "t_end_ms", "text"},
                 ),
+                **({"targets": list(request.targets)} if request.targets else {}),
             },
         )
         key = (subject_id, topic_id)
@@ -249,12 +352,12 @@ class AssistantRequestConsumer:
         if handler is None:
             logger.warning("no handler for assistant request kind %r", request.kind)
             return
-        kind = "prepare_notes" if request.kind == "prepare_notes" else "revise"
+        kind = TURN_KINDS.get(request.kind, "revise")
         broadcast = TurnBroadcast(
             self.hub,
             queued.subject_id,
             queued.topic_id,
-            origin="voice",
+            origin="typed" if request.typed else "voice",
             request_id=request.request_id,
             kind=kind,
         )
@@ -325,7 +428,7 @@ class AssistantRequestConsumer:
             sync=sync,
             on_reply=broadcast.reply,
             on_event=self._publisher(queued.subject_id, queued.topic_id),
-            request=queued.reference(),
+            request=queued.chat_request(),
             turn_id=broadcast.turn_id,
             live=None
             if self.doubts is None
@@ -337,13 +440,401 @@ class AssistantRequestConsumer:
         # Never `confirm_over_cap`: a reached cap is a `turn.error` the student confirms.
         return await self.generator.generate(self.sessions, queued.subject_id, queued.topic_id)
 
+    async def _incorporate(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
+        return await self.generator.incorporate(
+            self.sessions,
+            queued.subject_id,
+            queued.topic_id,
+            list(queued.request.targets),
+            on_reply=broadcast.reply,
+            request=queued.chat_request(),
+            turn_id=broadcast.turn_id,
+        )
+
+    async def _set_aside(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
+        return await self._triage(queued, broadcast, "set_aside")
+
+    async def _restore(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
+        return await self._triage(queued, broadcast, "restore")
+
+    async def _triage(
+        self,
+        queued: QueuedRequest,
+        broadcast: TurnBroadcast,
+        decision: Literal["set_aside", "restore"],
+    ) -> BaseModel:
+        """Set the request's targets aside (or restore them), one `capture.triaged` each."""
+        vault = await self.sessions.open_vault()
+        sync = self.sessions.sync
+        s, t = queued.subject_id, queued.topic_id
+        rows = {row.source_id: row for row in await asyncio.to_thread(source_status, vault, s, t)}
+        done: list[SourceStatus] = []
+        unchanged: list[SourceStatus] = []
+        owed: list[SourceStatus] = []
+        for target in queued.request.targets:
+            row = rows.get(target)
+            if row is None:
+                raise _UnknownSourceError(target)
+            if (row.state == "apartada") == (decision == "set_aside"):
+                unchanged.append(row)
+                continue
+            result = await asyncio.to_thread(
+                set_capture_triage, vault, s, t, target, decision, sync=sync
+            )
+            change = await asyncio.to_thread(change_for, vault, s, t, target, result)
+            await self._write_event(
+                vault, s, t, CAPTURE_TRIAGED_KIND, TYPED_ORIGIN, triaged_payload(change)
+            )
+            done.append(row)
+            if decision == "restore" and not await asyncio.to_thread(
+                _has_transcription, vault, change.source_path
+            ):
+                owed.append(row)
+        live = self._live_session(s, t) is not None
+        reply = _triage_reply(
+            decision, done, unchanged, owed, transcribing=self.transcribing and live
+        )
+        await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
+        turn = TriageTurn(
+            turn_id=broadcast.turn_id,
+            origin=broadcast.origin,
+            request=queued.chat_request(),
+            decision=decision,
+            source_ids=[row.source_id for row in done],
+            message=queued.request.text,
+            reply=reply,
+            applied=bool(done),
+        )
+        await asyncio.to_thread(record_triage_turn, vault, s, t, turn)
+        if sync is not None:
+            sync.note_change()
+        return turn
+
+    async def _doubt_answer(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
+        request = queued.request
+        assert request.pending_id is not None and request.answer is not None
+        vault = await self.sessions.open_vault()
+        sync = self.sessions.sync
+        if sync is None:  # pragma: no cover - the vault opens with its sync
+            raise VaultUnavailableError("the vault has no sync")
+        s, t = queued.subject_id, queued.topic_id
+        client = get_client(
+            "editor",
+            settings=self.generator.settings,
+            transport=self.generator.transport,
+            ledger=LedgerBinding(vault, s, t),
+        )
+        result = await answer_doubt(
+            vault,
+            s,
+            t,
+            request.pending_id,
+            _doubt_answer(request.answer),
+            client=client,
+            sync=sync,
+            host=self.sessions.host,
+            live=None if self.doubts is None else self.doubts.live(s, t),
+        )
+        reply = result.resolution or "Anotado."
+        await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
+        if self.doubts is not None:
+            self.doubts.resolved(s, t, result)
+            self.doubts.schedule(s, t)
+        return result
+
+    # -- where the events go ---------------------------------------------------------------------
+
+    def _live_session(self, subject_id: str, topic_id: str) -> str | None:
+        """The topic's active session on this backend, if it has one."""
+        active = self.sessions.active
+        if active is not None and (active.subject_id, active.topic_id) == (subject_id, topic_id):
+            return active.session_id
+        return None
+
+    async def _write_event(
+        self,
+        vault: Vault,
+        subject_id: str,
+        topic_id: str,
+        kind: str,
+        origin: Origin,
+        payload: dict[str, Any],
+    ) -> str:
+        """Write one event in the topic's live session, else in a review session; its session."""
+        session_id = self._live_session(subject_id, topic_id)
+        if session_id is not None:
+            try:
+                await self.bus.publish(session_id, kind, origin, payload)
+                return session_id
+            except BusError:
+                logger.info("the session of %s/%s ended meanwhile", subject_id, topic_id)
+        review = await asyncio.to_thread(
+            _review_session,
+            vault,
+            subject_id,
+            topic_id,
+            self.sessions.host,
+            [(kind, origin, payload)],
+        )
+        if self.sessions.sync is not None:
+            self.sessions.sync.note_change()
+        return review
+
+    # -- typed messages --------------------------------------------------------------------------
+
+    async def post_message(
+        self,
+        subject_id: str,
+        topic_id: str,
+        text: str,
+        classifier: MessageClassifier | None,
+    ) -> TypedMessageResult:
+        """Classify a message typed in the workspace chat and queue its requests (#327).
+
+        Each request is persisted as an `assistant.request` (origin `user`, `detector: "typed"`)
+        in the topic's live session -- the bus brings it back to this consumer -- or in a review
+        session (then queued here directly). A message with no request, or a classifier failure,
+        becomes one `edit` (a `question` when it asks something) with the raw text, so nothing
+        typed is lost.
+        """
+        vault = await self.sessions.open_vault()
+        message_id = f"msg-{uuid.uuid4().hex[:16]}"
+        text = text.strip()
+        reported: list[ReportedRequest] = []
+        classified = True
+        if classifier is not None:
+            try:
+                reported = await classifier.classify(
+                    vault,
+                    subject_id,
+                    topic_id,
+                    text,
+                    session_id=self._live_session(subject_id, topic_id),
+                )
+            except Exception as error:  # a ClassificationError, or anything else: keep the text
+                logger.warning(
+                    "the typed message of %s/%s was not classified: %s", subject_id, topic_id, error
+                )
+                classified = False
+        if not reported:
+            reported = [_fallback(text)]
+        async with self._typed_lock:
+            session_id = self._live_session(subject_id, topic_id)
+            if session_id is not None:
+                requests = await self._typed_live(session_id, message_id, text, reported)
+                if requests is not None:
+                    return TypedMessageResult(
+                        message_id=message_id, requests=requests, classified=classified
+                    )
+            requests = [
+                _typed_request(n, message_id, text, request)
+                for n, request in enumerate(reported, start=1)
+            ]
+            review = await asyncio.to_thread(
+                _review_session,
+                vault,
+                subject_id,
+                topic_id,
+                self.sessions.host,
+                [(ASSISTANT_REQUEST_KIND, TYPED_ORIGIN, r.payload()) for r in requests],
+            )
+            if self.sessions.sync is not None:
+                self.sessions.sync.note_change()
+        for request in requests:
+            self.submit(subject_id, topic_id, review, request)
+        return TypedMessageResult(message_id=message_id, requests=requests, classified=classified)
+
+    async def _typed_live(
+        self, session_id: str, message_id: str, text: str, reported: list[ReportedRequest]
+    ) -> list[AssistantRequest] | None:
+        """Publish the requests in the live session (under `_typed_lock`); None when it ended."""
+        if session_id not in self._typed_counts:
+            session = self.bus.attached(session_id)
+            events = [] if session is None else await asyncio.to_thread(session.read_events)
+            self._typed_counts[session_id] = sum(
+                1
+                for event in events
+                if event.kind == ASSISTANT_REQUEST_KIND
+                and str(event.payload.get("request_id", "")).startswith(TYPED_REQUEST_PREFIX)
+            )
+        requests: list[AssistantRequest] = []
+        for request in reported:
+            number = self._typed_counts[session_id] + 1
+            typed = _typed_request(number, message_id, text, request)
+            try:
+                await self.bus.publish(
+                    session_id, ASSISTANT_REQUEST_KIND, TYPED_ORIGIN, typed.payload()
+                )
+            except BusError:
+                if requests:  # pragma: no cover - the session ended between two requests
+                    return requests
+                return None
+            self._typed_counts[session_id] = number
+            requests.append(typed)
+        return requests
+
+
+class _UnknownSourceError(LookupError):
+    """A set-aside or restore target that is not a source of the topic."""
+
 
 HANDLERS: Mapping[str, Handler] = {
     "edit": AssistantRequestConsumer._revise,
     "question": AssistantRequestConsumer._revise,
     "prepare_notes": AssistantRequestConsumer._prepare,
+    "incorporate": AssistantRequestConsumer._incorporate,
+    "set_aside": AssistantRequestConsumer._set_aside,
+    "restore": AssistantRequestConsumer._restore,
+    "doubt_answer": AssistantRequestConsumer._doubt_answer,
 }
-"""What runs each request kind (later tasks add kinds here)."""
+"""What runs each request kind."""
+
+
+def sources_lookup(sessions: SessionService) -> SourcesLookup:
+    """The request detector's context of a topic (#327): `editor.source_status` and the doubt the
+    chat is asking now; injected into the observer so it never imports the editor."""
+
+    async def lookup(subject_id: str, topic_id: str) -> RequestContext:
+        vault = await sessions.open_vault()
+        return await asyncio.to_thread(request_context, vault, subject_id, topic_id)
+
+    return lookup
+
+
+def request_context(vault: Vault, subject_id: str, topic_id: str) -> RequestContext:
+    """The topic's sources with their states and the open doubt asked in the chat (blocking)."""
+    sources = [
+        RequestSource.model_validate(row.model_dump())
+        for row in source_status(vault, subject_id, topic_id)
+    ]
+    asked = [
+        turn for turn in doubt_chat_turns(vault, subject_id, topic_id) if turn.status == "open"
+    ]
+    doubt = None
+    if asked:
+        last = asked[-1]
+        doubt = AskedDoubtRef(
+            pending_id=last.pending_id, question=last.question, suggestions=last.suggestions
+        )
+    return RequestContext(sources=sources, doubt=doubt)
+
+
+def _typed_request(
+    number: int, message_id: str, text: str, request: ReportedRequest
+) -> AssistantRequest:
+    fields: dict[str, Any] = {}
+    if request.targets:
+        fields["targets"] = list(request.targets)
+    if request.kind == "doubt_answer":
+        fields.update(pending_id=request.pending_id, answer=request.answer)
+    return AssistantRequest(
+        request_id=f"{TYPED_REQUEST_PREFIX}{number}",
+        kind=request.kind,
+        summary=request.summary.strip(),
+        text=text,
+        t_start_ms=0,
+        t_end_ms=0,
+        detector="typed",
+        message_id=message_id,
+        **fields,
+    )
+
+
+def _fallback(text: str) -> ReportedRequest:
+    """A message no request was found in: an `edit`, or a `question` when it asks something."""
+    asks = "?" in text or text.startswith("¿")
+    return ReportedRequest(
+        kind="question" if asks else "edit", summary=_summary(text), segment_ids=[]
+    )
+
+
+def _summary(text: str) -> str:
+    line = " ".join(text.split())
+    if len(line) <= SUMMARY_MAX_CHARS:
+        return line
+    return line[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _doubt_answer(answer: str) -> DoubtAnswer:
+    """A suggestion's number (as digits) picks it; anything else is the answer's words."""
+    value = answer.strip()
+    if value.isdigit() and 1 <= int(value) <= 20:
+        try:
+            return DoubtAnswer(suggestion=int(value))
+        except ValueError:
+            pass
+    return DoubtAnswer(answer=value)
+
+
+def _has_transcription(vault: Vault, source_path: str) -> bool:
+    path = PurePosixPath(source_path)
+    try:
+        read_source(vault, path.with_name(path.name.split(".", 1)[0] + ".md").as_posix())
+    except (SourceError, OSError):
+        return False
+    return True
+
+
+def _labels(rows: list[SourceStatus]) -> str:
+    labels = [row.label for row in rows]
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " y " + labels[-1]
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _triage_reply(
+    decision: Literal["set_aside", "restore"],
+    done: list[SourceStatus],
+    unchanged: list[SourceStatus],
+    owed: list[SourceStatus],
+    *,
+    transcribing: bool,
+) -> str:
+    """The short chat entry of a set-aside or restore request, Spanish."""
+    parts: list[str] = []
+    if done and decision == "set_aside":
+        parts.append(f"He apartado {_labels(done)}.")
+    elif done:
+        line = f"He recuperado {_labels(done)}"
+        if owed:
+            which = "" if len(owed) == len(done) else f" ({_labels(owed)})"
+            many = len(owed) > 1
+            if transcribing:
+                line += f"; {'se están' if many else 'se está'} transcribiendo{which}"
+            else:
+                line += (
+                    f"; {'se transcribirán' if many else 'se transcribirá'}{which} en la"
+                    " próxima sesión del tema"
+                )
+        parts.append(line + ".")
+    if unchanged:
+        many = len(unchanged) > 1
+        state = (
+            ("ya estaban apartadas" if many else "ya estaba apartada")
+            if decision == "set_aside"
+            else ("no estaban apartadas" if many else "no estaba apartada")
+        )
+        parts.append(_sentence(f"{_labels(unchanged)} {state}."))
+    return " ".join(parts) or "No había nada que cambiar."
+
+
+def _review_session(
+    vault: Vault,
+    subject_id: str,
+    topic_id: str,
+    host: str,
+    events: list[tuple[str, Origin, dict[str, Any]]],
+) -> str:
+    """Write `events` in a review session started and ended at once for them (blocking)."""
+    session = start_session(vault, subject_id, topic_id, host, PROTOCOL_VERSION, kind="review")
+    try:
+        for kind, origin, payload in events:
+            session.append_event(kind, origin, payload)
+    finally:
+        end_session(session)
+    return session.id
 
 
 def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
@@ -360,8 +851,38 @@ def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
         if isinstance(error, LLMError):
             return 502, FAILED_DETAIL, None
         return 500, ERROR_DETAIL, None
+    if isinstance(error, IncorporationError):
+        return 422, str(error), None
+    if isinstance(error, _UnknownSourceError):
+        return 404, UNKNOWN_SOURCE_DETAIL, None
+    if isinstance(error, DoubtError):
+        code = (
+            ErrorCode.DOUBT_CLOSED
+            if isinstance(error, DoubtClosedError)
+            else ErrorCode.SESSION_OPEN
+            if isinstance(error, OpenSessionError)
+            else None
+        )
+        status = (
+            404
+            if isinstance(error, UnknownDoubtError)
+            else 422
+            if isinstance(error, InvalidAnswerError)
+            else 409
+        )
+        return status, str(error), None if code is None else code.value
+    if isinstance(error, SourceError):
+        return 404, UNKNOWN_SOURCE_DETAIL, None
     status, detail, error_code = turn_error(error)
     return status, detail, None if error_code is None else error_code.value
 
 
-__all__ = ["HANDLERS", "AssistantRequestConsumer", "QueuedRequest"]
+__all__ = [
+    "HANDLERS",
+    "request_context",
+    "sources_lookup",
+    "TURN_KINDS",
+    "AssistantRequestConsumer",
+    "QueuedRequest",
+    "TypedMessageResult",
+]

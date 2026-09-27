@@ -13,8 +13,10 @@
 - Topic digest at session end, used to resume a topic and as editor input.
 - Context purge: roll the live conversation over to snapshot + digest + tail past a token
   threshold and at session end (#60); context is always one topic only (ADR-0003).
-- Requests to the assistant detected in the raw transcript (#314): `assistant.request` events
-  for the editor's chat turns (#315).
+- Requests to the assistant detected in the raw transcript (#314), and the same classification of
+  a message typed in the workspace chat (#327): `assistant.request` events for the editor's chat
+  turns (#315) -- edits, questions, "prepárame el tema", incorporating, setting aside or restoring
+  pages, and answers to the doubt asked in the chat.
 
 ## Public surface
 What exists today, after issues #29, #31, #51, #55, #176, #56 and #60: the knowledge-state model,
@@ -243,12 +245,13 @@ topic digest (the server passes `topic_digest`, below). The server builds one wh
   baseline ack is written that could skip it. A topic whose acks name no event (none yet, or only
   a `through: null` baseline) is not compacted.
 
-### Requests to the assistant -- `requests.py`, `assistant_request.py` (#314)
+### Requests to the assistant -- `requests.py`, `assistant_request.py` (#314, #327)
 During a session Sonnet (role `observer`) reads the raw transcript and detects when the student is
 addressing the assistant and what they want (epic #311). `RequestDetector(bus, lookup, *,
 settings, client_factory=None, clock=SystemClock())` (`start()`/`stop()`/`flush(session_id)`/
-`wait_idle`/`status`) lives in `studentassistant.observer.requests` (it imports the llm module, so
-it is not re-exported); the event model is re-exported by `studentassistant.observer`.
+`wait_idle`/`status`, plus `sources_lookup=None`) lives in `studentassistant.observer.requests`
+(it imports the llm module, so it is not re-exported, like `MessageClassifier`); the event model
+and the context models are re-exported by `studentassistant.observer`.
 
 - **Mode** (`[observer] request_detection`, `SA_OBSERVER__REQUEST_DETECTION`): `observer`
   (default: this detector), `wake_word` (the deterministic "anel" of `stt`, #318; this detector is
@@ -264,27 +267,49 @@ it is not re-exported); the event model is re-exported by `studentassistant.obse
   whenever at least one final is unexamined. One call per session is in flight; finals that arrive
   meanwhile coalesce into the next call (sent at once when its deadline already passed). `clock`
   gives `now()` (records), `monotonic()` and `sleep()` (the triggers), so tests drive it.
+- **Context** (#327): each call first awaits `sources_lookup(subject, topic) -> RequestContext`
+  (`SourcesLookup`, injected by the server: the editor's `source_status` and the doubt the chat is
+  asking, so observer never imports editor; none or a failing one gives an empty context). It is
+  rendered at the top of the user turn -- uncached, after the stable prefix -- as the topic's
+  sources, one line each (`<source id>: página N (apuntes) -- pendiente | incorporada | apartada:
+  <motivo>`, `RequestSource.line`), and the doubt asked now (`AskedDoubtRef`: `pending_id`,
+  question, numbered suggestions) or `none`.
 - **Call**: self-contained (no growing conversation): system = the `observer_requests` prompt +
   the topic block (`render_topic`, no digest), the cached prefix with the tool; one user turn = the
-  window, one line per final `<id> [<start>s-<end>s] <mark> <text>`, `<mark>` being `new`, `seen`
-  or the `req-N` it already belongs to. The strict tool `report_requests`
-  (`ReportRequests`: `{requests: [{kind: edit|question|prepare_notes, summary, segment_ids}]}`,
-  `tool_choice: auto`). Plain dictation must yield an empty list. A request is refused when its
-  `summary` is empty or over 140 characters, or its `segment_ids` are empty, outside the window,
-  repeated, not consecutive in window order, or already part of a request (earlier or in the same
-  answer). Valid ones are published at once; the refused ones are re-asked once (the first turn,
-  the answer, then an `is_error` tool result with the reasons), and what is still invalid is
+  context, then the window, one line per final `<id> [<start>s-<end>s] <mark> <text>`, `<mark>`
+  being `new`, `seen` or the `req-N` it already belongs to. The strict tool `report_requests`
+  (`ReportRequests`: `{requests: [{kind, summary, segment_ids, targets, pending_id, answer}]}`,
+  `tool_choice: auto`); `kind` is `edit`, `question`, `prepare_notes`, `incorporate`,
+  `set_aside`, `restore` or `doubt_answer`. Sonnet resolves «la página 3», «las dos últimas», «la
+  que está borrosa» to `targets` from the sources list; a reference it cannot resolve is reported
+  as a `question` (the editor asks back); «la segunda», «pone "escrita"» while a doubt is asked are
+  a `doubt_answer` (`answer`: the suggestion's number as digits, or the words). Plain dictation
+  must yield an empty list. A request is refused when its `summary` is empty or over 140
+  characters, or its `segment_ids` are empty, outside the window, repeated, not consecutive in
+  window order, or already part of a request (earlier or in the same answer); a target kind
+  without `targets` or with one not in the sources list, a `set_aside`/`restore` of a source that
+  is not a captured page (`notes`, `book`), and a `doubt_answer` without an asked doubt, for
+  another doubt or with an empty answer are refused too (targets are de-duplicated, fields of
+  other kinds dropped; an empty `pending_id` of a `doubt_answer` is the asked one). Valid ones are
+  published at once; the refused ones are re-asked `client.structured_reasks` times (`[llm]
+  structured_reasks`: once on the API, twice on the claude-code backend by default; the turns so
+  far, the answer, then an `is_error` tool result with the reasons), and what is still invalid is
   logged and dropped. Once answered, the finals that were `new` are examined, whatever the answer.
   `flush` sends the last window with a line saying the session is ending.
 - **Output**: one persisted `assistant.request` event (`ASSISTANT_REQUEST_KIND`, origin
   `observer`) per request, payload `AssistantRequest` (frozen, `extra="forbid"`):
-  `request_id` (`req-<n>`, the session's n-th request), `kind` (`RequestKind`, `REQUEST_KINDS`),
-  `summary` (Spanish, <= 140 characters), `text` (the span's finals joined with a space),
-  `segment_ids`, `t_start_ms`/`t_end_ms` (the span's session times) and `detector`
-  (`observer`; the wake word, #318, writes `wake_word` with origin `stt`). Consumers (#315)
-  validate it with `AssistantRequest`. The fold ignores the kind. When a session is first seen
-  (a start, a resume, a restart) the session's earlier `assistant.request` events are read back,
-  so numbering goes on and their segments stay assigned.
+  `request_id` (`req-<n>`, the session's n-th spoken request), `kind` (`RequestKind`,
+  `REQUEST_KINDS`), `summary` (Spanish, <= 140 characters), `text` (the span's finals joined with
+  a space), `segment_ids`, `t_start_ms`/`t_end_ms` (the span's session times), `detector`
+  (`observer`; the wake word, #318, writes `wake_word` with origin `stt`; a typed message
+  `typed`), and by kind `targets` (topic-relative source ids; required for `incorporate`,
+  `set_aside`, `restore`, `TARGET_KINDS`) or `pending_id` + `answer` (required for
+  `doubt_answer`); a typed request also has `message_id` (`msg-<hex>`), id `req-t<n>` and no
+  segments. `payload()` dumps it without defaults, so an event written before #327 reads and
+  dumps back unchanged. Consumers (#315) validate it with `AssistantRequest`. The fold ignores
+  the kind. When a session is first seen (a start, a resume, a restart) the session's earlier
+  `assistant.request` events are read back, so numbering goes on (typed `req-t<n>` ids do not
+  count) and their segments stay assigned.
 - **Cost caps**: calls are bound to the session's ledger (`default_client_factory`). A reached cap
   keeps the finals unexamined and publishes one `observer.status` (`status: paused`, `reason`,
   `cap`, `limit_usd`, `total_usd`, `detector: "requests"`); the next new final tries again and a
@@ -295,6 +320,17 @@ it is not re-exported); the event model is re-exported by `studentassistant.obse
   record shapes: a `context` record when the session is first seen (`reason` `start`/`resume`,
   `requests` read back, `window_segments`), each `user` turn and `assistant` answer (model, prompt
   hash, usage) and `status` changes (with `detector`).
+- **Typed messages** (#327): `MessageClassifier(client_factory, *, sources_lookup=None,
+  clock=None).classify(vault, subject, topic, text, *, session_id=None) -> list[ReportedRequest]`
+  classifies one message typed in the workspace chat with the same prompt, tool and checks: the
+  user turn is the context plus the message as the single segment `m1`, which every request of
+  it shares (a typed message holds at least one request, usually one). Re-asks follow
+  `structured_reasks`; valid requests of a partly refused answer are kept. It raises
+  `ClassificationError` when Claude fails or no valid answer comes; the server then keeps the
+  raw text as a request. Calls are bound to the topic's ledger (its live session when given) and
+  recorded in `conversations/observer-messages.jsonl` (`user`, `assistant`). It works whatever
+  `request_detection` says (that switch is about speech). The wake word (#318) keeps producing
+  `edit`/`prepare_notes` only.
 
 ### Topic digest -- `digest.py` (#56)
 `state/digest.md` (Spanish Markdown) is how a topic is resumed another day ("continúa el tema")
