@@ -61,6 +61,32 @@
   sentence. **Volver** returns to the picker (`onEnded`). The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
+- **Capture reconnect** (#411): a dropped capture connection (a backend restart, a blip) no
+  longer ends the capture. On a close that is not final (anything but the page's own end, 4404,
+  or a protocol/trust refusal: 1002, 1003, 1007, 1008) of a session running in `client` STT
+  mode, `SessionSocket` (given `reconnect`) reports `reconnecting` once and retries with the
+  backoff `RECONNECT_DELAYS_MS` (1, 2, 5, 10 s, then every 30 s; reset by every resume). Each
+  attempt first asks `POST /api/sessions/{id}/resume` (a restarted backend refuses the socket
+  of an unresumed session): no answer or a 5xx tries again later, any other refusal ends it
+  like a 4404 close; then it dials again with a new `hello` (a new clock offset). While
+  offline, finals, buttons, markers and command `ack`s wait in a bounded in-memory queue
+  (`MAX_QUEUED_FRAMES`, 500, oldest dropped); partials and audio are dropped. After the new
+  `hello.ack` the queue goes out in order and the socket reports `reconnected` (the backend
+  drops a final whose `segment_id` it already handled, so a frame sent twice is harmless). A
+  session in `server` STT mode does not reconnect (the backend expects contiguous audio `seq`s
+  a restarted backend no longer knows) and keeps the blocking lost-connection message. The
+  screen meanwhile keeps the camera, the recognizer and the wake lock running and the controls
+  enabled, shows «Reconectando…» in "Estado de la conexión" and, after a reconnect,
+  «Conexión recuperada» for `RECOVERED_MS` (5 s); only after `LONG_OUTAGE_MS` (2 min) of outage
+  does it show the blocking "Se ha perdido la conexión con el servidor…" (still retrying; a
+  later reconnect clears it). A burst whose upload was unreachable, a 5xx, or a 409 while the
+  connection is down (a restarted backend before the resume) is «Pendiente de subir» and is
+  sent again, with the same `capture_id`, after the reconnect (or after `UPLOAD_RETRY_MS`, 10 s,
+  if the connection stayed up); a burst listed in the resume's `received_capture_ids` becomes
+  «Guardada» without a new upload; any other 4xx stays «Error». A `beforeunload` warning asks
+  before leaving only while a burst is uploading or pending or the socket's queue is not empty.
+  Inside the study workspace (`CapturePage` with `preset`, `CaptureScreen` `embedded`) a
+  session ended elsewhere says to go on in Construir or Estudiar instead of the list of sessions.
 - **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
   offers "Preguntar al tutor" (section "Estudiar con el tutor"; `SessionPicker`'s optional
   `onTutor(TutorTopic {subjectId, topicId, subjectName, topicName})`), and `CapturePage` shows
@@ -534,7 +560,10 @@ token):
     "unreachable"}`; `refused` carries the backend's own Spanish `detail` and `unexpected` is a
     2xx body that is not the message the endpoint promises, which is reported and never used.
     `failures.ts`: `describeFailure(prefix, failure)` turns one into a Spanish sentence.
-  - `sessionSocket.ts`: `SessionSocket({wsPath, clientTimeMs, capabilities?, onEvent?})` --
+  - `sessionSocket.ts`: `SessionSocket({wsPath, clientTimeMs, capabilities?, onEvent?,
+    reconnect?: {resume?, delaysMs?, clock?, maxQueued?}})` (#411: `resume()` answers a
+    `ResumeOutcome` `ok | ended | retry`; getters `reconnecting`, `queuedCount`; events
+    `reconnecting`, `reconnected`) --
     dials the `ws_path` of the start/resume answer (`socketUrl()`), sends `hello` first and
     exposes the handshake as `handshake: Promise<HandshakeResult>` plus the getters
     `protocolVersion`, `sttMode`, `clockOffsetMs` and `audioFormat`; sends

@@ -43,6 +43,7 @@ const SESSION: Session = {
 
 const CAPTURES_PATH = `/api/sessions/${SESSION.session_id}/captures`;
 const END_PATH = `/api/sessions/${SESSION.session_id}/end`;
+const RESUME_PATH = `/api/sessions/${SESSION.session_id}/resume`;
 const ENDED = { session_id: SESSION.session_id, status: "ended", ended_at_ms: NOW + 60_000 };
 
 /** The `metadata` part of a burst as the backend reads it back. */
@@ -115,6 +116,7 @@ function backend(routes: Record<string, Route> = {}): void {
   stubFetch({
     [CAPTURES_PATH]: (init) => storedResponse(init),
     [END_PATH]: () => jsonResponse(ENDED),
+    [RESUME_PATH]: () => jsonResponse({ ...SESSION, received_capture_ids: [] }),
     ...routes,
   });
 }
@@ -365,21 +367,40 @@ describe("the session socket", () => {
     );
   });
 
-  it("says in Spanish when the backend connection is lost", async () => {
-    renderScreen();
-    await open();
+  it("says in Spanish when the backend connection stays lost for a long outage (#411)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      backend({ [RESUME_PATH]: () => Promise.reject(new TypeError("Failed to fetch")) });
+      renderScreen({ longOutageMs: 120_000, reconnectDelaysMs: [1000, 30_000] });
+      await open();
 
-    await act(async () => {
-      socket().serverClose(1006);
-    });
+      await act(async () => {
+        socket().serverClose(1006);
+      });
+      expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+        "Reconectando…",
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Se ha perdido la conexión con el servidor.",
-    );
-    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
-      "Se ha perdido la conexión con el servidor",
-    );
-    expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(119_000);
+      });
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Se ha perdido la conexión con el servidor.",
+      );
+      expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+        "Se ha perdido la conexión con el servidor",
+      );
+      expect(screen.getByRole("button", { name: "Capturar" })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says in Spanish when the backend connection fails before it opens (#298)", async () => {
@@ -1333,5 +1354,230 @@ describe("CapturePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "← Volver" }));
     expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
+  });
+});
+
+describe("a dropped connection (#411)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function fakeTimers(): void {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  }
+
+  /** Lets the socket's backoff run out, its resume answer, and the new connection say hello. */
+  async function reconnect(delayMs = 1000): Promise<FakeWebSocket> {
+    const count = fakes.sockets.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(delayMs);
+    });
+    await waitFor(() => expect(fakes.sockets).toHaveLength(count + 1));
+    await act(async () => {
+      socket().serverOpen();
+      socket().serverMessage(helloAck());
+    });
+    return socket();
+  }
+
+  it("reconnects on its own, keeps camera and recognizer running and flushes what was said", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+    const recognition = fakes.recognitions[0];
+
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Reconectando…",
+    );
+    expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent(
+      "La cámara está en marcha.",
+    );
+    expect(recognition.abortCount).toBe(0);
+
+    await act(async () => {
+      recognition.emitResult([{ transcript: "la clorofila absorbe la luz", final: true }]);
+    });
+
+    const next = await reconnect();
+    expect(sent.some((call) => call.path === RESUME_PATH)).toBe(true);
+    const types = next.sentText.map((text) => (JSON.parse(text) as SentFrame).type);
+    expect(types).toEqual(["hello", "transcript.client.final"]);
+    expect(JSON.parse(next.sentText[1])).toMatchObject({ text: "la clorofila absorbe la luz" });
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Conexión recuperada",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Conectado con el servidor",
+    );
+  });
+
+  it("clears the long-outage message once the connection comes back", async () => {
+    fakeTimers();
+    renderScreen({ longOutageMs: 3000, reconnectDelaysMs: [5000] });
+    await open();
+
+    await act(async () => {
+      socket().serverClose(1006);
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Se ha perdido la conexión con el servidor.");
+
+    await reconnect(2000);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Capturar" })).toBeEnabled();
+  });
+
+  it("says the session ended when the resume finds it over", async () => {
+    fakeTimers();
+    backend({
+      [RESUME_PATH]: () => jsonResponse({ detail: "La sesión ya ha terminado." }, 409),
+    });
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+
+    await act(async () => {
+      socket().serverClose(1006);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "La sesión ha terminado en el servidor. Vuelve a la lista de sesiones",
+    );
+    expect(fakes.sockets).toHaveLength(1);
+  });
+
+  it("points to Construir and Estudiar when the session ended elsewhere inside the workspace", async () => {
+    renderScreen({ embedded: true });
+    await open();
+
+    await act(async () => {
+      socket().serverClose(4404, "session s is no longer active");
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Construir");
+    expect(alert).toHaveTextContent("Estudiar");
+    expect(alert).not.toHaveTextContent("lista de sesiones");
+  });
+
+  it("retries after the reconnect a burst whose upload failed on the network", async () => {
+    fakeTimers();
+    let down = true;
+    backend({
+      [CAPTURES_PATH]: (init) =>
+        down ? Promise.reject(new TypeError("Failed to fetch")) : storedResponse(init),
+    });
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    await capture();
+    expect(await screen.findByText("Pendiente de subir")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    down = false;
+    await reconnect();
+
+    expect(await screen.findByText("Guardada")).toBeInTheDocument();
+    const posts = sent.filter((call) => call.path === CAPTURES_PATH);
+    expect(posts).toHaveLength(2);
+    const ids = await Promise.all(posts.map(async (post) => (await metadataOf(post.init)).capture_id));
+    expect(ids[1]).toBe(ids[0]);
+  });
+
+  it("does not upload again a burst the resume says is stored", async () => {
+    fakeTimers();
+    let storedId: string | null = null;
+    backend({
+      [CAPTURES_PATH]: async (init) => {
+        storedId = (await metadataOf(init)).capture_id;
+        return jsonResponse({ detail: "Service Unavailable" }, 503);
+      },
+      [RESUME_PATH]: () =>
+        jsonResponse({ ...SESSION, received_capture_ids: storedId === null ? [] : [storedId] }),
+    });
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    await capture();
+    expect(await screen.findByText("Pendiente de subir")).toBeInTheDocument();
+
+    await reconnect();
+
+    expect(await screen.findByText("Guardada")).toBeInTheDocument();
+    expect(sent.filter((call) => call.path === CAPTURES_PATH)).toHaveLength(1);
+  });
+
+  it("keeps a burst the backend refused with a 4xx as an error, and does not retry it", async () => {
+    fakeTimers();
+    backend({ [CAPTURES_PATH]: () => jsonResponse({ detail: "La ráfaga no es válida." }, 422) });
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+
+    await capture();
+    expect(await screen.findByText("Error")).toBeInTheDocument();
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    await reconnect();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(sent.filter((call) => call.path === CAPTURES_PATH)).toHaveLength(1);
+    expect(screen.getByText("Error")).toBeInTheDocument();
+  });
+
+  it("warns before the page is left only while work is pending", async () => {
+    fakeTimers();
+    let answer: ((response: Response) => void) | undefined;
+    backend({
+      [CAPTURES_PATH]: () =>
+        new Promise<Response>((resolve) => {
+          answer = resolve;
+        }),
+    });
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open();
+
+    const leave = (): boolean => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(leave()).toBe(false);
+
+    await capture();
+    expect(await screen.findByText("Subiendo…")).toBeInTheDocument();
+    expect(leave()).toBe(true);
+
+    await act(async () => {
+      answer?.(await storedResponse(capturePost().init));
+    });
+    expect(await screen.findByText("Guardada")).toBeInTheDocument();
+    expect(leave()).toBe(false);
+
+    // A final said during an outage waits in the socket's queue until the resume.
+    await act(async () => {
+      socket().serverClose(1006);
+      fakes.recognitions[0].emitResult([{ transcript: "el estroma", final: true }]);
+    });
+    expect(leave()).toBe(true);
+    await reconnect();
+    expect(leave()).toBe(false);
   });
 });

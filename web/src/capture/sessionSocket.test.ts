@@ -5,7 +5,7 @@
  * matching what this test invented.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ClientEvent,
   type Command,
@@ -23,6 +23,8 @@ import {
   type HandshakeResult,
   type SessionSocketEvent,
   type SessionSocketOptions,
+  type ResumeOutcome,
+  SESSION_NOT_ACTIVE_CLOSE,
   SessionSocket,
   socketUrl,
 } from "./sessionSocket";
@@ -497,5 +499,210 @@ describe("client events", () => {
     expect(harness.fake.sentText).toHaveLength(1);
     expect(harness.fake.sentBinary).toEqual([]);
     expect(harness.fake.closeCalls).toHaveLength(1);
+  });
+});
+
+describe("reconnect (#411)", () => {
+  interface Reconnecting {
+    readonly socket: SessionSocket;
+    readonly sockets: FakeWebSocket[];
+    readonly events: SessionSocketEvent[];
+    readonly resumes: number[];
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A running client-mode session whose socket reconnects, asking `resume` before each attempt. */
+  async function running(
+    resume: () => Promise<ResumeOutcome> = async () => ({ kind: "ok" }),
+    options: { maxQueued?: number; ack?: unknown } = {},
+  ): Promise<Reconnecting> {
+    vi.useFakeTimers();
+    const installed = installWebSocketFake();
+    restores.push(installed.restore);
+    const events: SessionSocketEvent[] = [];
+    const resumes: number[] = [];
+    let clock = CLIENT_TIME_MS;
+    const socket = new SessionSocket({
+      wsPath: WS_PATH,
+      clientTimeMs: CLIENT_TIME_MS,
+      onEvent: (event) => events.push(event),
+      reconnect: {
+        resume: () => {
+          resumes.push(Date.now());
+          return resume();
+        },
+        delaysMs: [1000, 2000, 5000],
+        clock: () => (clock += 1000),
+        maxQueued: options.maxQueued,
+      },
+    });
+    installed.sockets[0].serverOpen();
+    installed.sockets[0].serverMessage(JSON.stringify(options.ack ?? example("server.hello.ack")));
+    expect((await socket.handshake).kind).toBe("ok");
+    return { socket, sockets: installed.sockets, events, resumes };
+  }
+
+  function types(fake: FakeWebSocket): string[] {
+    return fake.sentText.map((text) => (JSON.parse(text) as { type: string }).type);
+  }
+
+  it("rides out a dropped connection: resumes, says hello again and flushes what was said meanwhile", async () => {
+    const session = await running();
+
+    session.sockets[0].serverClose(1006);
+    expect(session.events).toEqual([{ kind: "reconnecting" }]);
+    expect(session.socket.reconnecting).toBe(true);
+
+    session.socket.sendTranscript(PARTIAL, "partial");
+    session.socket.sendTranscript(FINAL, "final");
+    session.socket.sendTranscript({ ...FINAL, segment_id: "seg-0008", text: "y la de x es uno" }, "final");
+    session.socket.sendAudio(AUDIO_FRAME);
+    expect(session.socket.queuedCount).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(session.sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(session.resumes).toHaveLength(1);
+    expect(session.sockets).toHaveLength(2);
+
+    const next = session.sockets[1];
+    next.serverOpen();
+    expect(types(next)).toEqual(["hello"]);
+    expect(sentEvent(next, 0)).toMatchObject({ type: "hello", client_time_ms: CLIENT_TIME_MS + 1000 });
+
+    next.serverMessage(JSON.stringify(example("server.hello.ack")));
+
+    expect(types(next)).toEqual(["hello", "transcript.client.final", "transcript.client.final"]);
+    expect(sentEvent(next, 1)).toMatchObject({ segment_id: "seg-0007" });
+    expect(sentEvent(next, 2)).toMatchObject({ segment_id: "seg-0008" });
+    expect(next.sentBinary).toEqual([]);
+    expect(session.events.map((event) => event.kind)).toEqual(["reconnecting", "reconnected"]);
+    expect(session.socket.reconnecting).toBe(false);
+    expect(session.socket.queuedCount).toBe(0);
+
+    // Live again: frames go straight out, and server events reach the page.
+    session.socket.sendButton("important", CLIENT_TIME_MS);
+    expect(types(next).at(-1)).toBe("button");
+    next.serverMessage(JSON.stringify(example("server.notice")));
+    expect(session.events.at(-1)?.kind).toBe("notice");
+  });
+
+  it("backs off while the backend is not there and starts over after a resume", async () => {
+    let answer: ResumeOutcome = { kind: "retry" };
+    const session = await running(async () => answer);
+
+    session.sockets[0].serverClose(1001);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.resumes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(session.resumes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(session.resumes).toHaveLength(2);
+    expect(session.sockets).toHaveLength(1);
+
+    answer = { kind: "ok" };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(session.sockets).toHaveLength(2);
+    // An attempt whose connection fails is one more outage step, reported only once.
+    session.sockets[1].serverError();
+    session.sockets[1].serverClose(1006);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(session.sockets).toHaveLength(3);
+    session.sockets[2].serverOpen();
+    session.sockets[2].serverMessage(JSON.stringify(example("server.hello.ack")));
+    expect(session.events.map((event) => event.kind)).toEqual(["reconnecting", "reconnected"]);
+
+    // A second outage waits the first delay again.
+    session.sockets[2].serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.sockets).toHaveLength(4);
+  });
+
+  it("gives up with the session-ended close when the resume says the session is over", async () => {
+    const session = await running(async () => ({ kind: "ended", detail: "La sesión ya ha terminado." }));
+    session.sockets[0].serverClose(1006);
+    session.socket.sendTranscript(FINAL, "final");
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(session.sockets).toHaveLength(1);
+    expect(session.events).toEqual([
+      { kind: "reconnecting" },
+      { kind: "closed", code: SESSION_NOT_ACTIVE_CLOSE, reason: "La sesión ya ha terminado.", wasClean: true },
+    ]);
+    expect(session.socket.queuedCount).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(session.sockets).toHaveLength(1);
+  });
+
+  it("does not reconnect after a final close code", async () => {
+    const session = await running();
+
+    session.sockets[0].serverClose(SESSION_NOT_ACTIVE_CLOSE, "session s-1 is no longer active");
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(session.sockets).toHaveLength(1);
+    expect(session.events).toEqual([
+      { kind: "closed", code: SESSION_NOT_ACTIVE_CLOSE, reason: "session s-1 is no longer active", wasClean: true },
+    ]);
+  });
+
+  it("gives up when the reconnect is refused as not active", async () => {
+    const session = await running();
+    session.sockets[0].serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    session.sockets[1].serverOpen();
+    session.sockets[1].serverClose(SESSION_NOT_ACTIVE_CLOSE, "ended");
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(session.sockets).toHaveLength(2);
+    expect(session.events.map((event) => event.kind)).toEqual(["reconnecting", "closed"]);
+  });
+
+  it("stops reconnecting when the page closes it", async () => {
+    const session = await running();
+    session.sockets[0].serverClose(1006);
+
+    session.socket.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(session.sockets).toHaveLength(1);
+    expect(session.resumes).toEqual([]);
+    expect(session.events).toEqual([{ kind: "reconnecting" }]);
+  });
+
+  it("keeps a bounded queue, dropping the oldest frames", async () => {
+    const session = await running(undefined, { maxQueued: 2 });
+    session.sockets[0].serverClose(1006);
+    for (const id of ["a", "b", "c"]) {
+      session.socket.sendTranscript({ ...FINAL, segment_id: id }, "final");
+    }
+    expect(session.socket.queuedCount).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    session.sockets[1].serverOpen();
+    session.sockets[1].serverMessage(JSON.stringify(example("server.hello.ack")));
+
+    expect([1, 2].map((index) => sentJson(session.sockets[1], index).segment_id)).toEqual(["b", "c"]);
+  });
+
+  it("does not reconnect a session in server STT mode", async () => {
+    const session = await running(undefined, {
+      ack: {
+        ...example<HelloAck>("server.hello.ack"),
+        stt_mode: "server",
+        audio_format: { encoding: "pcm16", sample_rate_hz: 16000, channels: 1 },
+      },
+    });
+
+    session.sockets[0].serverClose(1006);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(session.sockets).toHaveLength(1);
+    expect(session.events).toEqual([{ kind: "closed", code: 1006, reason: "", wasClean: false }]);
   });
 });
