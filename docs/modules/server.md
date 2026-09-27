@@ -1176,6 +1176,20 @@ Every file but the manifest is optional (absent = empty). A client-mode recordin
   with Claude scripted per role by `FakeClaude`) and asserts on a clone of the local remote the
   vault pushed to: transcript, pages and their transcription, events, `review/pending.yaml`, and
   notes that pass the ADR-0005 validator, tagged v1.
+- `backend/tests/server/test_workspace_e2e.py` drives the workspace path end to end (#369): a
+  client-mode recording built in the test (a notes page, then "incorpora esta página", "haz una
+  tabla con las tres causas" and "ya está, quiero estudiar") is replayed while a client reads
+  `GET .../workspace/stream`, on a virtual clock whose `sleep` lets the backend settle between
+  steps (finals on the bus, `PageTranscriber.flush`, `RequestDetector.flush`, the turns run), so
+  each detector call sees one new final. It asserts the stream's `request.detected`,
+  `turn.started`, `turn.result` and `notes.changed` per request, the notes (the page cited and
+  `incorporada` in `GET .../sources/status`, the table section), a typed
+  `POST .../workspace/messages` turn, the `go_study` turn that ended the session and labelled
+  the study version (`GET .../study`, `study_current: true`), "hazme un quiz de 3 preguntas" in
+  the study chat (`POST .../tutor`, the quiz `listo`), a student save that leaves
+  `study_current: false` and the quiz `desactualizado`, and one commit per step's write, all of
+  them on the local bare remote after the shutdown. The replay's session end is not sent when
+  the spoken request already ended the session, as the web capture page does on `go_study`.
 
 **Recorder** (`SessionRecorder(root)`, on `app.state.recorder`): the WebSocket gateway and the
 capture endpoint call it with exactly what the client sent and the backend accepted -- the client
