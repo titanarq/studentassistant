@@ -83,6 +83,75 @@
   overflow-y: auto;
 }
 
+/* Two columns on a screen tall enough (#412): the page is one viewport high, the header on top
+   and each column scrolling inside its share. On the left the tabs' panel (camera, transcript,
+   photos) scrolls or shrinks, and the chat below keeps a minimum height with its input pinned at
+   the bottom, so the reply to what the student just said is read without scrolling the page. */
+@media (min-width: 56.3125rem) and (min-height: 40rem) {
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    box-sizing: border-box;
+    padding-bottom: var(--space-3);
+  }
+
+  .workspace-header {
+    flex: none;
+  }
+
+  .workspace-columns {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .workspace-left {
+    min-height: 0;
+    gap: var(--space-3);
+  }
+
+  .workspace-sources {
+    flex: 0 1 auto;
+    min-height: 7rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .workspace-chat {
+    flex: 1 0 18rem;
+    min-height: 18rem;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace-chat > .ws-chat {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .workspace-chat .ws-chat-log {
+    max-height: none;
+  }
+
+  .workspace-document {
+    position: static;
+    max-height: none;
+    min-height: 0;
+  }
+
+  /* The camera preview gets a smaller share than on /capture, where it has the page to itself. */
+  .workspace .capture-preview {
+    max-height: 32vh;
+  }
+
+  .workspace .capture-transcript ol {
+    max-height: 20vh;
+  }
+}
+
 /* ---- Tabs ---- */
 
 .workspace-tablist {

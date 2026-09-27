@@ -1,6 +1,7 @@
-import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 import DiffView from "../../chat/DiffView";
 import type { OpenSource } from "../../chat/EditorChat";
+import { useFollowLog } from "../../chat/useFollowLog";
 import { sourceItem } from "../resources";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
@@ -38,6 +39,7 @@ function MicIcon() {
 function SpokenRequest({ entry }: { entry: ChatEntry }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const hint = useId();
   const span: SpokenSpan | null = entry.transcript;
   const raw = span?.text ?? entry.message;
   const hour = hourOf(entry.time);
@@ -58,6 +60,8 @@ function SpokenRequest({ entry }: { entry: ChatEntry }) {
               aria-expanded={open}
               aria-controls={id}
               aria-label={open ? "Ocultar lo que dijiste" : "Ver lo que dijiste"}
+              aria-describedby={hint}
+              title={open ? "Ocultar lo que dijiste" : "Ver lo que dijiste, palabra por palabra"}
               onClick={() => setOpen((value) => !value)}
             >
               …
@@ -65,6 +69,11 @@ function SpokenRequest({ entry }: { entry: ChatEntry }) {
           </>
         )}
       </p>
+      {raw !== null && raw !== "" && (
+        <span id={hint} className="ws-chat-sr">
+          Muestra la transcripción de lo que dijiste y cuándo lo dijiste
+        </span>
+      )}
       {open && raw !== null && (
         <div id={id} className="ws-chat-transcript">
           <p className="ws-chat-quote">«{raw}»</p>
@@ -198,7 +207,7 @@ const DOUBT_BADGE: Record<string, string> = {
  * numbered list and, for a contradiction, each option with its source (which opens in
  * Recursos). The student answers by typing or saying it; `doubt.resolved` marks it answered.
  */
-function DoubtEntry({ doubt, onOpenSource }: { doubt: DoubtView; onOpenSource?: OpenSource }) {
+function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOpenSource?: OpenSource; capturing: boolean }) {
   const open = doubt.status === "open";
   const withOptions = new Set(doubt.options.map((option) => option.sourceId));
   const others = doubt.refs.filter((ref) => !withOptions.has(ref));
@@ -230,7 +239,11 @@ function DoubtEntry({ doubt, onOpenSource }: { doubt: DoubtView; onOpenSource?: 
           Sobre: <Sources sourceIds={others} onOpenSource={onOpenSource} />
         </p>
       )}
-      {open && <p className="ws-chat-hint">Contesta escribiendo o de viva voz: «la 2», «pone “escrita”»…</p>}
+      {open && (
+        <p className="ws-chat-hint">
+          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo"}: «la 2», «pone “escrita”»…
+        </p>
+      )}
       {!open && doubt.answer !== null && <p className="ws-chat-answer">Respondiste: «{doubt.answer}»</p>}
       {doubt.status === "dismissed" && <p className="ws-chat-resolved">Descartada.</p>}
       {doubt.status !== "open" && doubt.status !== "dismissed" && (
@@ -249,16 +262,18 @@ interface ReplyProps {
   onOpenSource?: OpenSource;
   onRetry: (key: string) => void;
   idle: boolean;
+  /** A capture is running: the student can also answer by voice. */
+  capturing: boolean;
   /** A whole-topic run: its batches, shown below its progress. */
   batches?: ReactNode;
 }
 
-function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, batches }: ReplyProps) {
+function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, batches }: ReplyProps) {
   const [showDiff, setShowDiff] = useState(false);
   const diffId = useId();
   const placeholder = replyPlaceholder(entry);
   const text = entry.reply !== "" ? entry.reply : placeholder;
-  if (entry.kind === "doubt" && entry.doubt !== null) return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} />;
+  if (entry.kind === "doubt" && entry.doubt !== null) return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} capturing={capturing} />;
   if (entry.kind === "doubts_resolved") return <p className="ws-chat-line">{entry.reply}</p>;
   if (entry.kind === "triage" && entry.status === "done" && entry.decision === "set_aside" && entry.targets.some((t) => t.reasons.length > 0)) {
     return <TriageLines targets={entry.targets} onOpenSource={onOpenSource} />;
@@ -385,16 +400,38 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, batches }: Re
  * highlighted, and answered by typing or saying it. "Ya está, quiero estudiar" (#335, #337) is
  * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
  * is a new line) with **Enviar** and "Deshacer el último cambio".
+ *
+ * The log is its own scroll area and follows the newest turn (#412) unless the student scrolled up
+ * (then «Nuevos mensajes ↓» brings them back); only the latest turn is announced, through a polite
+ * live region, not the whole growing log. The input only invites speaking while a capture runs
+ * (`capturing`): the panel has no microphone of its own.
  */
+/** What the live region says of the latest turn: its status while it runs, its reply once done. */
+export function latestLine(entry: ChatEntry | undefined): string {
+  if (entry === undefined) return "";
+  if (entry.kind === "doubt" && entry.doubt !== null) {
+    return entry.doubt.status === "open" ? `Asistente, duda: ${entry.doubt.question}` : "";
+  }
+  const waiting = replyPlaceholder(entry);
+  if (waiting !== null) return `Asistente: ${waiting}`;
+  if (entry.status === "failed") return "";
+  return entry.reply !== "" ? `Asistente: ${entry.reply}` : "";
+}
+
+export const FOLLOW_BUTTON = "Nuevos mensajes ↓";
+
 export default function ChatPanel({
   chat,
   versionsPath,
   onOpenSource,
+  capturing = false,
 }: {
   chat: WorkspaceChat;
   /** The topic's versions page, where a change read from the history is compared. */
   versionsPath: string;
   onOpenSource?: OpenSource;
+  /** A capture of this topic is running: what the student says reaches the chat too. */
+  capturing?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const idle = chat.busy === null;
@@ -404,17 +441,36 @@ export default function ChatPanel({
   for (const entry of chat.entries) {
     if (entry.parent !== null && keys.has(entry.parent)) children.set(entry.parent, [...(children.get(entry.parent) ?? []), entry]);
   }
+  // Changes whenever a turn is added, changes state or its streamed reply grows.
+  const content = chat.entries.map((entry) => `${entry.key}:${entry.status}:${entry.reply.length}:${entry.doubt?.status ?? ""}`).join("|");
+  const log = useFollowLog<HTMLOListElement>(content);
+  // Turns seen on their way (sent, queued, running) on this page: the history is never announced.
+  const live = useRef(new Set<string>());
+  for (const entry of chat.entries) if (entry.status !== "done" && entry.status !== "failed") live.current.add(entry.key);
+  const latest = top.length > 0 ? top[top.length - 1] : undefined;
+  const latestChildren = latest !== undefined ? (children.get(latest.key) ?? []) : [];
+  const current = latestChildren.length > 0 && latest?.status === "running" ? latestChildren[latestChildren.length - 1] : latest;
+  const announced = current !== undefined && (live.current.has(current.key) || current.kind === "doubt") ? latestLine(current) : "";
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (!idle || draft.trim() === "") return;
     chat.send(draft);
     setDraft("");
+    log.follow();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) submit(event);
   };
+
+  const placeholder = chat.doubtAsked
+    ? capturing
+      ? "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…"
+      : "Responde a la duda o escribe otra cosa…"
+    : capturing
+      ? "Escribe o habla: «pon un ejemplo aquí»…"
+      : "Escribe: «pon un ejemplo aquí»…";
 
   return (
     <section className="ws-chat" aria-labelledby="ws-chat-heading">
@@ -429,43 +485,69 @@ export default function ChatPanel({
       {chat.historyFailure !== null && <p role="alert">{chat.historyFailure}</p>}
       {chat.entries.length === 0 && chat.historyFailure === null && (
         <p className="ws-chat-hint">
-          Pídele cambios al asistente hablando o escribiendo: «pon esto como definición», «haz una tabla con las tres
-          causas»…
+          {capturing ? "Pídele cambios al asistente hablando o escribiendo" : "Pídele cambios al asistente escribiendo"}: «pon esto como
+          definición», «haz una tabla con las tres causas»…
         </p>
       )}
-      <ol className="ws-chat-log" role="log" aria-live="polite" aria-label="Conversación con el asistente">
-        {top.map((entry, index) => {
-          const own = children.get(entry.key) ?? [];
-          const continued = entry.messageId !== null && top.slice(0, index).some((e) => e.messageId === entry.messageId);
-          return (
-            <li
-              key={entry.key}
-              className={entry.kind === "doubt" ? "ws-chat-entry ws-chat-entry-doubt" : "ws-chat-entry"}
-              aria-busy={entry.status === "running" ? "true" : undefined}
-            >
-              <Request entry={entry} continued={continued} />
-              <Reply
-                entry={entry}
-                versionsPath={versionsPath}
-                onOpenSource={onOpenSource}
-                onRetry={chat.retry}
-                idle={idle}
-                batches={
-                  own.length > 0 && (
-                    <ol className="ws-chat-batches" aria-label="Tandas de la preparación">
-                      {own.map((child) => (
-                        <li key={child.key} className="ws-chat-batch" aria-busy={child.status === "running" ? "true" : undefined}>
-                          <Reply entry={child} versionsPath={versionsPath} onOpenSource={onOpenSource} onRetry={chat.retry} idle={idle} />
-                        </li>
-                      ))}
-                    </ol>
-                  )
-                }
-              />
-            </li>
-          );
-        })}
-      </ol>
+      <div className="ws-chat-scroll">
+        <ol
+          ref={log.ref}
+          onScroll={log.onScroll}
+          className="ws-chat-log"
+          role="log"
+          aria-live="off"
+          aria-label="Conversación con el asistente"
+          tabIndex={0}
+        >
+          {top.map((entry, index) => {
+            const own = children.get(entry.key) ?? [];
+            const continued = entry.messageId !== null && top.slice(0, index).some((e) => e.messageId === entry.messageId);
+            return (
+              <li
+                key={entry.key}
+                className={entry.kind === "doubt" ? "ws-chat-entry ws-chat-entry-doubt" : "ws-chat-entry"}
+                aria-busy={entry.status === "running" ? "true" : undefined}
+              >
+                <Request entry={entry} continued={continued} />
+                <Reply
+                  entry={entry}
+                  versionsPath={versionsPath}
+                  onOpenSource={onOpenSource}
+                  onRetry={chat.retry}
+                  idle={idle}
+                  capturing={capturing}
+                  batches={
+                    own.length > 0 && (
+                      <ol className="ws-chat-batches" aria-label="Tandas de la preparación">
+                        {own.map((child) => (
+                          <li key={child.key} className="ws-chat-batch" aria-busy={child.status === "running" ? "true" : undefined}>
+                            <Reply
+                              entry={child}
+                              versionsPath={versionsPath}
+                              onOpenSource={onOpenSource}
+                              onRetry={chat.retry}
+                              idle={idle}
+                              capturing={capturing}
+                            />
+                          </li>
+                        ))}
+                      </ol>
+                    )
+                  }
+                />
+              </li>
+            );
+          })}
+        </ol>
+        {log.unseen && (
+          <button type="button" className="ws-chat-follow" onClick={log.follow}>
+            {FOLLOW_BUTTON}
+          </button>
+        )}
+      </div>
+      <div className="ws-chat-sr" aria-live="polite" data-testid="ws-chat-latest">
+        {announced}
+      </div>
       <div aria-live="polite">
         {chat.busy === "undo" && <p>Deshaciendo el último cambio…</p>}
         {chat.notice !== null && <p>{chat.notice}</p>}
@@ -478,7 +560,7 @@ export default function ChatPanel({
           id="ws-chat-input"
           rows={2}
           maxLength={4000}
-          placeholder={chat.doubtAsked ? "Responde a la duda o escribe otra cosa…" : "Escribe o habla: «pon un ejemplo aquí»…"}
+          placeholder={placeholder}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}

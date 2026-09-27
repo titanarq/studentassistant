@@ -3,6 +3,7 @@ import { describeFailure, topicPath } from "../../desk/api";
 import { describeTutorFailure, fetchTutorHistory, type SectionRef, type TutorTurn } from "../../tutor/api";
 import { type OptionKey, STUDY_OPTIONS } from "../options";
 import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
+import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
 import "../../chat/chat.css";
 import "./studyChat.css";
@@ -18,6 +19,10 @@ import "./studyChat.css";
  * same stream: the turn shows the `generation.started` line with a busy indicator, then the
  * generation's reply, its warnings and **Abrir «<opción>»**, which opens the option's panel
  * (`onOpenOption`), «Diapositivas» included (#382). The page gets the fresh study state (`onGenerated`).
+ *
+ * The log is its own scroll area and follows the newest turn as it streams (#412), unless the
+ * student scrolled up (then «Nuevos mensajes ↓»); only the latest turn is announced, through a
+ * polite live region, not the whole growing log.
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -25,6 +30,7 @@ export const READ_ONLY_LINE = "Solo respondo preguntas: no cambio los apuntes. P
 export const BUSY_SENTENCE = "Espera a que termine la respuesta anterior.";
 export const STALE_SECTION = "Esa sección ya no está en los apuntes";
 export const THINKING = "Pensando…";
+export const FOLLOW_BUTTON = "Nuevos mensajes ↓";
 
 export interface StudyChatProps {
   subjectId: string;
@@ -47,6 +53,9 @@ export interface StudyChatProps {
 
 /** A turn as the chat shows it: warnings as a list, the generation (if any) it made. */
 type ChatTurn = TutorTurn & { warnings: string[] };
+
+/** An answer as the live region reads it: without its `[§anchor]` and `[^label]` marks. */
+const spoken = (text: string): string => text.replace(/\[(?:§|\^)[^\]]*\]/g, "").replace(/\s+([.,;:!?])/g, "$1").replace(/\s{2,}/g, " ").trim();
 
 const chatTurn = (turn: TutorTurn): ChatTurn => ({ ...turn, warnings: turn.warning === null ? [] : [turn.warning] });
 
@@ -97,7 +106,12 @@ export default function StudyChat({
   const [asking, setAsking] = useState<Asking | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
   const mounted = useRef(true);
+  // What the live region says once an answer ended: never the history, only a turn asked here.
+  const [answered, setAnswered] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  // Changes whenever a turn is added or the answer on its way grows.
+  const content = `${turns.length}:${asking === null ? "" : `${asking.question}:${asking.generating ?? ""}:${asking.reply.length}`}`;
+  const log = useFollowLog<HTMLOListElement>(content);
 
   useEffect(() => {
     mounted.current = true;
@@ -130,6 +144,8 @@ export default function StudyChat({
       const text = question.trim();
       if (text === "" || asking !== null) return;
       setFailure(null);
+      setAnswered("");
+      log.follow();
       setAsking({ question: text, reply: "", generating: null });
       const outcome = await askStudyChat(subjectId, topicId, text, {
         confirmOverCap,
@@ -150,6 +166,7 @@ export default function StudyChat({
         const reply = outcome.value;
         if (reply.kind === "answer") {
           setTurns((now) => [...now, chatTurn({ ...reply.answer, time, generation: null })]);
+          setAnswered(spoken(reply.answer.reply));
         } else {
           const { generation } = reply;
           setTurns((now) => [
@@ -166,6 +183,7 @@ export default function StudyChat({
               generation: { option: generation.option, items: generation.items },
             },
           ]);
+          setAnswered(generation.reply);
           onGenerated?.(generation);
         }
         setDraft("");
@@ -176,7 +194,7 @@ export default function StudyChat({
       // The input was disabled while the answer came: give it the focus back.
       requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
     },
-    [asking, hasNotes, onGenerated, subjectId, topicId],
+    [asking, hasNotes, onGenerated, subjectId, topicId, log.follow],
   );
 
   // A hint of an option («Pídelo en el chat: …») puts its phrase in the input, not sent.
@@ -223,6 +241,8 @@ export default function StudyChat({
   });
 
   const busy = asking !== null;
+  // Announced once per state, never on every streamed fragment.
+  const announced = asking !== null ? `Asistente: ${asking.generating ?? THINKING}` : answered === "" ? "" : `Asistente: ${answered}`;
   const workspace = `${topicPath(subjectId, topicId)}/workspace`;
 
   return (
@@ -233,49 +253,67 @@ export default function StudyChat({
       {history.state === "ready" && turns.length === 0 && !busy && (
         <p className="study-chat-empty">Pregunta lo que no entiendas: contesto con tus apuntes y cito dónde está.</p>
       )}
-      <ol className="chat-log study-chat-log" role="log" aria-live="polite" aria-label="Preguntas y respuestas">
-        {turns.map((turn, index) => (
-          <li className="chat-entry" key={`${turn.time}-${index}`}>
-            <p className="chat-message">
-              <span className="chat-who">Tú:</span> {turn.question}
-            </p>
-            <div className="chat-reply">
-              <span className="chat-who">Asistente:</span>
-              {turn.generation === null ? (
-                <ReplyView text={turn.reply} {...chips(turn.sections)} />
-              ) : (
-                <p>{turn.reply}</p>
-              )}
-            </div>
-            {turn.warnings.map((warning, w) => (
-              <p className="chat-warning" key={w}>
-                {warning}
+      <div className="study-chat-scroll">
+        <ol
+          ref={log.ref}
+          onScroll={log.onScroll}
+          className="chat-log study-chat-log"
+          role="log"
+          aria-live="off"
+          aria-label="Preguntas y respuestas"
+          tabIndex={0}
+        >
+          {turns.map((turn, index) => (
+            <li className="chat-entry" key={`${turn.time}-${index}`}>
+              <p className="chat-message">
+                <span className="chat-who">Tú:</span> {turn.question}
               </p>
-            ))}
-            {turn.generation !== null && <OpenButton option={turn.generation.option} onOpen={onOpenOption} />}
-          </li>
-        ))}
-        {asking !== null && (
-          <li className="chat-entry" aria-busy="true">
-            <p className="chat-message">
-              <span className="chat-who">Tú:</span> {asking.question}
-            </p>
-            <div className="chat-reply">
-              <span className="chat-who">Asistente:</span>
-              {asking.generating !== null ? (
-                <p className="study-chat-progress">
-                  <span className="study-chat-spinner" aria-hidden="true" />
-                  {asking.generating}
+              <div className="chat-reply">
+                <span className="chat-who">Asistente:</span>
+                {turn.generation === null ? (
+                  <ReplyView text={turn.reply} {...chips(turn.sections)} />
+                ) : (
+                  <p>{turn.reply}</p>
+                )}
+              </div>
+              {turn.warnings.map((warning, w) => (
+                <p className="chat-warning" key={w}>
+                  {warning}
                 </p>
-              ) : asking.reply === "" ? (
-                <p>{THINKING}</p>
-              ) : (
-                <ReplyView text={asking.reply} {...chips([])} />
-              )}
-            </div>
-          </li>
+              ))}
+              {turn.generation !== null && <OpenButton option={turn.generation.option} onOpen={onOpenOption} />}
+            </li>
+          ))}
+          {asking !== null && (
+            <li className="chat-entry" aria-busy="true">
+              <p className="chat-message">
+                <span className="chat-who">Tú:</span> {asking.question}
+              </p>
+              <div className="chat-reply">
+                <span className="chat-who">Asistente:</span>
+                {asking.generating !== null ? (
+                  <p className="study-chat-progress">
+                    <span className="study-chat-spinner" aria-hidden="true" />
+                    {asking.generating}
+                  </p>
+                ) : asking.reply === "" ? (
+                  <p>{THINKING}</p>
+                ) : (
+                  <ReplyView text={asking.reply} {...chips([])} />
+                )}
+              </div>
+            </li>
+          )}
+        </ol>
+        {log.unseen && (
+          <button type="button" className="study-chat-follow" onClick={log.follow}>
+            {FOLLOW_BUTTON}
+          </button>
         )}
-      </ol>
+      </div>
+      <div className="study-chat-sr" aria-live="polite" data-testid="study-chat-latest">
+        {announced}
+      </div>
       {failure !== null && (
         <div role="alert" className="study-chat-failure">
           {failure.kind === "busy" && <p>{BUSY_SENTENCE}</p>}

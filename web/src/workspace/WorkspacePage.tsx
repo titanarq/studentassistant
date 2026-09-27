@@ -190,7 +190,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
               />
             </section>
             <section className="workspace-chat" aria-label="Chat">
-              <WorkspaceChatSlot onOpenSource={openSource} />
+              <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing} />
             </section>
           </div>
           <section className="workspace-document" aria-label="Documento">
