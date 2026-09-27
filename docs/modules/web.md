@@ -153,37 +153,81 @@
     `turn.error` shows "No se pudo completar: <detail>" (`role="alert"`), and a
     `cost_cap_reached` one **Continuar igualmente**, which repeats it with `confirm_over_cap`
     (a spoken edit or question is re-sent as a typed message with its raw text; "prepárame el
-    tema" through `POST .../notes/generate`). Below, a textarea "Mensaje para el asistente"
-    (Enter sends, Shift+Enter is a new line) with **Enviar** (disabled while empty or while this
-    page's send or undo runs) and **Deshacer el último cambio** (`POST .../notes/chat/undo`, as
-    the notes page's chat). While the stream is down: "Sin conexión en directo con el asistente;
-    reintentando…" (`role="status"`).
+    tema" through `POST .../notes/generate`; offered only for those kinds). Below, a textarea
+    "Mensaje para el asistente" (Enter sends, Shift+Enter is a new line) with **Enviar**
+    (disabled while empty or while this page's post or undo runs) and **Deshacer el último
+    cambio** (`POST .../notes/chat/undo`, as the notes page's chat). While the stream is down:
+    "Sin conexión en directo con el asistente; reintentando…" (`role="status"`).
+    Since #329 the panel is where the student drives the work (epic #311), with no buttons to
+    incorporate or answer:
+    - **Typed messages** go to the request classifier like spoken ones: `POST
+      .../workspace/messages` `{text}` (#327). The message shows "Enviando…" until the 202; its
+      `requests` (`req-t<n>`) then take its place as queued entries ("En cola…"; a second
+      request of the same message shows "Y además: <summary>") until their turns stream in (a
+      typed `request.detected` of the stream for one already shown adds nothing). A refusal shows
+      "No se pudo completar: <detail>" (`role="alert"`) under the message. `POST .../notes/chat`
+      is only used by "Continuar igualmente".
+    - **Incorporations** (`kind: incorporate`): "Incorporadas: página 3, página 4" (each source
+      a button that opens it in **Recursos**, like provenance clicks), the reply, "Cambio
+      aplicado" with its diff (the history's incorporation turns carry their diff), and "Ha
+      surgido 1 duda…" / "Han surgido N dudas…" when the result raised doubts.
+    - **A whole-topic run** ("prepárame el tema", batched, #326) is one entry: its
+      `incorporation.progress` as "3 de 8 páginas" (with a `<progress>`), and each batch (an
+      `incorporate` turn without request) listed below it ("Tandas de la preparación"). A run
+      started elsewhere (the end of a session) gets an entry "Preparación del tema" of its own,
+      finished when its progress is complete or the generation's `notes.changed` arrives.
+    - **Triage** (`set_aside` / `restore` turns, `triage` in the history): the request, then one
+      short line, the backend's reply («He apartado la página 9.»).
+    - **Doubts** (`doubt.asked` / `doubt.resolved`, #325; `doubt` turns of the history): a
+      highlighted entry "Asistente · Duda" with the question, the suggestions as a numbered list
+      (`<ol>` "Sugerencias"), for a contradiction each option with its source ("Página 3:
+      «1760»", the source opening in Recursos) and the other sources it is about ("Sobre: …").
+      No answer buttons and no "Descartar" link: the student types or says the answer ("la 2",
+      "pone «escrita»", "descártala"), which becomes a `doubt_answer` turn (its reply is the
+      resolution); `doubt.resolved` marks the doubt "Duda resuelta" / "Duda descartada" with
+      "Respondida: <resolution>" (and "Respondiste: «…»" when the history knows the answer).
+      While one is asked, the input's placeholder is "Responde a la duda o escribe otra cosa…".
+      `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
+    - The header's pending-doubts counter is read again on every `doubt.asked`,
+      `doubt.resolved` and `doubts.auto_resolved` (`WorkspaceState.doubtsChanged`).
     - `chat/api.ts`: `fetchWorkspaceHistory` (`GET .../notes/chat` read with `turn_id`,
-      `origin`, `request_summary`, `transcript`), `readWorkspaceEvent(event, data)` (the stream's
-      events decoded; unknown ones are `null`, the list is open), `readOutcome` (a
-      `RevisionResult`, or a `prepare_notes` `GenerationResult`, as one `TurnOutcome`), and
-      `sendTyped(s, t, message, {confirmOverCap, onDelta, onRestart})`, the one place typed
-      messages go out (today `POST .../notes/chat` through `src/chat/api.ts`'s `streamTurn`;
-      #329 moves it).
+      `origin`, `request_summary`, `transcript` and, since #329, the `incorporate`, `triage`,
+      `doubt` and `doubts_resolved` fields), `readWorkspaceEvent(event, data)` (the stream's
+      events decoded, `doubt.asked`, `doubt.resolved`, `doubts.auto_resolved` and
+      `incorporation.progress` included; unknown ones are `null`, the list is open),
+      `readOutcome` (a `RevisionResult`, a `prepare_notes` `GenerationResult`, an
+      `IncorporationResult`, a `TriageTurn` or a `doubt_answer` `ResolutionResult`, as one
+      `TurnOutcome`), `postMessage(s, t, text)` (`POST .../workspace/messages`, the typed
+      messages) and `sendTyped(s, t, message, {confirmOverCap, onDelta, onRestart})` (`POST
+      .../notes/chat` through `src/chat/api.ts`'s `streamTurn`, for "Continuar igualmente").
+    - `chat/sources.ts`: `sourceName(id)` («página 3», «página 83 del libro», else the Recursos
+      title); the item that opens a source in Recursos is `resources.ts`'s `sourceItem(id)`
+      (`OpenSource` takes that item's `definition` as its optional third argument).
     - `chat/stream.ts`: `connectWorkspaceStream(s, t, {onEvent, onOpen(reconnected), onDown,
       retryDelays?}) -> close()`: `GET .../workspace/stream` read with `fetch` + `readSse`; a
       failed attempt or a drop is retried after 1 s, 2 s, 5 s, 10 s, then every 30 s
       (`RETRY_DELAYS_MS`, reset by each successful open).
     - `chat/turns.ts`: `reduceChat`, the pure merge of the history, the stream's events and this
       page's sends. Turns are keyed by `turn_id`; a queued request by `request_id` until its
-      `turn.started`. A typed send starts as a local entry fed by its own POST stream; the typed
-      `turn.started` the workspace stream broadcasts meanwhile is adopted by it, and from then on
-      only the workspace stream writes the reply (so nothing shows twice); the POST's `result`
-      carries the real `turn_id`, and a wrongly adopted turn (another tab's) is split off again.
-      A history read replaces the entries it has (keeping a live entry's diff) and keeps, after
-      it, the live ones it does not have yet.
+      `turn.started`; a doubt by `doubt:<pending_id>`, an auto-resolution line by
+      `auto:<pending_ids>`; a batch carries its run's key as `parent`. A typed message is a
+      "Enviando…" entry until the POST answers (its first request keeps that entry's key). A
+      "Continuar igualmente" resend starts as a local entry fed by its own POST stream; the typed
+      `revise` `turn.started` the workspace stream broadcasts meanwhile is adopted by it, and the
+      POST's `result` carries the real `turn_id`, so a wrongly adopted turn (another tab's) is
+      split off again. A history read replaces the entries it has (by `turn_id` or those keys,
+      keeping a live entry's key -- so a doubt is announced once -- and its diff) and keeps, after
+      it, the live ones it does not have yet; a `doubt_answer` entry whose doubt the history shows
+      answered is dropped, and so is a queued typed request whose typed turn (same words, not
+      older than a minute before it) the history already has, one for one.
     - `chat/useWorkspaceChat.ts`: the hook. Every (re)open of the stream re-reads the history;
       a reopen also reloads the notes, so a turn or a change that happened while disconnected is
       neither missed nor duplicated. Every `notes.changed` calls the workspace state's
       `reloadNotes` (with the sections the turn changed when its `turn.result` was seen, else
       none), and so does a typed turn's own result that changed the notes.
-    - The request's rendering is one switch on the entry's origin/kind (`Request` in
-      `ChatPanel.tsx`), so later turn kinds (#329) add a case.
+    - The request's rendering is one switch on the entry's origin (`Request` in `ChatPanel.tsx`:
+      voice, typed, or `system` for what the assistant does on its own), the reply's on its kind
+      (`Reply`, `DoubtEntry`).
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
     **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
@@ -211,7 +255,9 @@
     notes, changedSections, reloadNotes(changedSections?)}`, where `notes` is `{kind: "loading"} |
     {kind: "ready", text, revision, version} | {kind: "empty"} | {kind: "failed", message}` from
     `GET .../notes` (only the latest read is kept; `revision` is null while the backend does not
-    send it, before #313); `WorkspaceContext` / `useWorkspace()` give it to the page's children.
+    send it, before #313), plus `doubtsKey` / `doubtsChanged()` (#329: the chat bumps it on a
+    doubt event and the header's counter is read again); `WorkspaceContext` / `useWorkspace()`
+    give it to the page's children.
     The chat panel calls `reloadNotes(sections)` on every `notes.changed` of the workspace stream,
     after an applied typed turn or an undo, and after the stream reconnects. #316 and #317 build
     on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.

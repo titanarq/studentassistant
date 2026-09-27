@@ -26,7 +26,7 @@ Truco para recordarlas.[^est]
 const THEIRS = TEXT.replace("Cada función", "Cada una de las funciones");
 
 function workspace(notes: WorkspaceNotes, reloadNotes = vi.fn(async () => undefined)): WorkspaceState {
-  return { subjectId: "lengua", topicId: "la-comunicacion", notes, changedSections: new Set(), reloadNotes };
+  return { subjectId: "lengua", topicId: "la-comunicacion", notes, changedSections: new Set(), reloadNotes, doubtsKey: 0, doubtsChanged: vi.fn() };
 }
 
 const ready = (text = TEXT, revision = R1): WorkspaceNotes => ({ kind: "ready", text, revision, version: 4 });

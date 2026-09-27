@@ -136,6 +136,15 @@ function listedItem(source: ListedSource): [ResourceGroupKind, ResourceItem] | n
 }
 
 /**
+ * The item of one stored source by its id (topic-relative, `sources/notes/page-003.jpg`, or
+ * vault-relative), as the chat opens it in the tab; `null` for a kind the tab does not show.
+ */
+export function sourceItem(sourceId: string): ResourceItem | null {
+  const kind = sourceId.split("/").at(-2) ?? "";
+  return listedItem({ vault_id: sourceId, kind })?.[1] ?? null;
+}
+
+/**
  * The tab's groups from the topic's source list (an array) or, as a fallback, the summary's
  * counts, plus the sources the notes cite.
  */

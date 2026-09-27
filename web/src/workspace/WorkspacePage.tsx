@@ -64,7 +64,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
     return () => {
       cancelled = true;
     };
-  }, [subjectId, topicId, notesKey]);
+  }, [subjectId, topicId, notesKey, state.doubtsKey]);
 
   const tree = useMemo(() => (notes.kind === "ready" ? parseNotes(notes.text) : null), [notes]);
 
@@ -74,9 +74,9 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   }, []);
 
   const openSource = useCallback(
-    (label: string, element: HTMLElement) => {
+    (label: string, element: HTMLElement, definition?: string) => {
       trigger.current = element;
-      setOpen({ label, definition: tree?.footnotes.find((f) => f.label === label)?.text });
+      setOpen({ label, definition: definition ?? tree?.footnotes.find((f) => f.label === label)?.text });
       changeTab("resources");
       setView("left");
     },

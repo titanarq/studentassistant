@@ -3,8 +3,11 @@ import DiffView from "./DiffView";
 import type { EditorChat as Chat, ChatEntry } from "./useEditorChat";
 import "./chat.css";
 
-/** Opens the sources panel on a footnote label; `trigger` gets the focus back on close. */
-export type OpenSource = (label: string, trigger: HTMLElement) => void;
+/**
+ * Opens the sources panel on a footnote label; `trigger` gets the focus back on close. A source
+ * that is not a footnote of the notes (a doubt's option, #329) comes with its own `definition`.
+ */
+export type OpenSource = (label: string, trigger: HTMLElement, definition?: string) => void;
 
 interface EntryProps {
   entry: ChatEntry;
