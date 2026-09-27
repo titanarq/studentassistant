@@ -236,7 +236,7 @@ it("reports a source the vault does not have", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el PDF: No existe esa fuente en la bóveda.");
 });
 
-it("says there are no notes yet", async () => {
+it("says there are no notes yet and sends the student to Construir, with no button to write them", async () => {
   renderPage({
     "/api/subjects/historia/topics": TOPICS,
     "/api/subjects/historia/topics/revolucion-industrial/notes": jsonResponse(
@@ -247,6 +247,13 @@ it("says there are no notes yet", async () => {
 
   expect(await screen.findByText("Todavía no hay apuntes de este tema.")).toBeInTheDocument();
   expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Construir" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-industrial/workspace",
+  );
+  expect(screen.getByText(/pídeselo al asistente en el chat/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Prepárame el tema/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Prepárame el tema" })).not.toBeInTheDocument();
 });
 
 it("never renders the notes' HTML as markup", async () => {

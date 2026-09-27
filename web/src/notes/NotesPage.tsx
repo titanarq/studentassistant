@@ -3,7 +3,7 @@ import EditorChat from "../chat/EditorChat";
 import { useEditorChat } from "../chat/useEditorChat";
 import { blockExcerpt, whyQuestion } from "../chat/why";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
-import PrepareTopic from "../topic/PrepareTopic";
+import { topicWorkspacePath } from "../desk/entry";
 import { fetchNotes, type TopicNotes } from "./api";
 import { type Block, parseNotes } from "./markdown";
 import NotesView from "./NotesView";
@@ -21,7 +21,8 @@ import "./notes.css";
  * after a turn or an undo that changed the notes they are read again, and the sections the turn
  * touched are highlighted; every block offers "¿Por qué pusiste esto?", which asks the editor
  * (`POST .../notes/why`, #69) and shows the answer in the same chat, with the block's sources:
- * each opens in the sources panel. A topic without notes yet offers "Prepárame el tema" instead.
+ * each opens in the sources panel. A topic without notes yet sends the student to Construir, to ask
+ * the assistant for them in the chat (#434: no button writes them).
  *
  * At phone width (below 48rem, `notes.css`) the page is one column: the notes, then the sources
  * panel (sticky to the bottom of the screen), then the chat. The sources panel and the chat are
@@ -127,7 +128,11 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
         {notes !== null && notes.kind === "not-found" && (
           <>
             <p>{notes.detail}</p>
-            <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={() => void loadNotes()} />
+            <p>
+              Para redactar los apuntes, ve a{" "}
+              <a href={topicWorkspacePath({ subject_id: subjectId, topic_id: topicId })}>Construir</a> y pídeselo al
+              asistente en el chat.
+            </p>
           </>
         )}
         {notes !== null && notes.kind !== "ok" && notes.kind !== "not-found" && (

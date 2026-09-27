@@ -190,7 +190,7 @@ export default function MaterialsPanel({
 }: {
   subjectId: string;
   topicId: string;
-  /** Read the materials again when it changes (the page's reload after "Prepárame el tema"...). */
+  /** Read the materials again when it changes (the page's reload after a PDF or a web page is added...). */
   refreshKey?: number;
   /** A generation finished; without it the section reads itself again, with it the caller does. */
   onGenerated?: () => void;

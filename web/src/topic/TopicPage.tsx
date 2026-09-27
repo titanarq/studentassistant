@@ -11,7 +11,6 @@ import { topicStudyPath, topicWorkspacePath } from "../desk/entry";
 import MaterialsPanel from "../materials/MaterialsPanel";
 import BookTitleForm from "./BookTitleForm";
 import PdfUploadForm from "./PdfUploadForm";
-import PrepareTopic from "./PrepareTopic";
 import TopicCard from "./TopicCard";
 import TopicCostBlock from "./TopicCostBlock";
 import WebPageForm from "./WebPageForm";
@@ -24,8 +23,8 @@ import "./topic.css";
  * pair **Construir** (the workspace) / **Estudiar** (the study screen) at the top (#368), the
  * topic card from the read API's summary, "Material de estudio" (`MaterialsPanel`, #79: generate,
  * preview and download each material; a generation reloads the card), and the PDF upload (#149), after which the card is
- * reloaded so the new source is counted, and "Prepárame el tema" (`PrepareTopic`), after which
- * the card is reloaded too, "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
+ * reloaded so the new source is counted, a line sending the student to Construir to ask the
+ * assistant for the notes in the chat (#434: no button writes them), "Buscar en Internet" (`WebSearchPanel`, #59), after keeping a page, and
  * "Añadir una página web" (`WebPageForm`, #62), after storing one, and "Libro de texto"
  * (`BookTitleForm`, #214), the title book pages are cited with, and "Coste" (`TopicCostBlock`,
  * #260), the topic's Claude spend in total and per session, reloaded with the card.
@@ -82,7 +81,10 @@ export default function TopicPage({ subjectId, topicId }: { subjectId: string; t
       )}
       {(summary === null || summary.kind !== "not-found") && (
         <>
-          <PrepareTopic subjectId={subjectId} topicId={topicId} onDone={refresh} />
+          <p>
+            Para redactar los apuntes, ve a <a href={topicWorkspacePath(ref)}>Construir</a> y pídeselo al asistente en
+            el chat.
+          </p>
           <MaterialsPanel subjectId={subjectId} topicId={topicId} refreshKey={reload} onGenerated={refresh} />
           <PdfUploadForm subjectId={subjectId} topicId={topicId} onImported={refresh} />
           <WebSearchPanel subjectId={subjectId} topicId={topicId} onKept={refresh} />
