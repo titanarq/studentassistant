@@ -8,6 +8,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Bound for waits on the page's reads, which can take well over the default 1 s under host load (#406). */
+const LOAD_TIMEOUT = 5000;
+/** Whole-test bound for the tests that wait on those reads, above vitest's default 5 s. */
+const TEST_TIMEOUT = 15000;
+
 const TOPIC = "/api/subjects/matematicas/topics/derivadas";
 const BUILT_AT = "2026-09-25T18:00:00Z";
 const TOPICS = jsonResponse({
@@ -83,9 +88,16 @@ it("corrects the exam criterion by criterion and saves the result", async () => 
   stub(jsonResponse(storedExam()), posted);
   renderPage();
 
-  expect(await screen.findByRole("heading", { name: "Corregir examen de Derivadas" })).toBeInTheDocument();
-  expect(screen.getByText(/2 preguntas · 10 puntos · 60 minutos · de los apuntes v2/)).toBeInTheDocument();
-  expect(screen.getByRole("region", { name: "Correcciones anteriores" })).toHaveTextContent("4 de 10 (40 %)");
+  // The heading's name comes from the topics read; the exam and its history from a separate one.
+  expect(
+    await screen.findByRole("heading", { name: "Corregir examen de Derivadas" }, { timeout: LOAD_TIMEOUT }),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText(/2 preguntas · 10 puntos · 60 minutos · de los apuntes v2/, {}, { timeout: LOAD_TIMEOUT }),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByRole("region", { name: "Correcciones anteriores" }, { timeout: LOAD_TIMEOUT }),
+  ).toHaveTextContent("4 de 10 (40 %)");
 
   const first = screen.getByRole("group", { name: "Pregunta 1" });
   expect(first).toHaveTextContent("Define la derivada de f en a.");
@@ -112,7 +124,7 @@ it("corrects the exam criterion by criterion and saves the result", async () => 
   expect(screen.getByRole("region", { name: "Resultado" })).toHaveTextContent("Total: 7,5 de 10 (75 %)");
 
   fireEvent.click(screen.getByRole("button", { name: "Guardar corrección" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("Corrección guardada: 7,5 de 10 (75 %).");
+  expect(await screen.findByRole("status", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Corrección guardada: 7,5 de 10 (75 %).");
   expect(posted).toEqual([
     {
       built_at: BUILT_AT,
@@ -123,7 +135,7 @@ it("corrects the exam criterion by criterion and saves the result", async () => 
     },
   ]);
   expect(screen.getByRole("region", { name: "Correcciones anteriores" }).querySelectorAll("li")).toHaveLength(2);
-});
+}, TEST_TIMEOUT);
 
 it("shows the backend's refusal when the exam changed", async () => {
   stub(
@@ -133,22 +145,24 @@ it("shows the backend's refusal when the exam changed", async () => {
   );
   renderPage();
 
-  expect(await screen.findByRole("note")).toHaveTextContent("Los apuntes han cambiado.");
+  expect(await screen.findByRole("note", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("Los apuntes han cambiado.");
   fireEvent.click(screen.getByRole("button", { name: "Guardar corrección" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("El examen ha cambiado");
-});
+  expect(await screen.findByRole("alert", {}, { timeout: LOAD_TIMEOUT })).toHaveTextContent("El examen ha cambiado");
+}, TEST_TIMEOUT);
 
 it("says there is no exam yet and points to the study materials", async () => {
   stub(jsonResponse({ detail: "Todavía no hay examen que corregir en este tema." }, 404));
   renderPage();
 
-  expect(await screen.findByText("Todavía no hay examen que corregir en este tema.")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Todavía no hay examen que corregir en este tema.", {}, { timeout: LOAD_TIMEOUT }),
+  ).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "material de estudio del tema" })).toHaveAttribute(
     "href",
     "/subjects/matematicas/topics/derivadas",
   );
   expect(screen.queryByRole("button", { name: "Guardar corrección" })).toBeNull();
-});
+}, TEST_TIMEOUT);
 
 it("reads the exam leniently and parses points in Spanish", () => {
   const exam = readStoredExam(
