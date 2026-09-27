@@ -3,6 +3,7 @@ import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary 
 import type { NotesTree } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
 import { sourceUrl } from "../notes/api";
+import AddSource from "./resources/AddSource";
 import { fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
 import { countsText, resourceStates, STATE_LABELS, type SourceEntry, thumbnailOf } from "./resources/state";
 import { useSourceMetas } from "./resources/useSourceMetas";
@@ -83,7 +84,9 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
  * summary's counts on an older backend) with its state -- **Pendiente**,
  * **Incorporada** (cited by the current notes) or **Apartada** (set aside by the capture triage
  * or by the student, with the reason) -- kept ones first in source order, then a collapsed
- * "Apartadas (N)" group. There are no action buttons: incorporating, setting aside and restoring
+ * "Apartadas (N)" group. Above the list, «Añadir fuente» (`AddSource`, #384) adds a PDF, a web
+ * page or the textbook's title and then the list is read again. There are no per-source action
+ * buttons: incorporating, setting aside and restoring
  * are asked in the chat. Choosing a source (here or from a footnote of the document) shows it in
  * the sources viewer (`SourcePanel`) in the list's place; "Cerrar" goes back to the list. The
  * sources' metadata is read again each time the tab is shown and after each change of the notes.
@@ -91,6 +94,8 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
 export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, open, onOpen, onClose }: ResourcesTabProps) {
   const [summary, setSummary] = useState<Loaded | null>(null);
   const [showSetAside, setShowSetAside] = useState(false);
+  // Bumped after «Añadir fuente» added something: the list is read again, as `refreshKey` does.
+  const [added, setAdded] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,14 +105,14 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
     return () => {
       cancelled = true;
     };
-  }, [subjectId, topicId, refreshKey]);
+  }, [subjectId, topicId, refreshKey, added]);
 
   const sources =
     summary?.kind === "listed" ? summary.value.sources : summary?.kind === "ok" ? summary.value.sources : null;
   const list = useMemo(() => resourceList(sources, tree), [sources, tree]);
   const items = useMemo(() => list.groups.flatMap((group) => group.items), [list]);
   // A new object whenever the tab is shown or the notes change: every source is read again.
-  const reloadKey = useMemo(() => ({ refreshKey, tree }), [refreshKey, tree]);
+  const reloadKey = useMemo(() => ({ refreshKey, added, tree }), [refreshKey, added, tree]);
   const first = useMemo(() => resourceStates(subjectId, topicId, items, tree, new Map()), [subjectId, topicId, items, tree]);
   const vaultIds = useMemo(() => [...first.kept, ...first.setAside].map((entry) => entry.vaultId), [first]);
   const metas = useSourceMetas(vaultIds, reloadKey);
@@ -126,6 +131,7 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
 
   return (
     <div className="workspace-resources">
+      <AddSource subjectId={subjectId} topicId={topicId} onAdded={() => setAdded((count) => count + 1)} />
       {summary === null && <p>Cargando las fuentes…</p>}
       {summary !== null && summary.kind !== "ok" && summary.kind !== "listed" && (
         <p role="alert">No se pudieron cargar las fuentes del tema: {describeFailure(summary)}</p>
