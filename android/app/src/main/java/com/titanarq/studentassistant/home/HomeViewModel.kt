@@ -7,6 +7,8 @@ import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
+import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.Subject
@@ -254,6 +256,15 @@ class HomeViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * What a topic row's «Construir» ([DeskView.WORKSPACE]) or «Estudiar» ([DeskView.STUDY]) opens
+     * in the study desk (#414); null when no subject is selected.
+     */
+    fun deskTarget(row: TopicRow, view: DeskView): DeskTopic? {
+        val subject = _state.value.selectedSubject ?: return null
+        return DeskTopic(subject.subjectId, row.topic.topicId, row.topic.name, view)
     }
 
     /** Hides a start/continue failure. */

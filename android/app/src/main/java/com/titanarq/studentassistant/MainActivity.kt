@@ -20,6 +20,7 @@ import com.titanarq.studentassistant.backend.ConnectionTestViewModel
 import com.titanarq.studentassistant.backend.PairedBackendsScreen
 import com.titanarq.studentassistant.backend.PairedBackendsViewModel
 import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.desk.StudyDeskScreen
 import com.titanarq.studentassistant.desk.StudyDeskViewModel
 import com.titanarq.studentassistant.home.HomeScreen
@@ -55,7 +56,7 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
     val backendsViewModel: PairedBackendsViewModel = viewModel(factory = container.pairedBackendsViewModelFactory)
     val stored by backendsViewModel.backends.collectAsStateWithLifecycle()
     var route by rememberSaveable { mutableStateOf<Route?>(null) }
-    // The topic Route.DESK shows, as [subjectId, topicId, topicName] so it survives recreation.
+    // The topic Route.DESK shows, as [subjectId, topicId, topicName, view] so it survives recreation.
     var deskTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
     // The topic Route.TUTOR asks about, kept the same way.
     var tutorTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
@@ -85,8 +86,8 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
             viewModel = viewModel<HomeViewModel>(factory = container.homeViewModelFactory),
             onSessionOpened = { route = Route.CAPTURE },
             onBackends = { route = Route.BACKENDS },
-            onReadNotes = { topic ->
-                deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
+            onOpenDesk = { topic ->
+                deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName, topic.view.name)
                 route = Route.DESK
             },
             onAskTutor = { topic ->
@@ -109,13 +110,15 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
             }
         }
         Route.DESK -> {
-            val topic = deskTopic?.takeIf { it.size == 3 }?.let { DeskTopic(it[0], it[1], it[2]) }
+            val topic = deskTopic?.takeIf { it.size == 4 }?.let { saved ->
+                DeskView.entries.firstOrNull { it.name == saved[3] }?.let { DeskTopic(saved[0], saved[1], saved[2], it) }
+            }
             if (topic == null) {
                 LaunchedEffect(Unit) { route = Route.HOME }
             } else {
                 StudyDeskScreen(
                     viewModel = viewModel<StudyDeskViewModel>(
-                        key = "desk-${topic.subjectId}/${topic.topicId}",
+                        key = "desk-${topic.subjectId}/${topic.topicId}/${topic.view.segment}",
                         factory = container.studyDeskViewModelFactory(topic),
                     ),
                     onBack = { route = Route.HOME },
@@ -137,7 +140,7 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
                     onLeave = { route = Route.HOME },
                     onEnded = { route = Route.HOME },
                     onOpenNotes = { topic ->
-                        deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName)
+                        deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName, topic.view.name)
                         route = Route.DESK
                     },
                     imageCapture = imageCapture,

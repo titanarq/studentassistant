@@ -22,6 +22,7 @@ import com.titanarq.studentassistant.protocol.NotesGenerationStart
 import com.titanarq.studentassistant.protocol.NotesGenerationState
 import com.titanarq.studentassistant.protocol.NotesGenerationStatus
 import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.protocol.SttStatus
@@ -290,7 +291,8 @@ class CaptureViewModelTest {
         advanceTimeBy(POLL_MS * 5)
         runCurrent()
         assertEquals(3, pollCalls())
-        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo"), viewModel.deskTopic)
+        // The post-session link opens the topic's Construir screen (its workspace).
+        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE), viewModel.deskTopic)
 
         viewModel.closeNotes()
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)

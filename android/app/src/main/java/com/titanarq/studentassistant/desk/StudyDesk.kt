@@ -4,8 +4,10 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
- * The web UI's study desk on the phone (#83): the backend serves the web app, and the app shows a
- * topic's notes page (the notes viewer with the editor chat beside it) in a WebView. The page
+ * The web UI's study desk on the phone (#83): the backend serves the web app, and the app shows one
+ * of a topic's two screens in a WebView (#414): **Construir** (the workspace, `/workspace`: the
+ * document, its sources and the chat that drives the work) or **Estudiar** (`/study`: the study
+ * modes and the material generated from the notes), the same two entries the web desk offers. The page
  * cannot send `Authorization: Bearer`, so the paired token travels in the [TOKEN_COOKIE] cookie,
  * which the backend accepts in its place (docs/modules/server.md).
  */
@@ -13,8 +15,22 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 /** The cookie the backend reads a paired device's token from when no bearer header comes. */
 const val TOKEN_COOKIE = "sa_token"
 
-/** The topic whose notes the study desk screen shows. */
-data class DeskTopic(val subjectId: String, val topicId: String, val topicName: String)
+/** Which of a topic's two web screens the study desk shows; [segment] is its last URL path segment. */
+enum class DeskView(val segment: String) {
+    /** «Construir»: the topic's workspace. */
+    WORKSPACE("workspace"),
+
+    /** «Estudiar»: the topic's study screen. */
+    STUDY("study"),
+}
+
+/** The topic, and which of its screens ([view]), the study desk screen shows. */
+data class DeskTopic(
+    val subjectId: String,
+    val topicId: String,
+    val topicName: String,
+    val view: DeskView = DeskView.WORKSPACE,
+)
 
 /**
  * What the WebView loads: [url], after setting [cookie] for [cookieUrl] (the backend's origin).
@@ -26,11 +42,11 @@ data class DeskPage(val url: String, val cookieUrl: String, val cookie: String, 
 }
 
 /**
- * The web notes page of a topic on the backend at [baseUrl]:
- * `<baseUrl>/subjects/<subjectId>/topics/<topicId>/notes`, each id percent-encoded as one path
- * segment. Null when [baseUrl] is not an `http(s)` URL.
+ * The web page [view] of a topic on the backend at [baseUrl]:
+ * `<baseUrl>/subjects/<subjectId>/topics/<topicId>/<view.segment>`, each id percent-encoded as one
+ * path segment, the base URL's path and query dropped. Null when [baseUrl] is not an `http(s)` URL.
  */
-fun notesPageUrl(baseUrl: String, subjectId: String, topicId: String): String? {
+fun topicPageUrl(baseUrl: String, subjectId: String, topicId: String, view: DeskView): String? {
     val base = baseUrl.toHttpUrlOrNull() ?: return null
     return base.newBuilder()
         .encodedPath("/")
@@ -38,12 +54,20 @@ fun notesPageUrl(baseUrl: String, subjectId: String, topicId: String): String? {
         .addPathSegment(subjectId)
         .addPathSegment("topics")
         .addPathSegment(topicId)
-        .addPathSegment("notes")
+        .addPathSegment(view.segment)
         .query(null)
         .fragment(null)
         .build()
         .toString()
 }
+
+/** «Construir»: `<baseUrl>/subjects/<s>/topics/<t>/workspace`; null for a bad base URL. */
+fun workspacePageUrl(baseUrl: String, subjectId: String, topicId: String): String? =
+    topicPageUrl(baseUrl, subjectId, topicId, DeskView.WORKSPACE)
+
+/** «Estudiar»: `<baseUrl>/subjects/<s>/topics/<t>/study`; null for a bad base URL. */
+fun studyPageUrl(baseUrl: String, subjectId: String, topicId: String): String? =
+    topicPageUrl(baseUrl, subjectId, topicId, DeskView.STUDY)
 
 /** The backend's origin (`scheme://host:port/`), the URL its cookie is set for; null when not http(s). */
 fun backendOrigin(baseUrl: String): String? = baseUrl.toHttpUrlOrNull()?.let { origin(it) }
@@ -55,9 +79,9 @@ fun backendOrigin(baseUrl: String): String? = baseUrl.toHttpUrlOrNull()?.let { o
  */
 fun tokenCookie(token: String): String = "$TOKEN_COOKIE=$token; Path=/; HttpOnly; SameSite=Strict"
 
-/** The page of a topic's notes on the backend at [baseUrl] with [token]; null for a bad base URL. */
+/** The page [DeskTopic.view] of [topic] on the backend at [baseUrl] with [token]; null for a bad base URL. */
 fun deskPage(baseUrl: String, token: String, topic: DeskTopic): DeskPage? {
-    val url = notesPageUrl(baseUrl, topic.subjectId, topic.topicId) ?: return null
+    val url = topicPageUrl(baseUrl, topic.subjectId, topic.topicId, topic.view) ?: return null
     val cookieUrl = backendOrigin(baseUrl) ?: return null
     return DeskPage(url, cookieUrl, tokenCookie(token), token)
 }
