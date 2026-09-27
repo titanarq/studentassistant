@@ -28,7 +28,7 @@ import {
   swapGlobal,
   swapProperty,
 } from "./testing";
-import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
+import { LOAD_TIMEOUT, PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const NOW = 1790251200000;
 
@@ -1337,15 +1337,18 @@ describe("a dropped connection (#411)", () => {
   }
 
   /** Lets the socket's backoff run out, its resume answer, and the new connection say hello. */
-  async function reconnect(delayMs = 1000): Promise<FakeWebSocket> {
+  async function reconnect(
+    delayMs = 1000,
+    sttMode: "client" | "server" = "client",
+  ): Promise<FakeWebSocket> {
     const count = fakes.sockets.length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(delayMs);
     });
-    await waitFor(() => expect(fakes.sockets).toHaveLength(count + 1));
+    await waitFor(() => expect(fakes.sockets).toHaveLength(count + 1), { timeout: LOAD_TIMEOUT });
     await act(async () => {
       socket().serverOpen();
-      socket().serverMessage(helloAck());
+      socket().serverMessage(helloAck(sttMode));
     });
     return socket();
   }
@@ -1407,6 +1410,79 @@ describe("a dropped connection (#411)", () => {
     expect(sentFrames.filter((frame) => frame.type === "button").at(-1)).toMatchObject({
       button: "pause",
     });
+  });
+
+  /** A tenth of a second of a 16 kHz microphone, as the worklet processor hands it over. */
+  async function speak(startTimeSec: number): Promise<void> {
+    const chunk: PcmWorkletChunk = {
+      samples: Float32Array.from({ length: 1600 }, () => 0.25),
+      startTimeSec,
+    };
+    await act(async () => {
+      fakes.workletNodes[0].emitProcessorMessage(chunk);
+    });
+  }
+
+  /** The `seq` of every audio frame a connection carried. */
+  function audioSeqs(fake: FakeWebSocket): number[] {
+    return fake.sentBinary.map((bytes) =>
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(6, false),
+    );
+  }
+
+  it("reconnects in server STT mode too and streams from frame 0 to a restarted backend (#419)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open("server");
+    await speak(0);
+    await speak(0.1);
+    const first = socket();
+    expect(audioSeqs(first)).toEqual([0, 1]);
+
+    await act(async () => {
+      first.serverClose(1012);
+    });
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Reconectando…",
+    );
+    // The microphone goes on; what it hears during the outage is not sent anywhere.
+    expect(fakes.audioTrack.readyState).toBe("live");
+    await speak(0.2);
+
+    const next = await reconnect(1000, "server");
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Conexión recuperada",
+    );
+    await speak(0.3);
+    await speak(0.4);
+
+    expect(audioSeqs(first)).toEqual([0, 1]);
+    expect(audioSeqs(next)).toEqual([0, 1]);
+    expect(fakes.workletNodes).toHaveLength(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says pause again on a new connection in server STT mode while the tab is hidden (#419)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open("server");
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+    expect(fakes.audioTrack.readyState).toBe("ended");
+
+    await act(async () => {
+      socket().serverClose(1006);
+    });
+    const next = await reconnect(1000, "server");
+
+    const sentFrames = next.sentText.map((text) => JSON.parse(text) as SentFrame);
+    expect(sentFrames[0].type).toBe("hello");
+    expect(sentFrames.filter((frame) => frame.type === "button").at(-1)).toMatchObject({
+      button: "pause",
+    });
+    expect(next.sentBinary).toEqual([]);
+    expect(fakes.workletNodes).toHaveLength(1);
   });
 
   it("clears the long-outage message once the connection comes back", async () => {

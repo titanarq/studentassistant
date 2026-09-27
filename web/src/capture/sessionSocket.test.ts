@@ -28,6 +28,7 @@ import {
   SessionSocket,
   socketUrl,
 } from "./sessionSocket";
+import { encodeAudioFrame } from "./audioFrames";
 import { type FakeWebSocket, installWebSocketFake } from "./testing";
 
 const WS_PATH = "/ws/sessions/s-20260924-1810";
@@ -690,19 +691,126 @@ describe("reconnect (#411)", () => {
     expect([1, 2].map((index) => sentJson(session.sockets[1], index).segment_id)).toEqual(["b", "c"]);
   });
 
-  it("does not reconnect a session in server STT mode", async () => {
-    const session = await running(undefined, {
-      ack: {
-        ...example<HelloAck>("server.hello.ack"),
-        stt_mode: "server",
-        audio_format: { encoding: "pcm16", sample_rate_hz: 16000, channels: 1 },
-      },
-    });
+  /** The `hello.ack` of a backend that transcribes the streamed audio itself. */
+  const SERVER_ACK: HelloAck = {
+    ...example<HelloAck>("server.hello.ack"),
+    stt_mode: "server",
+    audio_format: { encoding: "pcm16", sample_rate_hz: 16000, channels: 1 },
+  };
 
+  /** A frame as the audio stream builds it, with its own counter. */
+  function frame(seq: number): Uint8Array<ArrayBuffer> {
+    return encodeAudioFrame({ seq, clientTimeMs: CLIENT_TIME_MS + seq * 100, pcm: new Uint8Array(4) });
+  }
+
+  /** The `seq` of every audio frame a connection carried. */
+  function seqs(fake: FakeWebSocket): number[] {
+    return fake.sentBinary.map((bytes) =>
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(6, false),
+    );
+  }
+
+  /** The backend's audio ack. */
+  function audioAck(seq: number): string {
+    return JSON.stringify({ type: "ack", audio_seq: seq, server_time_ms: CLIENT_TIME_MS });
+  }
+
+  /** Reconnects a dropped server-mode session and answers the new `hello`. */
+  async function reconnect(session: Reconnecting, index: number): Promise<FakeWebSocket> {
+    await vi.advanceTimersByTimeAsync(1000);
+    const next = session.sockets[index];
+    next.serverOpen();
+    next.serverMessage(JSON.stringify(SERVER_ACK));
+    return next;
+  }
+
+  it("reconnects a session in server STT mode and streams from frame 0 to a restarted backend (#419)", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    const first = session.sockets[0];
+    for (let seq = 0; seq < 3; seq += 1) session.socket.sendAudio(frame(seq));
+    first.serverMessage(audioAck(2));
+    expect(seqs(first)).toEqual([0, 1, 2]);
+
+    first.serverClose(1012);
+    expect(session.events.at(-1)).toEqual({ kind: "reconnecting" });
+    // The outage's audio is dropped; a button waits for the resume.
+    session.socket.sendAudio(frame(3));
+    session.socket.sendButton("pause", CLIENT_TIME_MS);
+    expect(session.socket.queuedCount).toBe(1);
+
+    const next = await reconnect(session, 1);
+    expect(session.events.at(-1)).toMatchObject({ kind: "reconnected" });
+    expect(types(next)).toEqual(["hello", "button"]);
+    expect(next.sentBinary).toEqual([]);
+
+    // No resume ack: the backend starts over, and so does the numbering.
+    for (let seq = 4; seq < 7; seq += 1) session.socket.sendAudio(frame(seq));
+    expect(seqs(next)).toEqual([0, 1, 2]);
+    next.serverMessage(audioAck(2));
+    session.socket.sendAudio(frame(7));
+    expect(seqs(next)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("goes on from the resume ack of a backend that kept the session", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    for (let seq = 0; seq < 5; seq += 1) session.socket.sendAudio(frame(seq));
+    session.sockets[0].serverMessage(audioAck(2));
+    // Frames 3 and 4 went into a connection that died before they reached the backend.
     session.sockets[0].serverClose(1006);
-    await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(session.sockets).toHaveLength(1);
-    expect(session.events).toEqual([{ kind: "closed", code: 1006, reason: "", wasClean: false }]);
+    const next = await reconnect(session, 1);
+    next.serverMessage(audioAck(2));
+    session.socket.sendAudio(frame(5));
+    session.socket.sendAudio(frame(6));
+
+    expect(seqs(next)).toEqual([3, 4]);
+  });
+
+  it("catches up when frames went out before the resume ack arrived", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    for (let seq = 0; seq < 10; seq += 1) session.socket.sendAudio(frame(seq));
+    session.sockets[0].serverMessage(audioAck(9));
+    session.sockets[0].serverClose(1006);
+
+    const next = await reconnect(session, 1);
+    session.socket.sendAudio(frame(10));
+    // The backend drops frame 0 as a duplicate and answers with where it stands.
+    next.serverMessage(audioAck(9));
+    session.socket.sendAudio(frame(11));
+
+    expect(seqs(next)).toEqual([0, 10]);
+  });
+
+  it("numbers from the ack right after hello.ack on a first connection too", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    session.sockets[0].serverMessage(audioAck(41));
+    session.socket.sendAudio(frame(0));
+
+    expect(seqs(session.sockets[0])).toEqual([42]);
+  });
+
+  it("leaves the numbering alone for the acks of a running connection, and the caller's bytes as they were", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    const sent = [frame(7), frame(8), frame(9)];
+    for (const bytes of sent) session.socket.sendAudio(bytes);
+    session.sockets[0].serverMessage(audioAck(0));
+    session.sockets[0].serverMessage(audioAck(2));
+    session.socket.sendAudio(frame(10));
+
+    expect(seqs(session.sockets[0])).toEqual([0, 1, 2, 3]);
+    expect(sent.map((bytes) => new DataView(bytes.buffer).getUint32(6, false))).toEqual([7, 8, 9]);
+  });
+
+  it("does not count a frame dropped by a connection that is going down", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    session.socket.sendAudio(frame(0));
+    session.sockets[0].serverClose(1006);
+    session.socket.sendAudio(frame(1));
+
+    const next = await reconnect(session, 1);
+    session.socket.sendAudio(frame(2));
+
+    expect(seqs(session.sockets[0])).toEqual([0]);
+    expect(seqs(next)).toEqual([0]);
   });
 });

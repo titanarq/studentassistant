@@ -133,7 +133,10 @@ export class AudioStreamTranscriber implements ClientTranscriber {
   private source: MediaStreamAudioSourceNode | null = null;
   private stream: MediaStream | null = null;
   private resampler: AudioResampler | null = null;
-  /** The per-session frame counter; every frame carries the next one, from 0. */
+  /**
+   * The frame counter, from 0. The session socket puts its own `seq` on the wire (#419), which
+   * starts over after a reconnect, so this only numbers the frames of an uninterrupted stream.
+   */
   private seq = 0;
   /** The client clock reading the audio clock started from; see `clientTimeMs`. */
   private clockOriginMs = 0;

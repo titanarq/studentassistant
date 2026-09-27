@@ -60,8 +60,8 @@
   state, no offline spool (the Android app owns the spool).
 - **Capture reconnect** (#411): a dropped capture connection (a backend restart, a blip) no
   longer ends the capture. On a close that is not final (anything but the page's own end, 4404,
-  or a protocol/trust refusal: 1002, 1003, 1007, 1008) of a session running in `client` STT
-  mode, `SessionSocket` (given `reconnect`) reports `reconnecting` once and retries with the
+  or a protocol/trust refusal: 1002, 1003, 1007, 1008) of a running session, in either STT
+  mode since #419, `SessionSocket` (given `reconnect`) reports `reconnecting` once and retries with the
   backoff `RECONNECT_DELAYS_MS` (1, 2, 5, 10 s, then every 30 s; reset by every resume). Each
   attempt first asks `POST /api/sessions/{id}/resume` (a restarted backend refuses the socket
   of an unresumed session): no answer or a 5xx tries again later, any other refusal ends it
@@ -69,10 +69,17 @@
   offline, finals, buttons, markers and command `ack`s wait in a bounded in-memory queue
   (`MAX_QUEUED_FRAMES`, 500, oldest dropped); partials and audio are dropped. After the new
   `hello.ack` the queue goes out in order and the socket reports `reconnected` (the backend
-  drops a final whose `segment_id` it already handled, so a frame sent twice is harmless). A
-  session in `server` STT mode does not reconnect (the backend expects contiguous audio `seq`s
-  a restarted backend no longer knows) and keeps the blocking lost-connection message. The
-  screen meanwhile keeps the camera, the recognizer and the wake lock running and the controls
+  drops a final whose `segment_id` it already handled, so a frame sent twice is harmless). In
+  `server` STT mode (#419) the socket puts its own `seq` on every audio frame, since the
+  backend feeds frames contiguously from its own next `seq`: a restarted backend starts again
+  at 0, and one that kept the session knows only the frames that reached it. Every
+  `hello.ack` restarts the numbering at 0, and a server `ack` whose `audio_seq` is at or past
+  the next number moves it to `audio_seq + 1` -- the resume `ack` a backend that kept the
+  session sends right after `hello.ack` (a frame sent before that ack arrived is dropped by
+  the backend as a duplicate and answered with the same ack). In a running connection an
+  `ack` never reaches the next number. The audio of the outage itself is lost; the microphone
+  keeps running. A hidden tab (#425) says `pause` again on the new connection in either mode.
+  The screen meanwhile keeps the camera, the recognizer (or audio stream) and the wake lock running and the controls
   enabled, shows «Reconectando…» in "Estado de la conexión" and, after a reconnect,
   «Conexión recuperada» for `RECOVERED_MS` (5 s); only after `LONG_OUTAGE_MS` (2 min) of outage
   does it show the blocking "Se ha perdido la conexión con el servidor…" (still retrying; a
