@@ -9,6 +9,7 @@ import { clock } from "./ChatPanel";
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const STREAM = `${BASE}/workspace/stream`;
 const CHAT = `${BASE}/notes/chat`;
+const MESSAGES = `${BASE}/workspace/messages`;
 
 const TRANSCRIPT = {
   session_id: "s-20260926-1000",
@@ -41,6 +42,8 @@ type Stream = ReturnType<typeof streamResponse>;
 function setup(routes: Record<string, Response | (() => Response | Promise<Response>)> = {}) {
   const streams: Stream[] = [];
   const reloadNotes = vi.fn(async () => undefined);
+  const doubtsChanged = vi.fn();
+  const onOpenSource = vi.fn();
   const fetchMock = stubApi({
     [STREAM]: () => {
       const stream = streamResponse();
@@ -56,10 +59,12 @@ function setup(routes: Record<string, Response | (() => Response | Promise<Respo
     notes: { kind: "empty" },
     changedSections: new Set(),
     reloadNotes,
+    doubtsKey: 0,
+    doubtsChanged,
   };
   render(
     <WorkspaceContext.Provider value={state}>
-      <WorkspaceChatSlot onOpenSource={vi.fn()} retryDelays={[5]} />
+      <WorkspaceChatSlot onOpenSource={onOpenSource} retryDelays={[5]} />
     </WorkspaceContext.Provider>,
   );
   const opened = async (count = 1) => {
@@ -68,7 +73,7 @@ function setup(routes: Record<string, Response | (() => Response | Promise<Respo
   };
   const calls = (path: string, method = "GET") =>
     fetchMock.mock.calls.filter(([input, init]) => input === path && ((init as RequestInit | undefined)?.method ?? "GET") === method);
-  return { streams, reloadNotes, fetchMock, opened, calls };
+  return { streams, reloadNotes, doubtsChanged, onOpenSource, fetchMock, opened, calls };
 }
 
 const log = () => screen.getByRole("log", { name: "Conversación con el asistente" });
@@ -165,48 +170,408 @@ it("keeps the order of several queued requests", async () => {
   expect(screen.getAllByText("En cola…")).toHaveLength(2);
 });
 
-it("sends a typed message with Enter and shows its reply once, although the workspace stream broadcasts it too", async () => {
-  const post = streamResponse();
-  const { opened, calls, reloadNotes } = setup({ [`POST ${CHAT}`]: () => post.response });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function posted(requests: Record<string, unknown>[], messageId = "msg-0123abcd") {
+  return jsonResponse({ message_id: messageId, requests, classified: true }, 202);
+}
+
+function typedRequest(requestId: string, kind: string, summary: string, text: string, extra: Record<string, unknown> = {}) {
+  return { request_id: requestId, kind, summary, text, t_start_ms: 0, t_end_ms: 0, detector: "typed", ...extra };
+}
+
+async function type(text: string) {
+  const input = screen.getByLabelText("Mensaje para el asistente");
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.keyDown(input, { key: "Enter" });
+}
+
+it("sends a typed message to the classifier with Enter, queues its requests and follows their turns", async () => {
+  const answer = deferred<Response>();
+  const { opened, calls, reloadNotes } = setup({ [`POST ${MESSAGES}`]: () => answer.promise });
   const stream = await opened();
 
   const input = screen.getByLabelText("Mensaje para el asistente");
   const send = screen.getByRole("button", { name: "Enviar" });
   expect(send).toBeDisabled();
-  fireEvent.change(input, { target: { value: "Pon un ejemplo" } });
+  fireEvent.change(input, { target: { value: "Pon un ejemplo y aparta la 9" } });
   expect(send).toBeEnabled();
   fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-  expect(calls(CHAT, "POST")).toHaveLength(0);
+  expect(calls(MESSAGES, "POST")).toHaveLength(0);
   fireEvent.keyDown(input, { key: "Enter" });
 
-  await waitFor(() => expect(calls(CHAT, "POST")).toHaveLength(1));
-  expect(JSON.parse(String((calls(CHAT, "POST")[0][1] as RequestInit).body))).toEqual({
-    message: "Pon un ejemplo",
-    confirm_over_cap: false,
-  });
+  await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(1));
+  expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo y aparta la 9" });
+  expect(calls(CHAT, "POST")).toHaveLength(0);
   expect(input).toHaveValue("");
-  const entry = (await within(log()).findByText("Pon un ejemplo")).closest("li") as HTMLElement;
+  expect(await within(log()).findByText("Enviando…")).toBeInTheDocument();
+
+  await act(async () =>
+    answer.resolve(
+      posted([
+        typedRequest("req-t1", "edit", "Un ejemplo", "Pon un ejemplo y aparta la 9"),
+        typedRequest("req-t2", "set_aside", "Apartar la página 9", "Pon un ejemplo y aparta la 9", { targets: ["sources/notes/page-009.jpg"] }),
+      ]),
+    ),
+  );
+  expect(await within(log()).findAllByText("En cola…")).toHaveLength(2);
+  expect(screen.queryByText("Enviando…")).toBeNull();
+  const [first, second] = within(log()).getAllByRole("listitem");
+  expect(within(first).getByText("Escribiste")).toBeInTheDocument();
+  expect(within(first).getByText("Pon un ejemplo y aparta la 9")).toBeInTheDocument();
+  expect(within(second).getByText("Y además")).toBeInTheDocument();
+  expect(within(second).getByText("Apartar la página 9")).toBeInTheDocument();
 
   act(() => {
-    post.push(sseEvent("reply.delta", { text: "Añado ", attempt: 1 }));
-    stream.push(sseEvent("turn.started", { turn_id: "turn-9", request_id: null, origin: "typed", kind: "revise" }));
+    // The stream's own announcement of a request already shown adds nothing.
+    stream.push(sseEvent("request.detected", { request_id: "req-t1", kind: "edit", summary: "Un ejemplo", origin: "typed", transcript: { text: "Pon un ejemplo y aparta la 9" } }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-9", request_id: "req-t1", origin: "typed", kind: "revise" }));
     stream.push(sseEvent("reply.delta", { turn_id: "turn-9", text: "Añado ", attempt: 1 }));
-    post.push(sseEvent("reply.delta", { text: "un ejemplo.", attempt: 1 }));
     stream.push(sseEvent("reply.delta", { turn_id: "turn-9", text: "un ejemplo.", attempt: 1 }));
   });
-  expect(await within(entry).findByText("Añado un ejemplo.")).toBeInTheDocument();
+  expect(await within(first).findByText("Añado un ejemplo.")).toBeInTheDocument();
+  expect(within(second).getByText("En cola…")).toBeInTheDocument();
 
-  const result = revision({ turn_id: "turn-9", message: "Pon un ejemplo", reply: "Añado un ejemplo de Manchester." });
   act(() => {
-    stream.push(sseEvent("turn.result", { ...result, request_id: null, kind: "revise" }));
-    post.push(sseEvent("result", result));
-    post.close();
+    stream.push(sseEvent("turn.result", { ...revision({ turn_id: "turn-9", message: "Pon un ejemplo y aparta la 9", reply: "Añado un ejemplo de Manchester." }), request_id: "req-t1", kind: "revise" }));
+    stream.push(sseEvent("notes.changed", { revision: "b".repeat(64), origin: "editor", summary: "Ejemplo", turn_id: "turn-9" }));
   });
-  expect(await within(entry).findByText("Añado un ejemplo de Manchester.")).toBeInTheDocument();
+  expect(await within(first).findByText("Añado un ejemplo de Manchester.")).toBeInTheDocument();
   await waitFor(() => expect(reloadNotes).toHaveBeenCalledWith(["contexto"]));
-  expect(within(log()).getAllByRole("listitem")).toHaveLength(1);
+  expect(within(log()).getAllByRole("listitem")).toHaveLength(2);
   expect(screen.getAllByText("Añado un ejemplo de Manchester.")).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Deshacer el último cambio" })).toBeEnabled();
+});
+
+it("shows a set-aside or restore request as one short line", async () => {
+  const { opened } = setup({
+    [`POST ${MESSAGES}`]: () =>
+      posted([typedRequest("req-t1", "set_aside", "Apartar la página 9", "aparta la 9", { targets: ["sources/notes/page-009.jpg"] })]),
+  });
+  const stream = await opened();
+  await type("aparta la 9");
+  const entry = (await within(log()).findByText("aparta la 9")).closest("li") as HTMLElement;
+  expect(await within(entry).findByText("En cola…")).toBeInTheDocument();
+
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-3", request_id: "req-t1", origin: "typed", kind: "set_aside" }));
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-3", text: "He apartado la página 9.", attempt: 1 }));
+    stream.push(
+      sseEvent("turn.result", {
+        turn_id: "turn-3",
+        request_id: "req-t1",
+        kind: "set_aside",
+        origin: "typed",
+        request: null,
+        decision: "set_aside",
+        source_ids: ["sources/notes/page-009.jpg"],
+        message: "aparta la 9",
+        reply: "He apartado la página 9.",
+        applied: true,
+      }),
+    );
+  });
+  expect(await within(entry).findByText("He apartado la página 9.")).toHaveClass("ws-chat-line");
+  expect(within(entry).queryByText("Asistente")).toBeNull();
+  expect(within(entry).queryByText(/Cambio aplicado/)).toBeNull();
+});
+
+it("says so when a typed message is refused", async () => {
+  setup({
+    [`POST ${MESSAGES}`]: jsonResponse({ detail: "El asistente no está disponible: falta la conexión con Claude." }, 503),
+  });
+  await type("Hola");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo completar: El asistente no está disponible: falta la conexión con Claude.");
+  expect(screen.getByText("Hola")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Enviar" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Continuar igualmente" })).toBeNull();
+});
+
+function incorporation(turnId: string, requestId: string | null, extra: Record<string, unknown> = {}) {
+  return {
+    ...revision({
+      turn_id: turnId,
+      message: "Incorpora las páginas 3 y 4",
+      reply: "He añadido las causas de las páginas 3 y 4.",
+      summary: "Causas de las páginas 3 y 4",
+    }),
+    request_id: requestId,
+    kind: "incorporate",
+    origin: "voice",
+    source_ids: ["sources/notes/page-003.jpg", "sources/notes/page-004.jpg"],
+    doubts: ["p-000004", "p-000005"],
+    nothing_new: [],
+    ...extra,
+  };
+}
+
+it("shows an incorporation with its sources, its change and the doubts it raised", async () => {
+  const { opened, onOpenSource } = setup();
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-4", kind: "incorporate", summary: "Incorporar las páginas 3 y 4", origin: "voice", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-4", request_id: "req-4", origin: "voice", kind: "incorporate" }));
+  });
+  const entry = (await screen.findByText(/Pediste: Incorporar las páginas 3 y 4/)).closest("li") as HTMLElement;
+  expect(await within(entry).findByText("Incorporando…")).toBeInTheDocument();
+
+  act(() => stream.push(sseEvent("turn.result", incorporation("turn-4", "req-4"))));
+  const line = await within(entry).findByText(/Incorporadas:/);
+  expect(line).toHaveTextContent("Incorporadas: página 3, página 4");
+  expect(within(entry).getByText("He añadido las causas de las páginas 3 y 4.")).toBeInTheDocument();
+  expect(within(entry).getByText(/Cambio aplicado: Causas de las páginas 3 y 4/)).toBeInTheDocument();
+  expect(within(entry).getByText("Han surgido 2 dudas: te las pregunto aquí, de una en una.")).toBeInTheDocument();
+  fireEvent.click(within(entry).getByRole("button", { name: "Ver los cambios" }));
+  expect(within(entry).getByText(/Cambios en los apuntes/)).toBeInTheDocument();
+
+  fireEvent.click(within(line).getByRole("button", { name: "Ver la fuente: página 4" }));
+  expect(onOpenSource).toHaveBeenCalledWith(
+    "recurso-notes-page-004.jpg",
+    expect.any(HTMLElement),
+    "[Apuntes, página 4](../sources/notes/page-004.jpg)",
+  );
+  expect(screen.getByRole("button", { name: "Deshacer el último cambio" })).toBeEnabled();
+});
+
+it("shows a whole-topic run as one entry with its progress and each batch below it", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-5", kind: "prepare_notes", summary: "Preparar el tema", origin: "voice", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-run", request_id: "req-5", origin: "voice", kind: "prepare_notes" }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-b1", request_id: null, origin: "typed", kind: "incorporate" }));
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-b1", text: "Añado el contexto…", attempt: 1 }));
+  });
+  const run = (await screen.findByText(/Pediste: Preparar el tema/)).closest("li") as HTMLElement;
+  const batches = await within(run).findByRole("list", { name: "Tandas de la preparación" });
+  expect(await within(batches).findByText("Añado el contexto…")).toBeInTheDocument();
+
+  act(() => {
+    stream.push(
+      sseEvent(
+        "turn.result",
+        incorporation("turn-b1", null, {
+          origin: "typed",
+          source_ids: ["sources/notes/page-001.jpg", "sources/notes/page-002.jpg"],
+          reply: "He añadido el contexto.",
+          doubts: [],
+        }),
+      ),
+    );
+    stream.push(sseEvent("incorporation.progress", { done: 2, total: 8, source_ids: ["sources/notes/page-001.jpg", "sources/notes/page-002.jpg"] }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-b2", request_id: null, origin: "typed", kind: "incorporate" }));
+  });
+  expect(await within(run).findByText("2 de 8 páginas")).toBeInTheDocument();
+  expect(within(batches).getByText(/Incorporadas:/)).toHaveTextContent("Incorporadas: página 1, página 2");
+  expect(within(batches).getByText("He añadido el contexto.")).toBeInTheDocument();
+  expect(await within(batches).findAllByRole("listitem")).toHaveLength(2);
+  // One entry for the run: the batches are inside it.
+  expect(within(log()).getAllByRole("listitem").filter((li) => li.parentElement === log())).toHaveLength(1);
+
+  act(() => {
+    stream.push(sseEvent("turn.result", incorporation("turn-b2", null, { origin: "typed", source_ids: ["sources/notes/page-003.jpg"], doubts: [] })));
+    stream.push(sseEvent("incorporation.progress", { done: 8, total: 8, source_ids: ["sources/notes/page-003.jpg"] }));
+    stream.push(sseEvent("turn.result", { turn_id: "turn-run", request_id: "req-5", kind: "prepare_notes", version: 3, draft: false, warning: null }));
+  });
+  expect(await within(run).findByText("He preparado los apuntes del tema (versión 3).")).toBeInTheDocument();
+  expect(within(run).getByText("8 de 8 páginas")).toBeInTheDocument();
+});
+
+it("gives a run started elsewhere an entry of its own", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-b1", request_id: null, origin: "typed", kind: "incorporate" }));
+    stream.push(sseEvent("turn.result", incorporation("turn-b1", null, { origin: "typed", doubts: [] })));
+    stream.push(sseEvent("incorporation.progress", { done: 2, total: 2, source_ids: [] }));
+  });
+  const run = (await screen.findByText("Preparación del tema")).closest("li") as HTMLElement;
+  expect(await within(run).findByText("2 de 2 páginas")).toBeInTheDocument();
+  expect(within(run).getByText(/Incorporadas:/)).toHaveTextContent("Incorporadas: página 3, página 4");
+  expect(run).not.toHaveAttribute("aria-busy");
+});
+
+const ASKED = {
+  pending_id: "p-000004",
+  question: "En la página 3 no leo bien una palabra: ¿«escrita» o «escrito»?",
+  suggestions: ["escrita", "escrito"],
+  options: [],
+  refs: ["sources/notes/page-003.jpg"],
+};
+
+it("asks a doubt in the chat, takes the typed answer and marks it answered", async () => {
+  const { opened, doubtsChanged, calls } = setup({
+    [`POST ${MESSAGES}`]: () => posted([typedRequest("req-t1", "doubt_answer", "Responder la duda", "la 2", { pending_id: "p-000004", answer: "2" })]),
+  });
+  const stream = await opened();
+  const input = screen.getByLabelText("Mensaje para el asistente");
+  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+
+  act(() => stream.push(sseEvent("doubt.asked", ASKED)));
+  const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
+  expect(doubt).toHaveClass("ws-chat-entry-doubt");
+  expect(within(doubt).getByText("Duda")).toBeInTheDocument();
+  const suggestions = within(doubt).getByRole("list", { name: "Sugerencias" });
+  expect(suggestions.tagName).toBe("OL");
+  expect(within(suggestions).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["escrita", "escrito"]);
+  expect(within(doubt).getByRole("button", { name: "Ver la fuente: página 3" })).toBeInTheDocument();
+  // No answer buttons: it is answered by typing or saying it.
+  expect(within(doubt).queryByRole("button", { name: /escrit/ })).toBeNull();
+  expect(input).toHaveAttribute("placeholder", "Responde a la duda o escribe otra cosa…");
+  expect(doubtsChanged).toHaveBeenCalledTimes(1);
+
+  await type("la 2");
+  await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(1));
+  const answer = (await within(log()).findByText("la 2")).closest("li") as HTMLElement;
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-7", request_id: "req-t1", origin: "typed", kind: "doubt_answer" }));
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-7", text: "Pone «escrito».", attempt: 1 }));
+    stream.push(
+      sseEvent("turn.result", {
+        subject: "historia",
+        topic: "revolucion-industrial",
+        pending_id: "p-000004",
+        status: "resolved",
+        resolution: "Pone «escrito».",
+        notes_changed: true,
+        revision: "c".repeat(64),
+        turn_id: "turn-7",
+        request_id: "req-t1",
+        kind: "doubt_answer",
+      }),
+    );
+    stream.push(sseEvent("doubt.resolved", { pending_id: "p-000004", status: "resolved", resolution: "Pone «escrito».", notes_changed: true }));
+  });
+  expect(await within(answer).findByText("Pone «escrito».")).toBeInTheDocument();
+  expect(await within(doubt).findByText("Respondida: Pone «escrito».")).toBeInTheDocument();
+  expect(within(doubt).getByText("Duda resuelta")).toBeInTheDocument();
+  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(doubtsChanged).toHaveBeenCalledTimes(2);
+});
+
+it("shows a contradiction's options with their sources, which open in Recursos", async () => {
+  const { opened, onOpenSource } = setup();
+  const stream = await opened();
+  act(() =>
+    stream.push(
+      sseEvent("doubt.asked", {
+        pending_id: "p-000009",
+        question: "Tus apuntes y el libro no dicen lo mismo del año: ¿cuál es?",
+        suggestions: [],
+        options: [
+          { source_id: "sources/notes/page-003.jpg", says: "1760" },
+          { source_id: "sources/book/page-083.jpg", says: "1780" },
+        ],
+        refs: ["sources/notes/page-003.jpg", "sources/book/page-083.jpg"],
+      }),
+    ),
+  );
+  const options = await screen.findByRole("list", { name: "Qué dice cada fuente" });
+  expect(within(options).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    "Página 3: «1760»",
+    "Página 83 del libro: «1780»",
+  ]);
+  fireEvent.click(within(options).getByRole("button", { name: "Ver la fuente: página 83 del libro" }));
+  expect(onOpenSource).toHaveBeenCalledWith(
+    "recurso-book-page-083.jpg",
+    expect.any(HTMLElement),
+    "[Libro, página 83](../sources/book/page-083.jpg)",
+  );
+  // The refs the options already name are not repeated.
+  expect(screen.queryByText(/Sobre:/)).toBeNull();
+});
+
+it("merges the new turn kinds of the history after a reconnect without duplicates", async () => {
+  let reads = 0;
+  const later = [
+    turn({
+      kind: "incorporate",
+      turn_id: "turn-4",
+      origin: "voice",
+      request_summary: "Incorporar las páginas 3 y 4",
+      transcript: { request_id: "req-4", summary: "Incorporar las páginas 3 y 4", ...TRANSCRIPT },
+      message: TRANSCRIPT.text,
+      reply: "He añadido las causas de las páginas 3 y 4.",
+      summary: "Causas de las páginas 3 y 4",
+      commit: "inc444",
+      source_ids: ["sources/notes/page-003.jpg", "sources/notes/page-004.jpg"],
+      diff: DIFF,
+    }),
+    turn({
+      time: "2026-09-25T10:01:00Z",
+      kind: "doubt",
+      message: "",
+      reply: ASKED.question,
+      pending_id: ASKED.pending_id,
+      question: ASKED.question,
+      suggestions: ASKED.suggestions,
+      options: [],
+      doubt_refs: ASKED.refs,
+      status: "resolved",
+      resolution: "Pone «escrito».",
+      answer: "2",
+      applied: true,
+      commit: null,
+      summary: null,
+    }),
+    turn({
+      time: "2026-09-25T10:02:00Z",
+      kind: "triage",
+      turn_id: "turn-8",
+      message: "aparta la 9",
+      reply: "He apartado la página 9.",
+      summary: "set_aside",
+      source_ids: ["sources/notes/page-009.jpg"],
+      commit: null,
+    }),
+    turn({ time: "2026-09-25T10:03:00Z", kind: "doubts_resolved", message: "", reply: "He resuelto 2 dudas con las fuentes.", pending_ids: ["p-000005", "p-000006"], commit: null, summary: null }),
+  ];
+  const { opened, calls } = setup({
+    [CHAT]: () => jsonResponse(history(reads++ === 0 ? [] : later, true)),
+    [`POST ${MESSAGES}`]: () => posted([typedRequest("req-t1", "doubt_answer", "Responder la duda", "la 2", { pending_id: ASKED.pending_id, answer: "2" })]),
+  });
+  const first = await opened(1);
+  await waitFor(() => expect(calls(CHAT)).toHaveLength(1));
+  act(() => {
+    first.push(sseEvent("request.detected", { request_id: "req-4", kind: "incorporate", summary: "Incorporar las páginas 3 y 4", origin: "voice", transcript: TRANSCRIPT }));
+    first.push(sseEvent("turn.started", { turn_id: "turn-4", request_id: "req-4", origin: "voice", kind: "incorporate" }));
+    first.push(sseEvent("turn.result", incorporation("turn-4", "req-4", { commit: "inc444" })));
+    first.push(sseEvent("doubt.asked", ASKED));
+  });
+  const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
+  await type("la 2");
+  const answer = (await within(log()).findByText("la 2")).closest("li") as HTMLElement;
+  act(() => {
+    first.push(sseEvent("turn.started", { turn_id: "turn-7", request_id: "req-t1", origin: "typed", kind: "doubt_answer" }));
+    first.push(sseEvent("turn.result", { pending_id: ASKED.pending_id, status: "resolved", resolution: "Pone «escrito».", notes_changed: true, turn_id: "turn-7", request_id: "req-t1", kind: "doubt_answer" }));
+  });
+  expect(await within(answer).findByText("Pone «escrito».")).toBeInTheDocument();
+
+  // The doubt.resolved and the rest happen while the stream is down.
+  act(() => first.fail());
+  await opened(2);
+  await waitFor(() => expect(calls(CHAT)).toHaveLength(2));
+  expect(await screen.findByText("He apartado la página 9.")).toBeInTheDocument();
+  expect(within(log()).getAllByRole("listitem").filter((li) => li.parentElement === log())).toHaveLength(4);
+  expect(screen.getAllByText(ASKED.question)).toHaveLength(1);
+  // The same element: the doubt is not announced again.
+  expect(screen.getByText(ASKED.question).closest("li")).toBe(doubt);
+  expect(within(doubt).getByText("Respondiste: «2»")).toBeInTheDocument();
+  expect(within(doubt).getByText("Respondida: Pone «escrito».")).toBeInTheDocument();
+  // The answer's own entry went: the doubt says what was answered.
+  expect(answer).not.toBeInTheDocument();
+  const incorporated = screen.getByText(/Incorporadas:/).closest("li") as HTMLElement;
+  expect(incorporated).toHaveTextContent("Incorporadas: página 3, página 4");
+  // A live entry keeps the diff it received.
+  expect(within(incorporated).getByRole("button", { name: "Ver los cambios" })).toBeInTheDocument();
+  expect(screen.getByText("He resuelto 2 dudas con las fuentes.")).toHaveClass("ws-chat-line");
+  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
 });
 
 it("drops the reply streamed so far on reply.restart", async () => {
@@ -327,14 +692,4 @@ it("keeps the undo of the latest applied change", async () => {
   expect(await screen.findByText("Se ha deshecho el cambio «Ejemplo añadido».")).toBeInTheDocument();
   expect(calls(`${CHAT}/undo`, "POST")).toHaveLength(1);
   expect(reloadNotes).toHaveBeenCalledWith([]);
-});
-
-it("says so when a typed message is refused before its turn", async () => {
-  setup({
-    [`POST ${CHAT}`]: jsonResponse({ detail: "Se está preparando el tema; espera a que termine." }, 409),
-  });
-  fireEvent.change(screen.getByLabelText("Mensaje para el asistente"), { target: { value: "Hola" } });
-  fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Se está preparando el tema; espera a que termine.");
-  expect(screen.getByText("Hola")).toBeInTheDocument();
 });

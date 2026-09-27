@@ -4,7 +4,7 @@ import { installCaptureFakes, swapProperty, type CaptureFakes } from "../capture
 import { revision } from "../chat/testChat";
 import { NOTES } from "../notes/testNotes";
 import { PROTOCOL_VERSION } from "../protocol";
-import { jsonResponse, sseResponse, streamResponse, stubApi } from "../test/mockApi";
+import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi";
 import { resourceList } from "./resources";
 import WorkspacePage, { EMPTY_NOTES } from "./WorkspacePage";
 import { parseNotes } from "../notes/markdown";
@@ -212,20 +212,73 @@ it("says there are no notes yet instead of an error", async () => {
 it("refreshes the document after the chat applied a change", async () => {
   let reads = 0;
   const edited = NOTES.replace("La Revolución Industrial empezó", "La Revolución Industrial, dicen, empezó");
+  const stream = streamResponse();
   const fetchMock = renderPage({
     ...ROUTES,
     [`${BASE}/notes`]: () => (reads++ === 0 ? notes() : notes(edited, { revision: "b".repeat(64) })),
-    [`POST ${BASE}/notes/chat`]: () => sseResponse([["result", revision()]]),
+    [`${BASE}/workspace/stream`]: () => stream.response,
+    [`POST ${BASE}/workspace/messages`]: () =>
+      jsonResponse(
+        {
+          message_id: "msg-0123abcd",
+          requests: [{ request_id: "req-t1", kind: "edit", summary: "Ampliar", text: "Amplía", detector: "typed" }],
+          classified: true,
+        },
+        202,
+      ),
   });
   await screen.findByRole("heading", { name: /Contexto/ });
 
   const chat = screen.getByRole("region", { name: "Chat" });
   fireEvent.change(within(chat).getByLabelText("Mensaje para el asistente"), { target: { value: "Amplía" } });
   fireEvent.click(within(chat).getByRole("button", { name: "Enviar" }));
+  expect(await within(chat).findByText("En cola…")).toBeInTheDocument();
+
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-t1", origin: "typed", kind: "revise" }));
+    stream.push(sseEvent("turn.result", { ...revision({ message: "Amplía" }), turn_id: "turn-1", request_id: "req-t1", kind: "revise" }));
+    stream.push(sseEvent("notes.changed", { revision: "b".repeat(64), origin: "editor", summary: "Ampliado", turn_id: "turn-1" }));
+  });
 
   expect(await screen.findByText(/dicen, empezó/)).toBeInTheDocument();
   expect(screen.getByText(/dicen, empezó/).closest(".notes-block")).toHaveClass("notes-changed");
   expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/notes`)).toHaveLength(2);
+});
+
+it("reads the doubts counter again on a doubt of the chat and opens a contradiction's source in Recursos", async () => {
+  let counts = 0;
+  const stream = streamResponse();
+  const fetchMock = renderPage({
+    ...ROUTES,
+    [`${BASE}/workspace/stream`]: () => stream.response,
+    [`${BASE}/pending?status=open`]: () =>
+      jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", open_count: counts++ === 0 ? 3 : 2, items: [] }),
+  });
+  expect(await screen.findByRole("link", { name: "3 dudas pendientes" })).toBeInTheDocument();
+  await screen.findByRole("heading", { name: /Contexto/ });
+
+  act(() =>
+    stream.push(
+      sseEvent("doubt.asked", {
+        pending_id: "p-000007",
+        question: "¿Empezó en 1760 o en 1780?",
+        suggestions: [],
+        options: [
+          { source_id: "sources/notes/page-002.jpg", says: "1760" },
+          { source_id: "sources/book/page-001.jpg", says: "1780" },
+        ],
+        refs: ["sources/notes/page-002.jpg", "sources/book/page-001.jpg"],
+      }),
+    ),
+  );
+  expect(await screen.findByRole("link", { name: "2 dudas pendientes" })).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/pending?status=open`).length).toBeGreaterThanOrEqual(2);
+
+  fireEvent.click(screen.getByRole("button", { name: "Ver la fuente: página 2" }));
+  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
+  const resources = document.getElementById("workspace-panel-resources")!;
+  const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 2" });
+  expect(await within(dialog).findByText("Carbón y hierro")).toBeInTheDocument();
 });
 
 it("switches the single column between document, capture/resources and chat", async () => {

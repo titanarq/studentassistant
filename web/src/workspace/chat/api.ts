@@ -1,8 +1,9 @@
 /**
  * The wire side of the workspace chat panel (#317, epic #311): the conversation so far (`GET
  * .../notes/chat`, read with the voice fields #315 added), the events of the topic's workspace
- * stream (`GET .../workspace/stream`) decoded one by one, and the one place typed messages are
- * sent from (`sendTyped`; #329 moves it to `POST .../workspace/messages`). Bodies are read
+ * stream (`GET .../workspace/stream`) decoded one by one, and typed messages, which go to the
+ * request classifier (`postMessage`, `POST .../workspace/messages`, #327/#329; `sendTyped` over
+ * `POST .../notes/chat` is left for "Continuar igualmente" past the cost cap). Bodies are read
  * leniently, like `src/chat/api.ts`: unknown fields ignored, missing optional ones defaulted, and
  * an event that is not understood is `null` (the stream's list of events is open).
  */
@@ -23,6 +24,50 @@ const strings = (value: unknown): string[] =>
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0);
 
 export type TurnOrigin = "typed" | "voice";
+
+/** One side of a contradiction: a source and what it says. */
+export interface DoubtOption {
+  sourceId: string;
+  says: string;
+}
+
+/** A doubt asked in the chat (#325): `doubt.asked`, or a history turn of kind `doubt`. */
+export interface DoubtView {
+  pendingId: string;
+  question: string;
+  suggestions: string[];
+  options: DoubtOption[];
+  /** The sources the doubt is about (topic-relative ids). */
+  refs: string[];
+  /** `open` until answered; then `resolved`, `auto_resolved` or `dismissed`. */
+  status: string;
+  resolution: string | null;
+  /** What the student answered, when the history knows it. */
+  answer: string | null;
+}
+
+function readOptions(value: unknown): DoubtOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((option) =>
+    isObject(option) && typeof option.source_id === "string" ? [{ sourceId: option.source_id, says: text(option.says) }] : [],
+  );
+}
+
+function readDoubt(body: Json, refs: unknown): DoubtView | null {
+  const pendingId = optionalText(body.pending_id);
+  const question = optionalText(body.question) ?? optionalText(body.reply);
+  if (pendingId === null || question === null) return null;
+  return {
+    pendingId,
+    question,
+    suggestions: strings(body.suggestions),
+    options: readOptions(body.options),
+    refs: strings(refs),
+    status: text(body.status, "open") || "open",
+    resolution: optionalText(body.resolution),
+    answer: optionalText(body.answer),
+  };
+}
 
 /** The raw stretch of the transcript a spoken request came from. */
 export interface SpokenSpan {
@@ -53,7 +98,21 @@ export interface HistoryTurn {
   undone: boolean;
   warning: string | null;
   refs: ChatRef[];
+  /** `incorporate`: the unified diff of `apuntes.md` (other turns have none in the history). */
+  diff: string | null;
+  /** `incorporate`: the sources incorporated; `triage`: the ones set aside or restored. */
+  sourceIds: string[];
+  /** `triage`: what was done. */
+  decision: TriageDecision | null;
+  /** `doubt`: the doubt asked. */
+  doubt: DoubtView | null;
+  /** `doubts_resolved`: the doubts the editor settled from the sources. */
+  pendingIds: string[];
 }
+
+export type TriageDecision = "set_aside" | "restore";
+
+const decisionOf = (value: unknown): TriageDecision | null => (value === "set_aside" || value === "restore" ? value : null);
 
 export interface WorkspaceHistory {
   turns: HistoryTurn[];
@@ -89,6 +148,11 @@ function readHistoryTurn(body: unknown): HistoryTurn | null {
     undone: body.undone === true,
     warning: optionalText(body.warning),
     refs: readRefs(body.refs),
+    diff: optionalText(body.diff),
+    sourceIds: strings(body.source_ids),
+    decision: body.kind === "triage" ? decisionOf(body.summary) : null,
+    doubt: body.kind === "doubt" ? readDoubt(body, body.doubt_refs) : null,
+    pendingIds: strings(body.pending_ids),
   };
 }
 
@@ -143,7 +207,16 @@ export interface TurnOutcome {
   diff: string | null;
   commit: string | null;
   warning: string | null;
+  /** `incorporate` / `triage`: the sources incorporated, set aside or restored. */
+  sourceIds: string[];
+  /** `incorporate`: how many doubts it raised. */
+  doubts: number;
+  decision: TriageDecision | null;
+  /** `doubt_answer`: the doubt answered. */
+  pendingId: string | null;
 }
+
+const OUTCOME_EXTRAS = { sourceIds: [], doubts: 0, decision: null, pendingId: null } satisfies Partial<TurnOutcome>;
 
 /** The reply a "prepárame el tema" turn shows, which has no reply of its own. */
 function generationReply(body: Json): string {
@@ -174,6 +247,31 @@ export function readOutcome(body: unknown): TurnOutcome | null {
       diff: null,
       commit: optionalText(body.commit),
       warning: optionalText(body.warning),
+      ...OUTCOME_EXTRAS,
+    };
+  }
+  if (kind === "doubt_answer") {
+    // A `ResolutionResult`: the resolution is what the chat shows as the reply.
+    const pendingId = optionalText(body.pending_id);
+    if (pendingId === null) return null;
+    const changed = body.notes_changed === true;
+    return {
+      turnId: optionalText(body.turn_id),
+      requestId,
+      kind,
+      message: null,
+      transcript: null,
+      requestSummary: null,
+      reply: optionalText(body.resolution) ?? (body.status === "dismissed" ? "Descartada." : "Anotado."),
+      applied: changed,
+      summary: null,
+      notesChanged: changed,
+      changedSections: [],
+      diff: null,
+      commit: optionalText(body.commit),
+      warning: optionalText(body.warning),
+      ...OUTCOME_EXTRAS,
+      pendingId,
     };
   }
   const revision: RevisionResult | null = readRevision(body);
@@ -193,18 +291,34 @@ export function readOutcome(body: unknown): TurnOutcome | null {
     diff: revision.diff !== "" ? revision.diff : null,
     commit: revision.commit,
     warning: revision.warning,
+    sourceIds: strings(body.source_ids),
+    doubts: Array.isArray(body.doubts) ? body.doubts.length : 0,
+    // A `TriageTurn` of a `set_aside` / `restore` turn.
+    decision: decisionOf(body.decision) ?? decisionOf(kind),
+    pendingId: null,
   };
 }
 
 /** One event of the workspace stream the panel understands. */
 export type WorkspaceEvent =
-  | { type: "request.detected"; requestId: string; kind: string; summary: string; transcript: SpokenSpan | null }
+  | {
+      type: "request.detected";
+      requestId: string;
+      kind: string;
+      summary: string;
+      origin: TurnOrigin;
+      transcript: SpokenSpan | null;
+    }
   | { type: "turn.started"; turnId: string; requestId: string | null; origin: TurnOrigin; kind: string }
   | { type: "reply.delta"; turnId: string; text: string; attempt: number }
   | { type: "reply.restart"; turnId: string; attempt: number }
   | { type: "turn.result"; turnId: string; outcome: TurnOutcome }
   | { type: "turn.error"; turnId: string | null; requestId: string | null; status: number; detail: string; overCap: boolean }
-  | { type: "notes.changed"; revision: string | null; origin: string; summary: string | null; turnId: string | null };
+  | { type: "notes.changed"; revision: string | null; origin: string; summary: string | null; turnId: string | null }
+  | { type: "doubt.asked"; doubt: DoubtView }
+  | { type: "doubt.resolved"; pendingId: string; status: string; resolution: string | null; notesChanged: boolean }
+  | { type: "doubts.auto_resolved"; pendingIds: string[]; summary: string }
+  | { type: "incorporation.progress"; done: number; total: number; sourceIds: string[] };
 
 function parseData(data: string): unknown {
   try {
@@ -231,6 +345,7 @@ export function readWorkspaceEvent(event: string, data: string): WorkspaceEvent 
             requestId,
             kind: text(body.kind, "edit"),
             summary: text(body.summary),
+            origin: body.origin === "typed" ? "typed" : "voice",
             transcript: readSpan(body.transcript, requestId),
           };
     case "turn.started":
@@ -270,6 +385,28 @@ export function readWorkspaceEvent(event: string, data: string): WorkspaceEvent 
         summary: optionalText(body.summary),
         turnId,
       };
+    case "doubt.asked": {
+      const doubt = readDoubt({ ...body, status: "open" }, body.refs);
+      return doubt === null ? null : { type: event, doubt };
+    }
+    case "doubt.resolved": {
+      const pendingId = optionalText(body.pending_id);
+      return pendingId === null
+        ? null
+        : {
+            type: event,
+            pendingId,
+            status: text(body.status, "resolved") || "resolved",
+            resolution: optionalText(body.resolution),
+            notesChanged: body.notes_changed === true,
+          };
+    }
+    case "doubts.auto_resolved": {
+      const pendingIds = strings(body.pending_ids);
+      return pendingIds.length === 0 ? null : { type: event, pendingIds, summary: text(body.summary) };
+    }
+    case "incorporation.progress":
+      return { type: event, done: count(body.done), total: count(body.total), sourceIds: strings(body.source_ids) };
     default:
       return null;
   }
@@ -304,8 +441,9 @@ function failureOf(result: { kind: "refused"; status: number; detail: string; ov
 }
 
 /**
- * Sends one typed message (today `POST .../notes/chat`, streamed; #329 switches the target here
- * only). `handlers` get the reply as the typed turn's own stream writes it.
+ * Sends one typed message straight to the editor (`POST .../notes/chat`, streamed): only for
+ * "Continuar igualmente" past a reached cost cap, since `workspace/messages` has no confirmation.
+ * `handlers` get the reply as the typed turn's own stream writes it.
  */
 export async function sendTyped(
   subjectId: string,
@@ -346,8 +484,77 @@ export async function confirmPrepareNotes(subjectId: string, topicId: string): P
       diff: null,
       commit: null,
       warning,
+      ...OUTCOME_EXTRAS,
     },
   };
 }
 
 export const DISCONNECTED_TURN = "Se cortó la conexión con el asistente antes de terminar; el documento muestra lo que quedó guardado.";
+
+/** One request the classifier made of a typed message (`AssistantRequest`). */
+export interface PostedRequest {
+  requestId: string;
+  kind: string;
+  summary: string;
+  text: string;
+  targets: string[];
+}
+
+export type PostOutcome =
+  | { kind: "ok"; messageId: string | null; requests: PostedRequest[]; classified: boolean }
+  | { kind: "failed"; detail: string };
+
+function readPosted(value: unknown): PostedRequest | null {
+  if (!isObject(value)) return null;
+  const requestId = optionalText(value.request_id);
+  return requestId === null
+    ? null
+    : {
+        requestId,
+        kind: text(value.kind, "edit"),
+        summary: text(value.summary),
+        text: text(value.text),
+        targets: strings(value.targets),
+      };
+}
+
+export function workspaceMessagesPath(subjectId: string, topicId: string): string {
+  return `/api${topicPath(subjectId, topicId)}/workspace/messages`;
+}
+
+/**
+ * `POST .../workspace/messages` `{text}` (#327): the message goes to the request classifier like a
+ * spoken one and is answered 202 with the requests it became, queued in the backend; their turns
+ * then come through the workspace stream. A refusal is its Spanish `detail`.
+ */
+export async function postMessage(subjectId: string, topicId: string, message: string): Promise<PostOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(workspaceMessagesPath(subjectId, topicId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message }),
+    });
+  } catch {
+    return { kind: "failed", detail: "No se pudo conectar con el servidor." };
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  if (!response.ok) {
+    const detail = isObject(body) ? optionalText(body.detail) : null;
+    return { kind: "failed", detail: detail ?? `El servidor respondió con un error (${response.status}).` };
+  }
+  if (!isObject(body) || !Array.isArray(body.requests)) {
+    return { kind: "failed", detail: "El servidor respondió algo inesperado." };
+  }
+  return {
+    kind: "ok",
+    messageId: optionalText(body.message_id),
+    requests: body.requests.map(readPosted).filter((r): r is PostedRequest => r !== null),
+    classified: body.classified !== false,
+  };
+}

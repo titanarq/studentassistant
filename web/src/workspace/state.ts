@@ -1,7 +1,8 @@
 /**
  * The study workspace's shared state (#312, epic #311): the topic's document as last read
  * (`GET /api/subjects/{s}/topics/{t}/notes`) with its `revision`, and `reloadNotes()`, which the
- * chat calls after a turn changed the notes. Direct editing (#316) and the live chat panel (#317)
+ * chat calls after a turn changed the notes, and `doubtsChanged()`, which it calls when a doubt
+ * is asked or resolved (the header's counter is read again, #329). Direct editing (#316) and the live chat panel (#317)
  * read and refresh the document through this module only.
  */
 
@@ -25,6 +26,9 @@ export interface WorkspaceState {
   changedSections: ReadonlySet<string>;
   /** Reads the notes again; `changedSections` replaces the highlighted sections when given. */
   reloadNotes: (changedSections?: string[]) => Promise<void>;
+  /** Bumped when the chat hears a doubt asked or resolved: the pending-doubts counter is read again. */
+  doubtsKey: number;
+  doubtsChanged: () => void;
 }
 
 /**
@@ -35,6 +39,8 @@ export function useWorkspaceState(subjectId: string, topicId: string): Workspace
   const [notes, setNotes] = useState<WorkspaceNotes>({ kind: "loading" });
   const [changedSections, setChanged] = useState<ReadonlySet<string>>(new Set());
   const reads = useRef(0);
+  const [doubtsKey, setDoubtsKey] = useState(0);
+  const doubtsChanged = useCallback(() => setDoubtsKey((n) => n + 1), []);
 
   const reloadNotes = useCallback(
     async (changed?: string[]) => {
@@ -61,7 +67,7 @@ export function useWorkspaceState(subjectId: string, topicId: string): Workspace
     };
   }, [reloadNotes]);
 
-  return { subjectId, topicId, notes, changedSections, reloadNotes };
+  return { subjectId, topicId, notes, changedSections, reloadNotes, doubtsKey, doubtsChanged };
 }
 
 export const WorkspaceContext = createContext<WorkspaceState | null>(null);
