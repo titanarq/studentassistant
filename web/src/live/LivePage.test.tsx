@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import LivePage from "./LivePage";
 import { capture, fakeSources, snapshot } from "./testLive";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -28,7 +29,7 @@ it("says it is connecting, then that no session is running", () => {
   last!.emit("snapshot", snapshot({ session: null }));
   expect(screen.getByRole("status")).toHaveTextContent("No hay ninguna sesión en marcha");
   expect(screen.queryByRole("region", { name: "Transcripción" })).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the transcript, the outline and the captured pages as they arrive", async () => {
   topics();
@@ -91,7 +92,7 @@ it("shows the transcript, the outline and the captured pages as they arrive", as
   expect(within(pages).getByRole("article", { name: "Libro 2" })).toHaveTextContent(
     "No se pudo transcribir: sin respuesta",
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("keeps the ended session on screen and reports a lost connection", async () => {
   topics();

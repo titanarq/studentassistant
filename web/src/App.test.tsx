@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import App from "./App";
 import { jsonResponse, stubApi } from "./test/mockApi";
+import { PAGE_TEST_TIMEOUT } from "./test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -70,7 +71,7 @@ it("lists every subject with its topics, each name leading to its card and Const
   const fisica = screen.getByRole("region", { name: "Física" });
   expect(fisica).toHaveTextContent("Esta asignatura todavía no tiene temas.");
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows a topic without the 1.1 fields (older backend) with just its name", async () => {
   stubApi({

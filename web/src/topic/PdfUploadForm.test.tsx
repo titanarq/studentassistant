@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import PdfUploadForm from "./PdfUploadForm";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -59,7 +60,7 @@ it("uploads the picked PDF with the typed range and shows what was kept", async 
   const form = init.body as FormData;
   expect((form.get("file") as File).name).toBe(file.name);
   expect(form.get("pages")).toBe("páginas 82 a 94");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("sends no pages part when the range is left empty", async () => {
   const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>

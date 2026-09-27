@@ -5,6 +5,7 @@ import { UPLOADING } from "../noteEditor/NoteEditor";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import DocumentPanel, { ASSISTANT_CHANGED, BUSY, CHANGED_WHILE_EDITING } from "./DocumentPanel";
 import { type WorkspaceNotes, type WorkspaceState, WorkspaceContext } from "./state";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const BASE = "/api/subjects/lengua/topics/la-comunicacion";
 const R1 = "1".repeat(64);
@@ -93,7 +94,7 @@ it("opens the visual editor with fixed provenance chips and saves an untouched d
   expect(putBodies(fetchMock)).toEqual([{ text: TEXT, base_revision: R1 }]);
   expect(screen.queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("saves the edited Markdown with the revision the edit started from", async () => {
   const fetchMock = stubApi({ [`PUT ${BASE}/notes`]: saved(THEIRS, R2) });
@@ -105,7 +106,7 @@ it("saves the edited Markdown with the revision the edit started from", async ()
 
   fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
   await waitFor(() => expect(putBodies(fetchMock)).toEqual([{ text: THEIRS, base_revision: R1 }]));
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("on notes_changed shows both versions and retries on the current one keeping the student's text", async () => {
   const mine = TEXT.replace("Truco para recordarlas.", "Truco: cada función mira a un elemento.");
@@ -140,7 +141,7 @@ it("on notes_changed shows both versions and retries on the current one keeping 
       { text: mine, base_revision: R2 },
     ]),
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("on notes_changed can discard the student's changes", async () => {
   stubApi({ [`PUT ${BASE}/notes`]: jsonResponse({ detail: "x", code: "notes_changed", text: THEIRS, revision: R2 }, 409) });
@@ -153,7 +154,7 @@ it("on notes_changed can discard the student's changes", async () => {
   await waitFor(() => expect(reloadNotes).toHaveBeenCalled());
   expect(screen.queryByLabelText("Apuntes en Markdown")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("on notes_busy asks to wait and keeps the editor", async () => {
   stubApi({ [`PUT ${BASE}/notes`]: jsonResponse({ detail: "Ocupado.", code: "notes_busy" }, 409) });
@@ -162,7 +163,7 @@ it("on notes_busy asks to wait and keeps the editor", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(BUSY);
   expect(screen.getByLabelText("Apuntes en Markdown")).toHaveValue(TEXT);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("on 422 lists the Spanish format errors", async () => {
   stubApi({
@@ -179,7 +180,7 @@ it("on 422 lists the Spanish format errors", async () => {
     "El ancla #funciones está repetida.",
     "La nota [^p9] no está definida.",
   ]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("uploads a pasted image and inserts its Markdown at the cursor, with a placeholder meanwhile", async () => {
   let answer!: (response: Response) => void;
@@ -221,7 +222,7 @@ it("shows a Spanish error and inserts nothing when the image upload fails", asyn
   fireEvent.drop(area, { dataTransfer: { files: [file], items: [], types: ["Files"] } });
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo subir la imagen: La imagen supera el máximo (10.0 MB).");
   expect(area.value).toBe(TEXT);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("announces a newer revision while editing without touching the student's text", async () => {
   stubApi({});
@@ -233,7 +234,7 @@ it("announces a newer revision while editing without touching the student's text
   update(workspace(ready(THEIRS, R2)));
   expect(screen.getByRole("status")).toHaveTextContent(ASSISTANT_CHANGED);
   expect(screen.getByLabelText("Apuntes en Markdown")).toHaveValue(`${TEXT}\nMío.\n`);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("starts a document from the topic's title when there are no notes", async () => {
   const fetchMock = stubApi({ [`PUT ${BASE}/notes`]: saved("# La comunicación\n", R1) });

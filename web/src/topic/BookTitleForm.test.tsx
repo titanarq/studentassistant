@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import BookTitleForm from "./BookTitleForm";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,7 +50,7 @@ it("saves a new title and shows the one the backend stored", async () => {
   expect(screen.getByLabelText("Título del libro")).toHaveValue("Historia 1º Bachillerato");
   const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
   expect(JSON.parse(put?.[1]?.body as string)).toEqual({ title: "Historia   1º Bachillerato" });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows a 422's Spanish detail and keeps the previous title", async () => {
   stubApi({

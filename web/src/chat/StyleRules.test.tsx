@@ -4,6 +4,7 @@ import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi
 import EditorChat from "./EditorChat";
 import { history, revision, turn } from "./testChat";
 import { useEditorChat } from "./useEditorChat";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,7 +50,7 @@ it("shows the rules a history turn proposes and saves one for the whole subject"
   expect(screen.getByRole("link", { name: "Ver la guía de estilo" })).toHaveAttribute("href", "/subjects/historia/style-guide");
   expect(screen.queryByText(`«${TABLES}»`)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: `Guardar para toda la asignatura: ${EXAMPLES}` })).toBeEnabled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the rules of a live turn's result, and every copy leaves once saved", async () => {
   const stream = streamResponse();

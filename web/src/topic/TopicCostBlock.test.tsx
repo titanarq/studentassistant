@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import TopicCostBlock, { UNPRICED_WARNING } from "./TopicCostBlock";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -57,7 +58,7 @@ it("shows the topic total and one row per session plus the calls outside them, i
     "Fuera de las sesiones (editor, material): 0,5000 USD · 200 tokens · 1 llamada",
   ]);
   expect(within(block).queryByText(new RegExp(UNPRICED_WARNING))).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("warns that the total falls short when some calls have no known price", async () => {
   stubApi({ [COST_PATH]: cost({ unpriced: 1, noSession: 0 }) });

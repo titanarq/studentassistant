@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import type { TopicSummary } from "../desk/api";
 import TopicCard from "./TopicCard";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 function summary(overrides: Partial<TopicSummary> = {}): TopicSummary {
   return {
@@ -92,7 +93,7 @@ it("links the notes version to the notes viewer", () => {
     "href",
     "/subjects/historia/topics/revolucion-francesa/versions",
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("has no notes link before the first notes version", () => {
   render(<TopicCard summary={summary({ notes_version: null })} />);

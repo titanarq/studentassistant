@@ -4,6 +4,7 @@ import { jsonResponse, stubApi } from "../test/mockApi";
 import VersionsPage, { defaultComparison } from "./VersionsPage";
 import { readVersions } from "./api";
 import { section, version, versionDiff, versions } from "./testVersions";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -40,7 +41,8 @@ it("lists the versions newest first and compares the latest two by section", asy
   renderPage();
 
   expect(await screen.findByRole("heading", { name: "Versiones de los apuntes de La Revolución francesa" })).toBeInTheDocument();
-  const list = screen.getAllByRole("listitem").filter((li) => li.getAttribute("aria-label")?.startsWith("Versión"));
+  // The heading's name comes from the topics read; the versions from a separate one.
+  const list = (await screen.findAllByRole("listitem")).filter((li) => li.getAttribute("aria-label")?.startsWith("Versión"));
   expect(list.map((li) => li.getAttribute("aria-label"))).toEqual(["Versión 3", "Versión 2", "Versión 1"]);
   expect(list[0]).toHaveTextContent("la de los apuntes actuales");
   expect(within(list[0]).queryByRole("button")).not.toBeInTheDocument();
@@ -59,7 +61,7 @@ it("lists the versions newest first and compares the latest two by section", asy
     "href",
     "/subjects/historia/topics/revolucion-francesa",
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows a section side by side, the older text on the left", async () => {
   stubApi({
@@ -79,7 +81,7 @@ it("shows a section side by side, the older text on the left", async () => {
     "La crisis de 1788.",
     "La crisis fiscal de 1788.",
   ]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("compares the current notes with the latest version when they changed after it", async () => {
   const fetchMock = stubApi({
@@ -102,7 +104,7 @@ it("compares the current notes with the latest version when they changed after i
 
   expect(await screen.findByText("Versión 1 y versión 2 son iguales.")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith(`${BASE}/diff?from=1&to=2`);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("restores a version after a confirmation and reads the history again", async () => {
   let restored = false;

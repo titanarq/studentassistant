@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installSpeechRecognitionFake } from "../capture/testing/speech";
 import VoiceInputButton, { CHAT_VOICE_PROBLEMS } from "./VoiceInputButton";
 import type { VoiceQuestionCallbacks, VoiceQuestionStarter } from "./voiceQuestion";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 function fakeListen() {
   const calls: VoiceQuestionCallbacks[] = [];
@@ -64,7 +65,7 @@ describe("VoiceInputButton", () => {
     expect(onFinal).toHaveBeenCalledTimes(1);
     expect(onFinal).toHaveBeenCalledWith("pon un ejemplo");
     expect(screen.getByRole("button", { name: "Dictar el mensaje por voz" })).toHaveAttribute("aria-pressed", "false");
-  });
+  }, PAGE_TEST_TIMEOUT);
 
   it("stops the recognition when pressed again", () => {
     const { listen, calls, stop } = fakeListen();

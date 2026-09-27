@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import StyleGuidePage from "./StyleGuidePage";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -51,7 +52,7 @@ it("lists the subject's rules under its name", async () => {
   const items = within(await screen.findByRole("list", { name: "Reglas de la guía de estilo" })).getAllByRole("listitem");
   expect(items.map((item) => item.querySelector(".style-guide-rule")?.textContent)).toEqual([TABLES, DATES]);
   expect(screen.getByRole("link", { name: "← Mesa de estudio" })).toHaveAttribute("href", "/");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("edits a rule and writes the whole list", async () => {
   const fetchMock = stubGuide([TABLES, DATES]);
@@ -67,7 +68,7 @@ it("edits a rule and writes the whole list", async () => {
   expect(putBodies(fetchMock)).toEqual([[TABLES, "Pon las fechas y los nombres en negrita."]]);
   expect(within(rulesList()).getByText("Pon las fechas y los nombres en negrita.")).toBeInTheDocument();
   expect(screen.queryByLabelText("Regla 2")).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("cancels an edit without writing", async () => {
   const fetchMock = stubGuide([TABLES]);
@@ -79,7 +80,7 @@ it("cancels an edit without writing", async () => {
 
   expect(within(rulesList()).getByText(TABLES)).toBeInTheDocument();
   expect(putBodies(fetchMock)).toEqual([]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("deletes a rule, down to an empty guide", async () => {
   const fetchMock = stubGuide([TABLES]);
@@ -90,7 +91,7 @@ it("deletes a rule, down to an empty guide", async () => {
   expect(await screen.findByText(`Regla borrada: «${TABLES}».`)).toBeInTheDocument();
   expect(putBodies(fetchMock)).toEqual([[]]);
   expect(screen.getByText(/Todavía no hay reglas/)).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("adds a rule and refuses a repeated one without writing", async () => {
   const fetchMock = stubGuide([TABLES]);
@@ -110,7 +111,7 @@ it("adds a rule and refuses a repeated one without writing", async () => {
   fireEvent.click(add);
   expect(await screen.findByRole("alert")).toHaveTextContent("Esa regla ya está en la guía de estilo.");
   expect(putBodies(fetchMock)).toHaveLength(1);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the backend's refusal and keeps the list", async () => {
   stubApi({
@@ -128,7 +129,7 @@ it("shows the backend's refusal and keeps the list", async () => {
   );
   expect(within(rulesList()).getAllByRole("listitem")).toHaveLength(1);
   expect(screen.getByLabelText("Nueva regla")).toHaveValue(DATES);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says so for an unknown subject and shows no form", async () => {
   stubApi({
@@ -139,4 +140,4 @@ it("says so for an unknown subject and shows no form", async () => {
 
   expect(await screen.findByRole("alert")).toHaveTextContent("No existe esa asignatura en la bóveda.");
   expect(screen.queryByLabelText("Nueva regla")).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import MaterialPreviewPage from "./MaterialPreviewPage";
 import { artifact, GENERATED, materialsBody } from "./testMaterials";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -44,7 +45,8 @@ it("renders a generated Markdown file with the notes renderer, never as markup",
   renderPage();
 
   expect(await screen.findByRole("heading", { name: "Esquema: La Revolución Francesa" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { level: 1, name: "Esquema de La Revolución Francesa" })).toBeInTheDocument();
+  // The title needs the materials and the topics reads, each apart from the file's text.
+  expect(await screen.findByRole("heading", { level: 1, name: "Esquema de La Revolución Francesa" })).toBeInTheDocument();
   expect(screen.getByText(/Crisis fiscal y social\. <script>alert\(1\)<\/script>/)).toBeInTheDocument();
   expect(document.querySelector("script")).toBeNull();
   expect(screen.getByText(/root\(\("La Revolución Francesa"\)\)/)).toBeInTheDocument();
@@ -53,12 +55,12 @@ it("renders a generated Markdown file with the notes renderer, never as markup",
     "href",
     `${GENERATED}/files/esquema.md`,
   );
-  expect(screen.getByRole("link", { name: "← Tema La Revolución Francesa" })).toHaveAttribute(
+  expect(await screen.findByRole("link", { name: "← Tema La Revolución Francesa" })).toHaveAttribute(
     "href",
     "/subjects/historia/topics/revolucion-francesa",
   );
   expect(screen.queryByRole("note")).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("names the file of a kind with several and notes when it is stale", async () => {
   stubApi({

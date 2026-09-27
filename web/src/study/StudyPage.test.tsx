@@ -5,6 +5,7 @@ import { NOTES } from "../notes/testNotes";
 import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import StudyPage, { sectionTitles } from "./StudyPage";
 import { parseNotes } from "../notes/markdown";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const PAGE = "/subjects/historia/topics/revolucion-industrial";
@@ -212,7 +213,7 @@ it("shows the options, today's reviews, the question chat and the document in re
 
   const names = (await options()).map((button) => within(button).getByText(/^[A-Z]/, { selector: ".study-option-title" }).textContent);
   expect(names).toEqual(["Esquema", "Ejercicios", "Examen", "Quiz", "Tarjetas de memoria", "Diapositivas"]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("names the versión de estudio in the header", async () => {
   renderPage();
@@ -273,7 +274,7 @@ it("reads the states from GET .../study, not from GET .../generated", async () =
   );
   expect(fetchMock).toHaveBeenCalledWith(`${BASE}/study`);
   expect(fetchMock).not.toHaveBeenCalledWith(`${BASE}/generated`);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says when the state of the material cannot be read", async () => {
   renderPage({ [`${BASE}/study`]: jsonResponse({ detail: "boom" }, 503) });
@@ -311,7 +312,7 @@ it.each([
   expect(screen.queryByRole("region", { name: title })).toBeNull();
   expect(button).toHaveAttribute("aria-expanded", "false");
   expect(button).toHaveFocus();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("closes the panel with Escape", async () => {
   renderPage();
@@ -323,7 +324,7 @@ it("closes the panel with Escape", async () => {
 
   expect(screen.queryByRole("region", { name: "Quiz" })).toBeNull();
   expect(optionButton(/^Quiz/)).toHaveFocus();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("opens Tarjetas de memoria from Repasos para hoy, with the ratings and source chips", async () => {
   renderPage();
@@ -334,7 +335,7 @@ it("opens Tarjetas de memoria from Repasos para hoy, with the ratings and source
   const ratings = within(panel).getByRole("group", { name: "¿Cómo te ha ido?" });
   expect(within(ratings).getAllByRole("button").map((b) => b.textContent)).toEqual(["Otra vez", "Difícil", "Bien", "Fácil"]);
   expect(within(panel).getByRole("link", { name: "§ 2. Causas" })).toHaveClass("practice-chip");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says an option is not generated yet and what to ask the chat, with no Generar button", async () => {
   const { fetchMock } = renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
@@ -361,7 +362,7 @@ it("shows the reason and the chat hint above a stale option, with no generate fo
   expect(await within(panel).findByText("¿Dónde empezó la Revolución Industrial?")).toBeInTheDocument();
   expect(within(panel).queryByRole("button", { name: /Generar/ })).toBeNull();
   expect(within(panel).queryByRole("form", { name: "Generar un quiz" })).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("highlights the section of the flashcard shown and scrolls to it", async () => {
   renderPage();
@@ -382,7 +383,7 @@ it("highlights the section of the flashcard shown and scrolls to it", async () =
 
   fireEvent.click(within(screen.getByRole("region", { name: "Tarjetas de memoria" })).getByRole("button", { name: "Cerrar" }));
   expect(document.querySelector(".notes-focus")).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("highlights the section of the quiz question the student is on", async () => {
   renderPage();
@@ -395,7 +396,7 @@ it("highlights the section of the quiz question the student is on", async () => 
 
   expect(block(/Contexto/)).toHaveClass("notes-focus");
   expect(block(/Causas/)).not.toHaveClass("notes-focus");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("ignores an anchor the notes lack", async () => {
   renderPage({ [`${BASE}/quiz`]: quiz(["no-existe"]) });
@@ -407,7 +408,7 @@ it("ignores an anchor the notes lack", async () => {
 
   expect(document.querySelector(".notes-focus")).toBeNull();
   expect(scrollTo).not.toHaveBeenCalled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("moves through the exercises one at a time, each highlighting its section", async () => {
   renderPage();
@@ -428,7 +429,7 @@ it("moves through the exercises one at a time, each highlighting its section", a
   expect(within(panel).queryByText("Solución de e2.")).toBeNull();
   expect(block(/Contexto/)).toHaveClass("notes-focus");
   expect(block(/Causas/)).not.toHaveClass("notes-focus");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("opens a provenance footnote's source over the document and gives the focus back", async () => {
   renderPage();
@@ -442,7 +443,7 @@ it("opens a provenance footnote's source over the document and gives the focus b
   fireEvent.click(within(source).getByRole("button", { name: "Cerrar" }));
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(reference).toHaveFocus();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("says there are no notes yet, linking to Construir", async () => {
   renderPage({ [`${BASE}/notes`]: jsonResponse({ detail: "No hay apuntes." }, 404) });
@@ -474,7 +475,7 @@ it("switches between Estudiar and Documento in one column, and an option shows t
     fireEvent.click(within(screen.getByRole("region", { name: "Quiz" })).getByRole("button", { name: "Cerrar" }));
   });
   expect(root).toHaveAttribute("data-view", "study");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("names each section by its heading text", () => {
   const titles = sectionTitles(parseNotes(NOTES));
@@ -516,7 +517,7 @@ it("a section chip of an answer scrolls the document to that section and highlig
   expect(block(/Contexto/)).not.toHaveClass("notes-focus");
   expect(scrollTo).toHaveBeenCalled();
   expect(scrollTo.mock.contexts.at(-1)).toHaveClass("study-document");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("a source chip highlights the blocks citing it and opens its source over the document", async () => {
   renderPage({
@@ -573,7 +574,7 @@ it("a question asked on the study screen streams its answer with chips into the 
   await waitFor(() => expect(block(/Contexto/)).toHaveClass("notes-focus"));
   const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
   expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ question: "¿Dónde empezó?", style: "written" });
-});
+}, PAGE_TEST_TIMEOUT);
 
 // ---- Materials generated from the chat («hazme un quiz», #366, #367) ----
 
@@ -611,7 +612,7 @@ it("a quiz generated from the chat turns its badge to Listo and «Abrir «Quiz»
   const panel = screen.getByRole("region", { name: "Quiz" });
   expect(await within(panel).findByText("¿Dónde empezó la Revolución Industrial?")).toBeInTheDocument();
   expect(optionButton(/^Quiz/)).toHaveAttribute("aria-expanded", "true");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("a stale option regenerated from the chat drops its Desactualizado note and reads the material again", async () => {
   const { fetchMock } = renderPage({
@@ -639,7 +640,7 @@ it("a stale option regenerated from the chat drops its Desactualizado note and r
   fireEvent.click(within(chatRegion()).getByRole("button", { name: "Abrir «Quiz»" }));
   await waitFor(() => expect(quizReads()).toBeGreaterThan(afterResult));
   expect(screen.getByRole("region", { name: "Quiz" })).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("the phrase of an option's hint fills the chat's input without sending it", async () => {
   const { fetchMock } = renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
@@ -666,15 +667,16 @@ it("Diapositivas shows the deck's preview with its PDF and PowerPoint downloads"
 
   const panel = screen.getByRole("region", { name: "Diapositivas" });
   expect(await within(panel).findByText("La máquina de vapor")).toBeInTheDocument();
-  expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toHaveAttribute(
+  // The preview comes from the Markdown file; the download links from the materials list, read on its own.
+  expect(await within(panel).findByRole("link", { name: "Descargar PDF" })).toHaveAttribute(
     "href",
     `${BASE}/generated/files/diapositivas.pdf`,
   );
-  expect(within(panel).getByRole("link", { name: "Descargar PowerPoint" })).toHaveAttribute(
+  expect(await within(panel).findByRole("link", { name: "Descargar PowerPoint" })).toHaveAttribute(
     "href",
     `${BASE}/generated/files/diapositivas.pptx`,
   );
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("Diapositivas says which export is missing instead of linking it", async () => {
   renderPage({
@@ -688,7 +690,7 @@ it("Diapositivas says which export is missing instead of linking it", async () =
   expect(await within(panel).findByText("PowerPoint: no se pudo exportar.")).toBeInTheDocument();
   expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toBeInTheDocument();
   expect(within(panel).queryByRole("link", { name: "Descargar PowerPoint" })).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("Diapositivas not generated says to ask «hazme diapositivas» in the chat", async () => {
   renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({ diapositivas: ["sin_generar", null] })) });
@@ -703,7 +705,7 @@ it("Diapositivas not generated says to ask «hazme diapositivas» in the chat", 
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.click(within(panel).getByRole("button", { name: "hazme diapositivas" }));
   await waitFor(() => expect(input).toHaveValue("hazme diapositivas"));
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("slides generated from the chat turn the badge to Listo and «Abrir «Diapositivas»» opens them", async () => {
   renderPage({
@@ -722,4 +724,4 @@ it("slides generated from the chat turn the badge to Listo and «Abrir «Diaposi
   expect(await within(panel).findByText("La máquina de vapor")).toBeInTheDocument();
   expect(within(panel).getByRole("link", { name: "Descargar PDF" })).toBeInTheDocument();
   expect(optionButton(/^Diapositivas/)).toHaveAttribute("aria-expanded", "true");
-});
+}, PAGE_TEST_TIMEOUT);

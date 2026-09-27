@@ -28,6 +28,7 @@ import {
   swapGlobal,
   swapProperty,
 } from "./testing";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const NOW = 1790251200000;
 
@@ -300,7 +301,7 @@ describe("the session health line (#262)", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, PAGE_TEST_TIMEOUT);
 });
 
 describe("the session socket", () => {
@@ -506,7 +507,7 @@ describe("the camera", () => {
 
     await capture();
     await waitFor(() => expect(capturePost()).toBeDefined());
-  });
+  }, PAGE_TEST_TIMEOUT);
 
   it("keeps the notice up with the reason when the camera cannot come back yet", async () => {
     renderScreen();
@@ -1243,7 +1244,7 @@ describe("CapturePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Volver a la lista de sesiones" }));
     expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
-  });
+  }, PAGE_TEST_TIMEOUT);
 
   it("leads from the chosen topic to the voice tutor and back, without opening a session", async () => {
     backend({
@@ -1272,7 +1273,7 @@ describe("CapturePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "← Volver" }));
     expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
-  });
+  }, PAGE_TEST_TIMEOUT);
 });
 
 describe("a dropped connection (#411)", () => {

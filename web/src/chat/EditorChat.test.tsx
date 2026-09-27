@@ -4,6 +4,7 @@ import NotesPage from "../notes/NotesPage";
 import { NOTES } from "../notes/testNotes";
 import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "../test/mockApi";
 import { history, revision, turn } from "./testChat";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -91,7 +92,7 @@ it("streams the reply, shows the applied diff and highlights the changed section
   expect(screen.getByText(/Watt mejoró/).closest(".notes-block")).not.toHaveClass("notes-changed");
   expect(screen.getByText(/versión 3/)).toBeInTheDocument();
   expect(within(chat).getByRole("button", { name: "Deshacer el último cambio" })).toBeEnabled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("drops the streamed reply on a restart and keeps the final one", async () => {
   stubApi({
@@ -112,7 +113,7 @@ it("drops the streamed reply on a restart and keeps the final one", async () => 
   expect(within(chat).queryByText(/Un intento fallido/)).toBeNull();
   expect(within(chat).queryByText(/Cambios en los apuntes/)).toBeNull();
   expect(within(chat).getByRole("button", { name: "Deshacer el último cambio" })).toBeDisabled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("undoes the last turn and reads the notes and the conversation again", async () => {
   let historyReads = 0;
@@ -141,7 +142,7 @@ it("undoes the last turn and reads the notes and the conversation again", async 
   await waitFor(() => expect(undo).toBeDisabled());
   await waitFor(() => expect(screen.queryByText(/Manchester/)).toBeNull());
   expect(fetchMock.mock.calls.filter((call) => call[0] === `${BASE}/notes`)).toHaveLength(2);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks the editor why a block is there and opens the sources it points to", async () => {
   const question =
@@ -179,7 +180,7 @@ it("asks the editor why a block is there and opens the sources it points to", as
 
   fireEvent.click(within(chat).getByRole("button", { name: "Ver la fuente: Apuntes, página 2" }));
   expect(await screen.findByRole("dialog")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("numbers the blocks as the backend does", async () => {
   const fetchMock = stubApi({
@@ -201,7 +202,7 @@ it("numbers the blocks as the backend does", async () => {
     [null, 2],
     ["causas", 2],
   ]);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the sources of an explanation read from the history", async () => {
   stubApi({
@@ -244,7 +245,7 @@ it("offers to continue past a reached cost cap", async () => {
   expect(within(chat).queryByRole("alert")).toBeNull();
   expect(within(chat).getAllByText("Pon un ejemplo")).toHaveLength(1);
   expect(bodyOf(chatPosts(fetchMock)[1])).toEqual({ message: "Pon un ejemplo", confirm_over_cap: true });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("reads the conversation again when the stream is cut", async () => {
   let historyReads = 0;

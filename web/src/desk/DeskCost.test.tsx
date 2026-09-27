@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import DeskCost, { PAUSED_BANNER } from "./DeskCost";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -32,7 +33,7 @@ it("shows today's spend against the daily cap and no banner under the caps", asy
   expect(within(block).queryByText(/Sesión abierta/)).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.queryByRole("note")).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks for the open session's spend and shows it against the session cap", async () => {
   const fetchMock = stubApi({

@@ -4,6 +4,7 @@ import { PAUSED_BANNER } from "../desk/DeskCost";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import { UNPRICED_WARNING } from "../topic/TopicCostBlock";
 import WorkspaceCost from "./WorkspaceCost";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const SESSION_COST = "/api/cost?subject=historia&topic=revolucion-industrial&session=s-20260926-1000";
@@ -82,7 +83,7 @@ it("adds the desk's warning when a cap is reached", async () => {
 
   expect(await screen.findByRole("alert")).toHaveTextContent(PAUSED_BANNER);
   expect(screen.getByText("Esta sesión: 1,0000 USD")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("warns on the topic's line too when today's cap is reached", async () => {
   stubApi({ [`${BASE}/cost`]: topicCost(2), "/api/cost": status({ day_usd: 2, observer_paused: true }) });

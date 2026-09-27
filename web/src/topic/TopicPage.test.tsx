@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import TopicPage from "./TopicPage";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -53,7 +54,7 @@ it("shows the subject and topic names, the topic card, the PDF upload and the bo
   expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "← Mesa de estudio" })).toHaveAttribute("href", "/");
   expect(await screen.findByText("Libro «Historia del mundo contemporáneo»")).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("reloads the card after a PDF is added", async () => {
   let summaries = 0;
@@ -84,7 +85,7 @@ it("reloads the card after a PDF is added", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Añadir PDF" }));
 
   expect(await screen.findByText(/✓ 1 PDF/)).toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("shows the backend's Spanish detail for an unknown topic, without the upload", async () => {
   stubApi({
@@ -100,7 +101,8 @@ it("shows the backend's Spanish detail for an unknown topic, without the upload"
   );
   expect(screen.queryByRole("form", { name: "Añadir un PDF" })).not.toBeInTheDocument();
   expect(screen.queryByRole("form", { name: "Libro de texto" })).not.toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Tema La Revolución Francesa" })).toBeInTheDocument();
+  // The topic's name comes from the topics read, not the summary's.
+  expect(await screen.findByRole("heading", { name: "Tema La Revolución Francesa" })).toBeInTheDocument();
 });
 
 it("keeps the ids as names and shows an error when the backend is down", async () => {

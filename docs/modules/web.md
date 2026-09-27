@@ -1129,3 +1129,12 @@ API), `setVisibility("hidden" | "visible")` hides or shows the tab and fires `vi
 and `devices.plugInCamera()` hands out a fresh live video track after the old one ended. Tests drive them -- a fake recognition emits
 results, ends and errors, a fake socket records what was sent and lets a test push server events
 in -- so no test touches a real camera, microphone, network or backend.
+
+Waits (#430): under host load (every core busy) Testing Library's role queries cost hundreds of
+milliseconds each, so a test must not assume a page's reads land within the default waits.
+`src/test/setup.ts` sets `configure({asyncUtilTimeout: LOAD_TIMEOUT})`, so every `findBy*` /
+`waitFor` waits up to 5 s (`src/test/timeouts.ts`). An element a page renders from a read of its
+own (a separate fetch from the one the test first awaited) is awaited with `findBy*`, never read
+with a synchronous `getBy*` right after the first wait. A test that drives a page through several
+reads passes `PAGE_TEST_TIMEOUT` (15 s) as the third argument of `it`; the global `testTimeout`
+stays vitest's default. Waits are condition waits only: no fixed sleeps.

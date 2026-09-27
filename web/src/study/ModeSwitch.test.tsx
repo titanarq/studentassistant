@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import ModeSwitch from "./ModeSwitch";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const API = "/api/subjects/historia/topics/revolucion-industrial/study";
 const PAGE = "/subjects/historia/topics/revolucion-industrial";
@@ -55,7 +56,7 @@ it("switches to Estudiar through the backend, then opens the study screen", asyn
 
   expect(navigate).toHaveBeenCalledWith(`${PAGE}/study`);
   expect(screen.queryByRole("alert")).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks to wait while the notes are being prepared, and stays", async () => {
   stubApi({

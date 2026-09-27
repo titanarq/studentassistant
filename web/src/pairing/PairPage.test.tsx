@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import PairPage from "./PairPage";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const toString = vi.hoisted(() => vi.fn(async (text: string) => `<svg data-text='${text}'></svg>`));
 vi.mock("qrcode", () => ({ default: { toString } }));
@@ -60,7 +61,7 @@ it("renders the QR from the backend payload, the URL, the code and a decreasing 
 
   await advance(3000);
   expect(screen.getByTestId("pair-countdown")).toHaveTextContent("El código caduca en 4:57");
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("replaces the QR on expiry and requests a new code from the regenerate button", async () => {
   const fetchMock = vi

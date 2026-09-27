@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import Router from "./Router";
+import { PAGE_TEST_TIMEOUT } from "./test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -19,7 +20,7 @@ it.each(["/pair", "/pair/"])("renders the pairing page at %s", (pathname) => {
 
   expect(screen.getByRole("heading", { name: "Emparejar un dispositivo" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/pair/codes", { method: "POST" });
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("renders the study desk at /", () => {
   stubFetch();

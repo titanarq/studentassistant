@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import MaterialsPanel from "./MaterialsPanel";
 import { artifact, GENERATED, GENERATORS, materialsBody } from "./testMaterials";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -61,7 +62,7 @@ it("lists every material in the order of study, with its state and description",
   // A kind no longer registered is shown, but cannot be generated.
   expect(item("viejo").queryByRole("button")).toBeNull();
   expect(screen.queryByText("Desactualizado")).toBeNull();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("marks a stale material with the backend's reason", async () => {
   stubApi({

@@ -2,6 +2,7 @@ import { act, createRef } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, expect, it, vi } from "vitest";
 import NoteEditor, { type NoteEditorHandle, type UploadResult } from "./NoteEditor";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 const TEXT = `# Tema
 
@@ -55,7 +56,7 @@ it("hides heading anchors in the visual editor but keeps them in the text", asyn
   const hidden = surface.querySelector(".note-anchor-hidden");
   expect(hidden).toHaveTextContent("{#funciones_del_lenguaje}");
   expect(ref.current?.getText()).toBe(TEXT);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("keeps the text across Visual and Markdown", async () => {
   const { ref } = renderEditor();
@@ -68,7 +69,7 @@ it("keeps the text across Visual and Markdown", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Visual" }));
   await visualReady();
   expect(ref.current?.getText()).toBe(`${TEXT}\nOtra idea.[^p3]\n`);
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("inserts a table in the visual editor and saves it in the notes' style", async () => {
   const { ref, onChange } = renderEditor();

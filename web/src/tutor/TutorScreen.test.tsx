@@ -4,6 +4,7 @@ import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "..
 import type { SpeechOutput } from "./speech";
 import TutorScreen from "./TutorScreen";
 import type { VoiceQuestionCallbacks, VoiceQuestionStarter } from "./voiceQuestion";
+import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -94,7 +95,7 @@ it("shows the earlier questions and asks a typed one, reading the answer aloud",
   fireEvent.click(screen.getByRole("button", { name: "Parar de leer" }));
   expect(speech.cancel).toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "Parar de leer" })).not.toBeInTheDocument();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("asks a spoken question and sends it as soon as it is recognized", async () => {
   const fetchMock = stubApi({
@@ -123,7 +124,7 @@ it("asks a spoken question and sends it as soon as it is recognized", async () =
   expect(bodyOf(post).question).toBe("¿qué es el vapor?");
   expect(speech.speak).toHaveBeenCalledWith("Una fuerza.", expect.any(Function));
   expect(screen.getByRole("button", { name: "Preguntar por voz" })).toBeEnabled();
-});
+}, PAGE_TEST_TIMEOUT);
 
 it("explains voice problems and lets the student type instead", async () => {
   stubApi({ [TUTOR]: jsonResponse({ subject: "historia", topic: "revolucion-industrial", turns: [] }) });
