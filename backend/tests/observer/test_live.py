@@ -637,3 +637,53 @@ async def test_pending_changes_publish_the_open_count_and_regenerate_the_review(
     finally:
         subscription.close()
         await asyncio.wait_for(collector, WAIT)
+
+
+class HangingClaude(FakeClaude):
+    """A transport whose calls never answer (a hung Claude), until cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.called = asyncio.Event()
+        self.cancelled = 0
+
+    async def send(self, request: LLMRequest, on_text: Any = None) -> LLMResponse:
+        self.called.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+async def test_stop_waits_for_a_hung_call_only_a_bounded_time(
+    bus: SessionBus, session: Session
+) -> None:
+    hanging = HangingClaude()
+    settings = Settings(
+        observer=ObserverSettings(
+            batch_segments=2, batch_speech_seconds=1000, stop_timeout_seconds=0.2
+        )
+    )
+    loop = ObserverLoop(
+        bus,
+        bus.attached,
+        settings=settings.observer,
+        client_factory=default_client_factory(settings, hanging),
+    )
+    loop.start()
+    await segment(bus, session, 1, "uno")
+    await segment(bus, session, 2, "dos")
+    await asyncio.wait_for(hanging.called.wait(), WAIT)
+
+    started = asyncio.get_running_loop().time()
+    await asyncio.wait_for(loop.stop(), WAIT)
+
+    assert asyncio.get_running_loop().time() - started < 2.0
+    assert hanging.cancelled == 1
+    assert not loop.running
+
+
+def test_the_stop_bound_defaults_to_twenty_seconds() -> None:
+    assert ObserverSettings().stop_timeout_seconds == 20.0

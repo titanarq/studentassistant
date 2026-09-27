@@ -49,8 +49,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -95,16 +96,19 @@ from studentassistant.observer.live import (
     SubscriptionLike,
     _failure_kind,
     default_client_factory,
+    wait_bounded,
 )
 from studentassistant.stt.commands import ASSISTANT_REQUEST, VOICE_COMMAND, normalise
 from studentassistant.vault import (
     ConversationRecord,
+    Event,
     SecretRefused,
     Session,
     VaultError,
     append_conversation_record,
     get_subject,
     get_topic,
+    read_conversation,
 )
 
 logger = logging.getLogger(__name__)
@@ -235,10 +239,21 @@ class _Detected:
 
     @property
     def conversation_name(self) -> str:
-        return f"observer-requests-{self.session.id}"
+        return RequestDetector.conversation_of(self.session.id)
 
     def unexamined(self) -> list[_Final]:
         return [final for final in self.finals if not final.examined]
+
+
+@dataclass
+class _History:
+    """What `_open` reads back of a session: names, earlier requests, finals, examined ids."""
+
+    subject_name: str
+    title: str
+    requests: list[AssistantRequest]
+    finals: list[_Final]
+    examined: set[str]
 
 
 @dataclass
@@ -321,7 +336,9 @@ class RequestDetector:
         self._task = asyncio.create_task(self._run(self._subscription), name="observer-requests")
 
     async def stop(self) -> None:
-        """Stop receiving, wait for the calls in flight, end the task."""
+        """Stop receiving, wait for the calls in flight (at most `[observer]
+        stop_timeout_seconds`, then they are cancelled: their finals stay unexamined and are
+        caught up when the session is opened again), end the task."""
         subscription, task = self._subscription, self._task
         if subscription is None or task is None:
             return
@@ -335,8 +352,7 @@ class RequestDetector:
         for detected in self._detected.values():
             self._cancel_timer(detected)
         calls = [d.call for d in self._detected.values() if d.call is not None]
-        if calls:
-            await asyncio.gather(*calls, return_exceptions=True)
+        await wait_bounded(calls, self.settings.stop_timeout_seconds, "request detector")
         self._detected.clear()
         self._spoken.clear()
 
@@ -422,22 +438,23 @@ class RequestDetector:
             return None
         vault, subject, topic = session.vault, session.subject_slug, session.topic_slug
         try:
-            subject_name, topic_title, earlier = await asyncio.to_thread(
-                self._read_session, session
-            )
+            history = await asyncio.to_thread(self._read_session, session, self.conversation_of)
         except (VaultError, OSError):
             logger.exception("the request detector cannot read session %s", session_id)
             self._ignored.add(session_id)
             return None
+        earlier = history.requests
         detected = _Detected(
             session=session,
             client=self.client_factory(LedgerBinding(vault, subject, topic, session_id)),
-            system=[self.prompt.content, render_topic(subject_name, topic_title, None)],
+            system=[self.prompt.content, render_topic(history.subject_name, history.title, None)],
             requests=max((_spoken_number(r.request_id) for r in earlier), default=0),
         )
         for request in earlier:
             for segment_id in request.segment_ids:
                 detected.assigned[segment_id] = request.request_id
+        self._catch_up(detected, history)
+        unexamined = len(detected.unexamined())
         self._detected[session_id] = detected
         await self._record(
             detected,
@@ -450,18 +467,47 @@ class RequestDetector:
                     "reason": "resume" if resumed else "start",
                     "requests": len(earlier),
                     "window_segments": self.settings.request_window_segments,
+                    **({"unexamined": unexamined} if unexamined else {}),
                 },
             ),
         )
+        # Finals nobody examined before a restart are examined now, once (#408).
+        self._maybe_start(detected)
         return detected
 
     @staticmethod
-    def _read_session(session: Session) -> tuple[str, str, list[AssistantRequest]]:
+    def conversation_of(session_id: str) -> str:
+        return f"observer-requests-{session_id}"
+
+    @staticmethod
+    def _read_session(session: Session, conversation_of: Any) -> _History:
         vault, subject, topic = session.vault, session.subject_slug, session.topic_slug
-        earlier = _earlier_requests(session)
-        subject_name = get_subject(vault, subject).subject.name
-        topic_title = get_topic(vault, subject, topic).topic.title
-        return subject_name, topic_title, earlier
+        events = list(session.read_events())
+        records = read_conversation(vault, subject, topic, conversation_of(session.id))
+        return _History(
+            subject_name=get_subject(vault, subject).subject.name,
+            title=get_topic(vault, subject, topic).topic.title,
+            requests=_requests_in(session.id, events),
+            finals=_finals_in(events),
+            examined=_examined_in(records),
+        )
+
+    def _catch_up(self, detected: _Detected, history: _History) -> None:
+        """Rebuild the window from the session's finals (#408): every final up to the newest one
+        examined before (a recorded call's window, or part of a request) is examined; the later
+        ones are not, and the trigger examines them as if they had just arrived."""
+        examined = history.examined | set(detected.assigned)
+        high = max(
+            (n for n, final in enumerate(history.finals) if final.segment_id in examined),
+            default=-1,
+        )
+        now = self.clock.monotonic()
+        for n, final in enumerate(history.finals):
+            final.arrived, final.examined = now, n <= high
+        detected.finals = list(history.finals)
+        self._trim(detected)
+        if detected.unexamined():
+            detected.last_final_at = now
 
     def _add_final(self, detected: _Detected, event: BusEventLike) -> None:
         payload = event.payload
@@ -666,7 +712,9 @@ class RequestDetector:
         )
         text = context.render() + "\n\n" + self._render_window(detected, window, last)
         turn = {"role": "user", "content": [{"type": "text", "text": text}]}
-        response = await self._ask(detected, [turn])
+        response = await self._ask(
+            detected, [turn], examined=[final.segment_id for final in window]
+        )
         if response is None:
             detected.blocked = True
             return
@@ -721,8 +769,16 @@ class RequestDetector:
             )
         return "\n".join(lines)
 
-    async def _ask(self, detected: _Detected, messages: list[dict[str, Any]]) -> LLMResponse | None:
-        """One call; `None` when it failed (a reached cap pauses, any other error is reported)."""
+    async def _ask(
+        self,
+        detected: _Detected,
+        messages: list[dict[str, Any]],
+        *,
+        examined: list[str] | None = None,
+    ) -> LLMResponse | None:
+        """One call; `None` when it failed (a reached cap pauses, any other error is reported).
+        `examined`: the window's segment ids, recorded with the user turn (the restart catch-up
+        reads them back, #408)."""
         try:
             response = await detected.client.create(
                 messages,
@@ -745,7 +801,13 @@ class RequestDetector:
             await self._set_status(detected, "error", str(error), {})
             return None
         await self._record(
-            detected, ConversationRecord(time=self.clock.now(), kind="user", message=messages[-1])
+            detected,
+            ConversationRecord(
+                time=self.clock.now(),
+                kind="user",
+                message=messages[-1],
+                detail=None if examined is None else {"examined": examined},
+            ),
         )
         await self._record(
             detected,
@@ -1046,15 +1108,62 @@ async def _context_of(
 
 def _earlier_requests(session: Session) -> list[AssistantRequest]:
     """The session's `assistant.request` events so far (earlier sessions' of a resumed one)."""
+    return _requests_in(session.id, session.read_events())
+
+
+def _requests_in(session_id: str, events: Iterable[Event]) -> list[AssistantRequest]:
     earlier: list[AssistantRequest] = []
-    for event in session.read_events():
+    for event in events:
         if event.kind != ASSISTANT_REQUEST_KIND:
             continue
         try:
             earlier.append(AssistantRequest.model_validate(event.payload))
         except ValidationError:
-            logger.warning("session %s: an unreadable %s event", session.id, event.kind)
+            logger.warning("session %s: an unreadable %s event", session_id, event.kind)
     return earlier
+
+
+def _finals_in(events: Iterable[Event]) -> list[_Final]:
+    """The session's `transcript.final`s in log order, as `_add_final` keeps them (a repeated
+    id or an empty text left out); `arrived` is set by the caller."""
+    finals: list[_Final] = []
+    seen: set[str] = set()
+    for event in sorted(events, key=lambda event: event.seq):
+        if event.kind != SEGMENT_EVENT_KIND:
+            continue
+        payload = event.payload
+        segment_id, text = payload.get(SEGMENT_ID_KEY), payload.get("text")
+        if not isinstance(segment_id, str) or not segment_id or not isinstance(text, str):
+            continue
+        if not text.strip() or segment_id in seen:
+            continue
+        seen.add(segment_id)
+        start = _ms(payload.get("session_start_ms"), event.t)
+        end = max(start, _ms(payload.get("session_end_ms"), start))
+        finals.append(_Final(segment_id, text.strip(), start, end, 0.0))
+    return finals
+
+
+_WINDOW_LINE = re.compile(r"^(\S+) \[-?\d+(?:\.\d+)?s--?\d+(?:\.\d+)?s\] ", re.MULTILINE)
+"""A final's line of a rendered window (`_render_window`): its segment id first."""
+
+
+def _examined_in(records: Iterable[ConversationRecord]) -> set[str]:
+    """The segment ids some answered call showed (`user` records are written once answered, and
+    every final of an answered window is examined): `detail.examined` when recorded, else the
+    ids of the window lines of the turn's text."""
+    examined: set[str] = set()
+    for record in records:
+        if record.kind != "user" or record.message is None:
+            continue
+        ids = (record.detail or {}).get("examined")
+        if isinstance(ids, list):
+            examined.update(str(segment_id) for segment_id in ids)
+            continue
+        for block in record.message.get("content") or []:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                examined.update(_WINDOW_LINE.findall(block["text"]))
+    return examined
 
 
 def _wake_word_kind(query: str) -> RequestKind:

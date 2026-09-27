@@ -40,8 +40,10 @@ from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.bus import SessionBus
 from studentassistant.stt import CommandDetector, load_grammar
 from studentassistant.vault import (
+    ConversationRecord,
     Session,
     Vault,
+    append_conversation_record,
     create_subject,
     create_topic,
     read_conversation,
@@ -1141,3 +1143,145 @@ async def test_a_typed_study_message_is_classified(
         classifier.classify(tmp_vault, *topic, "vamos a estudiar esto"), WAIT
     )
     assert found.kind == "study" and found.targets == []
+
+
+# -- a backend restart (#408) --------------------------------------------------------------------
+
+
+async def resume(bus: SessionBus, session: Session) -> None:
+    await bus.publish(session.id, "session.resumed", "user", {"device_id": None})
+
+
+async def test_finals_nobody_examined_before_a_restart_are_examined_once(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    first = make_detector(bus, fake, clock)
+    first.start()
+    try:
+        fake.reply_tool(TOOL_NAME, report())
+        for n, text in enumerate(DICTATION, start=1):
+            await segment(bus, session, n, text)
+        await advance(first, clock, session, 2)
+        assert len(fake.requests) == 1
+        # The request is spoken, and the backend stops before the debounce ends.
+        await segment(bus, session, 3, REQUEST)
+        await asyncio.wait_for(first.drain(), WAIT)
+    finally:
+        await asyncio.wait_for(first.stop(), WAIT)
+    assert len(fake.requests) == 1
+
+    second = make_detector(bus, fake, clock)
+    second.start()
+    try:
+        fake.reply_tool(
+            TOOL_NAME,
+            report(
+                {
+                    "kind": "edit",
+                    "summary": "Poner lo último como definición",
+                    "segment_ids": ["seg-3"],
+                }
+            ),
+        )
+        await resume(bus, session)
+        await advance(second, clock, session, 2)
+        assert len(fake.requests) == 2
+        text = user_text(fake.requests[1])
+        assert "seg-1 [3.0s-5.5s] seen" in text and "seg-2 [6.0s-8.5s] seen" in text
+        assert f"seg-3 [9.0s-11.5s] new {REQUEST}" in text
+        assert [(e["request_id"], e["segment_ids"]) for e in requests_of(session)] == [
+            ("req-1", ["seg-3"])
+        ]
+        await advance(second, clock, session, 20)
+        assert len(fake.requests) == 2
+    finally:
+        await asyncio.wait_for(second.stop(), WAIT)
+
+    # Once examined, a further restart examines nothing again and never repeats the request.
+    third = make_detector(bus, fake, clock)
+    third.start()
+    try:
+        await resume(bus, session)
+        await advance(third, clock, session, 20)
+        assert len(fake.requests) == 2
+        assert len(requests_of(session)) == 1
+    finally:
+        await asyncio.wait_for(third.stop(), WAIT)
+
+
+async def test_a_conversation_without_examined_ids_is_read_from_its_windows(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    # A conversation written before #408: the user turn has only the rendered window.
+    for n, text in enumerate([*DICTATION, REQUEST], start=1):
+        await segment(bus, session, n, text)
+    append_conversation_record(
+        session.vault,
+        session.subject_slug,
+        session.topic_slug,
+        f"observer-requests-{session.id}",
+        ConversationRecord(
+            time=datetime(2026, 9, 26, 9, 0, tzinfo=UTC),
+            kind="user",
+            message={
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Window 1: the newest 2 final segments, 2 new.\n"
+                        f"seg-1 [3.0s-5.5s] new {DICTATION[0]}\n"
+                        f"seg-2 [6.0s-8.5s] new {DICTATION[1]}",
+                    }
+                ],
+            },
+        ),
+    )
+    detector = make_detector(bus, fake, clock)
+    detector.start()
+    try:
+        fake.reply_tool(TOOL_NAME, report())
+        await resume(bus, session)
+        await advance(detector, clock, session, 2)
+        [request] = fake.requests
+        text = user_text(request)
+        assert "seg-1 [3.0s-5.5s] seen" in text and "seg-3 [9.0s-11.5s] new" in text
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+
+
+class HangingClaude(FakeClaude):
+    """A transport whose calls never answer (a hung Claude), until cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.called = asyncio.Event()
+        self.cancelled = 0
+
+    async def send(self, request: LLMRequest, on_text: Any = None) -> Any:
+        self.called.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+async def test_stop_waits_for_a_hung_detection_only_a_bounded_time(
+    bus: SessionBus, session: Session, clock: FakeClock
+) -> None:
+    hanging = HangingClaude()
+    settings = Settings(observer=ObserverSettings(stop_timeout_seconds=0.2))
+    detector = make_detector(bus, hanging, clock, settings)
+    detector.start()
+    await segment(bus, session, 1, REQUEST)
+    await asyncio.wait_for(detector.drain(), WAIT)
+    clock.advance(2)
+    await asyncio.wait_for(hanging.called.wait(), WAIT)
+
+    started = asyncio.get_running_loop().time()
+    await asyncio.wait_for(detector.stop(), WAIT)
+
+    assert asyncio.get_running_loop().time() - started < 2.0
+    assert hanging.cancelled == 1
+    assert not detector.running

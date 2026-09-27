@@ -60,9 +60,22 @@ order**:
   classified again and not announced again (no second `request.detected`), and its new turn
   carries the same `request_id`. A request is confirmed once; after a restart nothing is kept.
 
+Surviving a restart (#408): every request that ran to a result or an error is recorded as a
+persisted `turn.finished` event (`TURN_FINISHED_KIND`, origin `editor`, `{request_id, turn_id,
+kind, outcome: "result" | "error", status?, code?}`) in the request's session while that session
+is attached. When a session is started or resumed on the bus (and at `start`, for a session
+already attached), `replay` reads the session's `events.jsonl` and queues again, through
+`submit`, oldest first, each `assistant.request` no turn answered (`unanswered_requests`): no
+`turn.finished` for its id, no voice chat turn (`editor.chat_history`) whose transcript is that
+request, and after the newest answered request of the session (requests run in order, so what
+precedes an answered one ran). Each `(session, request_id)` is submitted at most once per
+process, so a request queued or running now, or replayed already, is never queued twice. What is
+not replayed: a typed request kept in a review session (no capture session was open), and a
+request whose session ended before its turn ran.
+
 Shutdown (`stop`) closes the bus subscription and gives the running turns
-`SHUTDOWN_TIMEOUT_SECONDS` to finish before cancelling them; still-queued requests are dropped
-with a log line (they stay in the session's `events.jsonl`).
+`SHUTDOWN_TIMEOUT_SECONDS` to finish before cancelling them; still-queued requests, and the
+cancelled turns, have no `turn.finished`, so they are replayed when their session is resumed.
 """
 
 from __future__ import annotations
@@ -73,7 +86,7 @@ import logging
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -94,8 +107,10 @@ from studentassistant.editor.incorporate import IncorporationError, SourceStatus
 from studentassistant.editor.revise import (
     REPLY_DELTA,
     ChatRequestRef,
+    ChatTurn,
     TriageTarget,
     TriageTurn,
+    chat_history,
     record_triage_turn,
     revise_notes,
 )
@@ -122,7 +137,7 @@ from studentassistant.observer.requests import (
 )
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.version import PROTOCOL_VERSION
-from studentassistant.server.bus import BusError, SessionBus, Subscription
+from studentassistant.server.bus import BusError, BusEvent, SessionBus, Subscription
 from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.notes_routes import (
@@ -134,7 +149,12 @@ from studentassistant.server.notes_routes import (
     NotesGenerator,
 )
 from studentassistant.server.revise_routes import turn_error
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import (
+    SESSION_RESUMED,
+    SESSION_STARTED,
+    SessionService,
+    VaultUnavailableError,
+)
 from studentassistant.server.study_routes import (
     GoStudyAction,
     StudyTurn,
@@ -160,6 +180,7 @@ from studentassistant.sources.triage import (
     triaged_payload,
 )
 from studentassistant.vault import (
+    Event,
     Origin,
     SourceError,
     Vault,
@@ -183,6 +204,7 @@ BUSY_DETAIL = (
 )
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 UNKNOWN_SOURCE_DETAIL = "No encuentro esa página entre las fuentes del tema."
+UNKNOWN_KIND_DETAIL = "Todavía no sé atender este tipo de petición: pídemelo de otra forma."
 NOT_STOPPED_DETAIL = (
     "Esa petición ya no está esperando confirmación (quizá ya se hizo o el servidor se reinició):"
     " vuelve a pedirla."
@@ -199,6 +221,10 @@ TURN_KINDS: Mapping[str, TurnKind] = {
     "study": "study",
 }
 """The workspace turn kind of each request kind."""
+TURN_FINISHED_KIND = "turn.finished"
+"""The persisted record of a request's turn that ended in a result or an error (#408)."""
+REPLAY_TRIGGERS = frozenset({SESSION_STARTED, SESSION_RESUMED})
+"""The bus events after which the consumer replays a session's unanswered requests."""
 TYPED_ORIGIN: Origin = "user"
 """The origin of a typed message's `assistant.request` and of a student's `capture.triaged`."""
 
@@ -279,6 +305,10 @@ class AssistantRequestConsumer:
         self._typed_counts: dict[str, int] = {}
         self._stopped: dict[tuple[str, str], dict[str, QueuedRequest]] = {}
         """Per topic, the requests stopped at the cost cap by their failed turn id, oldest first."""
+        self._busy = False
+        """The reader is handling an event (`wait_idle`)."""
+        self._seen: set[tuple[str, str]] = set()
+        """`(session_id, request_id)` of every request submitted by this process (#408)."""
 
     # -- lifecycle -------------------------------------------------------------------------------
 
@@ -287,7 +317,7 @@ class AssistantRequestConsumer:
         if self._reader is not None:
             return
         self._subscription = self.bus.subscribe(
-            name="assistant-requests", kinds={ASSISTANT_REQUEST_KIND}
+            name="assistant-requests", kinds={ASSISTANT_REQUEST_KIND, *REPLAY_TRIGGERS}
         )
         self._reader = asyncio.create_task(self._read(), name="assistant-requests")
 
@@ -301,7 +331,11 @@ class AssistantRequestConsumer:
         for key, queue in self._queues.items():
             if queue:
                 logger.warning(
-                    "dropping %d queued assistant requests of %s/%s at shutdown", len(queue), *key
+                    "%d queued assistant requests of %s/%s wait for the session's resume at"
+                    " shutdown (%s)",
+                    len(queue),
+                    *key,
+                    ", ".join(queued.request.request_id for queued in queue),
                 )
             queue.clear()
         workers = set(self._workers.values())
@@ -313,12 +347,19 @@ class AssistantRequestConsumer:
                 await asyncio.wait(pending)
 
     async def wait_idle(self, timeout: float = 10.0) -> None:
-        """Wait until every queue is empty and no turn runs (tests)."""
+        """Wait until the bus events delivered so far are read, every queue is empty and no turn
+        runs (tests)."""
         deadline = time.monotonic() + timeout
-        while self._workers or any(self._queues.values()):
+        while self._reading() or self._workers or any(self._queues.values()):
             if time.monotonic() > deadline:
                 raise TimeoutError("the assistant requests did not finish")
             await asyncio.sleep(0.01)
+
+    def _reading(self) -> bool:
+        """Whether the reader has delivered events still to read, or is handling one."""
+        if self._reader is None or self._reader.done():
+            return False
+        return self._busy or (self._subscription is not None and len(self._subscription) > 0)
 
     def queued(self, subject_id: str, topic_id: str) -> int:
         return len(self._queues.get((subject_id, topic_id), ()))
@@ -327,24 +368,80 @@ class AssistantRequestConsumer:
 
     async def _read(self) -> None:
         assert self._subscription is not None
+        active = self.sessions.active
+        if active is not None:  # attached before we subscribed: its requests may wait already
+            self._busy = True
+            try:
+                await self.replay(active.session_id)
+            finally:
+                self._busy = False
         while True:
             try:
                 event = await self._subscription.get()
             except BusError:
                 return
+            self._busy = True
             try:
-                request = AssistantRequest.model_validate(dict(event.payload))
-            except ValidationError:
-                logger.warning(
-                    "ignoring a malformed assistant.request of session %s", event.session_id
+                await self._on_event(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Like every bus subscriber: one bad event never ends the reader.
+                logger.exception(
+                    "the assistant requests consumer failed on a %s event of session %s",
+                    event.kind,
+                    event.session_id,
                 )
-                continue
-            self.submit(event.subject_id, event.topic_id, event.session_id, request)
+            finally:
+                self._busy = False
+
+    async def _on_event(self, event: BusEvent) -> None:
+        if event.kind in REPLAY_TRIGGERS:
+            await self.replay(event.session_id)
+            return
+        try:
+            request = AssistantRequest.model_validate(dict(event.payload))
+        except ValidationError:
+            logger.warning("ignoring a malformed assistant.request of session %s", event.session_id)
+            return
+        self.submit(event.subject_id, event.topic_id, event.session_id, request)
+
+    async def replay(self, session_id: str) -> list[str]:
+        """Queue again the attached session's requests no turn answered (#408), oldest first,
+        through `submit` (announced as usual); the ids queued. A session not attached, or one
+        whose logs cannot be read (logged), replays nothing."""
+        session = self.bus.attached(session_id)
+        if session is None:
+            return []
+        s, t = session.subject_slug, session.topic_slug
+        try:
+            events = await asyncio.to_thread(lambda: list(session.read_events()))
+            turns = (await asyncio.to_thread(chat_history, session.vault, s, t)).turns
+        except Exception:
+            logger.exception("the requests of session %s cannot be read for a replay", session_id)
+            return []
+        replayed: list[str] = []
+        for request in unanswered_requests(events, session_id, turns):
+            if self.submit(s, t, session_id, request):
+                replayed.append(request.request_id)
+        if replayed:
+            logger.info(
+                "session %s: replaying %d unanswered assistant requests (%s)",
+                session_id,
+                len(replayed),
+                ", ".join(replayed),
+            )
+        return replayed
 
     def submit(
         self, subject_id: str, topic_id: str, session_id: str, request: AssistantRequest
-    ) -> None:
-        """Announce one request on the workspace stream and queue it for its topic."""
+    ) -> bool:
+        """Announce one request on the workspace stream and queue it for its topic; False (and
+        nothing done) when this process has submitted it already."""
+        seen = (session_id, request.request_id)
+        if seen in self._seen:
+            return False
+        self._seen.add(seen)
         queued = QueuedRequest(subject_id, topic_id, session_id, request)
         reference = queued.reference()
         self.hub.publish(
@@ -364,6 +461,7 @@ class AssistantRequestConsumer:
             },
         )
         self._enqueue(queued)
+        return True
 
     def _enqueue(self, queued: QueuedRequest) -> None:
         key = (queued.subject_id, queued.topic_id)
@@ -395,9 +493,6 @@ class AssistantRequestConsumer:
     async def _run(self, queued: QueuedRequest) -> None:
         request = queued.request
         handler = HANDLERS.get(request.kind)
-        if handler is None:
-            logger.warning("no handler for assistant request kind %r", request.kind)
-            return
         kind = TURN_KINDS.get(request.kind, "revise")
         broadcast = TurnBroadcast(
             self.hub,
@@ -407,15 +502,23 @@ class AssistantRequestConsumer:
             request_id=request.request_id,
             kind=kind,
         )
+        if handler is None:
+            logger.warning("no handler for assistant request kind %r", request.kind)
+            broadcast.error(422, UNKNOWN_KIND_DETAIL)
+            await self._finished(queued, broadcast, "error", 422)
+            return
         holder = "editor" if kind == "prepare_notes" else TURN_HOLDER
         try:
             await self._claim(queued.subject_id, queued.topic_id, holder)
         except _BusyError:
             broadcast.error(409, BUSY_DETAIL)
+            await self._finished(queued, broadcast, "error", 409)
             return
         try:
             broadcast.started()
             result = await handler(self, queued, broadcast)
+            # Recorded before it is announced: a turn cut off after its work never runs twice.
+            await self._finished(queued, broadcast, "result")
             broadcast.result(result)
             if self.doubts is not None:
                 self.doubts.after(queued.subject_id, queued.topic_id, result)
@@ -434,9 +537,42 @@ class AssistantRequestConsumer:
                 )
             if code == ErrorCode.COST_CAP_REACHED.value:
                 self._remember_stopped(broadcast.turn_id, queued)
+            await self._finished(queued, broadcast, "error", status, code)
             broadcast.error(status, detail, code)
         finally:
             self.generator.release(queued.subject_id, queued.topic_id)
+
+    async def _finished(
+        self,
+        queued: QueuedRequest,
+        broadcast: TurnBroadcast,
+        outcome: Literal["result", "error"],
+        status: int | None = None,
+        code: str | None = None,
+    ) -> None:
+        """Persist `turn.finished` in the request's session, so a restart does not replay it;
+        a session no longer attached (ended, a review session) needs none."""
+        payload: dict[str, Any] = {
+            "request_id": queued.request.request_id,
+            "turn_id": broadcast.turn_id,
+            "kind": broadcast.kind,
+            "outcome": outcome,
+        }
+        if status is not None:
+            payload["status"] = status
+        if code is not None:
+            payload["code"] = code
+        try:
+            await self.bus.publish(queued.session_id, TURN_FINISHED_KIND, "editor", payload)
+        except BusError:
+            pass
+        except Exception as error:  # the log refused it: the request may be replayed once
+            logger.warning(
+                "the turn of request %s of session %s was not recorded: %s",
+                queued.request.request_id,
+                queued.session_id,
+                error,
+            )
 
     def _remember_stopped(self, turn_id: str, queued: QueuedRequest) -> None:
         stopped = self._stopped.setdefault((queued.subject_id, queued.topic_id), {})
@@ -804,6 +940,40 @@ HANDLERS: Mapping[str, Handler] = {
 """What runs each request kind."""
 
 
+def unanswered_requests(
+    events: Iterable[Event], session_id: str, turns: Iterable[ChatTurn] = ()
+) -> list[AssistantRequest]:
+    """The session's `assistant.request`s no turn answered, oldest first (#408).
+
+    Answered: a `turn.finished` of its id in `events`, or a chat turn in `turns` whose transcript
+    is that request of `session_id`. Requests of a topic run in order, so the ones before the
+    newest answered request all ran (a failure written before `turn.finished` existed too) and
+    only later ones can be unanswered. A malformed request is left out.
+    """
+    answered = {
+        turn.transcript.request_id
+        for turn in turns
+        if turn.transcript is not None and turn.transcript.session_id == session_id
+    }
+    requests: list[AssistantRequest] = []
+    for event in sorted(events, key=lambda event: event.seq):
+        if event.kind == TURN_FINISHED_KIND:
+            request_id = event.payload.get("request_id")
+            if isinstance(request_id, str):
+                answered.add(request_id)
+        elif event.kind == ASSISTANT_REQUEST_KIND:
+            try:
+                request = AssistantRequest.model_validate(dict(event.payload))
+            except ValidationError:
+                continue
+            if all(r.request_id != request.request_id for r in requests):
+                requests.append(request)
+    last = max(
+        (n for n, request in enumerate(requests) if request.request_id in answered), default=-1
+    )
+    return [r for r in requests[last + 1 :] if r.request_id not in answered]
+
+
 def sources_lookup(sessions: SessionService) -> SourcesLookup:
     """The request detector's context of a topic (#327): `editor.source_status` and the doubt the
     chat is asking now; injected into the observer so it never imports the editor."""
@@ -1032,10 +1202,13 @@ def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
 
 __all__ = [
     "HANDLERS",
+    "TURN_FINISHED_KIND",
     "request_context",
+    "unanswered_requests",
     "sources_lookup",
     "TURN_KINDS",
     "NOT_STOPPED_DETAIL",
+    "UNKNOWN_KIND_DETAIL",
     "AssistantRequestConsumer",
     "NotStoppedError",
     "QueuedRequest",

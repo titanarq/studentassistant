@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from studentassistant.config import ObserverSettings, VaultGitSettings
 from studentassistant.install import service
 from studentassistant.install.service import SystemctlResult, render_unit
 from studentassistant.install.service import run_systemctl as real_run_systemctl
@@ -20,6 +21,19 @@ def test_the_unit_runs_serve_with_the_config_pinned() -> None:
     assert "Environment=SA_CONFIG=/home/ana/.config/sa.toml\n" in text
     assert "Restart=on-failure\n" in text
     assert "WantedBy=default.target\n" in text
+
+
+def test_the_unit_gives_the_shutdown_more_time_than_its_bounded_waits() -> None:
+    text = render_unit(Path("/opt/sa/bin/studentassistant"), Path("/home/ana/.config/sa.toml"))
+    [line] = [line for line in text.splitlines() if line.startswith("TimeoutStopSec=")]
+    stop = float(line.removeprefix("TimeoutStopSec="))
+
+    # The observer loop and the request detector wait for their calls one after the other, the
+    # assistant requests, the doubts chat and the background generations 5 s each, then the
+    # final commit and push (one git timeout each) must still fit before SIGKILL.
+    observer = ObserverSettings().stop_timeout_seconds
+    git = VaultGitSettings().timeout_seconds
+    assert stop > 2 * observer + 3 * 5 + 2 * git
 
 
 def test_paths_with_spaces_are_quoted() -> None:

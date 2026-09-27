@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,14 +28,22 @@ from studentassistant.config import (
     Settings,
 )
 from studentassistant.editor.notes_format import notes_revision
-from studentassistant.editor.revise import EDIT_TOOL
+from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn
 from studentassistant.llm import FakeClaude
-from studentassistant.observer import ASSISTANT_REQUEST_KIND
+from studentassistant.observer import ASSISTANT_REQUEST_KIND, REQUEST_KINDS
+from studentassistant.server import assistant_requests
 from studentassistant.server.app import create_app
-from studentassistant.server.assistant_requests import AssistantRequestConsumer
+from studentassistant.server.assistant_requests import (
+    HANDLERS,
+    TURN_FINISHED_KIND,
+    TURN_KINDS,
+    UNKNOWN_KIND_DETAIL,
+    AssistantRequestConsumer,
+    unanswered_requests,
+)
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscription
-from studentassistant.vault import Vault, read_notes
+from studentassistant.vault import Event, Vault, read_notes, resume_session
 
 LOCAL_BASE_URL = "http://localhost:8765"
 WAIT_SECONDS = 10.0
@@ -437,3 +446,169 @@ def test_a_request_waits_for_a_busy_topic(
 
     assert [e.event for e in subscription.drain()][-1] == "notes.changed"
     assert len(fake.requests) == 1
+
+
+# -- a backend restart (#408) --------------------------------------------------------------------
+
+
+def _resume(client: TestClient, session_id: str) -> None:
+    resumed = client.post(f"/api/sessions/{session_id}/resume")
+    assert resumed.status_code == 200, resumed.text
+
+
+def _events(topic: ReviseTopic, session_id: str, kind: str) -> list[dict[str, Any]]:
+    """The payloads of `kind` in the topic's unended session, read back from the vault."""
+    session = resume_session(topic.vault, topic.subject, topic.topic)
+    assert session.id == session_id
+    return [dict(e.payload) for e in session.read_events() if e.kind == kind]
+
+
+def test_a_request_queued_at_shutdown_is_answered_after_a_restart(
+    make_app: AppFactory, topic: ReviseTopic
+) -> None:
+    first = FakeClaude()
+    _edit(first, "Primer cambio")
+    with _client(make_app(first)) as client:
+        session_id = _start(client, topic)
+        _publish(client, session_id, _request(1))
+        _settle(client)
+        # Something holds the notes, so the second request is still queued at shutdown.
+        generator = client.app.state.notes  # type: ignore[attr-defined]
+        assert generator.claim(topic.subject, topic.topic, "editor")
+        subscription = _subscribe(client, topic)
+        _publish(client, session_id, _request(2, "question", "qué es la derivada"))
+        deadline = time.monotonic() + WAIT_SECONDS
+        while not any(e.event == "request.detected" for e in subscription.drain()):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        consumer: AssistantRequestConsumer = client.app.state.assistant_requests  # type: ignore[attr-defined]
+        client.portal.call(consumer.stop, 0.1)  # type: ignore[union-attr]
+        generator.release(topic.subject, topic.topic)
+    assert len(first.requests) == 1
+    finished = _events(topic, session_id, TURN_FINISHED_KIND)
+    assert [(f["request_id"], f["outcome"]) for f in finished] == [("req-1", "result")]
+
+    second = FakeClaude()
+    second.reply_text("La derivada mide el cambio instantáneo.")
+    with _client(make_app(second)) as client:
+        subscription = _subscribe(client, topic)
+        _resume(client, session_id)
+        _settle(client)
+        events = subscription.drain()
+        assert [e.data["request_id"] for e in events if e.event == "request.detected"] == ["req-2"]
+        assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-2"]
+        assert len(second.requests) == 1
+        assert "qué es la derivada" in json.dumps(second.requests[0].messages, ensure_ascii=False)
+        turns = client.get(_chat(topic)).json()["turns"]
+        assert [t["transcript"]["request_id"] for t in turns] == ["req-1", "req-2"]
+
+        # Resumed again (a reconnect): nothing is replayed twice.
+        _resume(client, session_id)
+        _settle(client)
+        assert not any(e.event == "request.detected" for e in subscription.drain())
+        assert len(second.requests) == 1
+
+    # A third backend finds every request answered.
+    third = FakeClaude()
+    with _client(make_app(third)) as client:
+        subscription = _subscribe(client, topic)
+        _resume(client, session_id)
+        _settle(client)
+        assert subscription.drain() == []
+        assert third.requests == []
+
+
+def test_unanswered_requests_follow_the_newest_answered_one() -> None:
+    def request(n: int, seq: int) -> Event:
+        return Event(
+            seq=seq, t=seq, origin="observer", kind=ASSISTANT_REQUEST_KIND, payload=_request(n)
+        )
+
+    def finished(n: int, seq: int) -> Event:
+        return Event(
+            seq=seq,
+            t=seq,
+            origin="editor",
+            kind=TURN_FINISHED_KIND,
+            payload={
+                "request_id": f"req-{n}",
+                "turn_id": "t",
+                "kind": "revise",
+                "outcome": "result",
+            },
+        )
+
+    malformed = Event(
+        seq=9, t=9, origin="observer", kind=ASSISTANT_REQUEST_KIND, payload={"request_id": "x"}
+    )
+    # req-1 has no record but ran before the answered req-2 (a failure before #408).
+    events = [request(1, 1), request(2, 2), finished(2, 3), request(3, 4), request(4, 5), malformed]
+    assert [r.request_id for r in unanswered_requests(events, "s1")] == ["req-3", "req-4"]
+    # A voice chat turn of req-3 of this session answers it; one of another session does not.
+    voice = ChatTurn(
+        time=datetime(2026, 9, 27, tzinfo=UTC),
+        message="m",
+        reply="r",
+        origin="voice",
+        transcript=ChatRequestRef(
+            request_id="req-4",
+            summary="s",
+            session_id="s1",
+            segment_ids=["a"],
+            t_start_ms=0,
+            t_end_ms=1,
+            text="m",
+        ),
+    )
+    other = voice.model_copy(
+        update={"transcript": voice.transcript.model_copy(update={"session_id": "s0"})}  # type: ignore[union-attr]
+    )
+    assert [r.request_id for r in unanswered_requests(events, "s1", [other])] == ["req-3", "req-4"]
+    assert unanswered_requests(events, "s1", [voice]) == []
+    assert unanswered_requests([], "s1") == []
+
+
+def test_every_request_kind_has_a_handler_and_a_turn_kind() -> None:
+    assert set(HANDLERS) == set(REQUEST_KINDS)
+    assert set(TURN_KINDS) == set(REQUEST_KINDS)
+
+
+def test_a_kind_without_a_handler_is_a_turn_error(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delitem(assistant_requests.HANDLERS, "question")  # type: ignore[arg-type]
+    session_id = _start(client, topic)
+    subscription = _subscribe(client, topic)
+    _publish(client, session_id, _request(1, "question", "qué es la derivada"))
+    _settle(client)
+
+    events = subscription.drain()
+    assert _names(events) == ["request.detected", "turn.error"]
+    error = events[-1].data
+    assert error["status"] == 422 and error["detail"] == UNKNOWN_KIND_DETAIL
+    assert error["request_id"] == "req-1"
+    assert fake.requests == []
+    [finished] = _events(topic, session_id, TURN_FINISHED_KIND)
+    assert finished["outcome"] == "error" and finished["status"] == 422
+
+
+def test_a_failing_event_does_not_stop_the_reader(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    submit = AssistantRequestConsumer.submit
+
+    def failing(self: AssistantRequestConsumer, *args: Any) -> bool:
+        if args[-1].request_id == "req-1":
+            raise RuntimeError("boom")
+        return submit(self, *args)
+
+    monkeypatch.setattr(AssistantRequestConsumer, "submit", failing)
+    session_id = _start(client, topic)
+    subscription = _subscribe(client, topic)
+    _edit(fake)
+    _publish(client, session_id, _request(1))
+    _publish(client, session_id, _request(2))
+    _settle(client)
+
+    events = subscription.drain()
+    assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-2"]
