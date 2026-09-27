@@ -84,7 +84,7 @@ from studentassistant.editor.notes_format import (
     topic_source_resolver,
     validate,
 )
-from studentassistant.editor.notes_lock import holding_notes
+from studentassistant.editor.notes_lock import checkpointing, holding_notes
 from studentassistant.llm import LLMClient, LLMResponse, StructuredResult, load_prompt, structured
 from studentassistant.observer import (
     STATE_OP_EVENT_KIND,
@@ -735,18 +735,27 @@ async def _commit_events(
 
 
 def _write_notes_if_current(
-    vault: Vault, subject_slug: str, topic_slug: str, base: str | None, edited: str
-) -> str | None:
-    """Write `edited` under the topic's write lock when the notes are still `base`; blocking.
+    vault: Vault,
+    sync: GitSync,
+    subject_slug: str,
+    topic_slug: str,
+    base: str | None,
+    edited: str,
+    message: str,
+) -> tuple[str | None, str | None]:
+    """Write and commit `edited` under the topic's write lock when the notes are still `base`.
 
-    Returns None when written, else the notes stored now (nothing written).
+    Blocking. The write and its checkpoint (`message`) are one locked step (`checkpointing`), so
+    the sync loop never commits the doubt's edit under a batch subject. Returns `(None, commit)`
+    when written, else `(the notes stored now, None)` (nothing written).
     """
     with holding_notes(vault, subject_slug, topic_slug):
         current = read_notes(vault, subject_slug, topic_slug)
         if current != base:
-            return current if current is not None else ""
-        write_notes(vault, subject_slug, topic_slug, edited)
-        return None
+            return (current if current is not None else ""), None
+        with checkpointing(sync) as commit_now:
+            write_notes(vault, subject_slug, topic_slug, edited)
+            return None, commit_now(message)
 
 
 def _stored_revision(vault: Vault, subject_slug: str, topic_slug: str) -> str | None:
@@ -1309,6 +1318,7 @@ async def review_doubts(
     )
     last: list[DoubtsReviewOutput] = []
     notes = {"base": base, "edited": base}
+    notes_commit: list[str | None] = []
 
     def check(value: DoubtsReviewOutput) -> list[str]:
         last[:] = [value]
@@ -1319,13 +1329,21 @@ async def review_doubts(
         edited = apply_edits(notes["base"], edits, value.footnotes)
         if edited == notes["base"]:
             return None
-        current = await asyncio.to_thread(
-            _write_notes_if_current, vault, subject_slug, topic_slug, notes["base"], edited
+        current, written = await asyncio.to_thread(
+            _write_notes_if_current,
+            vault,
+            sync,
+            subject_slug,
+            topic_slug,
+            notes["base"],
+            edited,
+            f"Apuntes de {subject_slug}/{topic_slug}: dudas resueltas con fuentes",
         )
         if current is not None:
             notes["base"] = current
             return current
         notes["edited"] = edited
+        notes_commit[:] = [written]
         return None
 
     value, attempts, model, _errors = await task.run(
@@ -1395,7 +1413,7 @@ async def review_doubts(
         summary=_review_summary(auto),
         revision=await asyncio.to_thread(_stored_revision, vault, subject_slug, topic_slug),
         session_id=session_id,
-        commit=commit,
+        commit=commit or next(iter(notes_commit), None),
         attempts=attempts,
         warning=warning,
         model=model,
@@ -1530,6 +1548,7 @@ async def answer_doubt(
 
     attempts, model = 0, None
     changed = False
+    notes_commit: list[str | None] = []
     resolution = decision
     conversation = _Conversation(vault, subject_slug, topic_slug, clock)
     prompt_hash = None
@@ -1560,13 +1579,21 @@ async def answer_doubt(
             edited = apply_edits(notes["base"], value.edits, value.footnotes)
             if edited == notes["base"]:
                 return None
-            current = await asyncio.to_thread(
-                _write_notes_if_current, vault, subject_slug, topic_slug, notes["base"], edited
+            current, written = await asyncio.to_thread(
+                _write_notes_if_current,
+                vault,
+                sync,
+                subject_slug,
+                topic_slug,
+                notes["base"],
+                edited,
+                f"Apuntes de {subject_slug}/{topic_slug}: duda resuelta: {_short(item.text)}",
             )
             if current is not None:
                 notes["base"] = current
                 return current
             changed = True
+            notes_commit[:] = [written]
             return None
 
         value, attempts, model, _errors = await task.run(
@@ -1608,7 +1635,7 @@ async def answer_doubt(
         notes_changed=outcome.notes_changed,
         revision=await asyncio.to_thread(_stored_revision, vault, subject_slug, topic_slug),
         session_id=session_id,
-        commit=commit,
+        commit=commit or next(iter(notes_commit), None),
         attempts=attempts,
         warning=outcome.warning,
         model=model,
