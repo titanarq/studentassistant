@@ -379,8 +379,11 @@
       Captura/Recursos box takes a fixed share of the left column (#458): 50 % at 720 px of
       viewport height, a third of every extra pixel of height taken off, down to 38 % from about
       1080 px (`clamp(38%, calc(50% - (100dvh - 45rem) / 3), 50%)`, never under 8rem). The chat
-      takes the rest (`flex: 1 1 0; min-height: 0`): its form keeps its height, so the input and
-      **Enviar** are always visible, and only the log shrinks and scrolls; the
+      takes the rest (`flex: 1 1 0; min-height: 0`, never `min-content`, which let a long reply
+      push the form off the screen, #463): its form keeps its height (`flex: none`), so the input
+      and **Enviar** are always visible, and only the log shrinks and scrolls; the input can be
+      dragged taller only up to `min(12rem, 22dvh)`; `src/workspace/layout.test.ts` pins these
+      rules (jsdom does no layout); the
       capture preview is capped at 32vh and the transcript at 20vh there, scoped to `.workspace`
       so `/capture` is unchanged. The log (`.ws-chat-log`) is its own scroll area (60vh at most
       outside that layout) and follows the newest turn through `src/chat/useFollowLog.ts`
