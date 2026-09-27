@@ -127,7 +127,12 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
    vídeo. La vista de cámara sólo existe en la pantalla del móvil. (La captura automática por
    cambio de página queda para más adelante.)
 2. **Ráfaga + la más nítida.** Cada captura son 3 fotos; el backend elige la más nítida
-   (varianza del laplaciano), la recorta/endereza como un escáner y conserva también el original.
+   (varianza del laplaciano) y la recorta/endereza como un escáner. En la bóveda sólo se guarda
+   la elegida (y su recorte), reducida a una resolución suficiente: por defecto 2000 px en el lado
+   largo (≈170 ppp en un A4, de sobra para letra manuscrita y rótulos pequeños de un esquema, ≈3,8k
+   tokens de imagen y ≈0,5–0,8 MB en JPEG de calidad 85), configurable. Las otras fotos de la
+   ráfaga y el original a resolución completa no se guardan: pesan mucho y encarecen el análisis
+   del LLM sin mejorarlo. Las sesiones ya guardadas se quedan como están.
 3. **Comandos de voz deterministas.** «Mira aquí», «siguiente», «importante», «ahora el libro»,
    «ya está, prepárame el tema» se detectan con una gramática configurable sobre la transcripción,
    sin LLM: latencia mínima, coste cero y comportamiento predecible. Sonnet se reserva para
@@ -146,7 +151,7 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
    práctica, «el estado de los LLM»: los modelos no guardan estado; lo guardamos nosotros.
    **Purga**: el contexto vivo del observador se recicla (instantánea + resumen del tema) al
    superar un umbral y al terminar cada sesión; y `studentassistant purge` aplica una política
-   de retención a la bóveda (originales de ráfagas, conversaciones ya purgadas, eventos ya
+   de retención a la bóveda (originales de ráfagas de sesiones antiguas, conversaciones ya purgadas, eventos ya
    plegados…) sin tocar nunca lo que citan los apuntes.
 6. **Procedencia en cada párrafo.** El apunte maestro es Markdown con notas al pie que apuntan a
    la fuente exacta (página manuscrita, minuto de la conversación, página del libro, URL). Lo que
