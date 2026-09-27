@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
-import { fetchMaterials, type Materials } from "../materials/api";
 import { fetchNotes, type TopicNotes } from "../notes/api";
 import { type Inline, type NotesTree, parseInline, parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
 import SourcePanel from "../notes/SourcePanel";
+import { fetchStudyState, type StudyState } from "./api";
 import ModeSwitch from "./ModeSwitch";
 import OptionContent from "./OptionContent";
 import OptionPanel, { OPTION_PANEL_ID } from "./OptionPanel";
@@ -79,9 +79,12 @@ function OptionButton({
 }
 
 /**
- * `/subjects/<subject>/topics/<topic>/study`, "Estudiar" (#333, epic #332): the study screen of a
- * topic. Left, "Repasos para hoy" for the topic, the study options with their state and the
- * question chat (`StudyChat`, #336), whose citation chips scroll to and highlight a section or open a source; right, the document read-only with "Editar en Construir". Opening an option
+ * `/subjects/<subject>/topics/<topic>/study`, "Estudiar" (#333, #337, epic #332): the study screen
+ * of a topic. The header names the "versión de estudio" (`GET .../study`, #335) and says when the
+ * notes changed after it; the options' states come from the same read. Left, "Repasos para hoy"
+ * for the topic, the study options with their state and the question chat (`StudyChat`, #336),
+ * whose citation chips scroll to and highlight a section or open a source; right, the document
+ * read-only with "Editar en Construir". Opening an option
  * slides `OptionPanel` over the right edge of the document with the existing page embedded, and
  * the sections the item shown is about are highlighted in the document and scrolled to. A
  * provenance footnote opens its source in the same place. Below 900 px the columns become one,
@@ -90,7 +93,7 @@ function OptionButton({
 export default function StudyPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [topicName, setTopicName] = useState(topicId);
   const [notes, setNotes] = useState<ReadResult<TopicNotes> | null>(null);
-  const [materials, setMaterials] = useState<ReadResult<Materials> | null>(null);
+  const [study, setStudy] = useState<ReadResult<StudyState> | null>(null);
   const [openKey, setOpenKey] = useState<OptionKey | null>(null);
   const [source, setSource] = useState<{
     label: string;
@@ -123,8 +126,8 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
   // Only the latest read is shown, so an older answer never overwrites a newer state.
   useEffect(() => {
     const read = ++reads.current;
-    void fetchMaterials(subjectId, topicId).then((result) => {
-      if (read === reads.current) setMaterials(result);
+    void fetchStudyState(subjectId, topicId).then((result) => {
+      if (read === reads.current) setStudy(result);
     });
   }, [subjectId, topicId]);
 
@@ -163,7 +166,9 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
     if (element.isConnected) element.focus({ preventScroll: true });
   });
 
-  const options = studyOptions(materials?.kind === "ok" ? materials.value : null);
+  const studyState = study?.kind === "ok" ? study.value : null;
+  const options = studyOptions(studyState);
+  const label = studyState?.studyVersion ?? null;
   const open = options.find((option) => option.key === openKey) ?? null;
 
   const register = useCallback((key: OptionKey, element: HTMLButtonElement | null) => {
@@ -242,6 +247,18 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
           <ModeSwitch subjectId={subjectId} topicId={topicId} current="study" />
         </div>
         <p className="page-context">Tema {topicName}</p>
+        {label !== null && (
+          <div className="study-label">
+            <p>
+              Apuntes v{label.version} · <span className="study-label-badge">versión de estudio</span>
+            </p>
+            {!studyState?.studyCurrent && (
+              <p className="study-label-note">
+                Has cambiado los apuntes después de la versión de estudio (v{label.version}).
+              </p>
+            )}
+          </div>
+        )}
         <div className="study-switch" role="group" aria-label="Qué mostrar">
           {VIEWS.map(([key, label]) => (
             <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
@@ -259,11 +276,11 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
           />
           <section className="study-options" aria-labelledby="study-options-heading">
             <h2 id="study-options-heading">Material de estudio</h2>
-            {materials === null && <p>Cargando el material…</p>}
-            {materials !== null && materials.kind !== "ok" && (
-              <p role="alert">No se pudo leer el estado del material: {describeFailure(materials)}</p>
+            {study === null && <p>Cargando el material…</p>}
+            {study !== null && study.kind !== "ok" && (
+              <p role="alert">No se pudo leer el estado del material: {describeFailure(study)}</p>
             )}
-            {materials !== null && (
+            {study !== null && (
               <ul className="study-option-list">
                 {options.map((option) => (
                   <OptionButton

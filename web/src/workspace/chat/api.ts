@@ -239,9 +239,31 @@ export interface TurnOutcome {
   targets: TriageTarget[];
   /** `doubt_answer`: the doubt answered. */
   pendingId: string | null;
+  /** `study` ("quiero estudiar", #335): where the assistant's one button goes. */
+  action: GoStudyAction | null;
 }
 
-const OUTCOME_EXTRAS = { sourceIds: [], doubts: 0, decision: null, targets: [], pendingId: null } satisfies Partial<TurnOutcome>;
+/** The action of a `study` turn: the "Ir a Estudiar" button to the study screen. */
+export interface GoStudyAction {
+  kind: "go_study";
+  path: string;
+}
+
+const OUTCOME_EXTRAS = {
+  sourceIds: [],
+  doubts: 0,
+  decision: null,
+  targets: [],
+  pendingId: null,
+  action: null,
+} satisfies Partial<TurnOutcome>;
+
+/** A `go_study` action with an in-app path, else null. */
+function readAction(value: unknown): GoStudyAction | null {
+  if (!isObject(value) || value.kind !== "go_study") return null;
+  const path = optionalText(value.path);
+  return path !== null && path.startsWith("/") && !path.startsWith("//") ? { kind: "go_study", path } : null;
+}
 
 /** The reply a "prepárame el tema" turn shows, which has no reply of its own. */
 function generationReply(body: Json): string {
@@ -299,6 +321,27 @@ export function readOutcome(body: unknown): TurnOutcome | null {
       pendingId,
     };
   }
+  if (kind === "study") {
+    // A `StudyTurn`: the topic switched to Estudiar; one line and the "Ir a Estudiar" action.
+    return {
+      turnId: optionalText(body.turn_id),
+      requestId,
+      kind,
+      message: optionalText(body.message),
+      transcript: readSpan(request, requestId),
+      requestSummary: request !== null ? optionalText(request.summary) : null,
+      reply: text(body.reply),
+      applied: false,
+      summary: null,
+      notesChanged: false,
+      changedSections: [],
+      diff: null,
+      commit: null,
+      warning: null,
+      ...OUTCOME_EXTRAS,
+      action: readAction(body.action),
+    };
+  }
   const revision: RevisionResult | null = readRevision(body);
   if (revision === null) return null;
   return {
@@ -322,6 +365,7 @@ export function readOutcome(body: unknown): TurnOutcome | null {
     decision: decisionOf(body.decision) ?? decisionOf(kind),
     targets: readTargets(body.targets),
     pendingId: null,
+    action: null,
   };
 }
 

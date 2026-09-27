@@ -796,3 +796,68 @@ it("keeps the undo of the latest applied change", async () => {
   expect(calls(`${CHAT}/undo`, "POST")).toHaveLength(1);
   expect(reloadNotes).toHaveBeenCalledWith([]);
 });
+
+function studyTurn(turnId: string, requestId: string, extra: Record<string, unknown> = {}) {
+  return {
+    turn_id: turnId,
+    request_id: requestId,
+    kind: "study",
+    origin: "voice",
+    request: { request_id: requestId, summary: "Dar el tema por terminado y ponerte a estudiar", ...TRANSCRIPT },
+    message: TRANSCRIPT.text,
+    reply: "He cerrado la captura y marcado los apuntes v5 como versión de estudio.",
+    action: { kind: "go_study", path: "/subjects/historia/topics/revolucion-industrial/study" },
+    study: {
+      subject: "historia",
+      topic: "revolucion-industrial",
+      study_version: { version: 5, tag: "historia/revolucion-industrial/apuntes-v5", marked_at: "2026-09-26T18:58:00Z" },
+      study_current: true,
+      options: [],
+      created_tag: false,
+      ended_session: "s-20260926-1000",
+    },
+    ...extra,
+  };
+}
+
+it("answers «quiero estudiar» with its line and one Ir a Estudiar button to the study screen", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-9", kind: "study", summary: "Dar el tema por terminado", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-9", request_id: "req-9", origin: "voice", kind: "study" }));
+  });
+  const entry = (await screen.findByText(/Pediste: Dar el tema por terminado/)).closest("li") as HTMLElement;
+  expect(await within(entry).findByText("Pasando a Estudiar…")).toBeInTheDocument();
+  expect(within(entry).queryByRole("link", { name: "Ir a Estudiar" })).toBeNull();
+
+  act(() => {
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-9", text: "He cerrado la captura y marcado los apuntes v5 como versión de estudio.", attempt: 1 }));
+    stream.push(sseEvent("study.marked", { version: 5, tag: "historia/revolucion-industrial/apuntes-v5" }));
+    stream.push(sseEvent("turn.result", studyTurn("turn-9", "req-9")));
+  });
+
+  const go = await within(entry).findByRole("link", { name: "Ir a Estudiar" });
+  expect(go).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/study");
+  expect(within(entry).getByText("He cerrado la captura y marcado los apuntes v5 como versión de estudio.")).toBeInTheDocument();
+  // The only control of the turn, and the only one in the chat.
+  expect(within(entry).queryAllByRole("button").filter((b) => b.textContent !== "…")).toHaveLength(0);
+  expect(within(log()).getAllByRole("link", { name: "Ir a Estudiar" })).toHaveLength(1);
+});
+
+it("shows no Ir a Estudiar button on other turns, nor on a study turn without a usable action", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  act(() => {
+    stream.push(detected("req-1", "Una tabla con las tres causas"));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" }));
+    stream.push(sseEvent("turn.result", voiceResult("turn-1", "req-1", { action: { kind: "go_study", path: "/x" } })));
+    stream.push(sseEvent("request.detected", { request_id: "req-2", kind: "study", summary: "A estudiar", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-2", request_id: "req-2", origin: "voice", kind: "study" }));
+    stream.push(sseEvent("turn.result", studyTurn("turn-2", "req-2", { action: { kind: "go_study", path: "https://example.com/" } })));
+  });
+
+  expect(await screen.findByText("He puesto una tabla con las tres causas.")).toBeInTheDocument();
+  expect(await screen.findByText("He cerrado la captura y marcado los apuntes v5 como versión de estudio.")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Ir a Estudiar" })).toBeNull();
+});

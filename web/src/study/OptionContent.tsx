@@ -5,6 +5,9 @@ import QuizPage from "../quiz/QuizPage";
 import ExercisesView from "./ExercisesView";
 import type { OptionKey, StudyOption } from "./options";
 
+/** The file the outline generator writes under `generated/`. */
+const OUTLINE_FILE = "esquema.md";
+
 export const NOT_GENERATED = "Todavía no está generado.";
 
 /** What to say in the study chat to get each option generated. */
@@ -51,7 +54,6 @@ export default function OptionContent({
     );
   }
   const props = { subjectId, topicId, embedded: true, onFocusAnchors };
-  const outline = option.files.find((name) => name === "esquema.md") ?? option.files.find((name) => name.endsWith(".md"));
   return (
     <>
       {option.state === "stale" && (
@@ -63,7 +65,7 @@ export default function OptionContent({
         </div>
       )}
       {option.key === "esquema" && (
-        <MaterialPreviewPage subjectId={subjectId} topicId={topicId} name={outline ?? "esquema.md"} embedded />
+        <MaterialPreviewPage subjectId={subjectId} topicId={topicId} name={OUTLINE_FILE} embedded />
       )}
       {option.key === "ejercicios" && (
         <ExercisesView subjectId={subjectId} topicId={topicId} onFocusAnchors={onFocusAnchors} anchorLabel={anchorLabel} />

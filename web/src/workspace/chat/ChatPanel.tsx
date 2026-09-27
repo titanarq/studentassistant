@@ -118,6 +118,7 @@ const RUNNING: Record<string, string> = {
   incorporate: "Incorporando…",
   triage: "Un momento…",
   doubt_answer: "Aplicando tu respuesta…",
+  study: "Pasando a Estudiar…",
 };
 
 function replyPlaceholder(entry: ChatEntry): string | null {
@@ -342,6 +343,17 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, batches }: Re
           <DiffView diff={entry.diff} />
         </div>
       )}
+      {entry.status === "done" && entry.action?.kind === "go_study" && (
+        <p className="ws-chat-actions">
+          <a className="ws-chat-go-study" href={entry.action.path}>
+            Ir a Estudiar
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12h14" />
+              <path d="M13 6l6 6-6 6" />
+            </svg>
+          </a>
+        </p>
+      )}
       {entry.kind === "incorporate" && entry.status === "done" && entry.doubts > 0 && (
         <p className="ws-chat-doubts">{doubtsLine(entry.doubts)}</p>
       )}
@@ -370,7 +382,8 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, batches }: Re
  * igualmente"). Requests waiting for their turn say "En cola…". Incorporations say what they
  * incorporated and how many doubts they raised; a whole-topic run shows its progress and its
  * batches; setting pages aside or restoring them is one short line; a doubt asked in the chat is
- * highlighted, and answered by typing or saying it. Below, a textarea (Enter sends, Shift+Enter
+ * highlighted, and answered by typing or saying it. "Ya está, quiero estudiar" (#335, #337) is
+ * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
  * is a new line) with **Enviar** and "Deshacer el último cambio".
  */
 export default function ChatPanel({

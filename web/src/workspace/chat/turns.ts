@@ -27,6 +27,7 @@
 import type { ChatRef } from "../../chat/api";
 import type {
   DoubtView,
+  GoStudyAction,
   HistoryTurn,
   PostOutcome,
   SpokenSpan,
@@ -93,6 +94,8 @@ export interface ChatEntry {
   progress: { done: number; total: number } | null;
   /** A batch of a whole-topic run: the run's entry key. */
   parent: string | null;
+  /** `study`: the "Ir a Estudiar" button (live only; the history does not keep these turns). */
+  action: GoStudyAction | null;
 }
 
 export interface ChatState {
@@ -160,6 +163,7 @@ function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
     pendingId: null,
     progress: null,
     parent: null,
+    action: null,
     ...fields,
   };
 }
@@ -294,6 +298,7 @@ function applyOutcome(entry: ChatEntry, outcome: TurnOutcome): Partial<ChatEntry
     decision: outcome.decision ?? entry.decision,
     targets: outcome.targets.length > 0 ? outcome.targets : entry.targets,
     pendingId: outcome.pendingId ?? entry.pendingId,
+    action: outcome.action,
   };
 }
 

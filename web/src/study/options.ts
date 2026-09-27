@@ -1,29 +1,27 @@
 /**
- * The study options of the study screen (#333) and their state, from `GET .../generated`
- * (`materials/api.ts`): **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind
- * `examen`), **Examen** (its `questions`), **Quiz** (kind `quiz`) and **Tarjetas de memoria** (the
- * practice queue, kind `flashcards`). A kind generated and not stale is "Listo", a stale one
- * "Desactualizado" (with the backend's reason), anything else "Sin generar".
+ * The study options of the study screen (#333) and their state, from `GET .../study` (#335,
+ * `api.ts`): **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`),
+ * **Examen** (its `questions`), **Quiz** (kind `quiz`) and **Tarjetas de memoria** (the practice
+ * queue, kind `flashcards`). The backend says whether each is "Listo", "Desactualizado" (with its
+ * reason) or "Sin generar"; an option it does not mention is "Sin generar".
  */
 
-import type { Artifact, Materials } from "../materials/api";
+import type { StudyOptionState, StudyState } from "./api";
 
 export type OptionKey = "esquema" | "ejercicios" | "examen" | "quiz" | "tarjetas";
-export type OptionState = "ready" | "stale" | "missing";
+export type OptionState = StudyOptionState;
 
 export interface StudyOptionInfo {
   key: OptionKey;
   title: string;
   description: string;
-  /** The generator kind whose state the option shows and which "Generar" runs. */
+  /** The generator kind of the material the option shows. */
   kind: string;
 }
 
 export interface StudyOption extends StudyOptionInfo {
   state: OptionState;
   staleReason: string | null;
-  /** The generated files of the kind (names under `generated/`). */
-  files: string[];
 }
 
 export const STUDY_OPTIONS: readonly StudyOptionInfo[] = [
@@ -42,21 +40,11 @@ export const STATE_LABELS: Record<OptionState, string> = {
 
 export const STALE_FALLBACK = "Los apuntes han cambiado desde que se generó.";
 
-function stateOf(artifact: Artifact | undefined): OptionState {
-  if (artifact === undefined || !artifact.generated) return "missing";
-  return artifact.stale ? "stale" : "ready";
-}
-
-/** The options in the study order, each with the state of its kind (`null` materials: all missing). */
-export function studyOptions(materials: Materials | null): StudyOption[] {
+/** The options in the study order, each with its state (`null` state: all missing). */
+export function studyOptions(study: StudyState | null): StudyOption[] {
   return STUDY_OPTIONS.map((info) => {
-    const artifact = materials?.artifacts.find((a) => a.kind === info.kind);
-    const state = stateOf(artifact);
-    return {
-      ...info,
-      state,
-      staleReason: state === "stale" ? (artifact?.staleReason ?? STALE_FALLBACK) : null,
-      files: artifact?.files ?? [],
-    };
+    const status = study?.options.find((option) => option.key === info.key);
+    const state = status?.state ?? "missing";
+    return { ...info, state, staleReason: state === "stale" ? (status?.staleReason ?? STALE_FALLBACK) : null };
   });
 }
