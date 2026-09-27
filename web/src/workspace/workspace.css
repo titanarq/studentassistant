@@ -196,10 +196,12 @@
     white-space: nowrap;
   }
 
-  /* A two-line input to start with (it grows by hand), so the log keeps more of the column. */
+  /* A two-line input to start with (it grows by hand), so the log keeps more of the column; never
+     dragged so tall that it pushes **Enviar** out of the chat's share (#463). */
   .workspace-chat .ws-chat-form textarea {
     height: 3.5rem;
     min-height: 2.5rem;
+    max-height: min(12rem, 22dvh);
   }
 
   .workspace-document {
