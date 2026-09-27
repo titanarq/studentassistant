@@ -31,6 +31,7 @@ from studentassistant.llm.errors import (
     RefusalError,
     StructuredOutputError,
     UnknownRoleError,
+    WebToolsUnavailableError,
 )
 from studentassistant.llm.fake import FakeClaude, no_sleep, web_fetch_blocks, web_search_blocks
 from studentassistant.llm.keycheck import check_api_key
@@ -47,6 +48,7 @@ from studentassistant.llm.types import (
     Usage,
 )
 from studentassistant.llm.web import (
+    WEB_TOOL_UNAVAILABLE_ERROR,
     FetchedDocument,
     ServerToolRun,
     WebSearchHit,
@@ -84,6 +86,7 @@ __all__ = [
     "PromptNotFoundError",
     "PromptRegistry",
     "ROLES",
+    "WEB_TOOL_UNAVAILABLE_ERROR",
     "RefusalError",
     "ResolvedBackend",
     "Role",
@@ -97,6 +100,7 @@ __all__ = [
     "Usage",
     "WebSearchHit",
     "WebToolResults",
+    "WebToolsUnavailableError",
     "api_key_available",
     "backoff_delay",
     "cache_stable_prefix",

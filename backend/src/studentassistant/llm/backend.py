@@ -78,5 +78,7 @@ def default_transport(settings: Settings | None = None) -> Transport:
     if resolve_backend(settings) == "claude-code":
         from studentassistant.llm.claude_code import ClaudeCodeTransport
 
-        return ClaudeCodeTransport(settings.llm.claude_code)
+        return ClaudeCodeTransport(
+            settings.llm.claude_code, web_role=settings.sources.web_search_role
+        )
     return AnthropicTransport()

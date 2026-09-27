@@ -46,7 +46,8 @@ resolved value.
 and `serve`, `generate` and `eval` build one per process and hand it to every feature, so nothing
 outside this module knows which backend runs.
 
-`ClaudeCodeTransport(settings: ClaudeCodeSettings | None = None, *, spawn=None, monotonic=...)`
+`ClaudeCodeTransport(settings: ClaudeCodeSettings | None = None, *, web_role=None, spawn=None,
+monotonic=...)`
 (`claude_code.py`) drives the locally installed Claude Code CLI headless, on the user's
 subscription, with no polling and no re-sent conversation:
 
@@ -54,13 +55,13 @@ subscription, with no polling and no re-sent conversation:
   --include-partial-messages` process per conversation, started with `--model` / `--effort` from
   the request (so from `[llm.roles.<role>]`), the system prompt through `--system-prompt-file`,
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS` = the request's `max_tokens`, `--tools ""` (no built-in tool:
-  no file edit, no bash, no web), `--strict-mcp-config`, `--setting-sources ""`,
+  no file edit, no bash, no web; a web request is the one exception, below), `--strict-mcp-config`, `--setting-sources ""`,
   `--disable-slash-commands`, `--no-session-persistence`, `--safe-mode`, then
   `[llm.claude_code] extra_args`; its working directory is `[llm.claude_code] workdir`.
   A request is one user turn written as a JSON line on stdin; stdout is read line by line up to
   the turn's `result` event.
-- A conversation is keyed by model, effort, `max_tokens` and the whole system prompt (tools
-  included). A request whose messages are what an idle process has already seen (its earlier
+- A conversation is keyed by model, effort, `max_tokens`, the whole system prompt (tools
+  included) and the CLI web tools it was started with. A request whose messages are what an idle process has already seen (its earlier
   messages plus the assistant turn it returned; `cache_control` markers ignored) followed only by
   user turns is sent to that process as just those turns, so the CLI's own prompt cache is reused.
   Anything else starts a new process; an earlier history is rendered as a transcript into its
@@ -76,8 +77,31 @@ subscription, with no polling and no re-sent conversation:
   elements, a trailing `,`, an unescaped `"` inside a string, raw control characters), and an
   `input` written as a JSON string is parsed too. One that is still malformed (e.g. cut off)
   keeps its raw input string so `structured` reports the JSON error and re-asks. `tool_result` blocks go back as text,
-  images and documents as blocks. Server tools (`web_search_*`, `web_fetch_*`) raise
-  `LLMAPIError` before anything starts: web sources need the `api` backend.
+  images and documents as blocks.
+- Web search / web fetch (#306): `default_transport` passes `web_role` = `[sources]
+  web_search_role`. A request of that role carrying the web search / web fetch server tools
+  (`web_search_*`, `web_fetch_*`) runs on a process started with `--tools` and `--allowedTools`
+  naming only the CLI built-ins that serve them, `[llm.claude_code] web_search_tool` /
+  `web_fetch_tool` (`WebSearch` / `WebFetch`); the system prompt tells Claude to use them
+  (`max_uses`, allowed / blocked domains; WebFetch with a prompt asking for the page verbatim),
+  and the client tools of the same request keep the JSON protocol. The CLI's `tool_use` /
+  `tool_result` events (with their `tool_use_result`) come back as the API's blocks, ahead of the
+  answer's own: `server_tool_use` (`web_search` `{query}` / `web_fetch` `{url}`),
+  `web_search_tool_result` (the found `{url, title}` pages, or an error object) and
+  `web_fetch_tool_result` (a text `document` with the page, `retrieved_at` = the event's time, or
+  error `fetch_failed`), so `parse_web_results` and `sources` do not branch on the backend.
+  Usage: `web_search_requests` is the `result` event's count (`usage.server_tool_use`, else the
+  sum of `modelUsage.*.webSearchRequests`, where the CLI reports it), `web_fetch_requests` the
+  WebFetch calls seen (the CLI reports none); the turn is billed and capped like any other
+  (`billing: subscription`, the reported cost). What the CLI cannot serve: a web tool whose name
+  is empty in config raises `WebToolsUnavailableError` (an `LLMAPIError`, not retried) before any
+  process starts; a CLI whose `init` event does not list the tool raises it too (the process is
+  dropped); a web fetch request whose turn brought no page text back gets a
+  `web_fetch_tool_result` error `WEB_TOOL_UNAVAILABLE_ERROR` (`web_tool_unavailable`). Server
+  tools in any other role's request, or other server tools, still raise `LLMAPIError` before
+  anything starts. Known limit: the CLI's WebFetch returns the page as its helper model renders it
+  for the prompt (Markdown, possibly cut on a very long page), not the raw document the API's web
+  fetch returns.
 - `on_text` gets the text deltas (`stream_event` `text_delta`); a reply that looks like a tool
   call (first visible character `{` or a fence) is held back and, if it is not one, sent whole.
 - Usage is the `result` event's `usage`; the turn's cost is the increase of the process's running
@@ -105,8 +129,11 @@ subscription, with no polling and no re-sent conversation:
 | `turn_timeout_seconds` | `600` |
 | `auth_check_timeout_seconds` | `20` |
 | `workdir` | `~/.cache/studentassistant/claude-code` |
+| `web_search_tool` | `WebSearch` (the CLI tool a web search runs on; `""` turns web search off under this backend) |
+| `web_fetch_tool` | `WebFetch` (the same for a web fetch) |
 
-Tests drive it with a fake `claude` script (`tests/llm/fake_claude_cli.py`), never the real CLI.
+Tests drive it with a fake `claude` script (`tests/llm/fake_claude_cli.py`, with scripted
+WebSearch / WebFetch tool events: `web_search(...)`, `web_fetch(...)`), never the real CLI.
 
 Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
 `SA_LLM__PRICES__claude-sonnet-5__INPUT_PER_MTOK=2`):

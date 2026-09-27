@@ -10,6 +10,12 @@ a `FakeClaudeCli` that scripts it. The script speaks the CLI's stream-json proto
   `{"text": ..., "usage": {...}, "cost": <this turn's USD>, "stop_reason": ...}`, or
   `{"error": {"status": 429, "message": ...}}` (an error result), `{"exit": 3}` (die before
   answering) or `{"hang": true}` (never answer).
+- A reply's `"web"` list scripts the CLI's built-in web tools, run before the answer: each item
+  `{"tool": "WebSearch" | "WebFetch", "input": {...}, "result": <tool_use_result>, "content":
+  <the tool_result text>, "is_error": bool}` is emitted as an assistant `tool_use` event and a
+  user `tool_result` event, like the real CLI does. The `init` event lists the tools named by
+  `--tools` (or the reply's `"cli_tools"`), and the `result` event reports the searches the way
+  the real CLI does: `usage.server_tool_use` zero, `modelUsage.<helper>.webSearchRequests` set.
 """
 
 from __future__ import annotations
@@ -75,8 +81,10 @@ for line in sys.stdin:
     turn = json.loads(line)
     log("turns.jsonl", {{"pid": os.getpid(), "turn": turn}})
     reply = next_reply()
+    tools = args[args.index("--tools") + 1] if "--tools" in args else ""
+    offered = reply.get("cli_tools", [t for t in tools.split(",") if t])
     emit({{"type": "system", "subtype": "init", "session_id": session, "model": model,
-          "tools": [], "apiKeySource": reply.get("api_key_source", "none")}})
+          "tools": offered, "apiKeySource": reply.get("api_key_source", "none")}})
     if "exit" in reply:
         sys.stderr.write("fake claude: exiting on purpose\n")
         sys.exit(reply["exit"])
@@ -88,6 +96,24 @@ for line in sys.stdin:
               "api_error_status": error.get("status"), "result": error.get("message", "boom"),
               "session_id": session, "total_cost_usd": total}})
         continue
+    searches = 0
+    for n, call in enumerate(reply.get("web", [])):
+        if call["tool"] not in offered:
+            continue  # like the real CLI: a tool it was not given is never called
+        tool_id = "toolu_fake_%d_%d" % (os.getpid(), n)
+        searches += call["tool"] == "WebSearch"
+        emit({{"type": "assistant", "message": {{"model": model, "role": "assistant",
+              "content": [{{"type": "tool_use", "id": tool_id, "name": call["tool"],
+              "input": call.get("input", {{}})}}]}}, "session_id": session}})
+        result = {{"type": "tool_result", "tool_use_id": tool_id,
+                  "content": call.get("content", "")}}
+        if call.get("is_error"):
+            result["is_error"] = True
+        event = {{"type": "user", "message": {{"role": "user", "content": [result]}},
+                 "session_id": session, "timestamp": "2026-09-27T10:00:00.000Z"}}
+        if "result" in call:
+            event["tool_use_result"] = call["result"]
+        emit(event)
     text = reply.get("text", "")
     half = len(text) // 2
     for piece in (text[:half], text[half:]):
@@ -100,9 +126,12 @@ for line in sys.stdin:
     emit({{"type": "assistant", "message": {{"model": model, "role": "assistant",
           "content": [{{"type": "text", "text": text}}], "usage": usage}}, "session_id": session}})
     total += reply.get("cost", 0.0)
+    usage["server_tool_use"] = {{"web_search_requests": 0, "web_fetch_requests": 0}}
     emit({{"type": "result", "subtype": "success", "is_error": False, "result": text,
           "stop_reason": reply.get("stop_reason", "end_turn"), "session_id": session,
-          "total_cost_usd": total, "usage": usage}})
+          "total_cost_usd": total, "usage": usage,
+          "modelUsage": {{model: {{"webSearchRequests": 0}},
+                         "claude-helper": {{"webSearchRequests": searches}}}}}})
 """
 
 
@@ -128,6 +157,36 @@ class FakeClaudeCli:
         replies.append({"text": text, **fields})
         (self.directory / "replies.json").write_text(json.dumps(replies), encoding="utf-8")
         return self
+
+    def web_search(
+        self, query: str, hits: list[tuple[str, str]], text: str, **fields: Any
+    ) -> FakeClaudeCli:
+        """A reply that runs one CLI WebSearch finding `hits` (`(url, title)`), then answers
+        `text`."""
+        links = [{"title": title, "url": url} for url, title in hits]
+        call = {
+            "tool": "WebSearch",
+            "input": {"query": query},
+            "content": f'Web search results for query: "{query}"\n\nLinks: {json.dumps(links)}',
+            "result": {"query": query, "results": [{"tool_use_id": "srv", "content": links}]},
+        }
+        return self.reply(text, web=[call], **fields)
+
+    def web_fetch(self, url: str, page: str, text: str = "Hecho.", **fields: Any) -> FakeClaudeCli:
+        """A reply that runs one CLI WebFetch of `url` returning `page`, then answers `text`."""
+        call = {
+            "tool": "WebFetch",
+            "input": {"url": url, "prompt": "verbatim"},
+            "content": page,
+            "result": {
+                "bytes": len(page),
+                "code": 200,
+                "codeText": "OK",
+                "result": page,
+                "url": url,
+            },
+        }
+        return self.reply(text, web=[call], **fields)
 
     def signed_in(self, **fields: Any) -> FakeClaudeCli:
         data = {"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "pro", **fields}

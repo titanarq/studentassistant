@@ -320,6 +320,16 @@ submodules. "Busca esto en Internet" runs Claude's server-side web tools through
 `studentassistant.llm` (`web_search_tool`, `web_fetch_tool`, `run_server_tools`; the versions come
 from `[llm] web_search_tool` / `web_fetch_tool`, `*_20260209` by default).
 
+Under each backend (#306): with `api` the tools run on Anthropic's servers; with `claude-code`
+the same requests run on the CLI's own `WebSearch` / `WebFetch` tools (only for the
+`web_search_role` client) and come back as the same blocks, so nothing here branches on the
+backend -- the fetched text is then the CLI's rendering of the page as Markdown (see
+`docs/modules/llm.md`). When the backend cannot run them (the CLI tool turned off in
+`[llm.claude_code]` or missing, or a fetch that brings nothing back), `search_web` raises
+`WebSearchError` and `snapshot_page` `WebFetchError` with `WEB_UNAVAILABLE_MESSAGE` ("La búsqueda
+web no está disponible con el backend de Claude Code..."): a search is recorded `search.failed`
+(`reason: error`) with it, a keep answers 422 with it; nothing is retried or written.
+
 - `search_web(client, query, *, settings, subject=None, topic=None) -> WebSearch` (`query`,
   `results`, `queries`, `responses`, `prompt_hash`, `model`): one request (prompt
   `prompts/web_search.md`, system cached) with the web search tool (`max_uses` =
