@@ -35,6 +35,14 @@ The conversation file is `conversations/observer-requests-<session-id>.jsonl` (a
 when a session is first seen, then each `user` turn and `assistant` answer, and `status` changes).
 `flush(session_id)` is the `add_before_ended` hook: it sends what is still unexamined at once and
 waits for it, so a request spoken just before ending is still detected.
+
+Wake-word mode (`request_detection = "wake_word"`, #318): no Claude call at all. The detector reads
+`voice.command` events instead, and each `assistant_request` command ("anel, haz una tabla...", the
+wake word lives only in the stt grammar) becomes a persisted `assistant.request` at once (origin
+`stt`, `detector: "wake_word"`): `kind` `prepare_notes` when the query says "prepárame el tema",
+else `edit`; `text` = the query, `summary` = the query cut to 140 characters at a word boundary,
+`segment_ids` = the command's segment, times from that segment's `transcript.final`. A request is
+one final: what follows a pause after the wake word is another segment and is not part of it.
 """
 
 from __future__ import annotations
@@ -88,6 +96,7 @@ from studentassistant.observer.live import (
     _failure_kind,
     default_client_factory,
 )
+from studentassistant.stt.commands import ASSISTANT_REQUEST, VOICE_COMMAND, normalise
 from studentassistant.vault import (
     ConversationRecord,
     SecretRefused,
@@ -111,6 +120,13 @@ DETECTOR = "requests"
 REQUEST_KINDS_READ = frozenset(
     {SEGMENT_EVENT_KIND, SESSION_STARTED, SESSION_RESUMED, SESSION_ENDED}
 )
+WAKE_WORD_KINDS_READ = frozenset({VOICE_COMMAND, SEGMENT_EVENT_KIND, SESSION_ENDED})
+"""What the detector reads in wake-word mode: the commands, and the finals for their times."""
+WAKE_WORD_ORIGIN = "stt"
+PREPARE_NOTES_PHRASE = normalise("prepárame el tema")
+"""A wake-word query containing it asks for `prepare_notes` (the grammar's "prepárame el tema")."""
+SEGMENT_TIMES_KEPT = 64
+"""The newest finals whose times a wake-word session keeps (its command follows at once)."""
 QUEUE_SIZE = 1024
 
 
@@ -225,11 +241,22 @@ class _Detected:
         return [final for final in self.finals if not final.examined]
 
 
+@dataclass
+class _Spoken:
+    """A session in wake-word mode: its request count, used segments and newest finals' times."""
+
+    requests: int = 0
+    assigned: set[str] = field(default_factory=set)
+    # segment id -> (session_start_ms, session_end_ms), newest last.
+    times: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+
 class RequestDetector:
     """The app-wide request detector: `start()` subscribes, `stop()` ends it, `flush()` a session.
 
-    Active only when `settings.request_detection == "observer"`; otherwise `start()` does nothing
-    and no call is ever made. `lookup` gives an attached session's vault handle; `client_factory`
+    With `settings.request_detection == "observer"` it asks Sonnet; with `"wake_word"` it turns
+    the `assistant_request` voice commands into requests without any call; with `"off"` `start()`
+    does nothing. `lookup` gives an attached session's vault handle; `client_factory`
     builds a session's `observer` client from its ledger binding (tests pass
     `default_client_factory(transport=fake)`); `clock` gives the time (`SystemClock`);
     `sources_lookup` the topic's context of each call (none: no sources, no doubt asked).
@@ -258,6 +285,7 @@ class RequestDetector:
         self._subscription: SubscriptionLike | None = None
         self._task: asyncio.Task[None] | None = None
         self._detected: dict[str, _Detected] = {}
+        self._spoken: dict[str, _Spoken] = {}
         self._ignored: set[str] = set()
         self._busy = False
         self._settled = asyncio.Event()
@@ -266,7 +294,11 @@ class RequestDetector:
 
     @property
     def enabled(self) -> bool:
-        return self.settings.request_detection == "observer"
+        return self.settings.request_detection != "off"
+
+    @property
+    def wake_word(self) -> bool:
+        return self.settings.request_detection == "wake_word"
 
     @property
     def running(self) -> bool:
@@ -282,8 +314,9 @@ class RequestDetector:
                 self.settings.request_detection,
             )
             return
+        kinds = WAKE_WORD_KINDS_READ if self.wake_word else REQUEST_KINDS_READ
         self._subscription = self.bus.subscribe(
-            name="observer-requests", kinds=REQUEST_KINDS_READ, maxsize=self.queue_size
+            name="observer-requests", kinds=kinds, maxsize=self.queue_size
         )
         self._task = asyncio.create_task(self._run(self._subscription), name="observer-requests")
 
@@ -305,6 +338,7 @@ class RequestDetector:
         if calls:
             await asyncio.gather(*calls, return_exceptions=True)
         self._detected.clear()
+        self._spoken.clear()
 
     async def drain(self) -> None:
         """Return once every event delivered to the detector so far has been consumed."""
@@ -360,6 +394,9 @@ class RequestDetector:
                     self._settled.set()
 
     async def _on_event(self, event: BusEventLike) -> None:
+        if self.wake_word:
+            await self._on_wake_word_event(event)
+            return
         session_id = event.session_id
         if event.kind == SESSION_ENDED:
             detected = self._detected.pop(session_id, None)
@@ -421,14 +458,7 @@ class RequestDetector:
     @staticmethod
     def _read_session(session: Session) -> tuple[str, str, list[AssistantRequest]]:
         vault, subject, topic = session.vault, session.subject_slug, session.topic_slug
-        earlier: list[AssistantRequest] = []
-        for event in session.read_events():
-            if event.kind != ASSISTANT_REQUEST_KIND:
-                continue
-            try:
-                earlier.append(AssistantRequest.model_validate(event.payload))
-            except ValidationError:
-                logger.warning("session %s: an unreadable %s event", session.id, event.kind)
+        earlier = _earlier_requests(session)
         subject_name = get_subject(vault, subject).subject.name
         topic_title = get_topic(vault, subject, topic).topic.title
         return subject_name, topic_title, earlier
@@ -465,6 +495,98 @@ class RequestDetector:
                 len(lost),
                 ", ".join(lost),
             )
+
+    # -- wake word ---------------------------------------------------------------------------
+
+    async def _on_wake_word_event(self, event: BusEventLike) -> None:
+        session_id = event.session_id
+        if event.kind == SESSION_ENDED:
+            self._spoken.pop(session_id, None)
+            self._ignored.discard(session_id)
+            return
+        if session_id in self._ignored:
+            return
+        spoken = self._spoken.get(session_id)
+        if spoken is None:
+            spoken = await self._open_spoken(session_id)
+            if spoken is None:
+                return
+        payload = event.payload
+        if event.kind == SEGMENT_EVENT_KIND:
+            segment_id = payload.get(SEGMENT_ID_KEY)
+            if isinstance(segment_id, str) and segment_id:
+                start = _ms(payload.get("session_start_ms"), event.t)
+                spoken.times.pop(segment_id, None)
+                spoken.times[segment_id] = (
+                    start,
+                    max(start, _ms(payload.get("session_end_ms"), start)),
+                )
+                while len(spoken.times) > SEGMENT_TIMES_KEPT:
+                    del spoken.times[next(iter(spoken.times))]
+            return
+        if event.kind == VOICE_COMMAND and payload.get("command") == ASSISTANT_REQUEST:
+            await self._publish_wake_word(session_id, spoken, event)
+
+    async def _open_spoken(self, session_id: str) -> _Spoken | None:
+        session = self.lookup(session_id)
+        if session is None:
+            logger.warning("no open vault session %s for the wake-word requests", session_id)
+            self._ignored.add(session_id)
+            return None
+        try:
+            earlier = await asyncio.to_thread(_earlier_requests, session)
+        except (VaultError, OSError):
+            logger.exception("the wake-word requests cannot read session %s", session_id)
+            self._ignored.add(session_id)
+            return None
+        spoken = _Spoken(
+            requests=max((_spoken_number(r.request_id) for r in earlier), default=0),
+            assigned={segment_id for r in earlier for segment_id in r.segment_ids},
+        )
+        self._spoken[session_id] = spoken
+        return spoken
+
+    async def _publish_wake_word(
+        self, session_id: str, spoken: _Spoken, event: BusEventLike
+    ) -> None:
+        payload = event.payload
+        segment_id, query = payload.get("segment_id"), payload.get("query")
+        if not isinstance(segment_id, str) or not segment_id or not isinstance(query, str):
+            logger.warning(
+                "session %s: a malformed %s command; skipped", session_id, ASSISTANT_REQUEST
+            )
+            return
+        query = query.strip()
+        if not normalise(query) or segment_id in spoken.assigned:
+            return
+        start, end = spoken.times.get(segment_id) or (_ms(event.t, 0), _ms(event.t, 0))
+        number = spoken.requests + 1
+        request = AssistantRequest(
+            request_id=f"req-{number}",
+            kind=_wake_word_kind(query),
+            summary=_cut_summary(query),
+            text=query,
+            segment_ids=[segment_id],
+            t_start_ms=start,
+            t_end_ms=end,
+            detector="wake_word",
+        )
+        try:
+            await self.bus.publish(
+                session_id, ASSISTANT_REQUEST_KIND, WAKE_WORD_ORIGIN, request.payload()
+            )
+        except Exception as error:  # the session ended meanwhile, a refused secret...
+            logger.warning("session %s: a wake-word request not published: %s", session_id, error)
+            return
+        spoken.requests = number
+        spoken.assigned.add(segment_id)
+        logger.info(
+            "wake-word request %s (%s) in segment %s of session %s",
+            request.request_id,
+            request.kind,
+            segment_id,
+            session_id,
+        )
 
     # -- triggers ----------------------------------------------------------------------------
 
@@ -920,6 +1042,35 @@ async def _context_of(
     except Exception:
         logger.exception("the request context of %s/%s cannot be read", subject_slug, topic_slug)
         return RequestContext()
+
+
+def _earlier_requests(session: Session) -> list[AssistantRequest]:
+    """The session's `assistant.request` events so far (earlier sessions' of a resumed one)."""
+    earlier: list[AssistantRequest] = []
+    for event in session.read_events():
+        if event.kind != ASSISTANT_REQUEST_KIND:
+            continue
+        try:
+            earlier.append(AssistantRequest.model_validate(event.payload))
+        except ValidationError:
+            logger.warning("session %s: an unreadable %s event", session.id, event.kind)
+    return earlier
+
+
+def _wake_word_kind(query: str) -> RequestKind:
+    """`prepare_notes` when the query says "prepárame el tema", else `edit`."""
+    words = f" {normalise(query)} "
+    return "prepare_notes" if f" {PREPARE_NOTES_PHRASE} " in words else "edit"
+
+
+def _cut_summary(text: str, limit: int = SUMMARY_MAX_CHARS) -> str:
+    """`text` on one line, cut to at most `limit` characters at a word boundary."""
+    line = " ".join(text.split())
+    if len(line) <= limit:
+        return line
+    head = line[: limit + 1]
+    cut = head.rsplit(" ", 1)[0].rstrip(" ,.;:-") if " " in head else ""
+    return cut or line[:limit]
 
 
 def _spoken_number(request_id: str) -> int:

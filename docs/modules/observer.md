@@ -254,11 +254,24 @@ settings, client_factory=None, clock=SystemClock())` (`start()`/`stop()`/`flush(
 and the context models are re-exported by `studentassistant.observer`.
 
 - **Mode** (`[observer] request_detection`, `SA_OBSERVER__REQUEST_DETECTION`): `observer`
-  (default: this detector), `wake_word` (the deterministic "anel" of `stt`, #318; this detector is
-  inactive) or `off`. Anything but `observer` makes `start()` a no-op, so no call is ever made. The
-  server builds it next to the observer loop (an `llm_transport`, `[observer] enabled` and
-  `request_detection = "observer"`), starts/stops it in the lifespan and registers `flush` with
-  `add_before_ended` after the observer loop's.
+  (default: Sonnet, below), `wake_word` (the deterministic "anel" of `stt`, #318, no Claude call;
+  see **Wake-word mode**) or `off` (`start()` is a no-op, nothing is produced). The server builds it
+  next to the observer loop (an `llm_transport`, `[observer] enabled` and `request_detection` not
+  `off`), starts/stops it in the lifespan and registers `flush` with `add_before_ended` after the
+  observer loop's; in `wake_word` mode it first registers the voice-command detector's `drain`, so
+  a wake word in the last final is still a request.
+- **Wake-word mode** (#318): the detector subscribes to `voice.command`, `transcript.final` and
+  `session.ended` only and never calls Claude. Each `voice.command` `assistant_request` (the stt
+  grammar's wake word "anel" and its spellings; the word lives only in the grammar file) becomes
+  a persisted `assistant.request` at once: origin `stt`, `detector: "wake_word"`, `kind`
+  `prepare_notes` when the query contains "prepárame el tema" (compared with `stt.commands.normalise`,
+  whole words), else `edit`; `text` = the query; `summary` = the query on one line cut to 140
+  characters at a word boundary; `segment_ids` = `[the command's segment]`; `t_start_ms` /
+  `t_end_ms` from that segment's `transcript.final` (the command's `t` when it was not seen).
+  Numbering continues the session's `req-<n>` (a resumed session's earlier requests counted); a
+  segment already part of a request, or an empty query, produces nothing. The Sonnet mode ignores
+  `assistant_request` commands (it does not read `voice.command`). Known limitation: a request is
+  one final segment (see `stt.md`).
 - **Input**: `transcript.final` (`segment_id`, `text`, `session_start_ms`, `session_end_ms`) and
   the lifecycle events. It keeps the newest `request_window_segments` finals (default 12) of each
   session and which of them it has examined; a final repeating an id, or empty, is ignored.

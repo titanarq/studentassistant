@@ -38,6 +38,7 @@ from studentassistant.observer.requests import (
 )
 from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.bus import SessionBus
+from studentassistant.stt import CommandDetector, load_grammar
 from studentassistant.vault import (
     Session,
     Vault,
@@ -427,19 +428,163 @@ async def test_finals_during_a_call_coalesce_into_the_next_one(
         await asyncio.wait_for(detector.stop(), WAIT)
 
 
-async def test_off_and_wake_word_make_no_call(
+async def test_off_makes_no_call_and_publishes_nothing(
     bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
 ) -> None:
-    for mode in ("off", "wake_word"):
-        settings = Settings(observer=ObserverSettings(request_detection=mode))
-        detector = make_detector(bus, fake, clock, settings)
-        detector.start()
-        assert not detector.running
-        await segment(bus, session, 1, REQUEST)
-        clock.advance(20)
-        await asyncio.sleep(0)
+    settings = Settings(observer=ObserverSettings(request_detection="off"))
+    detector = make_detector(bus, fake, clock, settings)
+    detector.start()
+    assert not detector.running
+    await segment(bus, session, 1, "anel, pon esto como definición")
+    await wake_word_command(bus, session, 1, "pon esto como definición")
+    clock.advance(20)
+    await asyncio.sleep(0)
+    await asyncio.wait_for(detector.flush(session.id), WAIT)
+    await asyncio.wait_for(detector.stop(), WAIT)
+    assert fake.requests == []
+    assert requests_of(session) == []
+
+
+# -- wake word (#318) ----------------------------------------------------------------------------
+
+
+async def wake_word_command(
+    bus: SessionBus, session: Session, n: int, query: str, command: str = "assistant_request"
+) -> None:
+    """The `voice.command` the stt detector publishes for "anel, <query>" in segment `n`."""
+    await bus.publish(
+        session.id,
+        "voice.command",
+        "stt",
+        {"command": command, "segment_id": f"seg-{n}", "text": f"anel, {query}", "query": query},
+        t=n * 3_000,
+    )
+
+
+def wake_word_detector(bus: SessionBus, fake: FakeClaude, clock: FakeClock) -> RequestDetector:
+    settings = Settings(observer=ObserverSettings(request_detection="wake_word"))
+    return make_detector(bus, fake, clock, settings)
+
+
+async def test_wake_word_turns_the_command_into_a_request_without_claude(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    detector = wake_word_detector(bus, fake, clock)
+    detector.start()
+    try:
+        assert detector.running
+        await segment(bus, session, 1, DICTATION[0])
+        await segment(bus, session, 2, "anel, haz una tabla con las causas")
+        await wake_word_command(bus, session, 2, "haz una tabla con las causas")
+        clock.advance(30)
         await asyncio.wait_for(detector.flush(session.id), WAIT)
+        assert requests_of(session) == [
+            {
+                "origin": "stt",
+                "request_id": "req-1",
+                "kind": "edit",
+                "summary": "haz una tabla con las causas",
+                "text": "haz una tabla con las causas",
+                "segment_ids": ["seg-2"],
+                "t_start_ms": 6_000,
+                "t_end_ms": 8_500,
+                "detector": "wake_word",
+            }
+        ]
+    finally:
         await asyncio.wait_for(detector.stop(), WAIT)
+    assert fake.requests == []
+
+
+async def test_wake_word_prepare_notes_long_summary_and_other_commands(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    long_query = "explica " + " ".join(["la fase de la mitosis"] * 10)
+    detector = wake_word_detector(bus, fake, clock)
+    detector.start()
+    try:
+        await segment(bus, session, 1, "anel, prepárame el tema")
+        await wake_word_command(bus, session, 1, "prepárame el tema, por favor")
+        await segment(bus, session, 2, "busca en internet la meiosis")
+        await wake_word_command(bus, session, 2, "la meiosis", command="web_search")
+        await segment(bus, session, 3, f"anel, {long_query}")
+        await wake_word_command(bus, session, 3, long_query)
+        await wake_word_command(bus, session, 3, long_query)  # never twice for one segment
+        await wake_word_command(bus, session, 4, "   ")  # an empty query fires nothing
+        await asyncio.wait_for(detector.flush(session.id), WAIT)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    found = requests_of(session)
+    assert [(e["request_id"], e["kind"]) for e in found] == [
+        ("req-1", "prepare_notes"),
+        ("req-2", "edit"),
+    ]
+    summary = found[1]["summary"]
+    assert len(summary) <= 140
+    assert long_query.startswith(summary)
+    assert long_query[len(summary)] == " "  # cut at a word boundary
+    assert found[1]["text"] == long_query
+    assert fake.requests == []
+
+
+async def test_wake_word_keeps_the_numbering_of_a_resumed_session(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    await bus.publish(
+        session.id,
+        ASSISTANT_REQUEST_KIND,
+        "stt",
+        {
+            "request_id": "req-1",
+            "kind": "edit",
+            "summary": "Antes",
+            "text": "Antes",
+            "segment_ids": ["seg-1"],
+            "t_start_ms": 3_000,
+            "t_end_ms": 5_500,
+            "detector": "wake_word",
+        },
+    )
+    detector = wake_word_detector(bus, fake, clock)
+    detector.start()
+    try:
+        await wake_word_command(bus, session, 1, "otra vez")  # already a request
+        await segment(bus, session, 2, "anel pon un ejemplo")
+        await wake_word_command(bus, session, 2, "pon un ejemplo")
+        await asyncio.wait_for(detector.flush(session.id), WAIT)
+    finally:
+        await asyncio.wait_for(detector.stop(), WAIT)
+    assert [e["request_id"] for e in requests_of(session)] == ["req-1", "req-2"]
+
+
+async def test_observer_mode_ignores_the_wake_word_command(
+    detector: RequestDetector, bus: SessionBus, session: Session, fake: FakeClaude
+) -> None:
+    await wake_word_command(bus, session, 1, "pon un ejemplo")
+    await asyncio.wait_for(detector.flush(session.id), WAIT)
+    assert fake.requests == []
+    assert requests_of(session) == []
+
+
+async def test_wake_word_end_to_end_from_the_transcript(
+    bus: SessionBus, session: Session, fake: FakeClaude, clock: FakeClock
+) -> None:
+    commands = CommandDetector(bus, load_grammar())
+    detector = wake_word_detector(bus, fake, clock)
+    commands.start()
+    detector.start()
+    try:
+        await segment(bus, session, 1, "Daniel dijo que la mitosis tiene cuatro fases")
+        await segment(bus, session, 2, "Anel, pon esto como definición.")
+        await asyncio.wait_for(commands.drain(), WAIT)
+        await asyncio.wait_for(detector.flush(session.id), WAIT)
+    finally:
+        await asyncio.wait_for(commands.stop(), WAIT)
+        await asyncio.wait_for(detector.stop(), WAIT)
+    found = requests_of(session)
+    assert [(e["kind"], e["text"], e["segment_ids"]) for e in found] == [
+        ("edit", "pon esto como definición.", ["seg-2"])
+    ]
     assert fake.requests == []
 
 

@@ -28,6 +28,7 @@ DEFAULT_COMMANDS = {
     "resume": (["reanuda", "seguimos"], []),
     "end_and_prepare": (["ya está, prepárame el tema"], []),
     "web_search": (["busca en internet"], []),
+    "assistant_request": (["anel", "anél", "a nel", "annel"], []),
 }
 
 

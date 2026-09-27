@@ -76,7 +76,9 @@ Everything below is importable from `studentassistant.stt` (the fakes from
     suppresses the command); no other keys. The default is the packaged `stt/commands.yaml`
     (`DEFAULT_GRAMMAR_PATH`): `capture` ("mira aquí", "mira esto", "captura", "haz foto", excluding
     "mira, aquí no"), `next_page`, `important`, `source_book`, `source_notes`, `source_pdf`,
-    `pause`, `resume`, `end_and_prepare`, `web_search` ("busca en internet" + the query).
+    `pause`, `resume`, `end_and_prepare`, `web_search` ("busca en internet" + the query),
+    `assistant_request` (the wake word "anel", also listed as the recogniser spellings "anél",
+    "a nel", "annel", + the request, #318).
     `[stt] commands_path` replaces the whole file (no merging).
   - `load_grammar(path | None) -> CommandGrammar` (`None` = the packaged file; `~` expanded).
     An unreadable file, invalid YAML, a non-mapping, an unknown key, an empty `phrases` or a phrase
@@ -94,7 +96,7 @@ Everything below is importable from `studentassistant.stt` (the fakes from
     command suppresses it; on a partial, a match in the tail that could still grow into one of that
     command's exclude phrases ("mira aquí" -> "mira aquí no") is deferred to the next partial or
     the final; each command fires at most once per `segment_id`, at the first text that matches;
-    `QUERY_COMMANDS` (`web_search`) fire only on the final, with `query` = the original text after
+    `QUERY_COMMANDS` (`web_search`, `assistant_request`) fire only on the final, with `query` = the original text after
     the earliest phrase occurrence, trimmed (leading `,.;:-` too), and not when it is empty.
     `forget(segment_id)` drops a segment's debounce state. `FiredCommand(command, segment_id,
     text, query=None)` (frozen; `text` is the partial or final as received).
@@ -110,12 +112,21 @@ Everything below is importable from `studentassistant.stt` (the fakes from
     {"command": "source_book", "segment_id": "s-12", "text": "Ahora el libro", "source": "book"}
     ```
     `source` (`book | notes | pdf`, `SOURCE_COMMANDS`) only on `source_book` / `source_notes` /
-    `source_pdf`, `query` only on `web_search`. `capture` and `next_page` (`CAPTURE_COMMANDS`)
+    `source_pdf`, `query` only on `web_search` and `assistant_request`. `capture` and `next_page` (`CAPTURE_COMMANDS`)
     also publish a persisted `command` (origin `stt`) `{"command_id": "voice-<seq of that
     voice.command>", "command": "capture_now", "voice_command", "segment_id"}`, which the WebSocket
     gateway forwards to the capture client as the protocol v1 `command` message. Acting on the
     other commands (pause, end and prepare, source switch, web search) is left to consumers of
     `voice.command`.
+  - Wake word (#318): `assistant_request` (`ASSISTANT_REQUEST`) is the query command of the
+    phrase "anel" ("anel, haz una tabla con las causas" -> `query` "haz una tabla con las
+    causas"). The word and its spellings live only in the grammar file, so `[stt] commands_path`
+    can replace them; no config key repeats it. Whole words only: "Daniel dijo..." does not fire;
+    words before the wake word are dropped. With `[observer] request_detection = "wake_word"` the
+    observer's request detector turns it into an `assistant.request` (see `observer.md`); in the
+    other modes nothing acts on it. **Known limitation**: a request is one final segment. A
+    request split across two finals (a pause after "anel,") yields only what follows the wake word
+    in the same segment, and nothing at all when that is empty.
 - Vocabulary hints (`stt/vocabulary.py`, pure logic, #54):
   `vocabulary_hints(*, subject, topic, concepts, max_terms, max_chars) -> list[str]` -- the
   subject's name, the topic's name, then `concepts` (given oldest first) newest first; whitespace

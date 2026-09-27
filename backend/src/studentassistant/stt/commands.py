@@ -58,9 +58,13 @@ def normalise(text: str) -> str:
     return _PUNCTUATION_OR_SPACE.sub(" ", stripped).strip()
 
 
+ASSISTANT_REQUEST = "assistant_request"
+"""The wake-word command ("anel, haz una tabla..."): its `query` is a request to the assistant,
+which the observer's request detector publishes in `wake_word` mode (#318)."""
+
 # Commands whose phrase is followed by a free-text query: they fire only on a final, carrying the
 # text after the phrase, and not at all when that text is empty.
-QUERY_COMMANDS = frozenset({"web_search"})
+QUERY_COMMANDS = frozenset({"web_search", ASSISTANT_REQUEST})
 
 
 class GrammarError(ValueError):

@@ -63,6 +63,30 @@ def test_esto_es_importante_fires_important_once(default_grammar: CommandGrammar
     run(CommandMatcher(default_grammar), [("esto es importante", F, ["important"])])
 
 
+# The wake word (#318): the query is the text after it, on the final only.
+WAKE_WORD_CASES: list[tuple[str, str | None]] = [
+    ("anel, haz una tabla con las causas", "haz una tabla con las causas"),
+    ("anel pon un ejemplo", "pon un ejemplo"),
+    ("Anél: pon esto como definición.", "pon esto como definición."),
+    ("a nel, resume este párrafo", "resume este párrafo"),
+    ("vale, anel, añade un esquema", "añade un esquema"),
+    ("Daniel dijo que la mitosis tiene cuatro fases", None),
+    ("anel", None),
+    ("anel, ", None),
+]
+
+
+@pytest.mark.parametrize(("text", "query"), WAKE_WORD_CASES)
+def test_the_wake_word_fires_assistant_request_with_the_query(
+    default_grammar: CommandGrammar, text: str, query: str | None
+) -> None:
+    matcher = CommandMatcher(default_grammar)
+    assert [c for c in matcher.match("s", text, False) if c.command == "assistant_request"] == []
+    fired = [c for c in matcher.match("s", text, True) if c.command == "assistant_request"]
+    expected = [] if query is None else [FiredCommand("assistant_request", "s", text, query)]
+    assert fired == expected
+
+
 def test_web_search_fires_on_final_with_query(default_grammar: CommandGrammar) -> None:
     matcher = CommandMatcher(default_grammar)
     assert matcher.match("s", "busca en internet la fotosíntesis", False) == []
