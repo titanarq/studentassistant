@@ -5,21 +5,26 @@ import {
   fetchTopics,
   formatDate,
   type ReadResult,
-  topicPath,
 } from "./desk/api";
 import type { ActiveSession } from "./desk/costApi";
 import DeskCost from "./desk/DeskCost";
+import { NewSubject, NewTopic } from "./desk/DeskCreate";
+import { topicCardPath, topicEntryPath, topicStudyPath, topicWorkspacePath } from "./desk/entry";
 import DeskPractice from "./desk/DeskPractice";
 import type { Subject, Topic } from "./protocol";
 import { styleGuidePagePath } from "./styleGuide/api";
 import "./desk/desk.css";
 
 /**
- * `/`: the study desk (docs/VISION.md §2). Every subject with its topics; each topic links to
- * its page (`/subjects/<s>/topics/<t>`, the topic card) and shows what the topic list carries:
- * an open session, the last session's date and the doubts waiting for review. "Gasto de hoy"
- * (`DeskCost`, #260) shows today's spend against the caps, and the open session's when there is one;
- * "Repasos para hoy" (`DeskPractice`, #285) lists the topics with practice due or new today.
+ * `/`: the study desk (docs/VISION.md §2), the way into a topic's Construir and Estudiar (#368).
+ * Every subject with its topics; each topic's name opens it where `topicEntryPath` says (the
+ * workspace, Construir, by default), followed by what the topic list carries (an open session,
+ * linking to the workspace, the last session's date and the doubts waiting for review) and two
+ * small links, **Estudiar** (the study screen) and **Ficha** (the topic card page). "Nueva
+ * asignatura" and each subject's "Nuevo tema" create them; a created topic opens in its
+ * workspace. "Gasto de hoy" (`DeskCost`, #260) shows today's spend against the caps, and the open
+ * session's when there is one; "Repasos para hoy" (`DeskPractice`, #285) lists the topics with
+ * practice due or new today.
  */
 
 type Desk =
@@ -42,6 +47,10 @@ function openSession(desk: Desk): ActiveSession | undefined {
   return undefined;
 }
 
+function goTo(path: string) {
+  window.location.assign(path);
+}
+
 function TopicRow({ topic }: { topic: Topic }) {
   const details: string[] = [];
   if (topic.last_session_at_ms !== undefined) {
@@ -52,23 +61,35 @@ function TopicRow({ topic }: { topic: Topic }) {
   }
   return (
     <li className="desk-topic">
-      <a className="desk-topic-name" href={topicPath(topic.subject_id, topic.topic_id)}>
+      <a className="desk-topic-name" href={topicEntryPath(topic)}>
         {topic.name}
       </a>
       {topic.open_session_id !== undefined && (
         <>
           {" · "}
-          <a className="desk-live" href="/live">
+          <a className="desk-live" href={topicWorkspacePath(topic)}>
             Sesión abierta
           </a>
         </>
       )}
       {details.length > 0 && <span className="desk-topic-details"> · {details.join(" · ")}</span>}
+      <span className="desk-topic-links">
+        <a href={topicStudyPath(topic)}>Estudiar</a>
+        <a href={topicCardPath(topic)}>Ficha</a>
+      </span>
     </li>
   );
 }
 
-function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadResult<Topic[]> }) {
+function SubjectSection({
+  subject,
+  topics,
+  onTopicCreated,
+}: {
+  subject: Subject;
+  topics: ReadResult<Topic[]>;
+  onTopicCreated: (topic: Topic) => void;
+}) {
   return (
     <section className="desk-subject" aria-label={subject.name}>
       <h2>{subject.name}</h2>
@@ -86,12 +107,22 @@ function SubjectSection({ subject, topics }: { subject: Subject; topics: ReadRes
           ))}
         </ul>
       )}
+      <NewTopic subject={subject} onCreated={onTopicCreated} />
     </section>
   );
 }
 
-export default function App() {
+/** `navigate` is where a created topic goes (the browser's location by default; tests pass their own). */
+export default function App({ navigate = goTo }: { navigate?: (path: string) => void }) {
   const [desk, setDesk] = useState<Desk>({ state: "loading" });
+
+  const addSubject = (subject: Subject) =>
+    setDesk((current) =>
+      current.state === "ok"
+        ? { state: "ok", subjects: [...current.subjects, { subject, topics: { kind: "ok", value: [] } }] }
+        : current,
+    );
+  const openTopic = (topic: Topic) => navigate(topicWorkspacePath(topic));
 
   useEffect(() => {
     let cancelled = false;
@@ -123,15 +154,16 @@ export default function App() {
       {desk.state === "loading" && <p>Cargando asignaturas…</p>}
       {desk.state === "failed" && <p role="alert">{desk.message}</p>}
       {desk.state === "ok" && desk.subjects.length === 0 && (
-        <p>Todavía no hay asignaturas. Aparecerán aquí cuando empieces tu primera sesión de estudio.</p>
+        <p>Todavía no hay asignaturas. Crea la primera en «Nueva asignatura» y dale un tema.</p>
       )}
       {desk.state === "ok" && desk.subjects.length > 0 && (
         <div className="desk-subjects">
           {desk.subjects.map(({ subject, topics }) => (
-            <SubjectSection key={subject.subject_id} subject={subject} topics={topics} />
+            <SubjectSection key={subject.subject_id} subject={subject} topics={topics} onTopicCreated={openTopic} />
           ))}
         </div>
       )}
+      {desk.state === "ok" && <NewSubject onCreated={addSubject} />}
     </main>
   );
 }

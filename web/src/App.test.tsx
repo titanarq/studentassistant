@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import App from "./App";
 import { jsonResponse, stubApi } from "./test/mockApi";
@@ -10,7 +10,7 @@ afterEach(() => {
 // 2026-09-24 12:00 UTC: the same calendar day in every time zone the tests may run in.
 const SEP_24 = Date.UTC(2026, 8, 24, 12);
 
-it("lists every subject with its topics, linking each to its topic page", async () => {
+it("lists every subject with its topics, opening each in Construir with Estudiar and Ficha beside it", async () => {
   const fetchMock = stubApi({
     "/api/subjects": jsonResponse({
       subjects: [
@@ -39,11 +39,27 @@ it("lists every subject with its topics, linking each to its topic page", async 
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
   const historia = await screen.findByRole("region", { name: "Historia" });
   const link = within(historia).getByRole("link", { name: "Tema 4 — La Revolución Francesa" });
-  expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-francesa");
-  expect(link.closest("li")).toHaveTextContent("Última sesión: 24 de septiembre de 2026 · 4 dudas por revisar");
+  expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-francesa/workspace");
+  const row = link.closest("li") as HTMLElement;
+  expect(row).toHaveTextContent("Última sesión: 24 de septiembre de 2026 · 4 dudas por revisar");
+  expect(within(row).getByRole("link", { name: "Estudiar" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/study",
+  );
+  expect(within(row).getByRole("link", { name: "Ficha" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa",
+  );
   const roman = within(historia).getByRole("link", { name: "El Imperio romano" });
   expect(roman.closest("li")).toHaveTextContent("Sesión abierta");
-  expect(within(historia).getByRole("link", { name: "Sesión abierta" })).toHaveAttribute("href", "/live");
+  expect(within(historia).getByRole("link", { name: "Sesión abierta" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/imperio-romano/workspace",
+  );
+  expect(screen.queryByRole("link", { name: /capture/i })).not.toBeInTheDocument();
+  for (const anchor of screen.getAllByRole("link")) {
+    expect(anchor.getAttribute("href")).not.toMatch(/^\/(capture|live)/);
+  }
   expect(within(historia).getByRole("link", { name: "Guía de estilo" })).toHaveAttribute(
     "href",
     "/subjects/historia/style-guide",
@@ -67,7 +83,7 @@ it("shows a topic without the 1.1 fields (older backend) with just its name", as
   render(<App />);
 
   const link = await screen.findByRole("link", { name: "Tema 1" });
-  expect(link.closest("li")).toHaveTextContent(/^Tema 1$/);
+  expect(link.closest("li")).toHaveTextContent(/^Tema 1EstudiarFicha$/);
 });
 
 it("shows the empty desk when there are no subjects yet", async () => {
@@ -146,4 +162,104 @@ it("shows today's spend and asks for the open session's once the topics say one 
   const cost = screen.getByRole("region", { name: "Gasto de hoy" });
   expect(await within(cost).findByText(/Sesión abierta/)).toHaveTextContent("Sesión abierta: 0,1000 USD de 1,0000 USD");
   expect(fetchMock).toHaveBeenCalledWith("/api/cost");
+});
+
+const EMPTY_DESK = {
+  "/api/subjects": jsonResponse({ subjects: [{ subject_id: "historia", name: "Historia" }] }),
+  "/api/subjects/historia/topics": jsonResponse({ subject_id: "historia", topics: [] }),
+};
+
+it("creates a subject and lists it at once, with its own Nuevo tema", async () => {
+  const fetchMock = stubApi({
+    ...EMPTY_DESK,
+    "POST /api/subjects": jsonResponse({ subject_id: "fisica", name: "Física" }, 201),
+  });
+
+  render(<App navigate={vi.fn()} />);
+
+  const form = await screen.findByRole("form", { name: "Nueva asignatura" });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Nombre de la asignatura" }), {
+    target: { value: "  Física " },
+  });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+
+  const fisica = await screen.findByRole("region", { name: "Física" });
+  expect(fisica).toHaveTextContent("Esta asignatura todavía no tiene temas.");
+  expect(within(fisica).getByRole("button", { name: "Nuevo tema" })).toBeInTheDocument();
+  expect(within(form).getByRole("textbox", { name: "Nombre de la asignatura" })).toHaveValue("");
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(post?.[0]).toBe("/api/subjects");
+  expect(JSON.parse(post?.[1]?.body as string)).toEqual({ name: "Física" });
+});
+
+it("asks for a subject name and shows the backend's refusal in Spanish", async () => {
+  stubApi({
+    ...EMPTY_DESK,
+    "POST /api/subjects": jsonResponse({ detail: "Ya existe una asignatura con ese nombre." }, 409),
+  });
+
+  render(<App navigate={vi.fn()} />);
+
+  const form = await screen.findByRole("form", { name: "Nueva asignatura" });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+  expect(within(form).getByRole("alert")).toHaveTextContent("Escribe el nombre de la asignatura.");
+
+  fireEvent.change(within(form).getByRole("textbox"), { target: { value: "Historia" } });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+  expect(await within(form).findByText(/Ya existe/)).toHaveTextContent(
+    "No se ha podido crear la asignatura: Ya existe una asignatura con ese nombre.",
+  );
+  expect(screen.getAllByRole("region", { name: "Historia" })).toHaveLength(1);
+});
+
+it("creates a topic under its subject and opens it in the workspace", async () => {
+  const navigate = vi.fn();
+  const fetchMock = stubApi({
+    ...EMPTY_DESK,
+    "POST /api/subjects/historia/topics": jsonResponse(
+      { topic_id: "la-ilustracion", subject_id: "historia", name: "La Ilustración" },
+      201,
+    ),
+  });
+
+  render(<App navigate={navigate} />);
+
+  const historia = await screen.findByRole("region", { name: "Historia" });
+  const toggle = within(historia).getByRole("button", { name: "Nuevo tema" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(within(historia).queryByRole("form")).not.toBeInTheDocument();
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const form = within(historia).getByRole("form", { name: "Nuevo tema de Historia" });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Nombre del tema" }), {
+    target: { value: "La Ilustración" },
+  });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+
+  await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/subjects/historia/topics/la-ilustracion/workspace"));
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(JSON.parse(post?.[1]?.body as string)).toEqual({ name: "La Ilustración" });
+});
+
+it("keeps the desk and says why a topic could not be created", async () => {
+  const navigate = vi.fn();
+  stubApi({
+    ...EMPTY_DESK,
+    "POST /api/subjects/historia/topics": new Error("offline"),
+  });
+
+  render(<App navigate={navigate} />);
+
+  const historia = await screen.findByRole("region", { name: "Historia" });
+  fireEvent.click(within(historia).getByRole("button", { name: "Nuevo tema" }));
+  const form = within(historia).getByRole("form", { name: "Nuevo tema de Historia" });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+  expect(within(form).getByRole("alert")).toHaveTextContent("Escribe el nombre del tema.");
+
+  fireEvent.change(within(form).getByRole("textbox"), { target: { value: "Tema 5" } });
+  fireEvent.click(within(form).getByRole("button", { name: "Crear" }));
+  expect(await within(form).findByText(/no se pudo conectar/)).toHaveTextContent(
+    "No se ha podido crear el tema: no se pudo conectar con el servidor.",
+  );
+  expect(navigate).not.toHaveBeenCalled();
 });

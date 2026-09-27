@@ -116,7 +116,54 @@
   text-decoration: none;
 }
 
+/* Estudiar · Ficha (#368): the topic's other two screens, small, after the row's details. */
+.desk-topic-links {
+  display: inline-flex;
+  gap: var(--space-3);
+  margin-left: var(--space-3);
+}
+
+/* Creating (#368): "Nueva asignatura" below the notebooks, "Nuevo tema" in each one. */
+.desk-new-subject {
+  margin-top: var(--space-6);
+  max-width: 32rem;
+}
+
+.desk-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+.desk-create input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.desk-create [role="alert"] {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.desk-new-topic {
+  margin-top: var(--space-3);
+  font-size: var(--step--1);
+}
+
 @media (max-width: 48rem) {
+  .desk-topic-links {
+    display: flex;
+    margin-left: 0;
+  }
+
+  .desk-topic-links a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+
   .desk-topic-name {
     display: flex;
     align-items: center;

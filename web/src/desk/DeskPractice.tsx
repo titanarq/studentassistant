@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { describeFailure, type ReadResult, topicPath } from "./api";
+import { describeFailure, type ReadResult } from "./api";
+import { topicStudyPath } from "./entry";
 import {
   countsText,
   fetchPracticeSummary,
@@ -11,7 +12,8 @@ import {
 
 /**
  * "Repasos para hoy" on the study desk (#285), from `GET /api/practice/summary`: the totals and
- * one row per topic with due or new items, each a link to the topic's practice page. With
+ * one row per topic with due or new items, each a link to the topic's study screen (#368), where
+ * its reviews are shown and Tarjetas de memoria opens the practice queue. With
  * practice material but nothing to review it says so and gives the next due date; without any
  * practice material the block is not shown. A failed read is one discreet Spanish line.
  */
@@ -50,7 +52,7 @@ function Summary({ summary }: { summary: PracticeSummary }) {
       <ul>
         {rows.map((topic) => (
           <li key={`${topic.subject_id}/${topic.topic_id}`}>
-            <a href={`${topicPath(topic.subject_id, topic.topic_id)}/practice`}>
+            <a href={topicStudyPath(topic)}>
               {topic.subject_name} · {topic.topic_title}
             </a>{" "}
             — {countsText(topic.due, topic.new)}

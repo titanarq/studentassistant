@@ -86,42 +86,50 @@ código vale 5 minutos y un solo uso. Para esta prueba en el portátil no hace f
 
 ## 5. La sesión (tú, unos 20 minutos)
 
-1. Abre `http://localhost:8765/capture` en Chrome y **permite cámara y micrófono**.
-2. Elige o crea la asignatura y el tema (una sesión = un tema). Si el tema tiene una sesión sin
-   terminar, puedes pulsar **Continuar la sesión abierta**; si no, **Empezar una sesión nueva**.
-3. Habla con normalidad sobre lo que enseñas. La transcripción en directo aparece en gris
+1. Abre `http://localhost:8765/` en Chrome: es la **Mesa de estudio**.
+2. Si todavía no tienes la asignatura, escríbela en **Nueva asignatura** y pulsa **Crear**.
+3. En su recuadro pulsa **Nuevo tema**, escribe el nombre y pulsa **Crear** (una sesión = un tema).
+   Se abre el espacio de estudio del tema (**Construir**). Un tema que ya existe se abre pulsando su
+   nombre en la mesa.
+4. En la pestaña **Captura** pulsa **Empezar una sesión nueva** (o **Continuar la sesión abierta**
+   si el tema tiene una sin terminar) y **permite cámara y micrófono**.
+5. Habla con normalidad sobre lo que enseñas. La transcripción en directo aparece en gris
    (provisional) y pasa a negro (definitiva).
-4. Para cada página: ponla delante de la cámara, bien iluminada y entera, y pulsa **Capturar**
+6. Para cada página: ponla delante de la cámara, bien iluminada y entera, y pulsa **Capturar**
    (hace una ráfaga de 3 fotos; verás un destello y la miniatura pasará de "Subiendo…" a
-   "Guardada").
-5. **Libro** / **Apuntes** indican de qué es la página siguiente; **Importante** marca el momento.
-6. Al acabar, pulsa **Terminar**.
+   "Guardada"). Las páginas guardadas aparecen en la pestaña **Recursos**; cambiar de pestaña no
+   para la captura.
+7. **Libro** / **Apuntes** indican de qué es la página siguiente; **Importante** marca el momento.
 
 Decir "mira aquí", "mira esto", "captura" o "haz foto" también dispara una captura, igual que
 "siguiente" o "pasamos página" pasa a la página siguiente. El resto de frases de la gramática
 ("ahora el libro", "vuelvo a mis apuntes", "ahora el pdf", "esto es importante" / "importante",
 "pausa", "reanuda", "busca en internet ...") por ahora solo quedan grabadas como eventos
-`voice.command` de la sesión, sin disparar ninguna acción por sí solas: para cambiar de fuente,
-marcar un momento importante o terminar sigue haciendo falta pulsar **Libro** / **Apuntes** /
-**Importante** / **Terminar**.
+`voice.command` de la sesión, sin disparar ninguna acción por sí solas: para cambiar de fuente o
+marcar un momento importante sigue haciendo falta pulsar **Libro** / **Apuntes** / **Importante**.
 
-Lo que le pides al asistente hablando durante la sesión sí lo entiende y lo lleva a cabo: "ya
-está, prepárame el tema", "incorpora la página 3", "aparta la 9" o un cambio en los apuntes se
-detectan y se ejecutan solos (modo por defecto `[observer] request_detection = "observer"`; con
-`wake_word` hace falta empezar diciendo "anel"), así que **Prepárame el tema** ya no es la única
-forma de pedirlo.
+Lo que le pides al asistente hablando (o escribiendo en el chat del espacio de estudio) sí lo
+entiende y lo lleva a cabo: "ya está, prepárame el tema", "incorpora la página 3", "aparta la 9"
+o un cambio en los apuntes se detectan y se ejecutan solos (modo por defecto `[observer]
+request_detection = "observer"`; con `wake_word` hace falta empezar diciendo "anel"). Cada
+petición y su respuesta aparecen en el chat, y los apuntes se van escribiendo en el documento de
+la derecha.
 
-## 6. "Prepárame el tema" y revisión (tú)
+## 6. Revisar y pasar a estudiar (tú)
 
-1. Abre `http://localhost:8765/` (escritorio de estudio) y entra en el tema, o directamente
-   `http://localhost:8765/subjects/<asignatura>/topics/<tema>`.
-2. Pulsa **Prepárame el tema**. Opus escribe los apuntes; tarda un poco (minutos, no segundos).
-3. `.../notes`: los apuntes con sus fuentes al lado; cada nota a pie lleva a la página o al
-   fragmento de la transcripción del que sale.
-4. En el chat del editor pide cambios ("demasiado resumido", "pon un ejemplo", "no inventes",
-   "¿por qué pusiste esto?"). Cada cambio muestra su diff y se puede deshacer.
-5. `.../pending`: las dudas que dejó el observador; respóndelas o descártalas.
-6. `.../versions`: historial de los apuntes.
+1. En el espacio de estudio, pide "ya está, prepárame el tema" si no lo has pedido ya. Opus
+   escribe los apuntes; tarda un poco (minutos, no segundos).
+2. Revisa el documento: cada nota a pie abre en **Recursos** la página o el fragmento del que
+   sale. Pide cambios en el chat ("demasiado resumido", "pon un ejemplo", "no inventes", "¿por qué
+   pusiste esto?") o pulsa **Editar** para cambiarlos tú.
+3. Las dudas que deja el observador aparecen en el chat; respóndelas ahí ("la 2", "pone
+   «escrita»", "descártala"). El contador de dudas pendientes está en la cabecera.
+4. Cuando estén bien, di o escribe **"ya está, quiero estudiar"**: el asistente cierra la
+   captura, marca la versión de estudio y ofrece **Ir a Estudiar**, que abre la pantalla
+   **Estudiar** (esquema, ejercicios, examen, quiz, tarjetas y preguntas sobre los apuntes). El
+   selector **Construir · Estudiar** de la cabecera hace lo mismo.
+5. Desde la mesa, **Estudiar** abre directamente esa pantalla y **Ficha** la ficha del tema
+   (resumen, PDF, páginas web, libro de texto, coste y descargas).
 
 ## 7. Coste
 
@@ -136,17 +144,20 @@ corto.
 
 ## Qué vigilar
 
-- [ ] **Transcripción en directo**: aparece en `/capture` con poco retraso, en español, y no se
-      corta durante minutos (si se para, mira `journalctl`; Chrome a veces pierde el micrófono).
+- [ ] **Transcripción en directo**: aparece en la pestaña **Captura** del espacio de estudio con
+      poco retraso, en español, y no se corta durante minutos (si se para, mira `journalctl`; Chrome a veces pierde el micrófono).
 - [ ] **Páginas guardadas**: cada ráfaga queda "guardada" y aparece en
       `~/StudentAssistant/vault/subjects/<asignatura>/topics/<tema>/sources/notes/`
       (`page-NNN.jpg`, `.page.jpg` recortada y, tras unos segundos, `page-NNN.md` con su
       transcripción).
 - [ ] **Observador**: en `journalctl` no hay `observer call ... failed`; aparecen dudas
-      pendientes (contador en `/capture`, lista en `.../pending`) cuando algo no se entiende.
+      pendientes (en el chat y en el contador de la cabecera del espacio de estudio) cuando algo no
+      se entiende.
 - [ ] **Calidad de los apuntes**: dicen lo que querías escribir, sin inventar; cada párrafo cita su
       fuente; lo que no se entendía está como duda, no rellenado.
-- [ ] **Coste**: `/api/cost` antes y después de "Prepárame el tema"; anota el total de la sesión.
+- [ ] **Coste**: `/api/cost` antes y después de "prepárame el tema"; anota el total de la sesión.
+- [ ] **Estudiar**: "ya está, quiero estudiar" abre la pantalla Estudiar con la versión de
+      estudio, y el tema se abre desde la mesa (su nombre, **Estudiar**).
 - [ ] **Vault en GitHub**: `curl -s http://localhost:8765/api/vault/status` sin
       `last_push_failure`, y los commits en el repositorio privado.
 
