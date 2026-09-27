@@ -393,3 +393,75 @@ it("builds the resource list from the counts and the notes' citations", () => {
   expect(list.uncitedWebs).toBe(0);
   expect(resourceList(null, null)).toEqual({ groups: [], uncitedWebs: 0 });
 });
+
+function costStatus(overrides: Record<string, unknown> = {}) {
+  return jsonResponse({
+    session_usd: 0,
+    day_usd: 0,
+    max_usd_per_session: null,
+    max_usd_per_day: null,
+    observer_paused: false,
+    editor_needs_confirmation: false,
+    unpriced_session_calls: 0,
+    unpriced_day_calls: 0,
+    unpriced_models: [],
+    ...overrides,
+  });
+}
+
+function topicCost(usd: number) {
+  const totals = { usd, tokens: 10, input_tokens: 5, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, calls: 1, unpriced_calls: 0 };
+  return jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", total: totals, sessions: [], no_session: totals });
+}
+
+it("links the notes' versions from the header, naming the current version", async () => {
+  renderPage();
+
+  const header = screen.getByRole("banner");
+  const link = await within(header).findByRole("link", { name: "Versiones (actual: v2)" });
+  expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/versions");
+  expect(link).toHaveTextContent("Versiones");
+});
+
+it("shows the topic's spend in the header and reads it again after the notes changed", async () => {
+  let costs = 0;
+  let reads = 0;
+  const stream = streamResponse();
+  renderPage({
+    ...ROUTES,
+    [`${BASE}/notes`]: () => (reads++ === 0 ? notes() : notes(NOTES, { revision: "c".repeat(64), version: 3 })),
+    [`${BASE}/workspace/stream`]: () => stream.response,
+    [`${BASE}/cost`]: () => topicCost(costs++ === 0 ? 0.01 : 0.05),
+    "/api/cost": costStatus(),
+  });
+  const header = screen.getByRole("banner");
+  await within(header).findByRole("link", { name: "Versiones (actual: v2)" });
+  expect(await within(header).findByText(/^Este tema: /)).toBeInTheDocument();
+
+  act(() => {
+    stream.push(sseEvent("notes.changed", { revision: "c".repeat(64), origin: "editor", summary: "Ampliado", turn_id: null }));
+  });
+
+  expect(await within(header).findByText("Este tema: 0,0500 USD")).toBeInTheDocument();
+  expect(within(header).getByRole("link", { name: "Versiones (actual: v3)" })).toBeInTheDocument();
+});
+
+it("shows the open session's spend when the topic has a session open", async () => {
+  renderPage({
+    ...ROUTES,
+    "/api/subjects/historia/topics": jsonResponse({
+      subject_id: "historia",
+      topics: [
+        {
+          topic_id: "revolucion-industrial",
+          subject_id: "historia",
+          name: "La Revolución Industrial",
+          open_session_id: "s-20260926-1000",
+        },
+      ],
+    }),
+    "/api/cost?subject=historia&topic=revolucion-industrial&session=s-20260926-1000": costStatus({ session_usd: 0.25 }),
+  });
+
+  expect(await within(screen.getByRole("banner")).findByText("Esta sesión: 0,2500 USD")).toBeInTheDocument();
+});

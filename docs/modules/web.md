@@ -97,7 +97,16 @@
   #312, epic #311): one screen for a topic, opened from the study desk (the row's **Construir**, "Sesión
   abierta", a created topic; #368) and from the topic page's **Construir**. The header has the crumbs, the topic name and the open-doubts counter ("N dudas
   pendientes", from `GET .../pending?status=open`, read again whenever the document changes,
-  linking to the pending page). Two columns (a CSS grid):
+  linking to the pending page). Next to it, in one wrapping row (`.workspace-meta`, also below
+  900 px, no horizontal scroll; #372): a **Versiones** link to `.../versions` (`VersionsPage`),
+  shown once the notes are read, whose accessible name carries the current `vN`; and the spend
+  line (`WorkspaceCost`): "Esta sesión: <importe>" (`GET /api/cost` with the topic's open
+  session, `open_session_id` of the topic list, read again when a capture starts or ends here)
+  or else "Este tema: <importe>" (`GET .../cost` total, plus `GET /api/cost` for the caps),
+  amounts as `formatUsd`. A reached cap adds a badge with `DeskCost`'s `PAUSED_BANNER` wording;
+  unpriced calls put `UNPRICED_WARNING` in the line's `title`. It is read again whenever the
+  document changes (the same key as the doubts counter; no polling) and shows nothing while
+  loading or when the read fails. Two columns (a CSS grid):
   - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
     with wrap-around, Home/End) with **Captura** and **Recursos**. Both panels stay mounted and
     the inactive one is only `hidden`, so switching to **Recursos** never stops a running capture

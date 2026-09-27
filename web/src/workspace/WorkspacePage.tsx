@@ -7,6 +7,7 @@ import DocumentPanel from "./DocumentPanel";
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
+import WorkspaceCost from "./WorkspaceCost";
 import WorkspaceTabs from "./WorkspaceTabs";
 import ModeSwitch from "../study/ModeSwitch";
 import "../notes/notes.css";
@@ -30,12 +31,15 @@ const VIEWS: Array<[NarrowView, string]> = [
  * **Recursos** (the topic's sources and the sources viewer) above the chat, and on the right the
  * topic's document (`apuntes.md`), which the student can also edit (`DocumentPanel`, #316). A
  * provenance footnote opens its source in **Recursos**. The capture tab stays mounted while hidden, so a running session goes on.
+ * The header also carries the doubts counter, a **Versiones** link to the notes' history and the
+ * spend of the open session or of the topic (`WorkspaceCost`, #372).
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat.
  */
 export default function WorkspacePage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const state = useWorkspaceState(subjectId, topicId);
   const { notes } = state;
   const [topicName, setTopicName] = useState(topicId);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("capture");
   const [view, setView] = useState<NarrowView>("document");
   const [capturing, setCapturing] = useState(false);
@@ -44,16 +48,19 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   const [pending, setPending] = useState<number | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
 
+  // Read again when a capture starts or ends here, for the open session the cost line follows.
   useEffect(() => {
     let cancelled = false;
     void fetchTopics(subjectId).then((result) => {
       const topic = result.kind === "ok" ? result.value.find((t) => t.topic_id === topicId) : undefined;
-      if (!cancelled && topic) setTopicName(topic.name);
+      if (cancelled || !topic) return;
+      setTopicName(topic.name);
+      setSessionId(topic.open_session_id ?? null);
     });
     return () => {
       cancelled = true;
     };
-  }, [subjectId, topicId]);
+  }, [subjectId, topicId, capturing]);
 
   // The doubts counter is read again whenever the document changed.
   const notesKey = notes.kind === "ready" ? `${notes.revision ?? ""}:${notes.text.length}:${notes.version}` : notes.kind;
@@ -112,13 +119,26 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
           <h1>Espacio de estudio</h1>
           <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
           <p className="page-context">Tema {topicName}</p>
-          <p className="workspace-pending" role="status" aria-label="Dudas pendientes">
-            {pending === null ? null : (
-              <a href={`${base}/pending`}>
-                {pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
-              </a>
+          <div className="workspace-meta">
+            <p className="workspace-pending" role="status" aria-label="Dudas pendientes">
+              {pending === null ? null : (
+                <a href={`${base}/pending`}>
+                  {pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
+                </a>
+              )}
+            </p>
+            {notes.kind === "ready" && (
+              <p className="workspace-versions">
+                <a
+                  href={`${base}/versions`}
+                  aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
+                >
+                  Versiones
+                </a>
+              </p>
             )}
-          </p>
+            <WorkspaceCost subjectId={subjectId} topicId={topicId} sessionId={sessionId} refreshKey={notesKey} />
+          </div>
           <div className="workspace-switch" role="group" aria-label="Qué mostrar">
             {VIEWS.map(([key, label]) => (
               <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
