@@ -11,3 +11,6 @@ Status: accepted (2026-09-24)
   observer may *interpret* what was said around it, but never decides whether a command ran.
 - The backend acknowledges a command to the phone (haptic + sound on capture) so the student
   knows it happened.
+- Navigation/capture commands stay deterministic; *requests to the assistant* about the document
+  content are interpreted by the observer (Sonnet) by default, or detected with the deterministic
+  wake word "anel" when `[observer] request_detection = "wake_word"`.

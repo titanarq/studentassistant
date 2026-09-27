@@ -13,6 +13,11 @@ Status: accepted (2026-09-24)
   ("Ampliado por la IA: no está en tus fuentes").
 - A topic has a **fidelity mode**: `estricto` (no `[^ia]` content allowed; the editor must ask
   instead) or `ampliado` (allowed, always marked). Default `estricto`.
+- A block written by the student in the document carries `[^est]: Escrito por el estudiante`
+  (allowed in both fidelity modes; the server adds it on save to a block with no reference). The
+  editor may later replace it with a source footnote.
+- Pasted images are sources of kind `images`: `[Imagen pegada N](../sources/images/img-NNN.png)`,
+  source id `sources/images/img-NNN.png`.
 - A validator in `studentassistant.editor` rejects any editor output that breaks these rules;
   the editor is re-asked, never silently patched.
 - Contradictions between sources are resolved by the student; the decision and, if requested, a

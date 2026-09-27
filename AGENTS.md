@@ -58,14 +58,14 @@ Each module maps 1:1 to a `module:<name>` label and `docs/modules/<name>.md`:
 
 | module | lives in | owns |
 |---|---|---|
-| infra | root, `scripts/`, `.github/` | monorepo tooling, CI, test wrapper, install/setup, agent OS config |
+| infra | root, `scripts/`, `.github/`, `studentassistant.evals` | monorepo tooling, CI, test wrapper, install/setup, agent OS config, eval set and `eval run` |
 | protocol | `protocol/`, `studentassistant.protocol`, `android/.../protocol` | phone<->backend wire contract (WebSocket + REST) |
 | android | `android/` | capture app: pairing, session screens, camera, SpeechRecognizer / audio streaming, offline spool |
 | server | `studentassistant.server` | FastAPI app: pairing/auth, session lifecycle, WebSocket gateway, REST for the web, replay |
 | stt | `studentassistant.stt` | pluggable STT: client segment ingestion, server-side providers (Whisper, cloud), voice-command grammar |
 | vault | `studentassistant.vault` | git-backed content store: layout, writers, commit/push/pull, setup, SQLite index |
 | sources | `studentassistant.sources` | source ingestion: capture processing, page transcription, textbook, PDF, web |
-| llm | `studentassistant.llm` | Claude client wrapper: model roles, caching, structured outputs, cost ledger, fakes |
+| llm | `studentassistant.llm` | Claude client wrapper: API or Claude Code CLI backend, model roles, caching, structured outputs, cost ledger, fakes |
 | observer | `studentassistant.observer` | Sonnet observer: event-sourced session state, pending-review queue, topic digest |
 | editor | `studentassistant.editor` | Opus tutor-editor: master notes with provenance, edit loop, doubts, "why" |
 | web | `web/` | web capture page (laptop camera/mic, Web Speech API) and review UI: study desk, notes + sources, editor chat, pending |
@@ -87,7 +87,7 @@ functions listed in their module doc, never through each other's internals.
 - Configuration via `studentassistant.config` (TOML at `~/.config/studentassistant/config.toml`
   + `SA_*` env vars). **No model id, path or secret is hard-coded** outside config defaults.
 - Claude is called ONLY through `studentassistant.llm` (ADR-0004). No other module imports
-  `anthropic`.
+  `anthropic` or runs the `claude` CLI.
 - Vault files are written ONLY through `studentassistant.vault` (ADR-0002). No other module runs
   `git` or writes under the vault root directly.
 - Tests: pytest, no network, no GPU, no real Claude calls. Use `FakeClaude` (scripted responses),

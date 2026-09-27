@@ -13,16 +13,17 @@ installing the app and configuring GitHub.
   `~/StudentAssistant/vault`, configurable.
 - Layout (normative details in `docs/modules/vault.md`):
   `vault.yaml` (format version) / `subjects/<subject>/subject.yaml` /
-  `subjects/<subject>/topics/<topic>/` with `topic.yaml`, `sources/{notes,book,pdf,web}/`,
+  `subjects/<subject>/topics/<topic>/` with `topic.yaml`, `sources/{notes,book,pdf,web,images}/`,
   `sessions/<session-id>/{session.yaml,transcript.jsonl,events.jsonl}`, `notes/apuntes.md`,
   `review/pending.yaml`, `conversations/*.jsonl`, `state/` (observer snapshots, topic digest),
-  `generated/`, `ledger.jsonl` (LLM usage and cost).
+  `generated/`, `study/`, `ledger.jsonl` (LLM usage and cost).
 - Only `studentassistant.vault` writes the vault or runs git on it.
 - Commits are batched (debounced) with meaningful messages and forced at checkpoints (capture
   stored, session end, each editor change). Push is debounced and retried; a failed push never
   loses a local commit. Pull (`--rebase`) happens at startup and at session start.
 - `*.jsonl` files are append-only and merged with `merge=union` (`.gitattributes`).
-- Notes versions are git tags (`<topic-slug>/apuntes-vN`); no `v1/v2` copies of files.
+- Notes versions are git tags (`<subject-slug>/<topic-slug>/apuntes-vN`); no `v1/v2` copies of
+  files.
 - The SQLite database (search, listings) is a **derived cache** under `~/.cache/studentassistant/`,
   rebuildable from the vault at any time (`studentassistant index rebuild`). It is never the only
   copy of anything.
