@@ -6,6 +6,7 @@ import { type WorkspaceState, WorkspaceContext } from "../state";
 import WorkspaceChatSlot from "../WorkspaceChatSlot";
 import { installSpeechRecognitionFake, type SpeechFakes } from "../../capture/testing/speech";
 import { clock } from "./ChatPanel";
+import { type SelectedSource, type SourceSelection, SourceSelectionContext, useSourceSelection } from "../resources/selection";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const STREAM = `${BASE}/workspace/stream`;
@@ -1050,4 +1051,92 @@ it("offers a disabled «Hablar» with a hint in a browser without speech recogni
   const input = screen.getByLabelText("Mensaje para el asistente");
   fireEvent.change(input, { target: { value: "Pon un ejemplo" } });
   expect(screen.getByRole("button", { name: "Enviar" })).toBeEnabled();
+});
+
+describe("the Recursos selection as chips (#432)", () => {
+  const page = (n: number): SelectedSource => ({ id: `sources/notes/page-00${n}.jpg`, title: `Pág. ${n}` });
+
+  function setupSelected(sources: SelectedSource[]) {
+    const fetchMock = stubApi({
+      [STREAM]: () => streamResponse().response,
+      [CHAT]: jsonResponse(history()),
+      [`POST ${MESSAGES}`]: () => posted([typedRequest("req-t1", "incorporate", "Incorporar", "incorpora estas")]),
+    });
+    const state: WorkspaceState = {
+      subjectId: "historia",
+      topicId: "revolucion-industrial",
+      notes: { kind: "empty" },
+      changedSections: new Set(),
+      reloadNotes: vi.fn(async () => undefined),
+      doubtsKey: 0,
+      doubtsChanged: vi.fn(),
+    };
+    const held: { current: SourceSelection | null } = { current: null };
+    function Harness() {
+      const selection = useSourceSelection();
+      held.current = selection;
+      return (
+        <WorkspaceContext.Provider value={state}>
+          <SourceSelectionContext.Provider value={selection}>
+            <WorkspaceChatSlot onOpenSource={vi.fn()} retryDelays={[5]} />
+          </SourceSelectionContext.Provider>
+        </WorkspaceContext.Provider>
+      );
+    }
+    render(<Harness />);
+    act(() => {
+      for (const source of sources) held.current!.toggle(source, sources, false);
+    });
+    const posts = () => fetchMock.mock.calls.filter(([input, init]) => input === MESSAGES && (init as RequestInit | undefined)?.method === "POST");
+    return { held, posts };
+  }
+
+  const chips = () => screen.getByRole("group", { name: "Fuentes seleccionadas para el mensaje" });
+
+  it("shows one chip per selected source, and × deselects it", () => {
+    const { held } = setupSelected([page(3), page(4)]);
+    expect(within(chips()).getAllByRole("listitem").map((li) => li.firstChild?.textContent)).toEqual(["Pág. 3", "Pág. 4"]);
+    fireEvent.click(screen.getByRole("button", { name: "Quitar Pág. 3 de la selección" }));
+    expect(held.current!.selected.map((s) => s.id)).toEqual(["sources/notes/page-004.jpg"]);
+    expect(within(chips()).getAllByRole("listitem")).toHaveLength(1);
+    fireEvent.click(within(chips()).getByRole("button", { name: "Quitar selección" }));
+    expect(screen.queryByRole("group", { name: "Fuentes seleccionadas para el mensaje" })).toBeNull();
+  });
+
+  it("shows the first five and «+N» past six", () => {
+    setupSelected([1, 2, 3, 4, 5, 6, 7].map(page));
+    const items = within(chips()).getAllByRole("listitem");
+    expect(items.map((li) => li.firstChild?.textContent)).toEqual(["Pág. 1", "Pág. 2", "Pág. 3", "Pág. 4", "Pág. 5", "+2"]);
+    expect(items[5]).toHaveAttribute("title", "Pág. 6, Pág. 7");
+  });
+
+  it("shows six chips when exactly six are selected", () => {
+    setupSelected([1, 2, 3, 4, 5, 6].map(page));
+    expect(within(chips()).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(chips()).queryByText(/^\+/)).toBeNull();
+  });
+
+  it("sends the selected source ids with the message and keeps the selection", async () => {
+    const { posts } = setupSelected([page(3), page(1)]);
+    const input = screen.getByLabelText("Mensaje para el asistente");
+    fireEvent.change(input, { target: { value: "incorpora el texto de estas" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(String((posts()[0][1] as RequestInit).body))).toEqual({
+      text: "incorpora el texto de estas",
+      selected_source_ids: ["sources/notes/page-003.jpg", "sources/notes/page-001.jpg"],
+    });
+    expect(await within(log()).findByText("En cola…")).toBeInTheDocument();
+    expect(within(chips()).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("sends only the text when nothing is selected", async () => {
+    const { posts } = setupSelected([]);
+    expect(screen.queryByRole("group", { name: "Fuentes seleccionadas para el mensaje" })).toBeNull();
+    const input = screen.getByLabelText("Mensaje para el asistente");
+    fireEvent.change(input, { target: { value: "Pon un ejemplo" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(String((posts()[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo" });
+  });
 });

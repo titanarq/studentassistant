@@ -181,8 +181,9 @@
     without a `triage` block (stored before #324, or not a capture), or whose metadata cannot be
     read, is kept. Kept sources come first in source order, then a collapsed "Apartadas (N)"
     group (a disclosure button with `aria-expanded`); above them the counts "N pendientes · M
-    incorporadas · K apartadas" and the hint that incorporating, setting aside and restoring are
-    asked in the chat ("incorpora la página 3"): there are no action buttons. Cited transcript
+    incorporadas · K apartadas" and the hint (`RESOURCES_HINT`) to select pages and ask the
+    assistant in the chat («Selecciona páginas y pídeselo al asistente en el chat (p. ej.
+    «incorpora el texto de estas»).»): there are no action buttons. Cited transcript
     spans follow, without a state. The metadata is read by `useSourceMetas`
     (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
     source; every listed source is read again each time the tab is shown and after each change
@@ -190,6 +191,23 @@
     source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
     (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
     the list.
+    **Large thumbnails and the selection (#432).** The grids are `minmax(min(14rem, 100%), 1fr)`
+    columns (two at most below 36rem, no horizontal scroll) and each thumbnail keeps the page's
+    aspect ratio (`aspect-ratio: 3 / 4`, `object-fit: contain`, never cropped). Each stored-source
+    card (kept and set-aside; transcript spans are not selectable) has a checkbox over the
+    thumbnail's corner, apart from the button that opens it, labelled «Seleccionar <title>»: a
+    click or Space toggles it, Shift-click sets the range from the last toggled card in the
+    visible order (kept, then the set-aside ones when shown) to the state the clicked one takes.
+    A selected card shows a checkmark and an outline. While N > 0 a bar above the grid reads «N
+    seleccionadas» with **Quitar selección**. The selection is workspace state
+    (`resources/selection.ts`: `useSourceSelection()` in `WorkspacePage`, shared through
+    `SourceSelectionContext`, read with `useSelection()`; null outside a workspace page, where the
+    tab shows no checkboxes), so it survives switching tabs and opening/closing a source; it
+    holds `{id, title}` in the order selected, `id` the topic-relative source id the chat events
+    use (`sources/notes/page-003.jpg`, `topicSourceId(ref)`; a PDF is one source) and `title` the
+    chip's short title (`chipTitle`: «Pág. 3», «Libro p. 12», the PDF's name, the web's title,
+    «Imagen 1»). After each read of the list, ids no longer listed are dropped (`prune`; the
+    pure helpers `toggled`, `ranged`, `pruned` are tested on their own).
     Above the list, one **Añadir fuente** button (`resources/AddSource.tsx`, #384) opens a
     small inline panel with three choices -- **PDF**, **Página web**, **Libro de texto** -- each
     showing the topic page's existing form as is (`PdfUploadForm`, `WebPageForm`,
@@ -219,14 +237,20 @@
     `incorporate`, `doubt_answer`; never a batch of a run), goes back to "En cola…" and its new
     turn (same `request_id`) streams into the same entry; a refused confirmation (404: it no
     longer waits, e.g. after a restart) shows its detail. Below, a textarea
-    "Mensaje para el asistente" (Enter sends, Shift+Enter is a new line) with **Enviar**
+    "Mensaje para el asistente" (Enter sends, Shift+Enter is a new line; above it, since #432,
+    one chip per source selected in **Recursos** -- its short title and × «Quitar <title> de la
+    selección», the first five and «+N» past six, and **Quitar selección**; shown in the narrow
+    layout's Chat view too) with **Enviar**
     (disabled while empty or while this page's post or undo runs) and **Deshacer el último
     cambio** (`POST .../notes/chat/undo`, as the notes page's chat). While the stream is down:
     "Sin conexión en directo con el asistente; reintentando…" (`role="status"`).
     Since #329 the panel is where the student drives the work (epic #311), with no buttons to
     incorporate or answer:
     - **Typed messages** go to the request classifier like spoken ones: `POST
-      .../workspace/messages` `{text}` (#327). The message shows "Enviando…" until the 202; its
+      .../workspace/messages` `{text}` (#327), or `{text, selected_source_ids: [...]}` when the
+      Recursos selection is not empty (#432; topic-relative ids in selection order; the backend
+      resolves «esto», «estas páginas» against them, #433, and ignored the field before it). The
+      selection is kept after a send, for a follow-up on the same pages. The message shows "Enviando…" until the 202; its
       `requests` (`req-t<n>`) then take its place as queued entries ("En cola…"; a second
       request of the same message shows "Y además: <summary>") until their turns stream in (a
       typed `request.detected` of the stream for one already shown adds nothing). A refusal shows
@@ -274,7 +298,7 @@
       `readOutcome` (a `RevisionResult`, a `prepare_notes` `GenerationResult`, an
       `IncorporationResult`, a `TriageTurn`, a `doubt_answer` `ResolutionResult` or a `study`
       `StudyTurn`, as one `TurnOutcome`; a triage one with its `targets`, a study one with its
-      `action`), `postMessage(s, t, text)` (`POST
+      `action`), `postMessage(s, t, text, selectedSourceIds = [])` (`POST
       .../workspace/messages`, the typed messages) and `confirmOverCap(s, t, turnId)` (the same
       route with `{confirm_over_cap: true, turn_id}`, for "Continuar igualmente", #351).
     - `chat/sources.ts`: `sourceName(id)` («página 3», «página 83 del libro», else the Recursos

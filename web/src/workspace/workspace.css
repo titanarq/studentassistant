@@ -430,7 +430,8 @@
 
 .resource-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  /* #432: thumbnails large enough to recognize the page (at least about 14rem wide). */
+  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
   gap: var(--space-3);
   margin: 0 0 var(--space-3);
   padding: 0;
@@ -439,6 +440,12 @@
 
 .resource-grid[hidden] {
   display: none;
+}
+
+.resource-card {
+  position: relative;
+  min-width: 0;
+  border-radius: var(--radius-m);
 }
 
 .resource-card button {
@@ -464,13 +471,15 @@
 
 .resource-thumb {
   display: block;
+  box-sizing: border-box;
   width: 100%;
-  height: 6.25rem;
+  height: auto;
+  aspect-ratio: 3 / 4;
   border: 1px solid var(--line);
   border-radius: var(--radius-s);
   background: var(--surface-sunken);
-  object-fit: cover;
-  object-position: top;
+  /* The whole page, never cropped to a strip. */
+  object-fit: contain;
 }
 
 .resource-thumb-empty {
@@ -484,6 +493,74 @@
 
 .resource-set-aside .resource-thumb {
   opacity: 0.6;
+}
+
+/* #432: the selection checkbox, over the thumbnail's corner, and the selected card. */
+
+.resource-check {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--paper);
+  cursor: pointer;
+}
+
+.resource-check input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.resource-check-mark {
+  visibility: hidden;
+  color: var(--on-accent);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.resource-check:has(input:focus-visible) {
+  outline: var(--focus-ring, 2px solid var(--accent));
+  outline-offset: 2px;
+}
+
+.resource-selected .resource-check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.resource-selected .resource-check-mark {
+  visibility: visible;
+}
+
+.resource-selected {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+  background: var(--accent-soft);
+}
+
+.resources-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+}
+
+.resources-selection p {
+  margin: 0;
+  font-weight: 700;
 }
 
 .resource-title {
@@ -515,6 +592,13 @@
 .resource-set-aside h3 {
   margin: var(--space-2) 0;
   font-size: var(--step-0);
+}
+
+@media (max-width: 36rem) {
+  /* Phone width: two columns at most, never a horizontal scroll. */
+  .resource-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .resource-disclosure {

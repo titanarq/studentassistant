@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary } from "../desk/api";
 import type { NotesTree } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
@@ -6,6 +6,7 @@ import { sourceUrl } from "../notes/api";
 import AddSource from "./resources/AddSource";
 import { fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
 import { countsText, resourceStates, STATE_LABELS, type SourceEntry, thumbnailOf } from "./resources/state";
+import { chipTitle, type SelectedSource, type SourceSelection, topicSourceId, useSelection } from "./resources/selection";
 import { useSourceMetas } from "./resources/useSourceMetas";
 
 /** The source open in the tab: a footnote label and its definition. */
@@ -36,7 +37,17 @@ async function loadSources(subjectId: string, topicId: string): Promise<Loaded> 
 }
 
 export const RESOURCES_HINT =
-  "Para incorporar, apartar o recuperar páginas, díselo al asistente en el chat (p. ej. «incorpora la página 3»).";
+  "Selecciona páginas y pídeselo al asistente en el chat (p. ej. «incorpora el texto de estas»).";
+
+/** «1 seleccionada», «3 seleccionadas». */
+export function selectedText(n: number): string {
+  return n === 1 ? "1 seleccionada" : `${n} seleccionadas`;
+}
+
+/** The selection's view of a source card. */
+function selectedOf(entry: SourceEntry): SelectedSource {
+  return { id: topicSourceId(entry.ref), title: chipTitle(entry.ref, entry.title) };
+}
 
 function Thumbnail({ entry }: { entry: SourceEntry }) {
   const thumb = thumbnailOf(entry.vaultId, entry.ref);
@@ -60,12 +71,41 @@ function Thumbnail({ entry }: { entry: SourceEntry }) {
   );
 }
 
-function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: OpenResource) => void }) {
+interface CardSelection {
+  selected: boolean;
+  onToggle: (shift: boolean) => void;
+}
+
+function SourceCard({
+  entry,
+  onOpen,
+  selection,
+}: {
+  entry: SourceEntry;
+  onOpen: (resource: OpenResource) => void;
+  selection: CardSelection | null;
+}) {
   const chip = entry.state === "incorporated" ? "badge badge-ok" : entry.state === "pending" ? "badge badge-warn" : "badge";
   const reasons = entry.reasons.join(", ");
   const detail = entry.state === "set_aside" ? [reasons, entry.byStudent ? "(la apartaste tú)" : ""].filter((part) => part !== "").join(" ") : "";
+  const selected = selection?.selected === true;
   return (
-    <li className={`resource-card resource-${entry.state.replace("_", "-")}`}>
+    <li className={`resource-card resource-${entry.state.replace("_", "-")}${selected ? " resource-selected" : ""}`}>
+      {selection !== null && (
+        <label className="resource-check">
+          <input
+            type="checkbox"
+            aria-label={`Seleccionar ${entry.title}`}
+            checked={selected}
+            // A click (or Space, which the browser turns into a click) toggles; Shift adds the range.
+            onClick={(event: MouseEvent<HTMLInputElement>) => selection.onToggle(event.shiftKey)}
+            onChange={() => undefined}
+          />
+          <span className="resource-check-mark" aria-hidden="true">
+            ✓
+          </span>
+        </label>
+      )}
       <button type="button" onClick={() => onOpen({ label: entry.label, definition: entry.definition })}>
         <Thumbnail entry={entry} />
         <span className="resource-title">{entry.title}</span>
@@ -79,6 +119,16 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
   );
 }
 
+/** The card's part of the selection, or null when the tab is outside a workspace page. */
+function cardSelection(selection: SourceSelection | null, entry: SourceEntry, visible: readonly SelectedSource[]): CardSelection | null {
+  if (selection === null) return null;
+  const source = selectedOf(entry);
+  return {
+    selected: selection.selected.some((s) => s.id === source.id),
+    onToggle: (shift) => selection.toggle(source, visible, shift),
+  };
+}
+
 /**
  * The **Recursos** tab (#312, #328, #323): every source of the topic (`GET .../sources`, or the
  * summary's counts on an older backend) with its state -- **Pendiente**,
@@ -87,7 +137,9 @@ function SourceCard({ entry, onOpen }: { entry: SourceEntry; onOpen: (resource: 
  * "Apartadas (N)" group. Above the list, «Añadir fuente» (`AddSource`, #384) adds a PDF, a web
  * page or the textbook's title and then the list is read again. There are no per-source action
  * buttons: incorporating, setting aside and restoring
- * are asked in the chat. Choosing a source (here or from a footnote of the document) shows it in
+ * are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
+ * workspace's selection (`resources/selection.ts`), shown as chips above the chat input and sent
+ * with the next message; Shift-click ticks a range, «Quitar selección» clears it. Choosing a source (here or from a footnote of the document) shows it in
  * the sources viewer (`SourcePanel`) in the list's place; "Cerrar" goes back to the list. The
  * sources' metadata is read again each time the tab is shown and after each change of the notes.
  */
@@ -117,6 +169,15 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
   const vaultIds = useMemo(() => [...first.kept, ...first.setAside].map((entry) => entry.vaultId), [first]);
   const metas = useSourceMetas(vaultIds, reloadKey);
   const states = useMemo(() => resourceStates(subjectId, topicId, items, tree, metas), [subjectId, topicId, items, tree, metas]);
+  const selection = useSelection();
+  // The visible order of the cards (kept, then set aside), for a shift-click range.
+  const visible = useMemo(() => [...states.kept, ...(showSetAside ? states.setAside : [])].map(selectedOf), [states, showSetAside]);
+  const listed = summary?.kind === "listed" || (summary?.kind === "ok" && tree !== null);
+  const prune = selection?.prune;
+  useEffect(() => {
+    if (!listed || prune === undefined) return;
+    prune(new Map([...states.kept, ...states.setAside].map((entry) => [topicSourceId(entry.ref), chipTitle(entry.ref, entry.title)])));
+  }, [listed, prune, states]);
 
   if (open !== null) {
     return (
@@ -145,10 +206,18 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
           <p className="resources-hint">{RESOURCES_HINT}</p>
         </>
       )}
+      {selection !== null && selection.selected.length > 0 && (
+        <div className="resources-selection" role="group" aria-label="Selección">
+          <p aria-live="polite">{selectedText(selection.selected.length)}</p>
+          <button type="button" onClick={selection.clear}>
+            Quitar selección
+          </button>
+        </div>
+      )}
       {states.kept.length > 0 && (
         <ul className="resource-grid" aria-label="Fuentes del tema">
           {states.kept.map((entry) => (
-            <SourceCard key={entry.key} entry={entry} onOpen={onOpen} />
+            <SourceCard key={entry.key} entry={entry} onOpen={onOpen} selection={cardSelection(selection, entry, visible)} />
           ))}
         </ul>
       )}
@@ -167,7 +236,7 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
           </h3>
           <ul id={setAsideId} className="resource-grid" aria-label="Fuentes apartadas" hidden={!showSetAside}>
             {states.setAside.map((entry) => (
-              <SourceCard key={entry.key} entry={entry} onOpen={onOpen} />
+              <SourceCard key={entry.key} entry={entry} onOpen={onOpen} selection={cardSelection(selection, entry, visible)} />
             ))}
           </ul>
         </section>

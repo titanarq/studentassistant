@@ -4,6 +4,7 @@ import { fetchTopics, topicPath } from "../desk/api";
 import { parseNotes } from "../notes/markdown";
 import { fetchPending } from "../pending/api";
 import DocumentPanel from "./DocumentPanel";
+import { SourceSelectionContext, useSourceSelection } from "./resources/selection";
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
@@ -37,10 +38,14 @@ const VIEWS: Array<[NarrowView, string]> = [
  * The header also carries the doubts counter (plain text since #413: the doubts are asked in the
  * chat, never on the legacy `/pending` page, epic #311), a **Versiones** link to the notes' history and the
  * spend of the open session or of the topic (`WorkspaceCost`, #372).
+ * The sources ticked in **Recursos** (#432) are the page's selection (`SourceSelectionContext`):
+ * chips above the chat input, sent with the next message.
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat.
  */
 export default function WorkspacePage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const state = useWorkspaceState(subjectId, topicId);
+  // The Recursos selection (#432), above the tabs so switching them keeps it; the chat sends it.
+  const selection = useSourceSelection();
   const { notes } = state;
   const [topicName, setTopicName] = useState(topicId);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -112,97 +117,99 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
 
   return (
     <WorkspaceContext.Provider value={state}>
-      <main className="workspace" data-view={view}>
-        <header className="workspace-header">
-          <p className="crumbs">
-            <a href={base}>← Tema {topicName}</a>
-            <a className="crumbs-home" href="/">
-              Mesa de estudio
-            </a>
-          </p>
-          <h1>Espacio de estudio</h1>
-          <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
-          <p className="page-context">Tema {topicName}</p>
-          <div className="workspace-meta">
-            <p
-              className="workspace-pending"
-              role="status"
-              aria-label="Dudas pendientes"
-              title={pending === null ? undefined : DOUBTS_TOOLTIP}
-            >
-              {pending === null ? null : pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
+      <SourceSelectionContext.Provider value={selection}>
+        <main className="workspace" data-view={view}>
+          <header className="workspace-header">
+            <p className="crumbs">
+              <a href={base}>← Tema {topicName}</a>
+              <a className="crumbs-home" href="/">
+                Mesa de estudio
+              </a>
             </p>
-            {notes.kind === "ready" && (
-              <p className="workspace-versions">
-                <a
-                  href={`${base}/versions`}
-                  aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
-                >
-                  Versiones
-                </a>
+            <h1>Espacio de estudio</h1>
+            <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
+            <p className="page-context">Tema {topicName}</p>
+            <div className="workspace-meta">
+              <p
+                className="workspace-pending"
+                role="status"
+                aria-label="Dudas pendientes"
+                title={pending === null ? undefined : DOUBTS_TOOLTIP}
+              >
+                {pending === null ? null : pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
               </p>
-            )}
-            <WorkspaceCost subjectId={subjectId} topicId={topicId} sessionId={sessionId} refreshKey={notesKey} />
-          </div>
-          <div className="workspace-switch" role="group" aria-label="Qué mostrar">
-            {VIEWS.map(([key, label]) => (
-              <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </header>
-        <div className="workspace-columns">
-          <div className="workspace-left">
-            <section className="workspace-sources" aria-label="Captura y recursos">
-              <WorkspaceTabs<Tab>
-                id="workspace"
-                label="Captura o recursos"
-                active={tab}
-                onChange={changeTab}
-                tabs={[
-                  {
-                    key: "capture",
-                    label: (
-                      <>
-                        Captura
-                        {capturing && (
-                          <>
-                            {" "}
-                            <span className="workspace-live">en curso</span>
-                          </>
-                        )}
-                      </>
-                    ),
-                    panel: <CapturePage preset={preset} onRunningChange={setCapturing} />,
-                  },
-                  {
-                    key: "resources",
-                    label: "Recursos",
-                    panel: (
-                      <ResourcesTab
-                        subjectId={subjectId}
-                        topicId={topicId}
-                        tree={tree}
-                        refreshKey={resourcesShown}
-                        open={open}
-                        onOpen={openResource}
-                        onClose={closeSource}
-                      />
-                    ),
-                  },
-                ]}
-              />
+              {notes.kind === "ready" && (
+                <p className="workspace-versions">
+                  <a
+                    href={`${base}/versions`}
+                    aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
+                  >
+                    Versiones
+                  </a>
+                </p>
+              )}
+              <WorkspaceCost subjectId={subjectId} topicId={topicId} sessionId={sessionId} refreshKey={notesKey} />
+            </div>
+            <div className="workspace-switch" role="group" aria-label="Qué mostrar">
+              {VIEWS.map(([key, label]) => (
+                <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </header>
+          <div className="workspace-columns">
+            <div className="workspace-left">
+              <section className="workspace-sources" aria-label="Captura y recursos">
+                <WorkspaceTabs<Tab>
+                  id="workspace"
+                  label="Captura o recursos"
+                  active={tab}
+                  onChange={changeTab}
+                  tabs={[
+                    {
+                      key: "capture",
+                      label: (
+                        <>
+                          Captura
+                          {capturing && (
+                            <>
+                              {" "}
+                              <span className="workspace-live">en curso</span>
+                            </>
+                          )}
+                        </>
+                      ),
+                      panel: <CapturePage preset={preset} onRunningChange={setCapturing} />,
+                    },
+                    {
+                      key: "resources",
+                      label: "Recursos",
+                      panel: (
+                        <ResourcesTab
+                          subjectId={subjectId}
+                          topicId={topicId}
+                          tree={tree}
+                          refreshKey={resourcesShown}
+                          open={open}
+                          onOpen={openResource}
+                          onClose={closeSource}
+                        />
+                      ),
+                    },
+                  ]}
+                />
+              </section>
+              <section className="workspace-chat" aria-label="Chat">
+                <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing} />
+              </section>
+            </div>
+            <section className="workspace-document" aria-label="Documento">
+              <DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />
             </section>
-            <section className="workspace-chat" aria-label="Chat">
-              <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing} />
-            </section>
           </div>
-          <section className="workspace-document" aria-label="Documento">
-            <DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />
-          </section>
-        </div>
-      </main>
+        </main>
+      </SourceSelectionContext.Provider>
     </WorkspaceContext.Provider>
   );
 }

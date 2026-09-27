@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseNotes } from "../../notes/markdown";
 import { jsonResponse, stubApi } from "../../test/mockApi";
-import ResourcesTab, { RESOURCES_HINT } from "../ResourcesTab";
+import { useState } from "react";
+import ResourcesTab, { type OpenResource, RESOURCES_HINT } from "../ResourcesTab";
+import { type SourceSelection, SourceSelectionContext, useSourceSelection } from "./selection";
 import { META_CONCURRENCY } from "./useSourceMetas";
 
 const TOPIC = "subjects/historia/topics/revolucion-industrial";
@@ -267,4 +269,120 @@ it("shows a pasted image in the viewer", () => {
     "src",
     `/api/sources/${TOPIC}/sources/images/img-001.png`,
   );
+});
+
+describe("the selection (#432)", () => {
+  const held: { current: SourceSelection | null } = { current: null };
+
+  /** The tab inside a workspace-like selection, opening and closing the viewer itself. */
+  function Selecting({ refreshKey }: { refreshKey: number }) {
+    const selection = useSourceSelection();
+    held.current = selection;
+    const [open, setOpen] = useState<OpenResource | null>(null);
+    return (
+      <SourceSelectionContext.Provider value={selection}>
+        <ResourcesTab
+          subjectId="historia"
+          topicId="revolucion-industrial"
+          tree={tree(NOTES)}
+          refreshKey={refreshKey}
+          open={open}
+          onOpen={setOpen}
+          onClose={() => setOpen(null)}
+        />
+      </SourceSelectionContext.Provider>
+    );
+  }
+
+  async function renderSelecting() {
+    const view = render(<Selecting refreshKey={0} />);
+    await screen.findByText("2 pendientes · 1 incorporada · 4 apartadas");
+    return { rerender: (key: number) => view.rerender(<Selecting refreshKey={key} />) };
+  }
+
+  const box = (name: string) => screen.getByRole("checkbox", { name: `Seleccionar ${name}` });
+  const selectedIds = () => held.current!.selected.map((s) => s.id);
+
+  it("gives each stored source a checkbox apart from the button that opens it", async () => {
+    stubApi(ROUTES);
+    await renderSelecting();
+    const kept = screen.getByRole("list", { name: "Fuentes del tema" });
+    expect(within(kept).getAllByRole("checkbox")).toHaveLength(3);
+    const checkbox = box("Página 2 · apuntes");
+    expect(card(/Página 2 · apuntes/)).not.toContainElement(checkbox);
+    // The image still opens the source, without selecting it.
+    fireEvent.click(card(/Página 2 · apuntes/).querySelector("img")!);
+    expect(await screen.findByRole("button", { name: "Cerrar" })).toBeInTheDocument();
+    expect(selectedIds()).toEqual([]);
+  });
+
+  it("selects one and several sources, with a count, a selected style and «Quitar selección»", async () => {
+    stubApi(ROUTES);
+    await renderSelecting();
+    expect(screen.queryByRole("button", { name: "Quitar selección" })).toBeNull();
+
+    fireEvent.click(box("Página 2 · apuntes"));
+    expect(box("Página 2 · apuntes")).toBeChecked();
+    expect(screen.getByText("1 seleccionada")).toBeInTheDocument();
+    expect(box("Página 2 · apuntes").closest("li")).toHaveClass("resource-selected");
+    expect(selectedIds()).toEqual(["sources/notes/page-002.jpg"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Apartadas (4)" }));
+    fireEvent.click(box("Libro, página 1"));
+    expect(screen.getByText("2 seleccionadas")).toBeInTheDocument();
+    expect(held.current!.selected).toEqual([
+      { id: "sources/notes/page-002.jpg", title: "Pág. 2" },
+      { id: "sources/book/page-001.jpg", title: "Libro p. 1" },
+    ]);
+
+    fireEvent.click(box("Página 2 · apuntes"));
+    expect(box("Página 2 · apuntes")).not.toBeChecked();
+    expect(box("Página 2 · apuntes").closest("li")).not.toHaveClass("resource-selected");
+    expect(screen.getByText("1 seleccionada")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quitar selección" }));
+    expect(selectedIds()).toEqual([]);
+    expect(box("Libro, página 1")).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: "Quitar selección" })).toBeNull();
+  });
+
+  it("selects the range from the last toggled card with Shift", async () => {
+    stubApi(ROUTES);
+    await renderSelecting();
+    fireEvent.click(screen.getByRole("button", { name: "Apartadas (4)" }));
+    fireEvent.click(box("Página 2 · apuntes"));
+    fireEvent.click(box("Página 5 · apuntes"), { shiftKey: true });
+    expect(selectedIds()).toEqual([
+      "sources/notes/page-002.jpg",
+      "sources/notes/page-003.jpg",
+      "sources/notes/page-004.jpg",
+      "sources/notes/page-005.jpg",
+    ]);
+    expect(screen.getByText("4 seleccionadas")).toBeInTheDocument();
+  });
+
+  it("keeps the selection across the viewer, and drops sources no longer listed after a reload", async () => {
+    stubApi(ROUTES);
+    const { rerender } = await renderSelecting();
+    fireEvent.click(box("Página 1 · apuntes"));
+    fireEvent.click(box("Página 3 · apuntes"));
+
+    fireEvent.click(card(/Página 1 · apuntes/));
+    fireEvent.click(await screen.findByRole("button", { name: "Cerrar" }));
+    expect(box("Página 1 · apuntes")).toBeChecked();
+    expect(box("Página 3 · apuntes")).toBeChecked();
+
+    // Page 3 is gone from the topic: the next read of the list drops it from the selection.
+    stubApi({ ...ROUTES, [SUMMARY]: summary(2) });
+    rerender(1);
+    await waitFor(() => expect(selectedIds()).toEqual(["sources/notes/page-001.jpg"]));
+    expect(screen.getByText("1 seleccionada")).toBeInTheDocument();
+  });
+
+  it("offers no checkbox outside a workspace page", async () => {
+    stubApi(ROUTES);
+    renderTab();
+    await screen.findByText("2 pendientes · 1 incorporada · 4 apartadas");
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  });
 });

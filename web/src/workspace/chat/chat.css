@@ -223,6 +223,61 @@
   font-weight: 700;
 }
 
+/* #432: the Recursos selection, as chips above the input. */
+
+.ws-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ws-chat-chips ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 14rem;
+  padding: 0 0 0 var(--space-2);
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: var(--step--1);
+}
+
+.ws-chat-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-chat-chip button {
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ws-chat-chip-more {
+  padding: var(--space-1) var(--space-2);
+  font-weight: 700;
+}
+
 .ws-chat-form textarea {
   width: 100%;
   box-sizing: border-box;
