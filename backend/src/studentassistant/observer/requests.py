@@ -25,6 +25,11 @@ structured_reasks`) and then dropped and logged.
 
 `MessageClassifier` classifies one typed chat message with the same prompt, tool and checks (the
 message is the window, as the single segment `m1`); the server persists and queues what it finds.
+A typed message carries the student's Recursos selection (#433): the context lists it after the
+sources (`Selected by the student now`, or `nothing`), the prompt makes a deictic referent («esto»,
+«estas páginas») mean it and asks back (a `question`) when nothing is selected or named, and a
+selected source that is not a captured page passes the `set_aside`/`restore` check (the turn says
+it cannot be set aside). Targets name stored sources: a PDF page's `#page=K` is dropped.
 
 Cost caps: the client is bound to the session's ledger. A reached cap pauses the detector: the
 finals stay unexamined, one `observer.status` event (`status: paused`, `detector: "requests"`) is
@@ -78,6 +83,7 @@ from studentassistant.observer.assistant_request import (
     RequestContext,
     RequestKind,
     SourcesLookup,
+    base_source_id,
 )
 from studentassistant.observer.context import OBSERVER_ORIGIN, render_topic
 from studentassistant.observer.fold import SEGMENT_EVENT_KIND, SEGMENT_ID_KEY
@@ -1045,7 +1051,10 @@ def _kind_problem(
     """The request with only its kind's fields, and why its targets or answer are refused."""
     kind = request.kind
     if kind in TARGET_KINDS:
-        targets = list(dict.fromkeys(t.strip() for t in request.targets if t.strip()))
+        # A PDF page's id names its PDF: sources are incorporated or triaged whole.
+        targets = list(
+            dict.fromkeys(base_source_id(t.strip()) for t in request.targets if t.strip())
+        )
         cleaned = request.model_copy(
             update={"targets": targets, "pending_id": None, "answer": None}
         )
@@ -1058,7 +1067,14 @@ def _kind_problem(
                 " is a `question`)"
             )
         if kind in ("set_aside", "restore"):
-            other = [t for t in targets if context.source(t).kind not in CAPTURE_KINDS]  # type: ignore[union-attr]
+            # A selected source that is not a captured page passes: the turn says it cannot be
+            # set aside, and the rest of the request still runs (#433).
+            other = [
+                t
+                for t in targets
+                if context.source(t).kind not in CAPTURE_KINDS  # type: ignore[union-attr]
+                and not context.is_selected(t)
+            ]
             if other:
                 return cleaned, (
                     f"only captured pages (apuntes, libro) can be set aside or restored:"
@@ -1226,8 +1242,12 @@ class MessageClassifier:
         text: str,
         *,
         session_id: str | None = None,
+        selected: Sequence[str] = (),
     ) -> list[ReportedRequest]:
         """The requests of `text`, checked (possibly none).
+
+        `selected` is the student's Recursos selection sent with the message (#433), shown to
+        Sonnet as marked (`RequestContext.selected`): the referent of «esto», «estas páginas».
 
         Raises:
             ClassificationError: Claude failed (a reached cap too) or never gave a valid answer.
@@ -1238,6 +1258,7 @@ class MessageClassifier:
         client = self.client_factory(LedgerBinding(vault, subject_slug, topic_slug, session_id))
         system = [self.prompt.content, render_topic(subject_name, topic_title, None)]
         context = await _context_of(self.sources_lookup, subject_slug, topic_slug)
+        context = context.model_copy(update={"selected": list(selected)})
         segment = _Final(MESSAGE_SEGMENT, text.strip(), 0, 0, self.clock.monotonic())
         rendered = (
             context.render() + "\n\nA typed message of the student, the single segment"

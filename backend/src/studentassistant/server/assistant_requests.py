@@ -9,8 +9,9 @@ subscribes to that kind on the bus and, **per topic, runs one request at a time 
 order**:
 
 - On arrival, the request is announced at once on the topic's workspace stream
-  (`request.detected` `{request_id, kind, summary, origin, transcript, targets?}`,
-  `workspace.py`) and queued. A
+  (`request.detected` `{request_id, kind, summary, origin, transcript, targets?,
+  selected_source_ids?}`, `workspace.py`; `selected_source_ids` is the Recursos selection a typed
+  message carried, #433) and queued. A
   request arriving while a turn of the topic runs waits in the queue; the queue lives in the
   backend, not in a client, so it survives a client that goes away, and the requests of a session
   that ended meanwhile are still processed (they work on the vault, not the session).
@@ -21,7 +22,9 @@ order**:
   - `edit` and `question`: `editor.revise_notes` on the topic's latest notes, the request's raw
     `text` as the message and a `ChatRequestRef` (request id, summary, session, segments, times,
     text) as `request`, so the turn is recorded as a voice chat turn (`GET .../notes/chat`); a
-    typed request is a typed turn (no `request`). The
+    typed request is a typed turn (no `request`); a typed request also passes its Recursos
+    selection as `selected_sources` (#433: the selected pages go first, marked; none selected,
+    the editor asks which pages «esto» is). The
     reply streams (`reply.delta`, `reply.restart`), then `turn.result` (the `RevisionResult`) and,
     when the notes changed, `notes.changed` (origin `editor`); `notes.edited` goes on the bus when
     the session is still active.
@@ -36,7 +39,8 @@ order**:
   - `set_aside` / `restore`: `sources.set_capture_triage` per target (a target already in that
     state is left alone), a `capture.triaged` event (origin `user`; in the topic's live session,
     which makes the transcriber transcribe a restored page with no transcription, else in a review
-    session) per change, and one short chat entry streamed as the reply and recorded as a
+    session) per change (a selected source that is not a captured page is left alone and the
+    reply says so, #433), and one short chat entry streamed as the reply and recorded as a
     `triage` chat turn («He apartado la página 3.», «He recuperado la página 3; se está
     transcribiendo.»); `notes.changed` untouched. `turn.result` is the `TriageTurn`.
   - `doubt_answer`: `editor.answer_doubt(pending_id, answer)` (#325; a number is the suggestion
@@ -96,10 +100,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -137,6 +142,7 @@ from studentassistant.llm import (
 )
 from studentassistant.observer import (
     ASSISTANT_REQUEST_KIND,
+    CAPTURE_KINDS,
     AskedDoubtRef,
     AssistantRequest,
     RequestContext,
@@ -222,6 +228,13 @@ BUSY_DETAIL = (
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 UNKNOWN_SOURCE_DETAIL = "No encuentro esa página entre las fuentes del tema."
 UNKNOWN_KIND_DETAIL = "Todavía no sé atender este tipo de petición: pídemelo de otra forma."
+TOO_MANY_SELECTED_DETAIL = (
+    "Has seleccionado demasiadas fuentes: selecciona como mucho {limit} en Recursos y pídemelo"
+    " por partes."
+)
+UNKNOWN_SELECTED_DETAIL = (
+    "La selección incluye algo que no es una fuente de este tema: {source_id}."
+)
 NOT_STOPPED_DETAIL = (
     "Esa petición ya no está esperando confirmación (quizá ya se hizo o el servidor se reinició):"
     " vuelve a pedirla."
@@ -562,6 +575,11 @@ class AssistantRequestConsumer:
                     include={"session_id", "segment_ids", "t_start_ms", "t_end_ms", "text"},
                 ),
                 **({"targets": list(request.targets)} if request.targets else {}),
+                **(
+                    {"selected_source_ids": list(request.selected_source_ids)}
+                    if request.selected_source_ids
+                    else {}
+                ),
             },
         )
         self._enqueue(queued)
@@ -750,6 +768,11 @@ class AssistantRequestConsumer:
             request=queued.chat_request(),
             confirm_over_cap=queued.confirm_over_cap,
             turn_id=broadcast.turn_id,
+            # A typed message's Recursos selection, even empty (the editor then asks which pages
+            # «esto» is); a spoken request has none (#433).
+            selected_sources=list(queued.request.selected_source_ids)
+            if queued.request.typed
+            else None,
             live=None
             if self.doubts is None
             else self.doubts.live(queued.subject_id, queued.topic_id),
@@ -800,11 +823,15 @@ class AssistantRequestConsumer:
         done: list[SourceStatus] = []
         unchanged: list[SourceStatus] = []
         owed: list[SourceStatus] = []
+        refused: list[SourceStatus] = []
         targets: dict[str, TriageTarget] = {}
         for target in queued.request.targets:
             row = rows.get(target)
             if row is None:
                 raise _UnknownSourceError(target)
+            if row.kind not in CAPTURE_KINDS:  # a selected PDF or web page (#433): said, skipped
+                refused.append(row)
+                continue
             already = (row.state == "apartada") == (decision == "set_aside")
             reason: str | None = None
             if decision == "set_aside":
@@ -835,6 +862,7 @@ class AssistantRequestConsumer:
             owed,
             transcribing=self.transcribing and live,
             targets=targets,
+            refused=refused,
         )
         await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
         turn = TriageTurn(
@@ -938,8 +966,13 @@ class AssistantRequestConsumer:
         topic_id: str,
         text: str,
         classifier: MessageClassifier | None,
+        selected: Sequence[str] = (),
     ) -> TypedMessageResult:
         """Classify a message typed in the workspace chat and queue its requests (#327).
+
+        `selected` is the student's Recursos selection sent with it (#433, checked by
+        `check_selection`): the classifier's referent of «esto», kept on every request
+        (`selected_source_ids`) for the editor turn, the stream, a confirmation and a replay.
 
         Each request is persisted as an `assistant.request` (origin `user`, `detector: "typed"`)
         in the topic's live session -- the bus brings it back to this consumer -- or in a review
@@ -960,6 +993,7 @@ class AssistantRequestConsumer:
                     topic_id,
                     text,
                     session_id=self._live_session(subject_id, topic_id),
+                    selected=selected,
                 )
             except Exception as error:  # a ClassificationError, or anything else: keep the text
                 logger.warning(
@@ -971,13 +1005,13 @@ class AssistantRequestConsumer:
         async with self._typed_lock:
             session_id = self._live_session(subject_id, topic_id)
             if session_id is not None:
-                requests = await self._typed_live(session_id, message_id, text, reported)
+                requests = await self._typed_live(session_id, message_id, text, reported, selected)
                 if requests is not None:
                     return TypedMessageResult(
                         message_id=message_id, requests=requests, classified=classified
                     )
             requests = [
-                _typed_request(n, message_id, text, request)
+                _typed_request(n, message_id, text, request, selected)
                 for n, request in enumerate(reported, start=1)
             ]
             # Outstanding until each has its `turn.finished`, so a restart runs them (#423).
@@ -1000,7 +1034,12 @@ class AssistantRequestConsumer:
         return TypedMessageResult(message_id=message_id, requests=requests, classified=classified)
 
     async def _typed_live(
-        self, session_id: str, message_id: str, text: str, reported: list[ReportedRequest]
+        self,
+        session_id: str,
+        message_id: str,
+        text: str,
+        reported: list[ReportedRequest],
+        selected: Sequence[str] = (),
     ) -> list[AssistantRequest] | None:
         """Publish the requests in the live session (under `_typed_lock`); None when it ended."""
         if session_id not in self._typed_counts:
@@ -1015,7 +1054,7 @@ class AssistantRequestConsumer:
         requests: list[AssistantRequest] = []
         for request in reported:
             number = self._typed_counts[session_id] + 1
-            typed = _typed_request(number, message_id, text, request)
+            typed = _typed_request(number, message_id, text, request, selected)
             try:
                 await self.bus.publish(
                     session_id, ASSISTANT_REQUEST_KIND, TYPED_ORIGIN, typed.payload()
@@ -1027,6 +1066,42 @@ class AssistantRequestConsumer:
             self._typed_counts[session_id] = number
             requests.append(typed)
         return requests
+
+
+_PDF_PAGE = re.compile(r"page=[1-9][0-9]*")
+"""The fragment of a selected PDF page: `<pdf id>#page=K`."""
+
+
+class SelectionError(ValueError):
+    """A Recursos selection that cannot be sent with a message; the message is its Spanish
+    `detail`."""
+
+
+def check_selection(
+    vault: Vault, subject_id: str, topic_id: str, source_ids: Sequence[str], limit: int
+) -> list[str]:
+    """The selection sent with a typed message (#433), checked; blocking.
+
+    Each id is topic-relative (`sources/notes/page-003.jpg`) and names a stored source of the
+    topic (`editor.source_status`, set-aside ones too); a PDF's page may be named as
+    `<pdf id>#page=K`, and is kept so. Repeats are dropped, the order kept.
+
+    Raises:
+        SelectionError: more than `limit` ids, or one that is not a source of the topic.
+    """
+    ids = list(dict.fromkeys(source_id.strip() for source_id in source_ids if source_id.strip()))
+    if len(ids) > limit:
+        raise SelectionError(TOO_MANY_SELECTED_DETAIL.format(limit=limit))
+    rows = {row.source_id: row for row in source_status(vault, subject_id, topic_id)}
+    for source_id in ids:
+        base, hashed, fragment = source_id.partition("#")
+        row = rows.get(base)
+        valid = row is not None and (
+            not hashed or (row.kind == "pdf" and _PDF_PAGE.fullmatch(fragment) is not None)
+        )
+        if not valid:
+            raise SelectionError(UNKNOWN_SELECTED_DETAIL.format(source_id=source_id))
+    return ids
 
 
 class _UnknownSourceError(LookupError):
@@ -1166,11 +1241,17 @@ def request_context(vault: Vault, subject_id: str, topic_id: str) -> RequestCont
 
 
 def _typed_request(
-    number: int, message_id: str, text: str, request: ReportedRequest
+    number: int,
+    message_id: str,
+    text: str,
+    request: ReportedRequest,
+    selected: Sequence[str] = (),
 ) -> AssistantRequest:
     fields: dict[str, Any] = {}
     if request.targets:
         fields["targets"] = list(request.targets)
+    if selected:
+        fields["selected_source_ids"] = list(selected)
     if request.kind == "doubt_answer":
         fields.update(pending_id=request.pending_id, answer=request.answer)
     return AssistantRequest(
@@ -1272,9 +1353,12 @@ def _triage_reply(
     *,
     transcribing: bool,
     targets: Mapping[str, TriageTarget] | None = None,
+    refused: list[SourceStatus] | None = None,
 ) -> str:
     """The short chat entry of a set-aside or restore request, Spanish; a target set aside
-    with a triage reason says it in brackets («He apartado la página 9 (página en blanco).»)."""
+    with a triage reason says it in brackets («He apartado la página 9 (página en blanco).»);
+    a `refused` target (a selected source that is not a captured page, #433) is said to be
+    left alone."""
     parts: list[str] = []
     if done and decision == "set_aside":
         parts.append(f"He apartado {_labels(done, targets)}.")
@@ -1300,6 +1384,15 @@ def _triage_reply(
         )
         which = _labels(unchanged, targets if decision == "set_aside" else None)
         parts.append(_sentence(f"{which} {state}."))
+    if refused:
+        many = len(refused) > 1
+        verb = "apartar" if decision == "set_aside" else "recuperar"
+        parts.append(
+            _sentence(
+                f"{_labels(refused)} no {'se pueden' if many else 'se puede'} {verb}: solo se"
+                " apartan y recuperan páginas capturadas (apuntes o libro)."
+            )
+        )
     return " ".join(parts) or "No había nada que cambiar."
 
 
@@ -1364,6 +1457,8 @@ def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
 
 __all__ = [
     "HANDLERS",
+    "SelectionError",
+    "check_selection",
     "TURN_FINISHED_KIND",
     "REQUESTS_OUTSTANDING_KIND",
     "outstanding_requests",

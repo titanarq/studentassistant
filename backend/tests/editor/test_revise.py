@@ -13,6 +13,7 @@ from revise_topic import BOOK_FOOTNOTE, ReviseTopic, ampliado_notes, make_revise
 from studentassistant.editor.notes_format import parse, topic_source_resolver, validate
 from studentassistant.editor.revise import (
     EDIT_TOOL,
+    NO_SELECTION_NOTE,
     NOTES_EDITED_KIND,
     NOTES_UNDONE_KIND,
     REPLY_DELTA,
@@ -496,3 +497,68 @@ def test_undo_is_refused_when_the_notes_changed_afterwards(
     with pytest.raises(UndoConflictError):
         _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
     assert _notes(topic) == topic.notes + "\n"
+
+
+# -- the student's Recursos selection (#433) -----------------------------------------------------
+
+
+def test_the_selected_pages_take_the_image_budget_first_and_are_marked(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    fake = FakeClaude()
+    fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Vale.")
+    page_1 = "sources/notes/page-001.jpg"
+    _run(
+        revise_notes(
+            topic.vault,
+            topic.subject,
+            topic.topic,
+            "reescribe esto con el texto de la captura",
+            client=fake.client("editor"),
+            sync=sync,
+            max_page_images=1,
+            selected_sources=[page_1],
+        )
+    )
+    [request] = fake.requests
+    content = request.messages[0]["content"]
+    images = [i for i, block in enumerate(content) if block["type"] == "image"]
+    # Page 1 is transcribed (the topic never sends its image), page 2 is not (it would): the one
+    # image allowed is the selected page's, sent after the topic and before the message.
+    [image] = images
+    assert content[image - 1]["text"].startswith(f"### Seleccionada: Apuntes, página 1 ({page_1})")
+    assert content[image - 2]["text"].startswith("## Selección actual del estudiante (Recursos)")
+    assert image == len(content) - 2
+    assert "«Selección actual del estudiante»" in content[-1]["text"]
+    context = next(
+        r
+        for r in read_conversation(topic.vault, topic.subject, topic.topic, "editor")
+        if r.kind == "context"
+    )
+    assert context.detail["selected_sources"] == [page_1]
+    assert context.detail["selected_images"] == [page_1]
+    assert "sources/notes/page-002.jpg" in context.detail["omitted"]
+
+
+def test_an_empty_selection_tells_the_editor_nothing_is_selected(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    fake = FakeClaude()
+    fake.reply_text("¿De qué páginas hablas? Selecciónalas en Recursos o dime su número.")
+    _run(
+        revise_notes(
+            topic.vault,
+            topic.subject,
+            topic.topic,
+            "incorpora esto",
+            client=fake.client("editor"),
+            sync=sync,
+            selected_sources=[],
+        )
+    )
+    text = fake.requests[0].messages[0]["content"][-1]["text"]
+    assert NO_SELECTION_NOTE in text
+    assert not any(
+        block["type"] == "text" and block["text"].startswith("## Selección actual")
+        for block in fake.requests[0].messages[0]["content"]
+    )

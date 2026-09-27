@@ -34,7 +34,9 @@ from studentassistant.observer.requests import (
     TOOL_NAME,
     ClassificationError,
     MessageClassifier,
+    ReportedRequest,
     RequestDetector,
+    _kind_problem,
 )
 from studentassistant.protocol import PROTOCOL_VERSION
 from studentassistant.server.bus import SessionBus
@@ -1285,3 +1287,40 @@ async def test_stop_waits_for_a_hung_detection_only_a_bounded_time(
     assert asyncio.get_running_loop().time() - started < 2.0
     assert hanging.cancelled == 1
     assert not detector.running
+
+
+# -- the Recursos selection of a typed message (#433) --------------------------------------------
+
+
+def test_the_context_renders_the_selection_only_for_a_typed_message() -> None:
+    spoken = CONTEXT.render()
+    assert "Selected by the student now" not in spoken  # the voice path is unchanged
+    nothing = CONTEXT.model_copy(update={"selected": []}).render()
+    assert nothing == spoken + "\n\nSelected by the student now (in Recursos): nothing."
+    selected = CONTEXT.model_copy(
+        update={"selected": ["sources/notes/page-004.jpg", "sources/pdf/tema.pdf#page=2"]}
+    ).render()
+    assert selected.endswith(
+        "Selected by the student now (in Recursos), in order:\n"
+        "- sources/notes/page-004.jpg: página 4 (apuntes) -- pendiente\n"
+        "- sources/pdf/tema.pdf#page=2: page 2 of sources/pdf/tema.pdf: PDF «tema.pdf» (PDF)"
+        " -- pendiente"
+    )
+
+
+def test_a_selected_pdf_passes_the_set_aside_check_and_targets_drop_the_page() -> None:
+    reported = ReportedRequest(
+        kind="set_aside",
+        summary="Apartar lo seleccionado",
+        segment_ids=["m1"],
+        targets=["sources/notes/page-004.jpg", "sources/pdf/tema.pdf#page=2"],
+    )
+    selected = CONTEXT.model_copy(
+        update={"selected": ["sources/notes/page-004.jpg", "sources/pdf/tema.pdf#page=2"]}
+    )
+    cleaned, problem = _kind_problem(reported, selected)
+    assert problem is None
+    assert cleaned.targets == ["sources/notes/page-004.jpg", "sources/pdf/tema.pdf"]
+    # Not selected, a PDF still cannot be set aside.
+    _, problem = _kind_problem(reported, CONTEXT)
+    assert problem is not None and "only captured pages" in problem

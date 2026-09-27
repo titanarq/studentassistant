@@ -351,7 +351,8 @@ and the context models are re-exported by `studentassistant.observer`.
   `user` turn (the first one of a call with `detail.examined`: the window's segment ids) and
   `assistant` answer (model, prompt hash, usage) and `status` changes (with `detector`).
 - **Typed messages** (#327): `MessageClassifier(client_factory, *, sources_lookup=None,
-  clock=None).classify(vault, subject, topic, text, *, session_id=None) -> list[ReportedRequest]`
+  clock=None).classify(vault, subject, topic, text, *, session_id=None, selected=()) ->
+  list[ReportedRequest]`
   classifies one message typed in the workspace chat with the same prompt, tool and checks: the
   user turn is the context plus the message as the single segment `m1`, which every request of
   it shares (a typed message holds at least one request, usually one). Re-asks follow
@@ -361,6 +362,22 @@ and the context models are re-exported by `studentassistant.observer`.
   recorded in `conversations/observer-messages.jsonl` (`user`, `assistant`). It works whatever
   `request_detection` says (that switch is about speech). The wake word (#318) keeps producing
   `edit`/`prepare_notes` only.
+- **The Recursos selection** (#433): `selected` is what the student had selected in Recursos
+  when typing (topic-relative ids, a PDF page as `<pdf>#page=K`). `RequestContext.selected`
+  renders it after the doubt as `Selected by the student now (in Recursos), in order:` with one
+  source line each (a PDF page as `<id>#page=K: page K of <the PDF's line>`), or `... : nothing.`;
+  it is `None` for the spoken detector, which renders no such block (unchanged). The
+  `observer_requests` prompt rule: a deictic or unspecified referent of a typed message («esto»,
+  «esta», «estas», «esta captura», «estas páginas», «el texto», «incorpóralas», «apártalas») means
+  the selection, and the `targets` of an `incorporate`/`set_aside`/`restore` are then exactly the
+  selected sources; a source the message names («la página 3») wins over the selection; needing
+  a referent with nothing selected and nothing named is a `question` whose summary asks for it
+  («¿De qué páginas hablas? Selecciónalas en Recursos o dime su número.»). Checks: targets name
+  stored sources (a `#page=K` is dropped, repeats removed) and stay among the topic's sources; a
+  selected source that is not a captured page passes the `set_aside`/`restore` check (the server's
+  turn says it cannot be set aside), an unselected one is still refused. The prompt's version is
+  its content hash (ADR-0004), so the edited prompt is a new version. The eval set scores spoken
+  request detection only (kinds and segments), so it has no typed-selection case.
 
 ### Topic digest -- `digest.py` (#56)
 `state/digest.md` (Spanish Markdown) is how a topic is resumed another day ("continúa el tema")

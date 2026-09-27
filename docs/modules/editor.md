@@ -431,7 +431,7 @@ mode, and the student's message.
   longer raised by a turn.
 - `await revise_notes(vault, subject, topic, message, *, client, sync, on_reply=None,
   on_event=None, digest=None, confirm_over_cap=False, clock=..., ..., request=None,
-  turn_id=None) -> RevisionResult`. The
+  turn_id=None, selected_sources=None) -> RevisionResult`. The
   editor first writes its Spanish reply as text -- streamed through `LLMClient.create(on_text=...)`
   to `on_reply("reply.delta", {"text", "attempt"})` -- and then, if anything changes, calls the
   strict tool `apply_edits` once (`EditsOutput`: `ops` (the `EditOp`s above), `footnotes`,
@@ -446,6 +446,18 @@ mode, and the student's message.
   recorded with `doubts.raise_doubts` (`live`, `host`: `revise_notes`' parameters; the server
   passes its sink into the topic's live session); their ids are the result's `doubts`, and a
   failure to record them is a `warning`, the change kept.
+- **The student's selection** (#433): `selected_sources` is the Recursos selection of a typed
+  workspace message (topic-relative ids in order, a PDF page as `<pdf>#page=K`).
+  `inputs.selection_input` lays it out as `## Selección actual del estudiante (Recursos)`: each
+  captured page `### Seleccionada: <cita> (<id>)` with its transcription and always its image, a
+  PDF page with its text, a pasted image with the image, anything else by name (a set-aside page
+  says it must be restored before it is cited). Its images come first out of `max_page_images`
+  and `max_attachment_bytes`; `assemble_input` gets what is left. The block goes after the cached
+  topic prefix, just before the turn text, which says «esto» / «estas páginas» are those sources.
+  `[]` (a typed message with nothing selected) adds a note instead: do not guess which pages
+  «esto» is, ask the student to select them in Recursos or name them. `None` (spoken requests,
+  the old notes chat) adds nothing. The context record carries `selected_sources` and
+  `selected_images`.
 - **Spoken requests** (#315): `request` (`ChatRequestRef`: `request_id`, `summary`, `session_id`,
   `segment_ids`, `t_start_ms`, `t_end_ms`, `text`) is the `assistant.request` the turn answers
   (the server's `assistant_requests.py` passes it, with the raw `text` as `message`). The turn is

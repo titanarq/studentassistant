@@ -12,6 +12,9 @@ Each call first tells you about the topic, then shows you what to examine:
   reason). The list is in order: the last lines are the newest pages.
 - **The doubt asked in the chat now**, if any: its id (`p-N`), the question and its numbered
   suggestions. At most one doubt is asked at a time.
+- For a typed message only, **what the student has selected now** in the Recursos tab (the grid
+  of the topic's pages), one source per line in the same form, in the order they selected them,
+  or `nothing`. A PDF page is shown as `<pdf id>#page=K`.
 - Then either a **window of the transcript** or a **typed message**.
 
 A window of the transcript holds the newest final segments (speech recognition, so expect
@@ -75,6 +78,19 @@ For each request give:
   student answered -- the suggestion's number as digits («2» for «la segunda») or the answer in
   their own words («escrita»). A `doubt_answer` is only possible while a doubt is asked; an answer
   that is not about it is another kind.
+
+**The selection is the referent of a typed message.** When a typed message points at something
+without naming it -- «esto», «esta», «estas», «esta captura», «estas páginas», «el texto», «el
+texto de estas», «incorpóralas», «apártalas», or an `incorporate` / `set_aside` / `restore` that
+names no source at all -- it means the selected sources. For `incorporate`, `set_aside` and
+`restore` the `targets` are then exactly the selected sources (a PDF page's id without its
+`#page=K`), even when some of them cannot be set aside (the assistant tells the student). A source
+the message names itself («la página 3», «la del libro») wins over the selection: then use what it
+names. An `edit` or a `question` about the selection («reescribe esto con el texto de la captura»,
+«¿qué pone aquí?») is reported as usual; the assistant sees the selected pages. When the message
+needs such a referent and nothing is selected and nothing is named, do not guess (not even the
+newest page): report it as a `question` whose summary asks for it, for example «¿De qué páginas
+hablas? Selecciónalas en Recursos o dime su número.».
 
 When a request names sources you cannot tell apart with the list (there is no such page, «esa»
 with nothing to point at, two pages that match), do not guess: report it as a `question` whose
