@@ -2,7 +2,8 @@
 
 `studentassistant eval run` repite sesiones reales que grabaste, con llamadas reales a Claude, y
 mide lo fieles que son la transcripción de las páginas, las secciones del observador, las
-peticiones al asistente que detecta y los apuntes del editor frente a lo que tú escribiste como referencia. Sirve para comparar antes y
+peticiones al asistente que detecta, el triaje de las capturas (qué fotos aparta y por qué) y los
+apuntes del editor frente a lo que tú escribiste como referencia. Sirve para comparar antes y
 después de cambiar un prompt o un modelo. La rúbrica exacta está en `docs/modules/infra.md`
 ("Evals").
 
@@ -67,6 +68,59 @@ speed = 4.0   # cuántas veces más rápido que la grabación se repite cada ses
      Una petición detectada acierta cuando es del mismo tipo y comparte al menos una frase con
      una de la referencia (cada una cuenta una sola vez).
 
+   - `triage.yaml` (opcional): qué debía pasar con cada captura. `status` es `kept` (se queda),
+     `flagged` (se queda con aviso) o `set_aside` (apartada); `reasons`, los motivos: `blank`
+     (en blanco), `duplicate` (repetida), `blurry` (borrosa), `partial` (cortada) o
+     `same_content` (mismo contenido que otra). Las capturas que no pongas no cuentan.
+
+     ```yaml
+     captures:
+       - capture_id: 5f0c2a7e-8d4b-4e61-9b3a-2c7d1e0f4a58
+         status: kept
+       - capture_id: 0b1a2c3d-0000-4000-8000-000000000001
+         status: set_aside
+         reasons: [blank]
+     ```
+
+   Los comentarios HTML (`<!-- ... -->`) de `notes.md` y de las páginas no cuentan como texto de
+   referencia.
+
+## 2 bis. Crear un caso desde una sesión de la bóveda
+
+Las sesiones que ya hiciste sin `--record` también sirven: la bóveda guarda lo que dijiste, los
+botones que pulsaste y las fotos. Este comando las convierte en un caso nuevo, **sin tocar la
+bóveda**:
+
+```sh
+studentassistant eval import-session <asignatura> <tema> <sesión>
+studentassistant eval import-session biologia la-celula 20260925-101500 --out ~/StudentAssistant/evals/celula
+```
+
+La asignatura y el tema son los nombres de sus carpetas en la bóveda
+(`subjects/<asignatura>/topics/<tema>/`) y la sesión, el de su carpeta en `sessions/`. Sin `--out` el caso se crea en `[eval] path` como
+`<asignatura>-<tema>-<sesión>`; si esa carpeta ya existe, o si `--out` está dentro de la bóveda,
+el comando se niega.
+
+Crea `recording/` (las frases, botones, marcas y fotos, en su momento de la sesión) y tres
+borradores en `reference/` que **tienes que corregir** antes de evaluar. Cada uno empieza con una
+línea que dice «borrador sin corregir»: bórrala cuando lo hayas corregido (mientras siga, el
+informe avisa de que esa referencia está en borrador).
+
+- `reference/notes.md`: solo trae el título del tema. Escribe debajo los apuntes que de verdad
+  querías sacar de la sesión.
+- `reference/pages/<capture_id>.md`: la transcripción que guardó la bóveda de cada página
+  (solo de las que se transcribieron). Corrígela para que diga exactamente lo que pone la hoja:
+  palabras mal leídas, marcas `[[?...]]`, lo que falte.
+- `reference/triage.yaml`: cada captura con el triaje que recibió en la sesión (un comentario
+  encima dice qué página es y en qué minuto se hizo). Cambia `status` y `reasons` a lo que
+  debería haber pasado: por ejemplo, una hoja en blanco que se quedó pasa a
+  `status: set_aside` con `reasons: [blank]`, y una página buena que se apartó, a `status: kept`
+  con `reasons: []`.
+
+Si alguna foto ya no está en la bóveda (por ejemplo, tras una purga), el comando lo avisa y la
+deja fuera del caso. `sections.yaml` y `requests.yaml` no se crean: añádelos a mano si quieres
+puntuar las secciones o las peticiones (los `segment_id` están en `recording/transcript.jsonl`).
+
 ## 3. Ejecutar
 
 ```sh
@@ -101,7 +155,9 @@ En `<path>/runs/<fecha>/`:
 
 - `report.md`: la tabla de puntuaciones y, por caso, las páginas, las secciones, las
   peticiones (precisión, exhaustividad y F1, en total y por tipo, con las que no se detectaron
-  y las que se detectaron sin estar en tu referencia), las ideas de referencia que faltan y las
+  y las que se detectaron sin estar en tu referencia), el triaje de las capturas (precisión,
+  exhaustividad y F1 de las apartadas, el acierto de cada motivo y las capturas que acabaron
+  distinto que en tu `triage.yaml`), las ideas de referencia que faltan y las
   ideas generadas sin apoyo en tus fuentes. Arriba dice qué detector y qué apuntes se usaron.
 - `report.json`: lo mismo en JSON, para comparar con otra ejecución.
 - `<caso>/vault/`: la bóveda que produjo el caso, para mirar qué pasó.
@@ -114,7 +170,7 @@ bajada señala dónde mirar, no un veredicto; lee las ideas que faltan o sobran 
 Cada informe termina con la sección **«Comparación con la ejecución anterior»**: se compara con
 la ejecución más reciente de `runs/` que sea anterior a esta. Por caso y por puntuación (páginas
 por caracteres y por palabras, acuerdo y cobertura de secciones, precisión, exhaustividad y F1
-de las peticiones, conservado, con fuente y global) muestra el valor anterior, el nuevo y la diferencia en puntos. Una bajada de más de
+de las peticiones, precisión, exhaustividad, F1 y motivos del triaje, conservado, con fuente y global) muestra el valor anterior, el nuevo y la diferencia en puntos. Una bajada de más de
 `[eval] regression_margin` (por defecto `0.05`, es decir, 5 puntos) se marca como
 **regresión**. También se listan los casos nuevos y los que ya no están. Si un informe anterior
 no se puede leer, se avisa y se usa el anterior a él. Las regresiones se informan, pero no hacen

@@ -1,6 +1,8 @@
 """`studentassistant eval run`: score the pipeline on the eval set; the cost is confirmed first.
 
 `studentassistant eval compare <run-a> <run-b>`: compare two runs already written, without Claude.
+
+`studentassistant eval import-session <subject> <topic> <session>`: a vault session as a new case.
 """
 
 from __future__ import annotations
@@ -22,9 +24,15 @@ from studentassistant.evals.compare import (
     render_comparison,
 )
 from studentassistant.evals.estimate import CaseEstimate, estimate_case, run_settings
+from studentassistant.evals.import_session import (
+    SessionImportError,
+    default_case_name,
+    import_session,
+)
 from studentassistant.evals.run import CaseResult, run_directory, run_eval, write_report
 from studentassistant.install.apikey import export_api_key
 from studentassistant.llm import Transport, default_transport
+from studentassistant.vault import Vault, VaultError
 
 eval_cli = typer.Typer(help="The eval set from real sessions (`[eval] path`).")
 
@@ -181,3 +189,53 @@ def compare_command(
         previous_run=Path(run_a).name,
     )
     typer.echo(render_comparison(comparison), nl=False)
+
+
+@eval_cli.command("import-session")
+def import_session_command(
+    subject: Annotated[str, typer.Argument(help="La asignatura (su identificador).")],
+    topic: Annotated[str, typer.Argument(help="El tema (su identificador).")],
+    session_id: Annotated[str, typer.Argument(help="La sesión, p. ej. 20260925-101500.")],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="La carpeta del caso (por defecto, una nueva en [eval] path)."),
+    ] = None,
+) -> None:
+    """Turn a session of the vault into an eval case: its recording and reference drafts.
+
+    The vault is only read. The reference files are drafts to correct before `eval run`.
+    """
+    settings = Settings()
+    default = settings.eval.path / default_case_name(subject, topic, session_id)
+    target = (out or default).expanduser()
+    if _inside(target, settings.vault.path) or _inside(settings.vault.path, target):
+        typer.echo(f"El caso «{target}» no puede estar dentro de la bóveda ni al revés.")
+        raise typer.Exit(code=1)
+    checkout = _code_checkout()
+    if checkout is not None and _inside(target, checkout):
+        typer.echo(
+            f"El caso «{target}» está dentro del repositorio del código: las grabaciones son"
+            " privadas, ponlo fuera de él."
+        )
+        raise typer.Exit(code=1)
+    try:
+        vault = Vault.open(settings.vault.path)
+        imported = import_session(
+            vault, subject, topic, session_id, target, language=settings.stt.language
+        )
+    except (SessionImportError, VaultError) as error:
+        typer.echo(f"No se puede importar la sesión: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        f"Caso creado en {imported.directory}: {imported.finals} frases, {imported.events}"
+        f" botones o marcas y {imported.captures} capturas."
+    )
+    for skipped in imported.skipped:
+        typer.echo(f"Aviso: captura omitida, {skipped}")
+    typer.echo(
+        "Corrige la referencia antes de evaluar (cada borrador lo dice en su primera línea):"
+    )
+    typer.echo("  reference/notes.md: los apuntes que querías")
+    if imported.pages:
+        typer.echo(f"  reference/pages/: {len(imported.pages)} transcripciones de página")
+    typer.echo("  reference/triage.yaml: qué capturas debían apartarse y por qué")

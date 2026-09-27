@@ -24,6 +24,10 @@ words of three letters or more that are not Spanish stop words (numbers always c
 - Request detection (`score_requests`): a detected request matches a reference request when both
   have the same kind and share at least one segment (each matched at most once, in order);
   precision, recall and F1 overall and per kind, plus the missed and spurious requests.
+- Capture triage (`score_triage`): over the captures of the reference, "set aside" is the
+  positive class -- precision, recall and F1 of the captures the run set aside -- and, per reason
+  (`TRIAGE_REASONS`), accuracy: the share of those captures on which the run and the reference
+  agree about whether that reason applies. A capture the run did not store counts as kept.
 """
 
 from __future__ import annotations
@@ -33,7 +37,10 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from itertools import combinations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
+
+TRIAGE_REASONS: tuple[str, ...] = ("blank", "duplicate", "blurry", "partial", "same_content")
+"""The triage reasons scored, in report order (`sources.triage.TRIAGE_REASONS`)."""
 
 # A reference unit is kept when one generated unit holds this share of its content words.
 COVERED_SHARE = 0.5
@@ -365,4 +372,99 @@ def score_requests(
         per_kind=per_kind,
         missed=missed,
         spurious=spurious,
+    )
+
+
+class TriageItem(BaseModel):
+    """One capture's triage, in the reference or as the run left it."""
+
+    capture_id: str
+    status: str
+    reasons: list[str] = []
+
+
+class ReasonScore(BaseModel):
+    """How well one triage reason was given, over the reference's captures."""
+
+    reason: str
+    reference: int
+    detected: int
+    matched: int
+    accuracy: float
+
+
+class TriageScore(BaseModel):
+    """The run's triage of a case's captures against the reference triage."""
+
+    captures: int
+    reference_set_aside: int
+    set_aside: int
+    matched: int
+    precision: float
+    recall: float
+    f1: float
+    per_reason: list[ReasonScore]
+    # Reference captures whose status or reasons the run got differently, and those it never
+    # stored (as the run left them: `status` "missing").
+    mismatches: list[tuple[TriageItem, TriageItem]]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def reason_accuracy(self) -> float | None:
+        """The mean accuracy over the reasons, `None` for a case with no capture."""
+        if not self.captures:
+            return None
+        return round(sum(r.accuracy for r in self.per_reason) / len(self.per_reason), 4)
+
+
+MISSING_STATUS = "missing"
+
+
+def score_triage(
+    reference: Iterable[TriageItem], observed: Mapping[str, TriageItem]
+) -> TriageScore:
+    """Score `observed` (capture id -> the run's triage) against every `reference` capture.
+
+    With nothing set aside by the run precision is 1; with nothing to set aside recall is 1.
+    """
+    wanted = list(reference)
+    got = {
+        item.capture_id: observed.get(item.capture_id)
+        or TriageItem(capture_id=item.capture_id, status=MISSING_STATUS)
+        for item in wanted
+    }
+    ref_aside = {i.capture_id for i in wanted if i.status == "set_aside"}
+    run_aside = {c for c, i in got.items() if i.status == "set_aside"}
+    hits = len(ref_aside & run_aside)
+    precision, recall = _share(hits, len(run_aside)), _share(hits, len(ref_aside))
+    per_reason: list[ReasonScore] = []
+    for reason in TRIAGE_REASONS:
+        expected = {i.capture_id for i in wanted if reason in i.reasons}
+        given = {c for c, i in got.items() if reason in i.reasons}
+        agree = sum((c in expected) == (c in given) for c in got)
+        per_reason.append(
+            ReasonScore(
+                reason=reason,
+                reference=len(expected),
+                detected=len(given),
+                matched=len(expected & given),
+                accuracy=_share(agree, len(wanted)),
+            )
+        )
+    mismatches = [
+        (item, got[item.capture_id])
+        for item in wanted
+        if (item.status, sorted(item.reasons))
+        != (got[item.capture_id].status, sorted(got[item.capture_id].reasons))
+    ]
+    return TriageScore(
+        captures=len(wanted),
+        reference_set_aside=len(ref_aside),
+        set_aside=len(run_aside),
+        matched=hits,
+        precision=precision,
+        recall=recall,
+        f1=_f1(precision, recall),
+        per_reason=per_reason,
+        mismatches=mismatches,
     )

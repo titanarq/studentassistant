@@ -49,16 +49,20 @@ from studentassistant.evals.scoring import (
     RequestItem,
     RequestScore,
     SectionScore,
+    TriageItem,
+    TriageScore,
     score_notes,
     score_page,
     score_requests,
     score_sections,
+    score_triage,
 )
 from studentassistant.llm import Transport
 from studentassistant.observer import ASSISTANT_REQUEST_KIND, load_observer_snapshot
 from studentassistant.server.app import create_app
 from studentassistant.server.assistant_requests import AssistantRequestConsumer
 from studentassistant.server.replay import AsgiTransport, ReplayError, replay
+from studentassistant.sources.triage import triage_of
 from studentassistant.vault import (
     Event,
     GitSync,
@@ -111,6 +115,8 @@ class CaseOutput:
     actual_usd: float | None = None
     # The spoken requests the detector published in the session (`assistant.request`).
     requests: list[RequestItem] = field(default_factory=list)
+    # capture id -> the triage its stored page ended the run with.
+    triage: dict[str, TriageItem] = field(default_factory=dict)
 
 
 class CaseResult(BaseModel):
@@ -131,6 +137,10 @@ class CaseResult(BaseModel):
     generate_error: str | None = None
     # `None` when the case has no `requests.yaml` (and in reports written before #371).
     requests: RequestScore | None = None
+    # `None` when the case has no `triage.yaml` (and in reports written before #415).
+    triage: TriageScore | None = None
+    # Reference files still marked as an uncorrected draft (`eval import-session`).
+    drafts: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -145,12 +155,15 @@ class CaseResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def score(self) -> float | None:
-        """The mean of the case's headline scores: pages, sections, requests, kept, supported."""
+        """The mean of the case's headline scores: pages, sections, requests, triage, kept and
+        supported."""
         parts = [self.page_char_accuracy]
         if self.sections is not None:
             parts.append(self.sections.pairwise_agreement)
         if self.requests is not None:
             parts.append(self.requests.f1)
+        if self.triage is not None:
+            parts.append(self.triage.f1)
         if self.notes is not None:
             parts += [self.notes.kept, self.notes.supported]
         elif self.error is None:
@@ -334,6 +347,10 @@ def _read_back(vault: Vault, output: CaseOutput) -> None:
         except SourceNotFoundError:
             text = None
         output.pages[str(capture_id)] = text
+        decided = triage_of(source.meta)  # a page with no triage block reads as kept
+        output.triage[str(capture_id)] = TriageItem(
+            capture_id=str(capture_id), status=decided.status, reasons=list(decided.reasons)
+        )
     output.assignments = dict(
         load_observer_snapshot(vault, subject, topic, write_back=False).state.assignments
     )
@@ -374,6 +391,15 @@ def score_case(case: EvalCase, output: CaseOutput) -> CaseResult:
             ],
             output.requests,
         )
+    triage = None
+    if case.reference_triage is not None:
+        triage = score_triage(
+            [
+                TriageItem(capture_id=t.capture_id, status=t.status, reasons=list(t.reasons))
+                for t in case.reference_triage
+            ],
+            output.triage,
+        )
     return CaseResult(
         case=case.name,
         estimate=CaseEstimate(case=case.name, roles=[]),
@@ -386,6 +412,8 @@ def score_case(case: EvalCase, output: CaseOutput) -> CaseResult:
         notes_errors=output.notes_errors,
         generate_error=output.generate_error,
         requests=requests,
+        triage=triage,
+        drafts=list(case.drafts),
     )
 
 
@@ -406,7 +434,9 @@ async def run_case(
         )
     except (ReplayError, VaultError) as error:
         logger.warning("eval case %s did not run: %s", case.name, error)
-        result = CaseResult(case=case.name, estimate=estimate, error=str(error))
+        result = CaseResult(
+            case=case.name, estimate=estimate, error=str(error), drafts=list(case.drafts)
+        )
     else:
         result = score_case(case, output).model_copy(update={"estimate": estimate})
     return result.model_copy(update={"vault": str(directory / CASE_VAULT_DIR)})
@@ -500,21 +530,28 @@ def render_report(report: EvalReport) -> str:
         f" {NOTES_PATH_LABELS.get(report.notes_path or '', '—')}",
         "",
         "| caso | páginas (caracteres) | páginas (palabras) | secciones | peticiones (F1)"
-        " | conservado | con fuente | global | coste |",
-        "|---|---|---|---|---|---|---|---|---|",
+        " | triaje (F1) | conservado | con fuente | global | coste |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for case in report.cases:
         sections = case.sections.pairwise_agreement if case.sections else None
         requests = case.requests.f1 if case.requests else None
+        triage = case.triage.f1 if case.triage else None
         kept = case.notes.kept if case.notes else None
         supported = case.notes.supported if case.notes else None
         lines.append(
             f"| {case.case} | {_pct(case.page_char_accuracy)} | {_pct(case.page_word_accuracy)}"
-            f" | {_pct(sections)} | {_pct(requests)} | {_pct(kept)} | {_pct(supported)}"
+            f" | {_pct(sections)} | {_pct(requests)} | {_pct(triage)} | {_pct(kept)}"
+            f" | {_pct(supported)}"
             f" | {_pct(case.score)} | {_usd(case.actual_usd)} |"
         )
     for case in report.cases:
         lines += ["", f"## {case.case}", ""]
+        if case.drafts:
+            lines.append(
+                "- Aviso: referencia en borrador sin corregir: "
+                + ", ".join(f"`{d}`" for d in case.drafts)
+            )
         if case.error is not None:
             lines.append(f"No se ha podido reproducir: {case.error}")
             continue
@@ -537,6 +574,8 @@ def render_report(report: EvalReport) -> str:
             )
         if case.requests is not None:
             lines += _render_requests(case.requests)
+        if case.triage is not None:
+            lines += _render_triage(case.triage)
         if case.generate_error is not None:
             lines.append(f"- Los apuntes no se han generado: {case.generate_error}")
         elif case.notes is None:
@@ -583,6 +622,51 @@ def _render_requests(score: RequestScore) -> list[str]:
     if score.spurious:
         lines.append("- Peticiones detectadas que no estaban en la referencia:")
         lines += [_request_line(r) for r in score.spurious]
+    return lines
+
+
+_TRIAGE_TEXT = {
+    "kept": "se queda",
+    "flagged": "se queda (avisada)",
+    "set_aside": "apartada",
+    "missing": "no guardada",
+}
+REASON_LABELS = {
+    "blank": "en blanco",
+    "duplicate": "repetida",
+    "blurry": "borrosa",
+    "partial": "cortada",
+    "same_content": "mismo contenido",
+}
+
+
+def _triage_text(item: TriageItem) -> str:
+    text = _TRIAGE_TEXT.get(item.status, item.status)
+    if item.reasons:
+        text += " (" + ", ".join(REASON_LABELS.get(r, r) for r in item.reasons) + ")"
+    return text
+
+
+def _render_triage(score: TriageScore) -> list[str]:
+    lines = [
+        f"- Triaje de capturas: apartadas con precisión {_pct(score.precision)}, exhaustividad"
+        f" {_pct(score.recall)}, F1 {_pct(score.f1)} ({score.matched} acertadas de"
+        f" {score.reference_set_aside} apartadas en la referencia y {score.set_aside} apartadas"
+        f" en la ejecución, {score.captures} capturas)"
+    ]
+    for reason in score.per_reason:
+        lines.append(
+            f"  - {REASON_LABELS.get(reason.reason, reason.reason)}: acierto"
+            f" {_pct(reason.accuracy)} ({reason.matched}/{reason.reference} de referencia,"
+            f" {reason.detected} en la ejecución)"
+        )
+    if score.mismatches:
+        lines.append("- Capturas con otro triaje que el de la referencia:")
+        lines += [
+            f"  - `{wanted.capture_id}`: referencia {_triage_text(wanted)},"
+            f" ejecución {_triage_text(got)}"
+            for wanted, got in score.mismatches
+        ]
     return lines
 
 
