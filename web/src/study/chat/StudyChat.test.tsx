@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "../../test/mockApi";
+import type { VoiceQuestionCallbacks, VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import StudyChat, { BUSY_SENTENCE, FOLLOW_BUTTON, MAX_QUESTION_CHARS, STALE_SECTION, THINKING } from "./StudyChat";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
@@ -37,6 +38,7 @@ function renderChat(
   routes: Record<string, Response | (() => Response) | Error>,
   hasNotes: boolean | null = true,
   suggestion: { text: string; id: number } | null = null,
+  voice: { listen?: VoiceQuestionStarter; voiceSupported?: boolean } = {},
 ) {
   const fetchMock = stubApi({ [TUTOR]: jsonResponse({ turns: [] }), ...routes });
   const onOpenSection = vi.fn();
@@ -54,10 +56,13 @@ function renderChat(
       onGenerated={onGenerated}
       onOpenOption={onOpenOption}
       suggestion={value}
+      listen={voice.listen}
+      voiceSupported={voice.voiceSupported}
     />
   );
-  const { rerender } = render(chat(suggestion));
+  const { rerender, unmount } = render(chat(suggestion));
   return {
+    unmount,
     fetchMock,
     onOpenSection,
     onOpenSource,
@@ -516,4 +521,92 @@ it("does not scroll when the student scrolled up, and offers «Nuevos mensajes �
   expect(area.sets).toHaveBeenLastCalledWith(1300);
   expect(screen.queryByRole("button", { name: FOLLOW_BUTTON })).toBeNull();
   stream.close();
+});
+
+function fakeListen() {
+  const calls: VoiceQuestionCallbacks[] = [];
+  const stop = vi.fn();
+  const listen: VoiceQuestionStarter = (callbacks) => {
+    calls.push(callbacks);
+    return { stop };
+  };
+  return { listen, calls, stop };
+}
+
+const SPEAK = "Dictar el mensaje por voz";
+const LISTENING = "Escuchando… (pulsa para parar)";
+
+it("asks a spoken question once, showing the interim text in the input", async () => {
+  const stream = streamResponse();
+  const { listen, calls } = fakeListen();
+  const { fetchMock } = renderChat({ [`POST ${TUTOR}`]: () => stream.response }, true, null, { listen, voiceSupported: true });
+  const speak = screen.getByRole("button", { name: SPEAK });
+  await waitFor(() => expect(speak).toBeEnabled());
+  fireEvent.click(speak);
+  expect(screen.getByRole("button", { name: LISTENING })).toHaveAttribute("aria-pressed", "true");
+  act(() => calls[0].onInterim?.("¿Qué causas"));
+  expect(screen.getByRole("textbox", { name: "Tu pregunta" })).toHaveValue("¿Qué causas");
+  act(() => {
+    calls[0].onFinal("¿Qué causas tuvo?");
+    calls[0].onEnd?.();
+  });
+  expect(await within(log()).findByText(THINKING)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: SPEAK })).toBeDisabled();
+  stream.push(sseEvent("result", answer()));
+  stream.close();
+  expect(await within(log()).findByRole("button", { name: "Ir a la sección 2. Causas" })).toBeEnabled();
+  const bodies = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(String(init?.body)));
+  expect(bodies).toEqual([{ question: "¿Qué causas tuvo?", confirm_over_cap: false, style: "written" }]);
+  expect(screen.getByRole("textbox", { name: "Tu pregunta" })).toHaveValue("");
+});
+
+it("trims a spoken question to the cap", async () => {
+  const { listen, calls } = fakeListen();
+  const { fetchMock } = renderChat({ [`POST ${TUTOR}`]: sseResponse([["result", answer()]]) }, true, null, { listen, voiceSupported: true });
+  const speak = screen.getByRole("button", { name: SPEAK });
+  await waitFor(() => expect(speak).toBeEnabled());
+  fireEvent.click(speak);
+  act(() => {
+    calls[0].onFinal("a".repeat(MAX_QUESTION_CHARS + 50));
+    calls[0].onEnd?.();
+  });
+  await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(JSON.parse(String(post?.[1]?.body)).question).toHaveLength(MAX_QUESTION_CHARS);
+});
+
+it("stops listening when pressed again, and shows a problem's line", async () => {
+  const { listen, calls, stop } = fakeListen();
+  renderChat({}, true, null, { listen, voiceSupported: true });
+  const speak = screen.getByRole("button", { name: SPEAK });
+  await waitFor(() => expect(speak).toBeEnabled());
+  fireEvent.click(speak);
+  fireEvent.click(screen.getByRole("button", { name: LISTENING }));
+  expect(stop).toHaveBeenCalledTimes(1);
+  act(() => {
+    calls[0].onProblem("no-speech");
+    calls[0].onEnd?.();
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("No te he oído. Pulsa «Hablar» y habla.");
+});
+
+it("offers a disabled «Hablar» with a hint in a browser without speech recognition", async () => {
+  renderChat({}, true, null, { voiceSupported: false });
+  const speak = screen.getByRole("button", { name: SPEAK });
+  expect(speak).toBeDisabled();
+  expect(speak).toHaveAccessibleDescription("Este navegador no reconoce la voz: escribe tu mensaje.");
+  const input = screen.getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.change(input, { target: { value: "¿Qué causas tuvo?" } });
+  expect(screen.getByRole("button", { name: "Preguntar" })).toBeEnabled();
+});
+
+it("stops a running recognition on unmount", async () => {
+  const { listen, stop } = fakeListen();
+  const { unmount } = renderChat({}, true, null, { listen, voiceSupported: true });
+  const speak = screen.getByRole("button", { name: SPEAK });
+  await waitFor(() => expect(speak).toBeEnabled());
+  fireEvent.click(speak);
+  unmount();
+  expect(stop).toHaveBeenCalledTimes(1);
 });

@@ -5,6 +5,8 @@ import { type OptionKey, STUDY_OPTIONS } from "../options";
 import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
 import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
+import VoiceInputButton from "../../tutor/VoiceInputButton";
+import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import "../../chat/chat.css";
 import "./studyChat.css";
 
@@ -23,6 +25,10 @@ import "./studyChat.css";
  * The log is its own scroll area and follows the newest turn as it streams (#412), unless the
  * student scrolled up (then «Nuevos mensajes ↓»); only the latest turn is announced, through a
  * polite live region, not the whole growing log.
+ *
+ * **Hablar** (#428) dictates one question: the interim text shows in the input, the final text
+ * (trimmed to `MAX_QUESTION_CHARS`) is asked like a typed one; while an answer comes it stays in
+ * the input, unsent.
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -49,6 +55,10 @@ export interface StudyChatProps {
   onOpenOption?: (key: OptionKey) => void;
   /** A phrase to put in the input (no send); a new `id` puts it again. */
   suggestion?: { text: string; id: number } | null;
+  /** Listens for one spoken question; the Web Speech API by default. */
+  listen?: VoiceQuestionStarter;
+  /** Whether `listen` can work here; asked of the browser by default. */
+  voiceSupported?: boolean;
 }
 
 /** A turn as the chat shows it: warnings as a list, the generation (if any) it made. */
@@ -99,6 +109,8 @@ export default function StudyChat({
   onGenerated,
   onOpenOption,
   suggestion = null,
+  listen,
+  voiceSupported,
 }: StudyChatProps) {
   const [history, setHistory] = useState<History>({ state: "loading" });
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -186,7 +198,8 @@ export default function StudyChat({
           setAnswered(generation.reply);
           onGenerated?.(generation);
         }
-        setDraft("");
+        // A question dictated while this answer came stays in the input.
+        setDraft((now) => (now.trim() === text ? "" : now));
       } else {
         setDraft(text);
         setFailure(failureOf(outcome, text, hasNotes));
@@ -354,6 +367,18 @@ export default function StudyChat({
         <button type="submit" disabled={busy || draft.trim() === ""}>
           Preguntar
         </button>
+        <VoiceInputButton
+          value={draft}
+          onChange={setDraft}
+          onFinal={(spokenQuestion) => {
+            const question = spokenQuestion.slice(0, MAX_QUESTION_CHARS);
+            setDraft(question);
+            void ask(question);
+          }}
+          disabled={busy}
+          listen={listen}
+          voiceSupported={voiceSupported}
+        />
       </form>
     </section>
   );

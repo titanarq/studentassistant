@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DIFF, history, revision, turn } from "../../chat/testChat";
 import { jsonResponse, sseEvent, streamResponse, stubApi } from "../../test/mockApi";
 import { type WorkspaceState, WorkspaceContext } from "../state";
 import WorkspaceChatSlot from "../WorkspaceChatSlot";
+import { installSpeechRecognitionFake, type SpeechFakes } from "../../capture/testing/speech";
 import { clock } from "./ChatPanel";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
@@ -468,7 +469,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   });
   const stream = await opened();
   const input = screen.getByLabelText("Mensaje para el asistente");
-  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
 
   act(() => stream.push(sseEvent("doubt.asked", ASKED)));
   const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
@@ -480,7 +481,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   expect(within(doubt).getByRole("button", { name: "Ver la fuente: página 3" })).toBeInTheDocument();
   // No answer buttons: it is answered by typing or saying it.
   expect(within(doubt).queryByRole("button", { name: /escrit/ })).toBeNull();
-  expect(input).toHaveAttribute("placeholder", "Responde a la duda o escribe otra cosa…");
+  expect(input).toHaveAttribute("placeholder", "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…");
   expect(doubtsChanged).toHaveBeenCalledTimes(1);
 
   await type("la 2");
@@ -508,7 +509,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   expect(await within(answer).findByText("Pone «escrito».")).toBeInTheDocument();
   expect(await within(doubt).findByText("Respondida: Pone «escrito».")).toBeInTheDocument();
   expect(within(doubt).getByText("Duda resuelta")).toBeInTheDocument();
-  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
   expect(doubtsChanged).toHaveBeenCalledTimes(2);
 });
 
@@ -628,7 +629,7 @@ it("merges the new turn kinds of the history after a reconnect without duplicate
   // A live entry keeps the diff it received.
   expect(within(incorporated).getByRole("button", { name: "Ver los cambios" })).toBeInTheDocument();
   expect(screen.getByText("He resuelto 2 dudas con las fuentes.")).toHaveClass("ws-chat-line");
-  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
+  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
 });
 
 it("drops the reply streamed so far on reply.restart", async () => {
@@ -966,8 +967,9 @@ it("invites speaking only while a capture is running", async () => {
   expect(await screen.findByText(/hablando o escribiendo/)).toBeInTheDocument();
 
   setCapturing(false);
-  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
-  expect(screen.queryByText(/habla/)).toBeNull();
+  expect(input).toHaveAttribute("placeholder", "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…");
+  expect(screen.queryByText(/hablando/)).toBeNull();
+  expect(screen.getByText(/escribiendo o con «Hablar»/)).toBeInTheDocument();
 });
 
 it("describes the … of a spoken request in Spanish", async () => {
@@ -976,4 +978,76 @@ it("describes the … of a spoken request in Spanish", async () => {
   act(() => stream.push(detected("req-1", "Una tabla con las tres causas")));
   const more = await screen.findByRole("button", { name: "Ver lo que dijiste" });
   expect(more).toHaveAccessibleDescription("Muestra la transcripción de lo que dijiste y cuándo lo dijiste");
+});
+
+describe("the microphone button (#428)", () => {
+  let speech: SpeechFakes;
+  beforeEach(() => {
+    speech = installSpeechRecognitionFake();
+  });
+  afterEach(() => speech.restore());
+
+  const SPEAK = "Dictar el mensaje por voz";
+  const LISTENING = "Escuchando… (pulsa para parar)";
+
+  it("sends a spoken message once, showing the interim text in the input", async () => {
+    const { opened, calls } = setup({ [`POST ${MESSAGES}`]: () => posted([typedRequest("req-t1", "edit", "Un ejemplo", "Pon un ejemplo")]) });
+    await opened();
+    const input = screen.getByLabelText("Mensaje para el asistente");
+    fireEvent.click(screen.getByRole("button", { name: SPEAK }));
+    expect(screen.getByRole("button", { name: LISTENING })).toHaveAttribute("aria-pressed", "true");
+    const recognition = speech.recognitions[0];
+    act(() => recognition.emitResult([{ transcript: "Pon un" }]));
+    expect(input).toHaveValue("Pon un");
+    act(() => recognition.emitResult([{ transcript: "Pon un ejemplo", final: true }]));
+    act(() => recognition.emitEnd());
+    await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(1));
+    expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo" });
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("button", { name: SPEAK })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("stops listening when pressed again, and says why nothing came out", async () => {
+    const { opened, calls } = setup();
+    await opened();
+    fireEvent.click(screen.getByRole("button", { name: SPEAK }));
+    fireEvent.click(screen.getByRole("button", { name: LISTENING }));
+    const recognition = speech.recognitions[0];
+    expect(recognition.stopCount).toBe(1);
+    act(() => recognition.emitError("not-allowed"));
+    act(() => recognition.emitEnd());
+    expect(await screen.findByRole("alert")).toHaveTextContent("No hay permiso para usar el micrófono");
+    expect(calls(MESSAGES, "POST")).toHaveLength(0);
+  });
+
+  it("is hidden while a capture runs, and a capture starting stops its recognition", async () => {
+    const { opened, setCapturing } = setup({}, { capturing: true });
+    await opened();
+    expect(screen.queryByRole("button", { name: SPEAK })).toBeNull();
+    setCapturing(false);
+    fireEvent.click(await screen.findByRole("button", { name: SPEAK }));
+    setCapturing(true);
+    expect(screen.queryByRole("button", { name: SPEAK })).toBeNull();
+    expect(screen.queryByRole("button", { name: LISTENING })).toBeNull();
+    expect(speech.recognitions[0].stopCount).toBe(1);
+  });
+
+  it("stops a running recognition when the panel unmounts", async () => {
+    const { opened } = setup();
+    await opened();
+    fireEvent.click(screen.getByRole("button", { name: SPEAK }));
+    cleanup();
+    expect(speech.recognitions[0].stopCount).toBe(1);
+  });
+});
+
+it("offers a disabled «Hablar» with a hint in a browser without speech recognition", async () => {
+  const { opened } = setup();
+  await opened();
+  const speak = screen.getByRole("button", { name: "Dictar el mensaje por voz" });
+  expect(speak).toBeDisabled();
+  expect(speak).toHaveAccessibleDescription("Este navegador no reconoce la voz: escribe tu mensaje.");
+  const input = screen.getByLabelText("Mensaje para el asistente");
+  fireEvent.change(input, { target: { value: "Pon un ejemplo" } });
+  expect(screen.getByRole("button", { name: "Enviar" })).toBeEnabled();
 });

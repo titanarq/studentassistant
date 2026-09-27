@@ -3,6 +3,7 @@ import DiffView from "../../chat/DiffView";
 import type { OpenSource } from "../../chat/EditorChat";
 import { useFollowLog } from "../../chat/useFollowLog";
 import { sourceItem } from "../resources";
+import VoiceInputButton from "../../tutor/VoiceInputButton";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
 import { capitalized, sourceName } from "./sources";
@@ -241,7 +242,7 @@ function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOp
       )}
       {open && (
         <p className="ws-chat-hint">
-          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo"}: «la 2», «pone “escrita”»…
+          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo o pulsa «Hablar»"}: «la 2», «pone “escrita”»…
         </p>
       )}
       {!open && doubt.answer !== null && <p className="ws-chat-answer">Respondiste: «{doubt.answer}»</p>}
@@ -403,8 +404,10 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
  *
  * The log is its own scroll area and follows the newest turn (#412) unless the student scrolled up
  * (then «Nuevos mensajes ↓» brings them back); only the latest turn is announced, through a polite
- * live region, not the whole growing log. The input only invites speaking while a capture runs
- * (`capturing`): the panel has no microphone of its own.
+ * live region, not the whole growing log. While a capture runs (`capturing`) what the student says
+ * reaches the chat through the capture; otherwise **Hablar** (#428) dictates one message into the
+ * input and sends it like a typed one (kept in the input, unsent, while the assistant is busy).
+ * Starting a capture removes the button and stops its recognition.
  */
 /** What the live region says of the latest turn: its status while it runs, its reply once done. */
 export function latestLine(entry: ChatEntry | undefined): string {
@@ -452,12 +455,19 @@ export default function ChatPanel({
   const current = latestChildren.length > 0 && latest?.status === "running" ? latestChildren[latestChildren.length - 1] : latest;
   const announced = current !== undefined && (live.current.has(current.key) || current.kind === "doubt") ? latestLine(current) : "";
 
-  const submit = (event?: FormEvent) => {
-    event?.preventDefault();
-    if (!idle || draft.trim() === "") return;
-    chat.send(draft);
+  const send = (text: string) => {
+    if (!idle || text.trim() === "") return;
+    chat.send(text);
     setDraft("");
     log.follow();
+  };
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
+    send(draft);
+  };
+  const dictated = (text: string) => {
+    setDraft(text);
+    send(text);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -467,10 +477,10 @@ export default function ChatPanel({
   const placeholder = chat.doubtAsked
     ? capturing
       ? "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…"
-      : "Responde a la duda o escribe otra cosa…"
+      : "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…"
     : capturing
       ? "Escribe o habla: «pon un ejemplo aquí»…"
-      : "Escribe: «pon un ejemplo aquí»…";
+      : "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…";
 
   return (
     <section className="ws-chat" aria-labelledby="ws-chat-heading">
@@ -485,7 +495,7 @@ export default function ChatPanel({
       {chat.historyFailure !== null && <p role="alert">{chat.historyFailure}</p>}
       {chat.entries.length === 0 && chat.historyFailure === null && (
         <p className="ws-chat-hint">
-          {capturing ? "Pídele cambios al asistente hablando o escribiendo" : "Pídele cambios al asistente escribiendo"}: «pon esto como
+          {capturing ? "Pídele cambios al asistente hablando o escribiendo" : "Pídele cambios al asistente escribiendo o con «Hablar»"}: «pon esto como
           definición», «haz una tabla con las tres causas»…
         </p>
       )}
@@ -569,6 +579,7 @@ export default function ChatPanel({
           <button type="submit" disabled={!idle || draft.trim() === ""}>
             Enviar
           </button>
+          {!capturing && <VoiceInputButton value={draft} onChange={setDraft} onFinal={dictated} />}
           <button type="button" onClick={chat.undo} disabled={!idle || !chat.canUndo}>
             Deshacer el último cambio
           </button>
