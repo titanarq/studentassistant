@@ -280,7 +280,9 @@ and the context models are re-exported by `studentassistant.observer`.
   being `new`, `seen` or the `req-N` it already belongs to. The strict tool `report_requests`
   (`ReportRequests`: `{requests: [{kind, summary, segment_ids, targets, pending_id, answer}]}`,
   `tool_choice: auto`); `kind` is `edit`, `question`, `prepare_notes`, `incorporate`,
-  `set_aside`, `restore` or `doubt_answer`. Sonnet resolves «la página 3», «las dos últimas», «la
+  `set_aside`, `restore`, `doubt_answer` or `study` («ya está, quiero estudiar», «vamos a estudiar
+  esto», «pasa a estudiar»: end the capture and switch the topic to Estudiar, #335; talking about
+  studying as content, a plan for later or asking for one material is not `study`). Sonnet resolves «la página 3», «las dos últimas», «la
   que está borrosa» to `targets` from the sources list; a reference it cannot resolve is reported
   as a `question` (the editor asks back); «la segunda», «pone "escrita"» while a doubt is asked are
   a `doubt_answer` (`answer`: the suggestion's number as digits, or the words). Plain dictation

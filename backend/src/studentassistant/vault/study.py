@@ -5,7 +5,11 @@ later flashcard reviews -- is kept in the vault like everything else, so it trav
 another PC. This module stores whatever record model a feature module hands it and knows nothing
 about quizzes: the file is append-only JSONL (`append_jsonl`: secret guard, fsynced, a torn last
 line ignored on read) and `*.jsonl` merges with `merge=union`, so two PCs' lines are both kept.
-Nothing here runs git.
+
+A topic's study state that is one document rather than a log -- the "versión de estudio" label,
+`study/version.yaml` (#335) -- is a YAML file of the same directory (`write_study_file`,
+`read_study_file`): whatever `VaultFileModel` the feature module hands it, written atomically with
+the deterministic dump. Nothing here runs git.
 """
 
 from __future__ import annotations
@@ -16,12 +20,15 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from studentassistant.vault.errors import VaultError
+from studentassistant.vault.files import read_yaml, write_yaml_atomic
 from studentassistant.vault.jsonl import append_jsonl, read_jsonl
+from studentassistant.vault.models import VaultFileModel
 from studentassistant.vault.topics import get_topic, topic_directory
 from studentassistant.vault.vault import Vault
 
 STUDY_DIRNAME = "study"
 STUDY_LOG_SUFFIX = ".jsonl"
+STUDY_FILE_SUFFIX = ".yaml"
 # `quiz-results`: lowercase ASCII, digits and hyphens, no path separator.
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 
@@ -83,3 +90,51 @@ def read_study_records[T: BaseModel](
     if not path.exists():
         return []
     return list(read_jsonl(path, model))
+
+
+def study_file_path(vault: Vault, subject_slug: str, topic_slug: str, name: str) -> Path:
+    """The file of study document `name` (`study/<name>.yaml`) of a topic.
+
+    Raises:
+        StudyLogError: `name` is not a plain file name.
+    """
+    if not _NAME.fullmatch(name):
+        raise StudyLogError(f"{name!r} is not a study file name (lowercase letters, digits, -)")
+    return study_directory(vault, subject_slug, topic_slug) / f"{name}{STUDY_FILE_SUFFIX}"
+
+
+def write_study_file(
+    vault: Vault, subject_slug: str, topic_slug: str, name: str, model: VaultFileModel
+) -> Path:
+    """Write `model` as study document `name` of the topic (whole, atomically); its path.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: the topic is
+            unknown or unreadable.
+        StudyLogError: `name` is not a plain file name.
+        SecretRefused: the dump looks like it carries a secret; nothing is written.
+        OSError: the file cannot be written.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = study_file_path(vault, subject_slug, topic_slug, name)
+    path.parent.mkdir(exist_ok=True)
+    write_yaml_atomic(path, model)
+    return path
+
+
+def read_study_file[T: VaultFileModel](
+    vault: Vault, subject_slug: str, topic_slug: str, name: str, model: type[T]
+) -> T | None:
+    """Study document `name` of the topic, or `None` when it was never written.
+
+    Raises:
+        SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: the topic is
+            unknown or unreadable.
+        StudyLogError: `name` is not a plain file name.
+        ValidationError: the file does not hold a `model`.
+    """
+    get_topic(vault, subject_slug, topic_slug)
+    path = study_file_path(vault, subject_slug, topic_slug, name)
+    if not path.exists():
+        return None
+    return read_yaml(path, model)

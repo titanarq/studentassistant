@@ -43,6 +43,12 @@ order**:
     picked, anything else the answer's words), the resolution streamed as the reply, then
     `doubt.resolved` (and `notes.changed` when the notes changed) through the `DoubtChat`, which
     asks the next doubt; `turn.result` is the `ResolutionResult`.
+  - `study` (#335): "ya está, quiero estudiar" -- `study_routes.switch_to_study`, the service of
+    `POST .../study`: the topic's capture session is ended (without "prepárame el tema") and the
+    notes are labelled "versión de estudio" (`study.marked` on the stream). One line streamed as
+    the reply («He cerrado la captura y marcado los apuntes v3 como versión de estudio.»);
+    `turn.result` is the `StudyTurn`, whose `action` `{kind: "go_study", path}` the web shows as
+    an "Ir a Estudiar" button. Not recorded in the chat history. No notes is a `turn.error` 409.
 - A failure is a `turn.error` `{turn_id, request_id, status, detail, code?}` with the status the
   same failure has over REST (a reached cap 409 `cost_cap_reached`, a Claude failure 502, ...).
   The next request of the topic runs anyway.
@@ -93,6 +99,7 @@ from studentassistant.editor.revise import (
     record_triage_turn,
     revise_notes,
 )
+from studentassistant.editor.versions import VersionError
 from studentassistant.llm import (
     CostConfirmationRequiredError,
     LedgerBinding,
@@ -128,6 +135,13 @@ from studentassistant.server.notes_routes import (
 )
 from studentassistant.server.revise_routes import turn_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.study_routes import (
+    GoStudyAction,
+    StudyTurn,
+    study_path,
+    study_reply,
+    switch_to_study,
+)
 from studentassistant.server.workspace import (
     REQUEST_DETECTED,
     TurnBroadcast,
@@ -182,6 +196,7 @@ TURN_KINDS: Mapping[str, TurnKind] = {
     "set_aside": "set_aside",
     "restore": "restore",
     "doubt_answer": "doubt_answer",
+    "study": "study",
 }
 """The workspace turn kind of each request kind."""
 TYPED_ORIGIN: Origin = "user"
@@ -624,6 +639,22 @@ class AssistantRequestConsumer:
             self.doubts.schedule(s, t)
         return result
 
+    async def _study(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
+        """End the capture and label the study version, as `POST .../study` (under our lock)."""
+        s, t = queued.subject_id, queued.topic_id
+        state = await switch_to_study(self.sessions, self.hub, s, t, reason="command")
+        reply = study_reply(state)
+        await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
+        return StudyTurn(
+            turn_id=broadcast.turn_id,
+            origin=broadcast.origin,
+            request=queued.chat_request(),
+            message=queued.request.text,
+            reply=reply,
+            action=GoStudyAction(path=study_path(s, t)),
+            study=state,
+        )
+
     # -- where the events go ---------------------------------------------------------------------
 
     def _live_session(self, subject_id: str, topic_id: str) -> str | None:
@@ -768,6 +799,7 @@ HANDLERS: Mapping[str, Handler] = {
     "set_aside": AssistantRequestConsumer._set_aside,
     "restore": AssistantRequestConsumer._restore,
     "doubt_answer": AssistantRequestConsumer._doubt_answer,
+    "study": AssistantRequestConsumer._study,
 }
 """What runs each request kind."""
 
@@ -992,6 +1024,8 @@ def _error_of(error: BaseException, kind: str) -> tuple[int, str, str | None]:
         return status, str(error), None if code is None else code.value
     if isinstance(error, SourceError):
         return 404, UNKNOWN_SOURCE_DETAIL, None
+    if isinstance(error, VersionError):  # `study`: no notes to label
+        return 409, str(error), None
     status, detail, error_code = turn_error(error)
     return status, detail, None if error_code is None else error_code.value
 

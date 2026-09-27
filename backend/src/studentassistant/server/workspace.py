@@ -19,12 +19,13 @@ The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
   (`kind` `revise`, `prepare_notes` for "prepárame el tema", `incorporate` for one
   incorporation of a few sources, #326 -- each batch of a batched "prepárame el tema" is one --,
   `set_aside` / `restore` for captures set aside or restored from the chat, `doubt_answer` for
-  the answer to the doubt asked, #327).
+  the answer to the doubt asked, #327; `study` for "quiero estudiar", #335).
 - `reply.delta` `{turn_id, text, attempt}` and `reply.restart` `{turn_id, attempt}`: the reply as
   it is written.
 - `turn.result`: the turn's result (`RevisionResult`, `GenerationResult` for `prepare_notes`,
   `IncorporationResult` for `incorporate`, `TriageTurn` for `set_aside`/`restore`,
-  `ResolutionResult` for `doubt_answer`) plus `turn_id`, `request_id` and `kind`.
+  `ResolutionResult` for `doubt_answer`, `StudyTurn` for `study`) plus `turn_id`, `request_id`
+  and `kind`.
 - `turn.error` `{turn_id, request_id, status, detail, code?}`: the turn failed (`status` as the
   same failure over REST; `code` e.g. `cost_cap_reached`).
 - `notes.changed` `{revision, origin: editor|user|generation|restore, summary, turn_id?}`: the
@@ -35,6 +36,8 @@ The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
   the editor settled those doubts from the sources, reported as one short line.
 - `incorporation.progress` `{done, total, source_ids}`: a batched "prepárame el tema" finished
   one batch (`source_ids`); `done` of the `total` pending sources are incorporated.
+- `study.marked` `{version, tag}`: the topic switched to Estudiar and its notes version `version`
+  is now labelled "versión de estudio" (`study_routes.py`, #335).
 
 Delivery never waits for a subscriber: each subscription has a bounded queue, and when it is full
 the oldest `reply.delta` (else the oldest event) is dropped and counted in `dropped`.
@@ -66,6 +69,7 @@ DOUBT_ASKED = "doubt.asked"
 DOUBT_RESOLVED = "doubt.resolved"
 DOUBTS_AUTO_RESOLVED = "doubts.auto_resolved"
 INCORPORATION_PROGRESS = "incorporation.progress"
+STUDY_MARKED = "study.marked"
 WORKSPACE_EVENTS: tuple[str, ...] = (
     REQUEST_DETECTED,
     TURN_STARTED,
@@ -78,11 +82,14 @@ WORKSPACE_EVENTS: tuple[str, ...] = (
     DOUBT_RESOLVED,
     DOUBTS_AUTO_RESOLVED,
     INCORPORATION_PROGRESS,
+    STUDY_MARKED,
 )
 """The events the workspace stream carries today (open: later tasks add kinds)."""
 
 NotesOrigin = Literal["editor", "user", "generation", "restore"]
-TurnKind = Literal["revise", "prepare_notes", "incorporate", "set_aside", "restore", "doubt_answer"]
+TurnKind = Literal[
+    "revise", "prepare_notes", "incorporate", "set_aside", "restore", "doubt_answer", "study"
+]
 
 DEFAULT_QUEUE_SIZE = 1024
 
@@ -303,6 +310,7 @@ __all__ = [
     "REPLY_DELTA",
     "REPLY_RESTART",
     "REQUEST_DETECTED",
+    "STUDY_MARKED",
     "TURN_ERROR",
     "TURN_RESULT",
     "TURN_STARTED",

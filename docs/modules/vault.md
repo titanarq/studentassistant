@@ -38,6 +38,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   notes/borrador.md                          a generation that failed the validator (editor)
   generated/                                 outline.md, quiz.yaml, flashcards.apkg, exam.md, slides.md …
   study/quiz-results.jsonl                   every quiz attempt, graded (generators, #75)
+  study/version.yaml                         the "versión de estudio" label + history (editor, #335)
   ledger.jsonl                               LLM usage and cost per call
 ```
 
@@ -233,8 +234,12 @@ followed) anywhere but that directory is a `SourcePathError`; a well-formed path
 `quiz-results`). `append_study_record(vault, s, t, name, record)` appends any Pydantic `record`
 (`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`) and returns the path;
 `read_study_records(vault, s, t, name, model)` reads them back (empty when there is none);
-`study_log_path`, `study_directory`. A name that is not `[a-z0-9-]` is `StudyLogError`; an
-unknown topic raises as `get_topic`. Nothing here runs git. Imported from
+`study_log_path`, `study_directory`. A study document that is one file rather than a log is
+`study/<name>.yaml`: `write_study_file(vault, s, t, name, model)` writes any `VaultFileModel`
+whole (atomic, deterministic dump, secret guard) and `read_study_file(vault, s, t, name, model)`
+reads it (None when absent); `study_file_path`. The editor's study label is `study/version.yaml`
+(#335). A name that is not `[a-z0-9-]` is `StudyLogError`; an unknown topic raises as
+`get_topic`. Nothing here runs git. Imported from
 `studentassistant.vault.study` (not re-exported by the package).
 
 ### Notes and generated material -- `notes.py`

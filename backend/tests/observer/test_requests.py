@@ -18,7 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from studentassistant.config import LlmSettings, ObserverSettings, Settings
-from studentassistant.llm import FakeClaude, LLMAPIError, LLMRequest
+from studentassistant.llm import FakeClaude, LLMAPIError, LLMRequest, load_prompt
 from studentassistant.observer import (
     ASSISTANT_REQUEST_KIND,
     REQUEST_KINDS,
@@ -940,3 +940,59 @@ async def test_a_typed_message_is_classified_with_the_same_prompt_and_tool(
     fake.fail(LLMAPIError("boom"))
     with pytest.raises(ClassificationError):
         await asyncio.wait_for(classifier.classify(tmp_vault, *topic, "hola"), WAIT)
+
+
+# -- "quiero estudiar" (#335) ----------------------------------------------------------------------
+
+
+def test_the_prompt_teaches_the_study_kind() -> None:
+    text = load_prompt("observer_requests").content
+    assert "`study`" in text
+    for phrase in ("ya está, quiero estudiar", "vamos a estudiar esto", "pasa a estudiar"):
+        assert phrase in text
+    assert "study" in REQUEST_KINDS
+
+
+async def test_a_spoken_study_request_is_published(
+    detector: RequestDetector,
+    bus: SessionBus,
+    session: Session,
+    fake: FakeClaude,
+    clock: FakeClock,
+) -> None:
+    fake.reply_tool(
+        TOOL_NAME,
+        report(
+            {
+                "kind": "study",
+                "summary": "Pasar a estudiar el tema",
+                "segment_ids": ["seg-2"],
+                # Fields of other kinds are dropped, not refused.
+                "targets": [PAGE_ID.format(n=3)],
+            }
+        ),
+    )
+    await segment(bus, session, 1, DICTATION[0])
+    await segment(bus, session, 2, "Vale, ya está, quiero estudiar.")
+    await advance(detector, clock, session, 2)
+
+    [event] = requests_of(session)
+    assert event["kind"] == "study" and event["segment_ids"] == ["seg-2"]
+    assert event["text"] == "Vale, ya está, quiero estudiar."
+    assert "targets" not in event
+    assert len(fake.requests) == 1  # accepted at once, no re-ask
+
+
+async def test_a_typed_study_message_is_classified(
+    tmp_vault: Vault, topic: tuple[str, str], fake: FakeClaude
+) -> None:
+    settings = Settings(llm=LlmSettings(), observer=ObserverSettings())
+    classifier = MessageClassifier(default_client_factory(settings, fake))
+    fake.reply_tool(
+        TOOL_NAME,
+        report({"kind": "study", "summary": "Pasar a estudiar", "segment_ids": ["m1"]}),
+    )
+    [found] = await asyncio.wait_for(
+        classifier.classify(tmp_vault, *topic, "vamos a estudiar esto"), WAIT
+    )
+    assert found.kind == "study" and found.targets == []
