@@ -216,5 +216,11 @@ mechanism's own, separate, path-filtered workflow.
 - backend: inside `backend/`, everything through `uv run --frozen` -- `ruff check .`,
   `ruff format --check .`, then `pytest -q -m "not integration"`. The `integration` marker is
   registered in `backend/pyproject.toml` and the wrapper never runs it (GPU, network, real Claude).
+- End-to-end coverage, in that same run (no network, `FakeClaude`, a local bare remote as GitHub,
+  a few seconds each): `tests/server/test_pipeline_e2e.py` (a replayed session -> "prepárame el
+  tema" -> pushed notes), `tests/server/test_workspace_e2e.py` (a replayed session whose spoken
+  requests build the notes through the workspace -> "ya está, quiero estudiar" -> a quiz from the
+  study chat -> a save that leaves it stale, #369) and `tests/server/test_restore_drill.py` (the
+  resulting state survives a clone onto a fresh PC).
 - A suite whose skeleton does not exist yet is skipped with a message; full logs land in
   `.cache/test-<suite>-last.log`, so read that instead of re-running.
