@@ -21,6 +21,9 @@ words of three letters or more that are not Spanish stop words (numbers always c
   dropped lowers it. *Supported* is the share of generated units whose content words are at least
   `SUPPORTED_SHARE` in the session's own material (transcript, page transcriptions) or the
   reference notes: content from nowhere lowers it.
+- Request detection (`score_requests`): a detected request matches a reference request when both
+  have the same kind and share at least one segment (each matched at most once, in order);
+  precision, recall and F1 overall and per kind, plus the missed and spurious requests.
 """
 
 from __future__ import annotations
@@ -258,3 +261,108 @@ def score_notes(reference: str, generated: str, sources: Iterable[str]) -> Notes
 
 def _share(part: int, whole: int) -> float:
     return round(part / whole, 4) if whole else 1.0
+
+
+class RequestItem(BaseModel):
+    """One request to the assistant, detected or in the reference, as the report lists it."""
+
+    kind: str
+    segments: list[str]
+    # Detected: the detector's summary; reference: the student's note (or the kind).
+    summary: str
+    # The finals' text the request spans.
+    text: str
+
+
+class KindScore(BaseModel):
+    """Request detection of one kind."""
+
+    kind: str
+    reference: int
+    detected: int
+    matched: int
+    precision: float
+    recall: float
+    f1: float
+
+
+class RequestScore(BaseModel):
+    """The detected requests against the reference requests of one case."""
+
+    reference: int
+    detected: int
+    matched: int
+    precision: float
+    recall: float
+    f1: float
+    per_kind: list[KindScore]
+    # Reference requests no detected one matches, and detected ones matching none.
+    missed: list[RequestItem]
+    spurious: list[RequestItem]
+
+
+def _f1(precision: float, recall: float) -> float:
+    total = precision + recall
+    return round(2 * precision * recall / total, 4) if total else 0.0
+
+
+def score_requests(
+    reference: Iterable[RequestItem], detected: Iterable[RequestItem]
+) -> RequestScore:
+    """Match `detected` requests to `reference` ones (same kind, one shared segment at least).
+
+    Each request matches at most once: every reference request, in order, takes the first
+    detected one still free that matches it. With nothing detected precision is 1; with nothing
+    to detect recall is 1.
+    """
+    wanted, found = list(reference), list(detected)
+    taken: set[int] = set()
+    missed: list[RequestItem] = []
+    matched_kinds: list[str] = []
+    for request in wanted:
+        segments = set(request.segments)
+        index = next(
+            (
+                i
+                for i, other in enumerate(found)
+                if i not in taken and other.kind == request.kind and segments & set(other.segments)
+            ),
+            None,
+        )
+        if index is None:
+            missed.append(request)
+        else:
+            taken.add(index)
+            matched_kinds.append(request.kind)
+    spurious = [request for i, request in enumerate(found) if i not in taken]
+    per_kind: list[KindScore] = []
+    kinds = dict.fromkeys([r.kind for r in wanted] + [r.kind for r in found])
+    for kind in kinds:
+        ref = sum(r.kind == kind for r in wanted)
+        det = sum(r.kind == kind for r in found)
+        hit = matched_kinds.count(kind)
+        precision, recall = _share(hit, det), _share(hit, ref)
+        per_kind.append(
+            KindScore(
+                kind=kind,
+                reference=ref,
+                detected=det,
+                matched=hit,
+                precision=precision,
+                recall=recall,
+                f1=_f1(precision, recall),
+            )
+        )
+    precision = _share(len(matched_kinds), len(found))
+    recall = _share(len(matched_kinds), len(wanted))
+    return RequestScore(
+        reference=len(wanted),
+        detected=len(found),
+        matched=len(matched_kinds),
+        precision=precision,
+        recall=recall,
+        f1=_f1(precision, recall),
+        per_kind=per_kind,
+        missed=missed,
+        spurious=spurious,
+    )

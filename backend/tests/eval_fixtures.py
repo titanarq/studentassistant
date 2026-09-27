@@ -10,6 +10,7 @@ from studentassistant.editor.contradictions import TOOL_NAME as CONTRADICTIONS_T
 from studentassistant.editor.notes_format import page_provenance, transcript_provenance
 from studentassistant.llm import FakeClaude, LLMRequest, LLMResponse
 from studentassistant.observer.live import TOOL_NAME
+from studentassistant.observer.requests import TOOL_NAME as REQUESTS_TOOL
 
 _SEGMENT = re.compile(r'"kind":"transcript.final".*?"segment_id":"([^"]+)"')
 SAMPLE = Path(__file__).parent / "fixtures" / "sessions" / "sample"
@@ -36,6 +37,17 @@ REFERENCE_SECTIONS = (
     "  - title: Partes\n"
     "    segments: [seg-2, seg-3]\n"
 )
+
+
+REFERENCE_REQUESTS = (
+    "requests:\n  - kind: prepare_notes\n    segments: [seg-3]\n    note: prepárame el tema\n"
+)
+
+
+def write_requests(case: Path, extra: str = "") -> None:
+    """Give `case` a `requests.yaml`: a "prepárame el tema" on seg-3, plus `extra` entries."""
+    path = case / "reference" / "requests.yaml"
+    path.write_text(REFERENCE_REQUESTS + extra, encoding="utf-8")
 
 
 def make_case(root: Path, name: str = "celula") -> Path:
@@ -78,17 +90,25 @@ class PipelineClaude:
 
     The observer puts every segment stored so far in one section; the transcriber answers the
     page; the editor answers `generated_notes` for the one session it finds under `runs`, which
-    only exists once the replay started it.
+    only exists once the replay started it. The request detector (its own fake, `requests`)
+    reports each of `spoken` (`(kind, segment id)`) once that segment is stored, else nothing.
     """
 
-    def __init__(self, runs: Path) -> None:
+    def __init__(self, runs: Path, spoken: tuple[tuple[str, str], ...] = ()) -> None:
         self.runs = runs
+        self.spoken = list(spoken)
+        self.requests = FakeClaude()
         self.observer = FakeClaude()
         self.assigned: set[str] = set()
         self.transcriber = FakeClaude()
         self.editor = FakeClaude()
 
     async def send(self, request: LLMRequest, **options: object) -> LLMResponse:
+        if request.role == "observer" and any(
+            tool.get("name") == REQUESTS_TOOL for tool in request.tools
+        ):
+            self.requests.reply_tool(REQUESTS_TOOL, {"requests": self._spoken()})
+            return await self.requests.send(request, **options)  # type: ignore[arg-type]
         if request.role == "observer":
             self.observer.reply_tool(TOOL_NAME, {"ops": self._observer_ops()})
             return await self.observer.send(request, **options)  # type: ignore[arg-type]
@@ -102,12 +122,31 @@ class PipelineClaude:
         self.editor.reply_text(generated_notes(sessions[-1].parent.name))
         return await self.editor.send(request, **options)  # type: ignore[arg-type]
 
-    def _observer_ops(self) -> list[dict[str, object]]:
-        """Add the section once, then assign it every segment stored since the last call."""
+    def _stored(self) -> list[str]:
         stored: list[str] = []
         for log in self.runs.glob("**/sessions/*/events.jsonl"):
             stored += _SEGMENT.findall(log.read_text(encoding="utf-8"))
-        new = [segment for segment in dict.fromkeys(stored) if segment not in self.assigned]
+        return list(dict.fromkeys(stored))
+
+    def _spoken(self) -> list[dict[str, object]]:
+        stored = self._stored()
+        due = [(kind, segment) for kind, segment in self.spoken if segment in stored]
+        self.spoken = [item for item in self.spoken if item not in due]
+        return [
+            {
+                "kind": kind,
+                "summary": "Prepárame el tema" if kind == "prepare_notes" else "Una petición",
+                "segment_ids": [segment],
+                "targets": [],
+                "pending_id": None,
+                "answer": None,
+            }
+            for kind, segment in due
+        ]
+
+    def _observer_ops(self) -> list[dict[str, object]]:
+        """Add the section once, then assign it every segment stored since the last call."""
+        new = [segment for segment in self._stored() if segment not in self.assigned]
         ops: list[dict[str, object]] = []
         if not self.observer.requests:
             ops.append({"op": "add_section", "section_id": "sec-1", "title": "La célula"})

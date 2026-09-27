@@ -132,6 +132,8 @@ The defaults live here and nowhere else:
 | `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |
 | `eval.speed` | `4.0`: how many times faster than recorded `eval run` replays each session |
 | `eval.regression_margin` | `0.05`: a score dropping more than this against the previous run is a regression |
+| `eval.request_detection` | unset: the request detector under test, replacing `observer.request_detection` for the run (`observer`, `wake_word`, `off`) |
+| `eval.notes_path` | `generate`: the notes scored come from "prepárame el tema" after the replay; `chat`: from the session's own requests |
 
 ## Evals (`studentassistant/evals/`)
 A small set of the student's real recorded sessions with reference notes, scored whenever prompts
@@ -140,21 +142,30 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
 - **Layout** (`cases.py`, `read_eval_set` / `read_case`, `EvalSetError`): `[eval] path` holds one
   directory per case -- `recording/` (a `serve --record` recording, `server/recording.py`) and
   `reference/notes.md` (required), `reference/pages/<capture_id>.md` and
-  `reference/sections.yaml` (`sections: [{title, segments: [<segment_id>]}]`), both optional --
-  plus `runs/`. Every reference is checked against its recording before anything runs. `eval run`
+  `reference/sections.yaml` (`sections: [{title, segments: [<segment_id>]}]`) and
+  `reference/requests.yaml` (`requests: [{kind, segments: [<segment_id>], note?}]`, `kind` one of
+  `observer.REQUEST_KINDS`), all optional -- plus `runs/`. Every reference is checked against its
+  recording before anything runs (an unknown segment or kind is an `EvalSetError`). `eval run`
   refuses a path inside the vault (or holding it) or inside the source checkout it runs from.
 - **Cost first** (`estimate.py`, `estimate_case`): calls and tokens per role from the recording
   alone (constants in the module), priced with `[llm.prices]` at the uncached input price; a
-  model with no price is named and left out of the total. The real cost is summed from the
+  model with no price is named and left out of the total. The request detector (`observer-requests`,
+  only when the run's detector is `observer`) is one call per final; with `notes_path = "chat"` the
+  editor is one incorporation/edit turn per editor-kind request of `requests.yaml` (without it,
+  one per `[editor] incorporate_batch_size` pages) instead of the one generation. The real cost is summed from the
   run vault's ledgers and reported next to it.
 - **Run** (`run.py`, `run_eval` / `run_case`): each case is wired as
   `tests/server/test_pipeline_e2e.py` wires the pipeline -- `create_app` with its lifespan over a
   fresh vault under `runs/<UTC time>/<case>/vault` (no remote; index, devices, recordings also
   under the run directory), `replay` at `[eval] speed`, then `POST .../notes/generate` with
-  `confirm_over_cap` (the estimate was already confirmed) -- with the real Claude transport
+  `confirm_over_cap` (the estimate was already confirmed) -- or, with `[eval] notes_path =
+  "chat"`, no generation: the notes scored are those the session's requests built, once the
+  `AssistantRequestConsumer` queue has drained (`CHAT_TURNS_TIMEOUT_S`) -- with the real Claude transport
   (`evals.cli._eval_transport`, replaced in tests). What came out is read back through the vault
-  and the observer's loader and scored. `write_report` writes `report.md` (Spanish) and
-  `report.json` (`EvalReport`, computed scores included).
+  and the observer's loader and scored. `estimate.run_settings` applies `[eval]
+  request_detection` over `[observer]` for the estimate and the app. `write_report` writes
+  `report.md` (Spanish) and `report.json` (`EvalReport`, computed scores included, plus the run's
+  `request_detection` and `notes_path`).
 - **Rubric** (`scoring.py`; pure, deterministic, every score in [0, 1], higher is better). Text is
   compared normalized: `[[?x]]` becomes `x`; footnote references, anchors, link targets, Markdown
   markup and punctuation are dropped; accents folded; lower case; whitespace collapsed. *Content
@@ -173,16 +184,21 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
     content words in the session's transcript, its page transcriptions or the reference notes
     (content from nowhere lowers it). The report lists the dropped and unsupported units, whether
     the notes stayed a draft, and the validator's errors.
-  - *Global* per case: the mean of page character accuracy, section agreement, kept and
-    supported (those that exist; no notes counts kept and supported as 0).
+  - *Request detection*, when `requests.yaml` exists: the session's `assistant.request` events
+    (not typed ones) against the reference; a detected request matches a reference one of the
+    same kind sharing at least one segment, each matched once. Precision, recall and F1 overall
+    and per kind; the report lists the missed and spurious requests (summary and text).
+  - *Global* per case: the mean of page character accuracy, section agreement, request F1, kept
+    and supported (those that exist; no notes counts kept and supported as 0).
 - **Comparison** (`compare.py`, `compare_reports` / `previous_report` / `render_comparison`;
   pure, no Claude). After a run, `run_eval` loads the most recent readable `report.json` among the
   sibling `runs/<UTC time>/` directories whose name sorts before its own; an unreadable one is
   named in a warning (log, CLI, `EvalReport.comparison_warnings`, the report) and skipped. Per
   case present in both runs and per score (page character/word accuracy, section
-  agreement/coverage, kept, supported, global): previous value, new value, delta (`None` when
+  agreement/coverage, request precision/recall/F1, kept, supported, global): previous value, new value, delta (`None` when
   either is missing); a drop larger than `[eval] regression_margin` is a regression. Cases only in
-  one run are listed as added/removed. It is stored as `EvalReport.comparison` (`RunComparison`,
+  one run are listed as added/removed. Each run's request detector and notes path are shown
+  (`None` for older reports, whose new fields are all optional). It is stored as `EvalReport.comparison` (`RunComparison`,
   optional so older reports still load) and rendered as the "Comparación con la ejecución
   anterior" section of `report.md`.
 

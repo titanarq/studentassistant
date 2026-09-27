@@ -21,7 +21,7 @@ from studentassistant.evals.compare import (
     read_report,
     render_comparison,
 )
-from studentassistant.evals.estimate import CaseEstimate, estimate_case
+from studentassistant.evals.estimate import CaseEstimate, estimate_case, run_settings
 from studentassistant.evals.run import CaseResult, run_directory, run_eval, write_report
 from studentassistant.install.apikey import export_api_key
 from studentassistant.llm import Transport, default_transport
@@ -117,6 +117,11 @@ def run_command(
             f"No hay casos en «{path}»: cada caso es una carpeta con recording/ y reference/."
         )
         raise typer.Exit(code=1)
+    effective = run_settings(settings)
+    notes = (
+        "los del chat de la sesión" if effective.eval.notes_path == "chat" else "prepárame el tema"
+    )
+    typer.echo(f"Detector de peticiones: {effective.observer.request_detection}; apuntes: {notes}.")
     _echo_estimate([estimate_case(c, settings) for c in cases])
     if not yes and not typer.confirm("¿Continuar con las llamadas reales a Claude?", default=False):
         typer.echo("Cancelado: no se ha llamado a Claude.")

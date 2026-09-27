@@ -25,6 +25,9 @@ SCORE_LABELS: dict[str, str] = {
     "page_word_accuracy": "páginas (palabras)",
     "section_agreement": "secciones (acuerdo)",
     "section_coverage": "secciones (cobertura)",
+    "request_precision": "peticiones (precisión)",
+    "request_recall": "peticiones (exhaustividad)",
+    "request_f1": "peticiones (F1)",
     "kept": "conservado",
     "supported": "con fuente",
     "score": "global",
@@ -60,6 +63,11 @@ class RunComparison(BaseModel):
     # Cases only in the new run, and only in the previous one.
     added: list[str] = []
     removed: list[str] = []
+    # The request detector and notes path of each run (`None`: an older report, not recorded).
+    previous_request_detection: str | None = None
+    request_detection: str | None = None
+    previous_notes_path: str | None = None
+    notes_path: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -69,12 +77,15 @@ class RunComparison(BaseModel):
 
 def case_scores(result: CaseResult) -> dict[str, float | None]:
     """Every compared score of one case, keyed as `SCORE_LABELS`."""
-    sections, notes = result.sections, result.notes
+    sections, notes, requests = result.sections, result.notes, result.requests
     return {
         "page_char_accuracy": result.page_char_accuracy,
         "page_word_accuracy": result.page_word_accuracy,
         "section_agreement": sections.pairwise_agreement if sections else None,
         "section_coverage": sections.coverage if sections else None,
+        "request_precision": requests.precision if requests else None,
+        "request_recall": requests.recall if requests else None,
+        "request_f1": requests.f1 if requests else None,
         "kept": notes.kept if notes else None,
         "supported": notes.supported if notes else None,
         "score": result.score,
@@ -112,6 +123,10 @@ def compare_reports(
         cases=cases,
         added=[name for name in now if name not in before],
         removed=[name for name in before if name not in now],
+        previous_request_detection=previous.request_detection,
+        request_detection=current.request_detection,
+        previous_notes_path=previous.notes_path,
+        notes_path=current.notes_path,
     )
 
 
@@ -181,6 +196,12 @@ def render_comparison(comparison: RunComparison | None, warnings: Sequence[str] 
         f"Frente a `{c.previous_run}`. Una bajada de más de {c.margin * 100:.1f} puntos es una"
         f" regresión; hay {c.regressions}."
     )
+    for label, before, now in (
+        ("Detector de peticiones", c.previous_request_detection, c.request_detection),
+        ("Apuntes", c.previous_notes_path, c.notes_path),
+    ):
+        if before is not None or now is not None:
+            lines.append(f"- {label}: `{before or '—'}` antes, `{now or '—'}` ahora")
     if c.added:
         lines.append("- Casos nuevos (sin valor anterior): " + ", ".join(c.added))
     if c.removed:
