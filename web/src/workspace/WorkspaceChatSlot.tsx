@@ -16,6 +16,7 @@ import { useWorkspace } from "./state";
 export default function WorkspaceChatSlot({
   onOpenSource,
   retryDelays,
+  quietMs,
   capturing = false,
 }: {
   onOpenSource: OpenSource;
@@ -23,10 +24,19 @@ export default function WorkspaceChatSlot({
   capturing?: boolean;
   /** The stream's reconnect backoff; tests pass short ones. */
   retryDelays?: readonly number[];
+  /** How long a waiting turn's silent stream is trusted before the history is re-read (tests). */
+  quietMs?: number;
 }) {
   const { subjectId, topicId, reloadNotes, doubtsChanged } = useWorkspace();
   const reload = useCallback((sections?: string[]) => void reloadNotes(sections), [reloadNotes]);
-  const chat = useWorkspaceChat({ subjectId, topicId, reloadNotes: reload, retryDelays, onDoubtsChanged: doubtsChanged });
+  const chat = useWorkspaceChat({
+    subjectId,
+    topicId,
+    reloadNotes: reload,
+    retryDelays,
+    quietMs,
+    onDoubtsChanged: doubtsChanged,
+  });
   const selection = useSelection();
   return (
     <ChatPanel

@@ -42,7 +42,10 @@ function voiceResult(turnId: string, requestId: string, extra: Record<string, un
 
 type Stream = ReturnType<typeof streamResponse>;
 
-function setup(routes: Record<string, Response | (() => Response | Promise<Response>)> = {}, { capturing = false } = {}) {
+function setup(
+  routes: Record<string, Response | (() => Response | Promise<Response>)> = {},
+  { capturing = false, quietMs }: { capturing?: boolean; quietMs?: number } = {},
+) {
   const streams: Stream[] = [];
   const reloadNotes = vi.fn(async () => undefined);
   const doubtsChanged = vi.fn();
@@ -67,7 +70,7 @@ function setup(routes: Record<string, Response | (() => Response | Promise<Respo
   };
   const view = (now: boolean) => (
     <WorkspaceContext.Provider value={state}>
-      <WorkspaceChatSlot onOpenSource={onOpenSource} retryDelays={[5]} capturing={now} />
+      <WorkspaceChatSlot onOpenSource={onOpenSource} retryDelays={[5]} quietMs={quietMs} capturing={now} />
     </WorkspaceContext.Provider>
   );
   const { rerender } = render(view(capturing));
@@ -109,7 +112,7 @@ it("shows the history, then follows a spoken request live until its result, and 
   expect(within(entry).getByText(/Por voz/)).toBeInTheDocument();
 
   act(() => stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" })));
-  expect(await within(entry).findByText("El asistente está pensando…")).toBeInTheDocument();
+  expect(await within(entry).findByText("Respondiendo…")).toBeInTheDocument();
 
   act(() => {
     stream.push(sseEvent("reply.delta", { turn_id: "turn-1", text: "He puesto ", attempt: 1 }));
@@ -172,7 +175,7 @@ it("keeps the order of several queued requests", async () => {
   expect(screen.getAllByText("En cola…")).toHaveLength(3);
 
   act(() => stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" })));
-  expect(await within(items[0]).findByText("El asistente está pensando…")).toBeInTheDocument();
+  expect(await within(items[0]).findByText("Respondiendo…")).toBeInTheDocument();
   expect(screen.getAllByText("En cola…")).toHaveLength(2);
 });
 
@@ -216,7 +219,7 @@ it("sends a typed message to the classifier with Enter, queues its requests and 
   expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo y aparta la 9" });
   expect(calls(CHAT, "POST")).toHaveLength(0);
   expect(input).toHaveValue("");
-  expect(await within(log()).findByText("Enviando…")).toBeInTheDocument();
+  expect(await within(log()).findByText("Respondiendo…")).toBeInTheDocument();
 
   await act(async () =>
     answer.resolve(
@@ -227,7 +230,7 @@ it("sends a typed message to the classifier with Enter, queues its requests and 
     ),
   );
   expect(await within(log()).findAllByText("En cola…")).toHaveLength(2);
-  expect(screen.queryByText("Enviando…")).toBeNull();
+  expect(screen.queryByText("Respondiendo…")).toBeNull();
   const [first, second] = within(log()).getAllByRole("listitem");
   expect(within(first).getByText("Escribiste")).toBeInTheDocument();
   expect(within(first).getByText("Pon un ejemplo y aparta la 9")).toBeInTheDocument();
@@ -955,7 +958,7 @@ it("announces only the latest turn, never the history", async () => {
     stream.push(sseEvent("reply.delta", { turn_id: "turn-1", text: "He puesto ", attempt: 1 }));
   });
   // A streamed fragment is not read out: the status is, until the reply is complete.
-  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: El asistente está pensando…$/));
+  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: Respondiendo…$/));
   act(() => stream.push(sseEvent("turn.result", voiceResult("turn-1", "req-1"))));
   await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: He puesto una tabla con las tres causas\.$/));
   expect(latest).not.toHaveTextContent("Añadido un ejemplo.");
@@ -1141,3 +1144,52 @@ describe("the Recursos selection as chips (#432)", () => {
     expect(JSON.parse(String((posts()[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo" });
   });
 });
+
+it("shows the sent message at once with «Respondiendo…», and reads the history when the stream stays silent (#452)", async () => {
+  const answer = deferred<Response>();
+  let answered = false;
+  const { opened, calls } = setup(
+    {
+      [`POST ${MESSAGES}`]: () => answer.promise,
+      [CHAT]: () =>
+        jsonResponse(
+          history(
+            answered
+              ? [turn({ time: new Date().toISOString(), turn_id: "turn-9", origin: "typed", message: "transcribe esta página", reply: "Ya está transcrita.", applied: false, summary: null })]
+              : [],
+          ),
+        ),
+    },
+    { quietMs: 40 },
+  );
+  await opened();
+  await waitFor(() => expect(calls(CHAT)).toHaveLength(1));
+
+  await type("transcribe esta página");
+  const input = screen.getByLabelText("Mensaje para el asistente");
+  // In the history at once, as the student's message, with the spinner; the input is empty.
+  const entry = within(log()).getByText("transcribe esta página").closest("li") as HTMLElement;
+  expect(within(entry).getByText("Escribiste")).toBeInTheDocument();
+  expect(within(entry).getByText("Respondiendo…")).toBeInTheDocument();
+  expect(within(entry).getByTestId("ws-chat-spinner")).toBeInTheDocument();
+  expect(input).toHaveValue("");
+
+  await act(async () => answer.resolve(posted([typedRequest("req-t1", "edit", "Transcribir", "transcribe esta página")])));
+  expect(await within(log()).findByText("En cola…")).toBeInTheDocument();
+  expect(within(log()).getByTestId("ws-chat-spinner")).toBeInTheDocument();
+
+  // The turn ran, but the stream said nothing: the history is read again and shows it.
+  answered = true;
+  expect(await within(log()).findByText("Ya está transcrita.", {}, { timeout: 3000 })).toBeInTheDocument();
+  expect(within(log()).queryByTestId("ws-chat-spinner")).toBeNull();
+  expect(within(log()).getAllByText("transcribe esta página")).toHaveLength(1);
+}, PAGE_TEST_TIMEOUT);
+
+it("keeps a message the server refused in the chat with a Spanish error, and the input free", async () => {
+  const { opened } = setup({ [`POST ${MESSAGES}`]: jsonResponse({ detail: "El asistente no está disponible." }, 503) });
+  await opened();
+  await type("hola");
+  expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo completar: El asistente no está disponible.");
+  expect(within(log()).getByText("hola")).toBeInTheDocument();
+  expect(within(log()).queryByTestId("ws-chat-spinner")).toBeNull();
+}, PAGE_TEST_TIMEOUT);

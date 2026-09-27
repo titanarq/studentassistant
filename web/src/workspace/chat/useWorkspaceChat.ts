@@ -4,7 +4,7 @@ import { describeFailure } from "../../desk/api";
 import { describeActionFailure } from "../../pending/doubts";
 import { confirmOverCap, fetchWorkspaceHistory, postMessage, type WorkspaceEvent } from "./api";
 import { connectWorkspaceStream } from "./stream";
-import { canRetry, type ChatEntry, INITIAL_CHAT, reduceChat } from "./turns";
+import { canRetry, type ChatEntry, INITIAL_CHAT, isOpen, reduceChat } from "./turns";
 
 export type Connection = "connecting" | "live" | "down";
 
@@ -19,8 +19,12 @@ export interface WorkspaceChat {
   historyFailure: string | null;
   /** The last line about an undo, in Spanish. */
   notice: string | null;
-  /** Posts a typed message, with the Recursos selection's source ids when there are any (#432). */
-  send: (message: string, selectedSourceIds?: readonly string[]) => void;
+  /**
+   * Posts a typed message, with the Recursos selection's source ids when there are any (#432).
+   * True when the message was taken (it is in `entries` from now on); false when it was not
+   * (empty, or another send still running), so the input keeps it.
+   */
+  send: (message: string, selectedSourceIds?: readonly string[]) => boolean;
   /** "Continuar igualmente" on a turn stopped at the cost cap. */
   retry: (key: string) => void;
   undo: () => void;
@@ -35,7 +39,17 @@ export interface WorkspaceChatOptions {
   retryDelays?: readonly number[];
   /** A doubt was asked or resolved: the page's pending-doubts counter is read again. */
   onDoubtsChanged?: () => void;
+  /**
+   * While a turn waits and the stream has said nothing for this long, the history is read again
+   * (then after twice as long, up to `QUIET_MAX_MS`), so an answer the stream missed still shows
+   * (#452). Tests pass short ones.
+   */
+  quietMs?: number;
 }
+
+/** Waiting turns and a silent stream: the history is re-read after this (then doubling). */
+export const QUIET_MS = 20_000;
+export const QUIET_MAX_MS = 60_000;
 
 const DOUBT_EVENTS = new Set<WorkspaceEvent["type"]>(["doubt.asked", "doubt.resolved", "doubts.auto_resolved"]);
 
@@ -48,7 +62,14 @@ const DOUBT_EVENTS = new Set<WorkspaceEvent["type"]>(["doubt.asked", "doubt.reso
  * stream reloads the document, with the sections the turn touched highlighted when the turn is
  * known; every doubt asked or resolved calls `onDoubtsChanged`.
  */
-export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays, onDoubtsChanged }: WorkspaceChatOptions): WorkspaceChat {
+export function useWorkspaceChat({
+  subjectId,
+  topicId,
+  reloadNotes,
+  retryDelays,
+  onDoubtsChanged,
+  quietMs = QUIET_MS,
+}: WorkspaceChatOptions): WorkspaceChat {
   const [state, dispatch] = useReducer(reduceChat, INITIAL_CHAT);
   const [connection, setConnection] = useState<Connection>("connecting");
   const [historyFailure, setHistoryFailure] = useState<string | null>(null);
@@ -85,9 +106,30 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
     }
   }, [subjectId, topicId]);
 
+  // A turn of this page still on its way (posted, queued or running): the stream owes its answer.
+  const waiting = state.entries.some((e) => isOpen(e) && e.status !== "sending");
+  /** Bumped by every stream event, so the quiet timer below starts again. */
+  const [heard, setHeard] = useState(0);
+  const quietStep = useRef(0);
+  useEffect(() => {
+    if (!waiting) {
+      quietStep.current = 0;
+      return;
+    }
+    const delay = Math.min(quietMs * 2 ** quietStep.current, Math.max(quietMs, QUIET_MAX_MS));
+    const timer = setTimeout(() => {
+      quietStep.current += 1;
+      void loadHistory();
+      setHeard((n) => n + 1);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [waiting, heard, quietMs, loadHistory]);
+
   useEffect(() => {
     let loaded = false;
     const onEvent = (event: WorkspaceEvent) => {
+      quietStep.current = 0;
+      setHeard((n) => n + 1);
       if (event.type === "turn.result" && event.outcome.notesChanged) {
         sections.current.set(event.turnId, event.outcome.changedSections);
       }
@@ -122,7 +164,7 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
   const send = useCallback(
     (message: string, selectedSourceIds: readonly string[] = []) => {
       const text = message.trim();
-      if (text === "" || running.current) return;
+      if (text === "" || running.current) return false;
       running.current = true;
       const key = `post${++counter.current}`;
       setBusy("send");
@@ -134,6 +176,7 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
         setBusy(null);
         dispatch({ type: "post.done", key, result });
       });
+      return true;
     },
     [subjectId, topicId],
   );

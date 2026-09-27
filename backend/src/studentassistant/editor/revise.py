@@ -169,6 +169,16 @@ TRIAGE_RECORD = "triage"
 kind `triage` (`record_triage_turn`); it changes no notes, so nothing undoes it."""
 MAX_REASKS = 2
 """How many times a change that fails the checks is sent back to the editor."""
+NO_CALL_NOTE = (
+    "El estudiante te ha pedido un cambio en los apuntes, pero tu respuesta no ha llamado a"
+    f" `{EDIT_TOOL}`, así que los apuntes no han cambiado. Si hay que cambiarlos, escribe otra vez"
+    f" una respuesta breve y llama a `{EDIT_TOOL}` con el cambio completo. Si no puedes o no"
+    " debes cambiar nada, contesta sin llamarla y di claramente que los apuntes no han cambiado"
+    " y por qué."
+)
+"""The one re-ask of an `edit` request answered without a tool call (#452)."""
+NO_CHANGE_WARNING = "Los apuntes no han cambiado: el asistente no ha aplicado ningún cambio."
+"""The warning of an `edit` request whose turn changed nothing, even after that re-ask (#452)."""
 MAX_MESSAGE_CHARS = 4000
 HISTORY_TURNS = 12
 """How many earlier turns of the conversation the editor is given."""
@@ -1062,8 +1072,14 @@ async def revise_notes(
     live: LiveSink | None = None,
     host: str | None = None,
     selected_sources: Sequence[str] | None = None,
+    expects_change: bool = False,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
+
+    `expects_change` is set for a request classified `edit` (#452): an answer without an
+    `apply_edits` call is then re-asked once (`NO_CALL_NOTE`), and a turn that still calls no
+    tool carries `NO_CHANGE_WARNING`, so a reply that only *says* it changed the notes never
+    passes silently. A `question` (and the old notes chat) keeps chat-only answers as they are.
 
     `selected_sources` is the student's Recursos selection of a typed message (#433),
     topic-relative ids in order (a PDF page as `<pdf>#page=K`): sent first within the image
@@ -1150,6 +1166,7 @@ async def revise_notes(
     edited: str | None = None
     applied: _Applied | None = None
     stale = False
+    nudged = False
     errors: list[str] = []
     reply = ""
     attempts = 0
@@ -1234,6 +1251,16 @@ async def revise_notes(
                 stale = True
                 base, notes = current, _seeded(current, assembled.topic_title)
                 errors = [f"No se ha aplicado: {NOTES_CHANGED_NOTE}."]
+        no_call = expects_change and value is None and not errors
+        if no_call and not nudged and attempt <= MAX_REASKS:
+            nudged = True
+            await conversation.record(
+                "validation", detail={"attempt": attempt, "errors": [NO_CALL_NOTE]}
+            )
+            nudge = {"role": "user", "content": [{"type": "text", "text": NO_CALL_NOTE}]}
+            messages = [*messages, response.assistant_turn(), nudge]
+            await conversation.record("user", message=nudge, model=model)
+            continue
         await conversation.record("validation", detail={"attempt": attempt, "errors": errors})
         if not errors or attempt > MAX_REASKS:
             break
@@ -1266,6 +1293,8 @@ async def revise_notes(
             " procedencia; los apuntes no han cambiado. Prueba a pedirlo de otra forma."
         )
         result = result.model_copy(update={"errors": errors, "warning": warning})
+    elif expects_change and value is None:
+        result = result.model_copy(update={"warning": NO_CHANGE_WARNING})
     elif value is not None and edited is not None and applied is not None:
         paths, commit, new_mode, added = applied
         changed = edited != notes

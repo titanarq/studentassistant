@@ -6,7 +6,7 @@
  * - A turn is keyed by its `turn_id`. A request shows as soon as it is known -- a spoken one on
  *   `request.detected`, a typed one when `POST .../workspace/messages` answers its requests (or on
  *   its own `request.detected`, whichever comes first) -- as "En cola…" by `request_id`, in
- *   arrival order, and becomes its turn on `turn.started`. A typed message shows "Enviando…"
+ *   arrival order, and becomes its turn on `turn.started`. A typed message shows «Respondiendo…»
  *   until the POST answers.
  * - "Continuar igualmente" past the cost cap (#351) confirms the stopped turn through `POST
  *   .../workspace/messages` `{confirm_over_cap, turn_id}`: the entry goes back to "En cola…"
@@ -168,6 +168,14 @@ function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
   };
 }
 
+/**
+ * An entry still on its way on this page (sent, queued, running). Request ids are only unique
+ * among these: typed ones restart in every session (`req-t1`…, #452), so a finished entry with
+ * the same id is an older request, never this one.
+ */
+export const isOpen = (entry: ChatEntry): boolean =>
+  !entry.fromHistory && (entry.status === "sending" || entry.status === "queued" || entry.status === "running");
+
 const doubtKey = (pendingId: string) => `doubt:${pendingId}`;
 const autoKey = (pendingIds: string[]) => `auto:${pendingIds.join(",")}`;
 
@@ -263,7 +271,7 @@ const append = (state: ChatState, entry: ChatEntry): ChatState => ({ ...state, e
 function attach(state: ChatState, turnId: string | null, requestId: string | null, create: Partial<ChatEntry>): [ChatState, ChatEntry] {
   const found =
     (turnId !== null ? state.entries.find((e) => e.turnId === turnId) : undefined) ??
-    (requestId !== null ? state.entries.find((e) => e.requestId === requestId && e.turnId === null) : undefined);
+    (requestId !== null ? state.entries.find((e) => e.requestId === requestId && e.turnId === null && isOpen(e)) : undefined);
   if (found !== undefined) {
     if (turnId === null || found.turnId === turnId) return [state, found];
     const bound = { ...found, turnId };
@@ -316,7 +324,8 @@ function openRun(state: ChatState): ChatEntry | undefined {
 function onTurnStarted(state: ChatState, event: Extract<WorkspaceEvent, { type: "turn.started" }>): ChatState {
   if (state.entries.some((e) => e.turnId === event.turnId)) return state;
   const kind = entryKind(event.kind);
-  const adoptable = event.requestId !== null ? state.entries.find((e) => e.requestId === event.requestId && e.turnId === null) : undefined;
+  const adoptable =
+    event.requestId !== null ? state.entries.find((e) => e.requestId === event.requestId && e.turnId === null && isOpen(e)) : undefined;
   if (adoptable !== undefined) {
     return update(state, adoptable.key, (e) => ({
       turnId: event.turnId,
@@ -354,7 +363,21 @@ function onTurnStarted(state: ChatState, event: Extract<WorkspaceEvent, { type: 
 function onEvent(state: ChatState, event: WorkspaceEvent): ChatState {
   switch (event.type) {
     case "request.detected": {
-      if (state.entries.some((e) => e.requestId === event.requestId)) return state;
+      if (state.entries.some((e) => e.requestId === event.requestId && isOpen(e))) return state;
+      const said = event.transcript?.text.trim() ?? "";
+      const sending =
+        event.origin === "typed"
+          ? state.entries.find((e) => e.status === "sending" && e.requestId === null && e.message !== null && e.message === said)
+          : undefined;
+      if (sending !== undefined) {
+        // The typed message this page is still posting: it becomes that request in place.
+        return update(state, sending.key, () => ({
+          requestId: event.requestId,
+          kind: entryKind(event.kind),
+          status: "queued",
+          requestSummary: event.summary || null,
+        }));
+      }
       return append(
         state,
         blank(`req:${event.requestId}`, {
@@ -458,7 +481,11 @@ function onEvent(state: ChatState, event: WorkspaceEvent): ChatState {
   }
 }
 
-/** The POST answered: its requests take the "Enviando…" entry's place (or bind the ones already shown). */
+/**
+ * The POST answered: its requests take the sending entry's place (or bind the ones already
+ * shown). The student's message never disappears: the entry stays unless another entry of this
+ * page already shows the same request, and a POST with no request keeps it, with a failure.
+ */
 function onPostDone(state: ChatState, key: string, result: PostOutcome): ChatState {
   const at = state.entries.findIndex((e) => e.key === key);
   if (at < 0) return state;
@@ -466,25 +493,41 @@ function onPostDone(state: ChatState, key: string, result: PostOutcome): ChatSta
   if (result.kind === "failed") {
     return update(state, key, () => ({ status: "failed", failure: result.detail }));
   }
-  const known = new Set(state.entries.flatMap((e) => (e.requestId !== null ? [e.requestId] : [])));
-  const fresh = result.requests
-    .filter((request) => !known.has(request.requestId))
-    // The first keeps the "Enviando…" entry's key, so its element stays.
-    .map((request, index) =>
-      blank(index === 0 ? sending.key : `req:${request.requestId}`, {
-        requestId: request.requestId,
-        origin: "typed",
-        kind: entryKind(request.kind),
-        status: "queued",
-        message: request.text || sending.message,
-        requestSummary: request.summary || null,
-        messageId: result.messageId,
-        time: sending.time,
-      }),
-    );
+  if (result.requests.length === 0) {
+    return update(state, key, () => ({ status: "failed", failure: "El asistente no ha recibido el mensaje. Vuelve a enviarlo." }));
+  }
   const ids = new Set(result.requests.map((request) => request.requestId));
-  const entries = state.entries.map((e) => (e.requestId !== null && ids.has(e.requestId) ? { ...e, messageId: result.messageId } : e));
-  entries.splice(at, 1, ...fresh);
+  // Requests another open entry already shows (announced on the stream before this answer).
+  const shown = new Set(
+    state.entries.flatMap((e) => (e.key !== key && e.requestId !== null && isOpen(e) && ids.has(e.requestId) ? [e.requestId] : [])),
+  );
+  const own = sending.requestId;
+  const fresh = result.requests.filter((request) => !shown.has(request.requestId) && request.requestId !== own);
+  const entries = state.entries.map((e) =>
+    e.key !== key && e.requestId !== null && shown.has(e.requestId) ? { ...e, messageId: result.messageId } : e,
+  );
+  const make = (request: (typeof fresh)[number], entryKey: string): ChatEntry =>
+    blank(entryKey, {
+      requestId: request.requestId,
+      origin: "typed",
+      kind: entryKind(request.kind),
+      status: "queued",
+      message: request.text || sending.message,
+      requestSummary: request.summary || null,
+      messageId: result.messageId,
+      time: sending.time,
+    });
+  let replacement: ChatEntry[];
+  if (own !== null) {
+    // Already bound by its `request.detected`: it stays, the other requests follow it.
+    replacement = [{ ...sending, messageId: result.messageId }, ...fresh.map((r) => make(r, `req:${r.requestId}`))];
+  } else if (fresh.length > 0) {
+    // The first keeps the sending entry's key, so its element stays.
+    replacement = fresh.map((r, index) => make(r, index === 0 ? sending.key : `req:${r.requestId}`));
+  } else {
+    replacement = [];
+  }
+  entries.splice(at, 1, ...replacement);
   return { ...state, entries };
 }
 

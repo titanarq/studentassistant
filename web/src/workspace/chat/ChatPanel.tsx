@@ -132,12 +132,22 @@ const RUNNING: Record<string, string> = {
   study: "Pasando a Estudiar…",
 };
 
+/** What the reply slot says until the reply arrives (#452: «Respondiendo…» from the moment it is sent). */
+export const ANSWERING = "Respondiendo…";
+
 function replyPlaceholder(entry: ChatEntry): string | null {
-  if (entry.status === "sending") return "Enviando…";
+  if (entry.status === "sending") return ANSWERING;
   if (entry.status === "queued") return "En cola…";
-  if (entry.status === "running") return RUNNING[entry.kind] ?? "El asistente está pensando…";
+  if (entry.status === "running") return RUNNING[entry.kind] ?? ANSWERING;
   return null;
 }
+
+/** A small spinner beside the reply while the turn is on its way (decorative: the text says it). */
+function Spinner() {
+  return <span className="ws-chat-spinner" aria-hidden="true" data-testid="ws-chat-spinner" />;
+}
+
+const onItsWay = (entry: ChatEntry): boolean => entry.status === "sending" || entry.status === "queued" || entry.status === "running";
 
 /** A source named in the chat, opening it in Recursos when it can. */
 function SourceButton({ sourceId, onOpenSource, text }: { sourceId: string; onOpenSource?: OpenSource; text?: string }) {
@@ -303,7 +313,10 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
       {(text !== null || entry.status !== "failed") && !(batch && text === null) && (
         <>
           {!batch && <p className="ws-chat-who">Asistente</p>}
-          <p className={entry.reply === "" ? "ws-chat-text ws-chat-waiting" : "ws-chat-text"}>{text}</p>
+          <p className={entry.reply === "" ? "ws-chat-text ws-chat-waiting" : "ws-chat-text"}>
+            {onItsWay(entry) && entry.reply === "" && <Spinner />}
+            {text}
+          </p>
         </>
       )}
       {entry.refs.length > 0 && (
@@ -500,7 +513,8 @@ export default function ChatPanel({
 
   const send = (text: string) => {
     if (!idle || text.trim() === "") return;
-    chat.send(text, selection?.selected.map((source) => source.id) ?? []);
+    // The input is emptied only once the message is in the history (it shows there at once).
+    if (!chat.send(text, selection?.selected.map((source) => source.id) ?? [])) return;
     setDraft("");
     log.follow();
   };

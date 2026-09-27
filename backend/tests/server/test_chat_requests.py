@@ -305,6 +305,76 @@ def test_typed_messages_without_a_session_go_to_a_review_session(
     assert turns[-1]["origin"] == "typed" and turns[-1]["message"] == "añade un ejemplo"
 
 
+EXAMPLE_BLOCK = "**Derivada**: el límite del cociente incremental, por ejemplo.[^p1]"
+
+
+def test_an_edit_answered_only_in_prose_is_re_asked_once_and_then_applied(
+    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+) -> None:
+    # #452: the editor said it had changed the notes but called no tool; one re-ask gets the call.
+    topic = make_revise_topic(tmp_vault)
+    _classify(fake, {"kind": "edit", "summary": "Añadir un ejemplo"})
+    fake.reply_text("He rehecho los apuntes con la página.")
+    fake.reply_tool(
+        EDIT_TOOL,
+        {
+            "summary": "Añado un ejemplo",
+            "ops": [
+                {"op": "replace_block", "section": "definicion", "block": 1, "text": EXAMPLE_BLOCK}
+            ],
+        },
+        text="Ahora sí: he añadido el ejemplo.",
+    )
+
+    response = client.post(f"{_base(topic)}/workspace/messages", json={"text": "añade un ejemplo"})
+    assert response.status_code == 202, response.text
+    _settle(client)
+
+    editor = [r for r in fake.requests if r.role == "editor"]
+    assert len(editor) == 2
+    nudge = editor[1].messages[-1]["content"]
+    assert any(EDIT_TOOL in str(block.get("text", "")) for block in nudge)
+    [turn] = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+    assert turn["applied"] is True and turn["reply"] == "Ahora sí: he añadido el ejemplo."
+    assert turn["warning"] is None
+    notes = read_notes(topic.vault, topic.subject, topic.topic)
+    assert notes is not None and "por ejemplo" in notes
+
+
+def test_an_edit_that_still_calls_no_tool_says_the_notes_did_not_change(
+    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+) -> None:
+    topic = make_revise_topic(tmp_vault)
+    before = read_notes(tmp_vault, topic.subject, topic.topic)
+    _classify(fake, {"kind": "edit", "summary": "Rehacer los apuntes"})
+    fake.reply_text("He rehecho los apuntes.")
+    fake.reply_text("¿Qué página quieres que use?")
+
+    client.post(f"{_base(topic)}/workspace/messages", json={"text": "rehaz los apuntes"})
+    _settle(client)
+
+    assert len([r for r in fake.requests if r.role == "editor"]) == 2
+    [turn] = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+    assert turn["applied"] is False and turn["reply"] == "¿Qué página quieres que use?"
+    assert turn["warning"] is not None and "no han cambiado" in turn["warning"]
+    assert read_notes(tmp_vault, topic.subject, topic.topic) == before
+
+
+def test_a_question_answered_in_prose_is_not_re_asked(
+    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+) -> None:
+    topic = make_revise_topic(tmp_vault)
+    _classify(fake, {"kind": "question", "summary": "Qué es la derivada"})
+    fake.reply_text("Es un límite.")
+
+    client.post(f"{_base(topic)}/workspace/messages", json={"text": "¿qué es la derivada?"})
+    _settle(client)
+
+    assert len([r for r in fake.requests if r.role == "editor"]) == 1
+    [turn] = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+    assert turn["reply"] == "Es un límite." and turn["warning"] is None
+
+
 def test_a_classifier_failure_keeps_the_typed_text_as_a_request(
     client: TestClient, fake: FakeClaude, tmp_vault: Vault
 ) -> None:
