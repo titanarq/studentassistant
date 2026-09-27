@@ -80,7 +80,7 @@ import com.titanarq.studentassistant.ui.backendFailureMessage
  * thumbnail strip shows each capture's upload state (a tap on a failed one retries it).
  *
  * After "Terminar y preparar apuntes" the screen shows the notes generation's progress instead
- * ([NotesProgressPanel]); [onOpenNotes] opens the topic's notes in the study desk.
+ * ([NotesProgressPanel]); [onOpenNotes] opens the topic's «Construir» screen (its workspace) in the study desk.
  */
 @Composable
 fun CaptureScreen(

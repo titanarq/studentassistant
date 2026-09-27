@@ -14,7 +14,8 @@ Thin capture client (ADR-0001), Spanish UI:
   sound; upload with retries; thumbnail strip (see "Still capture (#46)").
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
-- Study desk (#83): a topic's notes and the editor chat, the backend's web UI in a WebView.
+- Study desk (#83, #414): a topic's «Construir» (workspace) and «Estudiar» (study) screens, the
+  backend's web UI in a WebView.
 - Voice tutor (#248): «Preguntar al tutor» on a topic, a spoken or typed question answered from the
   notes and sources by the backend, read aloud with `TextToSpeech`.
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
@@ -133,17 +134,23 @@ Thin capture client (ADR-0001), Spanish UI:
 
 ## Study desk on the phone (#83)
 
-Package `desk`. The phone reads a topic's notes and talks to the editor through the backend's own
-web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes logic in the app
-(ADR-0001).
+Package `desk`. The phone works on and studies a topic through the backend's own web UI, the same
+two topic screens the web desk offers (web #368/#378): **Construir**, the workspace
+(`/workspace`: the document, its sources and the chat that drives the work), and **Estudiar**, the
+study screen (`/study`: study modes and generated material). No notes logic in the app (ADR-0001).
+The legacy notes page (`/notes`) is no longer opened from the phone (#414).
 
-- **«Apuntes»** on every topic card of the home screen opens `Route.DESK` for that
-  `DeskTopic(subjectId, topicId, topicName)` (kept by `MainActivity` across recreation).
-- **`StudyDesk.kt`** (pure, JVM-tested): `notesPageUrl(baseUrl, subjectId, topicId)` ->
-  `<base>/subjects/<s>/topics/<t>/notes` (each id percent-encoded as one segment, the base URL's
-  path/query dropped; null for a non-http(s) base), `backendOrigin(baseUrl)`,
+- **«Construir»** and **«Estudiar»** on every topic card of the home screen, below
+  «Empezar sesión/Continuar» and above «Preguntar al tutor», open `Route.DESK` for
+  `HomeViewModel.deskTarget(row, view)` -> `DeskTopic(subjectId, topicId, topicName, view)` with
+  `DeskView.WORKSPACE` or `DeskView.STUDY` (kept by `MainActivity` across recreation, the view by
+  name; the desk view model is keyed per topic and view).
+- **`StudyDesk.kt`** (pure, JVM-tested): `topicPageUrl(baseUrl, subjectId, topicId, view)` ->
+  `<base>/subjects/<s>/topics/<t>/<workspace|study>` (each id percent-encoded as one segment, the
+  base URL's path/query dropped; null for a non-http(s) base), with the shorthands
+  `workspacePageUrl` and `studyPageUrl`, `backendOrigin(baseUrl)`,
   `tokenCookie(token)` -> `sa_token=<token>; Path=/; HttpOnly; SameSite=Strict`,
-  `deskPage(baseUrl, token, topic)` -> `DeskPage(url, cookieUrl, cookie)` (its `toString()` hides
+  `deskPage(baseUrl, token, topic)` (the page of `topic.view`) -> `DeskPage(url, cookieUrl, cookie)` (its `toString()` hides
   the cookie) and `isSameOrigin(url, baseUrl)` (scheme, host and port).
 - **Authentication**: a page cannot send `Authorization: Bearer` on its own loads and `fetch`
   calls, so the backend also accepts the paired token from the `sa_token` cookie (server
@@ -157,7 +164,7 @@ web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes 
   `onLoadFailed(status, detail)` records a main-frame failure (`401` ->
   `DeskLoadFailure.Unauthorized`, «Vuelve a emparejarlo»; else `Failed("HTTP <n>" | detail)`);
   `retry()` («Reintentar», «Recargar») clears it and bumps `reload`.
-- **`StudyDeskScreen`**: a bar with «Volver», «Apuntes de <tema>» and «Recargar» over the
+- **`StudyDeskScreen`**: a bar with «Volver», «Construir: <tema>» or «Estudiar: <tema>» and «Recargar» over the
   WebView (JavaScript and DOM storage on, file/content access off). Links to another origin open
   in the system browser; system back goes back in the WebView history, then home. A progress bar
   shows while a page loads; a failure covers the page with its Spanish message.
@@ -177,7 +184,13 @@ web UI (the notes viewer with the editor chat beside it, web #52/#71): no notes 
   study desk, the topic page and the notes page are one column, and the notes page's sources
   panel and editor chat collapse behind "Fuentes" and "Chat con el editor"; nothing changes on
   the phone side.
-- Known gaps: no microphone inside the WebView (the voice tutor is native, #248); nothing offline.
+- The file chooser and the downloads (#259) work the same on both pages: «Añadir fuente» in the
+  workspace's Recursos picks a PDF, and the slides exports (`<a download>`) from Estudiar go to the
+  download manager. Estudiar has no Anki export link today (that lives on the legacy topic page's
+  materials panel); when it gets one it takes the same path.
+- Known gaps: no microphone inside the WebView. Voice requests come from the native capture session
+  («Empezar sesión/Continuar»), whose transcript feeds the same topic's workspace, and the voice
+  tutor is native too (#248); nothing offline.
 
 ## Voice tutor on the phone (#248)
 
@@ -276,7 +289,7 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   backend restarted) -> `Lost`, a refusal (401, 404, ...) -> `Unknown`; every state but `Running`
   stops polling. Polling pauses in the background (`onBackground`/`onForeground`) and stops when
   the student leaves: **Abrir apuntes** (done) / **Ir al escritorio de estudio** (otherwise) open
-  `CaptureViewModel.deskTopic` in the study desk (`CaptureScreen(onOpenNotes)`), **Volver al
+  `CaptureViewModel.deskTopic`, the topic's **Construir** screen (`DeskView.WORKSPACE`, #414), in the study desk (`CaptureScreen(onOpenNotes)`), **Volver al
   inicio** and back go home; each calls `closeNotes()` (clears the holder, phase `ENDED`). An end
   answered 404/409 (already ended) follows no generation; an end that is spooled keeps the flag in
   its `PendingEnd` (see "Offline spool") and the screen ends at once, as with Terminar.

@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.ui.backendFailureMessage
@@ -42,13 +43,17 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Subjects -> topics of the active backend; "Nuevo tema"; start or continue a session. */
+/**
+ * Subjects -> topics of the active backend; "Nuevo tema"; start or continue a session. Each topic
+ * also opens its «Construir» or «Estudiar» screen in the study desk ([onOpenDesk]) and the voice
+ * tutor.
+ */
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
     onSessionOpened: () -> Unit,
     onBackends: () -> Unit,
-    onReadNotes: (DeskTopic) -> Unit,
+    onOpenDesk: (DeskTopic) -> Unit,
     modifier: Modifier = Modifier,
     onAskTutor: (TutorTopic) -> Unit = {},
 ) {
@@ -85,7 +90,7 @@ fun HomeScreen(
                         topics = state.topics ?: Loadable.Loading,
                         session = state.session,
                         onOpen = viewModel::startOrContinue,
-                        onReadNotes = { row -> onReadNotes(DeskTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
+                        onOpenDesk = { row, view -> viewModel.deskTarget(row, view)?.let(onOpenDesk) },
                         onAskTutor = { row -> onAskTutor(TutorTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
                         onRetry = viewModel::refreshTopics,
                         modifier = Modifier.weight(1f, fill = false),
@@ -152,7 +157,7 @@ private fun TopicList(
     topics: Loadable<List<TopicRow>>,
     session: SessionAction,
     onOpen: (TopicRow) -> Unit,
-    onReadNotes: (TopicRow) -> Unit,
+    onOpenDesk: (TopicRow, DeskView) -> Unit,
     onAskTutor: (TopicRow) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
@@ -171,7 +176,8 @@ private fun TopicList(
                             opening = (session as? SessionAction.Opening)?.topicId == row.topic.topicId,
                             busy = session is SessionAction.Opening,
                             onOpen = { onOpen(row) },
-                            onReadNotes = { onReadNotes(row) },
+                            onBuild = { onOpenDesk(row, DeskView.WORKSPACE) },
+                            onStudy = { onOpenDesk(row, DeskView.STUDY) },
                             onAskTutor = { onAskTutor(row) },
                         )
                     }
@@ -186,7 +192,8 @@ private fun TopicCard(
     opening: Boolean,
     busy: Boolean,
     onOpen: () -> Unit,
-    onReadNotes: () -> Unit,
+    onBuild: () -> Unit,
+    onStudy: () -> Unit,
     onAskTutor: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -225,9 +232,10 @@ private fun TopicCard(
                 row.canContinue -> R.string.home_continue_session
                 else -> R.string.home_start_session
             }
+            Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
-                OutlinedButton(onClick = onReadNotes) { Text(stringResource(R.string.home_read_notes)) }
+                OutlinedButton(onClick = onBuild) { Text(stringResource(R.string.home_build)) }
+                OutlinedButton(onClick = onStudy) { Text(stringResource(R.string.home_study)) }
             }
             OutlinedButton(onClick = onAskTutor) { Text(stringResource(R.string.home_ask_tutor)) }
         }

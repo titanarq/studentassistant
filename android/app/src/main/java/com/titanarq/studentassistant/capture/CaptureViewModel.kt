@@ -6,6 +6,7 @@ import com.titanarq.studentassistant.Clock
 import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
 import com.titanarq.studentassistant.protocol.CaptureTrigger
@@ -231,8 +232,12 @@ class CaptureViewModel(
         connection.start()
     }
 
-    /** The topic whose notes "Abrir apuntes" opens in the study desk. */
-    val deskTopic: DeskTopic get() = DeskTopic(open.session.subjectId, open.session.topicId, open.topicName)
+    /**
+     * What "Abrir apuntes" / "Ir al escritorio de estudio" open in the study desk: the topic's
+     * «Construir» screen (its workspace, #414), where the session's material is worked into notes.
+     */
+    val deskTopic: DeskTopic
+        get() = DeskTopic(open.session.subjectId, open.session.topicId, open.topicName, DeskView.WORKSPACE)
 
     /**
      * Leaves the screen: socket and microphone stop, the session stays open. In

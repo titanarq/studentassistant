@@ -6,6 +6,8 @@ import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
 import com.titanarq.studentassistant.backend.FakeBackendClient
 import com.titanarq.studentassistant.backend.PairedBackend
+import com.titanarq.studentassistant.desk.DeskTopic
+import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
 import com.titanarq.studentassistant.protocol.Subject
@@ -152,6 +154,31 @@ class HomeViewModelTest {
         assertEquals(listOf(null, 2), rows.map { it.pendingCount })
         assertEquals(listOf(null, reconquista.digestExcerpt), rows.map { it.digestExcerpt })
         assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
+    }
+
+    @Test
+    fun `every topic offers Construir and Estudiar in the study desk`() {
+        val rows = (showHistoria().topics as Loadable.Loaded).value
+
+        assertEquals(
+            listOf(
+                DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE),
+                DeskTopic("historia", "reconquista", "La Reconquista", DeskView.WORKSPACE),
+            ),
+            rows.map { viewModel.deskTarget(it, DeskView.WORKSPACE) },
+        )
+        assertEquals(
+            listOf(
+                DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.STUDY),
+                DeskTopic("historia", "reconquista", "La Reconquista", DeskView.STUDY),
+            ),
+            rows.map { viewModel.deskTarget(it, DeskView.STUDY) },
+        )
+        // Opening either calls nothing on the backend: the web page does.
+        assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
+
+        viewModel.clearSubject()
+        assertNull(viewModel.deskTarget(rows.first(), DeskView.STUDY))
     }
 
     @Test

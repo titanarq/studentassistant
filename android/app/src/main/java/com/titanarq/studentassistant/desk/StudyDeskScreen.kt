@@ -48,8 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 
 /**
- * A topic's notes on the phone (#83): the backend's web notes page, with the editor chat beside
- * it, in a WebView authenticated by the paired token's cookie. Back goes back in the page history,
+ * A topic's Construir (workspace) or Estudiar (study) screen on the phone (#83, #414): the
+ * backend's web page in a WebView authenticated by the paired token's cookie. Back goes back in the page history,
  * then [onBack]. A file input opens the system document picker, and a download goes to the system
  * download manager with the paired token (#259).
  */
@@ -65,7 +65,13 @@ fun StudyDeskScreen(viewModel: StudyDeskViewModel, onBack: () -> Unit, modifier:
             ) {
                 TextButton(onClick = onBack) { Text(stringResource(R.string.back)) }
                 Text(
-                    stringResource(R.string.desk_title, viewModel.topic.topicName),
+                    stringResource(
+                        when (viewModel.topic.view) {
+                            DeskView.WORKSPACE -> R.string.desk_title_workspace
+                            DeskView.STUDY -> R.string.desk_title_study
+                        },
+                        viewModel.topic.topicName,
+                    ),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

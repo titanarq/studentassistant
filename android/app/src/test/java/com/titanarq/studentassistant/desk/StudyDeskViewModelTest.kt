@@ -50,12 +50,12 @@ class StudyDeskViewModelTest {
     }
 
     @Test
-    fun `the active backend's notes page is loaded with its token cookie`() {
+    fun `the active backend's Construir page is loaded with its token cookie`() {
         val (_, state) = ready()
 
         assertEquals("Portátil", state.backendName)
         assertEquals("http://192.168.1.20:8000", state.baseUrl)
-        assertEquals("http://192.168.1.20:8000/subjects/historia/topics/revolucion/notes", state.page.url)
+        assertEquals("http://192.168.1.20:8000/subjects/historia/topics/revolucion/workspace", state.page.url)
         assertEquals("http://192.168.1.20:8000/", state.page.cookieUrl)
         assertEquals("sa_token=sa_tok; Path=/; HttpOnly; SameSite=Strict", state.page.cookie)
         assertEquals(0, state.reload)
