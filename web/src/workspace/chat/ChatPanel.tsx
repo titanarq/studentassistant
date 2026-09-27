@@ -37,6 +37,15 @@ function MicIcon() {
   );
 }
 
+function UndoIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </svg>
+  );
+}
+
 /** What the student said for a spoken request: the short summary, with … for the raw stretch. */
 function SpokenRequest({ entry }: { entry: ChatEntry }) {
   const [open, setOpen] = useState(false);
@@ -253,7 +262,7 @@ function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOp
       )}
       {open && (
         <p className="ws-chat-hint">
-          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo o pulsa «Hablar»"}: «la 2», «pone “escrita”»…
+          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo o con el micrófono"}: «la 2», «pone “escrita”»…
         </p>
       )}
       {!open && doubt.answer !== null && <p className="ws-chat-answer">Respondiste: «{doubt.answer}»</p>}
@@ -414,12 +423,13 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
  * batches; setting pages aside or restoring them is one short line; a doubt asked in the chat is
  * highlighted, and answered by typing or saying it. "Ya está, quiero estudiar" (#335, #337) is
  * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
- * is a new line) with **Enviar** and "Deshacer el último cambio".
+ * is a new line) with, in one row, **Enviar** and the icon buttons for the microphone and "Deshacer
+ * el último cambio" (#458); no heading above the log (#458), the input's placeholder says what it is.
  *
  * The log is its own scroll area and follows the newest turn (#412) unless the student scrolled up
  * (then «Nuevos mensajes ↓» brings them back); only the latest turn is announced, through a polite
  * live region, not the whole growing log. While a capture runs (`capturing`) what the student says
- * reaches the chat through the capture; otherwise **Hablar** (#428) dictates one message into the
+ * reaches the chat through the capture; otherwise the microphone button (#428) dictates one message into the
  * input and sends it like a typed one (kept in the input, unsent, while the assistant is busy).
  * Starting a capture removes the button and stops its recognition. The sources selected in
  * **Recursos** (#432) show as chips above the input and go with each message sent.
@@ -534,16 +544,11 @@ export default function ChatPanel({
   const placeholder = chat.doubtAsked
     ? capturing
       ? "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…"
-      : "Responde a la duda (escribiendo o con «Hablar») o pide otra cosa…"
-    : capturing
-      ? "Escribe o habla: «pon un ejemplo aquí»…"
-      : "Escribe o pulsa «Hablar»: «pon un ejemplo aquí»…";
+      : "Responde a la duda (escribiendo o con el micrófono) o pide otra cosa…"
+    : "Chatea con el asistente…";
 
   return (
-    <section className="ws-chat" aria-labelledby="ws-chat-heading">
-      <h2 id="ws-chat-heading" className="ws-chat-heading">
-        Chat con el asistente
-      </h2>
+    <section className="ws-chat" aria-label="Chat con el asistente">
       {chat.connection === "down" && (
         <p className="ws-chat-status" role="status">
           Sin conexión en directo con el asistente; reintentando…
@@ -552,7 +557,7 @@ export default function ChatPanel({
       {chat.historyFailure !== null && <p role="alert">{chat.historyFailure}</p>}
       {chat.entries.length === 0 && chat.historyFailure === null && (
         <p className="ws-chat-hint">
-          {capturing ? "Pídele cambios al asistente hablando o escribiendo" : "Pídele cambios al asistente escribiendo o con «Hablar»"}: «pon esto como
+          {capturing ? "Pídele cambios al asistente hablando o escribiendo" : "Pídele cambios al asistente escribiendo o con el micrófono"}: «pon esto como
           definición», «haz una tabla con las tres causas»…
         </p>
       )}
@@ -637,9 +642,16 @@ export default function ChatPanel({
           <button type="submit" disabled={!idle || draft.trim() === ""}>
             Enviar
           </button>
-          {!capturing && <VoiceInputButton value={draft} onChange={setDraft} onFinal={dictated} />}
-          <button type="button" onClick={chat.undo} disabled={!idle || !chat.canUndo}>
-            Deshacer el último cambio
+          {!capturing && <VoiceInputButton icon value={draft} onChange={setDraft} onFinal={dictated} />}
+          <button
+            type="button"
+            className="ws-chat-icon-button"
+            aria-label="Deshacer el último cambio"
+            title="Deshacer el último cambio"
+            onClick={chat.undo}
+            disabled={!idle || !chat.canUndo}
+          >
+            <UndoIcon />
           </button>
         </div>
       </form>

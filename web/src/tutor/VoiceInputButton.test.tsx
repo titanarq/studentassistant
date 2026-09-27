@@ -16,7 +16,13 @@ function fakeListen() {
   return { listen, calls, stop };
 }
 
-function Harness(props: { listen?: VoiceQuestionStarter; voiceSupported?: boolean; onFinal?: (text: string) => void; disabled?: boolean }) {
+function Harness(props: {
+  listen?: VoiceQuestionStarter;
+  voiceSupported?: boolean;
+  onFinal?: (text: string) => void;
+  disabled?: boolean;
+  icon?: boolean;
+}) {
   const [draft, setDraft] = useState("");
   return (
     <form>
@@ -32,6 +38,7 @@ function Harness(props: { listen?: VoiceQuestionStarter; voiceSupported?: boolea
         disabled={props.disabled}
         listen={props.listen}
         voiceSupported={props.voiceSupported}
+        icon={props.icon}
       />
     </form>
   );
@@ -65,6 +72,19 @@ describe("VoiceInputButton", () => {
     expect(onFinal).toHaveBeenCalledTimes(1);
     expect(onFinal).toHaveBeenCalledWith("pon un ejemplo");
     expect(screen.getByRole("button", { name: "Dictar el mensaje por voz" })).toHaveAttribute("aria-pressed", "false");
+  }, PAGE_TEST_TIMEOUT);
+
+  it("shows a microphone icon with the same names and a tooltip when asked (#458)", () => {
+    const { listen } = fakeListen();
+    render(<Harness listen={listen} voiceSupported icon />);
+    const button = screen.getByRole("button", { name: "Dictar el mensaje por voz" });
+    expect(button).not.toHaveTextContent("Hablar");
+    expect(button.querySelector("svg")).not.toBeNull();
+    expect(button).toHaveAttribute("title", "Hablar: dictar el mensaje por voz");
+    fireEvent.click(button);
+    const listening = screen.getByRole("button", { name: "Escuchando… (pulsa para parar)" });
+    expect(listening).toHaveAttribute("aria-pressed", "true");
+    expect(listening).toHaveAttribute("title", "Escuchando… (pulsa para parar)");
   }, PAGE_TEST_TIMEOUT);
 
   it("stops the recognition when pressed again", () => {

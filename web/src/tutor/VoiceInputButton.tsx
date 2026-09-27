@@ -6,7 +6,8 @@
  * the recognition and keeps what was said so far. A problem shows one Spanish line after the
  * button, cleared on the next press or when the student types; an unsupported browser gets a
  * disabled button with a hint. Unmounting (or `disabled` turning true) stops a running recognition;
- * what it hears after unmounting is dropped.
+ * what it hears after unmounting is dropped. With `icon` (#458) the button shows a microphone
+ * instead of the word «Hablar», keeping the same accessible name, and a tooltip.
  */
 
 import { useEffect, useId, useRef, useState } from "react";
@@ -41,6 +42,20 @@ export interface VoiceInputButtonProps {
   listen?: VoiceQuestionStarter;
   /** Whether `listen` can work here; asked of the browser by default. */
   voiceSupported?: boolean;
+  /** A microphone icon instead of the text (#458). */
+  icon?: boolean;
+}
+
+const LISTENING = "Escuchando… (pulsa para parar)";
+
+function MicrophoneIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
+  );
 }
 
 export default function VoiceInputButton({
@@ -50,6 +65,7 @@ export default function VoiceInputButton({
   disabled = false,
   listen = listenForQuestion,
   voiceSupported: givenVoiceSupported,
+  icon = false,
 }: VoiceInputButtonProps) {
   const [voiceSupported] = useState(() => givenVoiceSupported ?? voiceQuestionSupported());
   const [listening, setListening] = useState(false);
@@ -122,15 +138,15 @@ export default function VoiceInputButton({
     <>
       <button
         type="button"
-        className="voice-input-button"
-        aria-label={listening ? undefined : "Dictar el mensaje por voz"}
+        className={icon ? "voice-input-button voice-input-icon" : "voice-input-button"}
+        aria-label={listening ? (icon ? LISTENING : undefined) : "Dictar el mensaje por voz"}
         aria-pressed={listening}
         aria-describedby={voiceSupported ? undefined : hint}
-        title={voiceSupported ? undefined : unsupportedHint}
+        title={voiceSupported ? (icon ? (listening ? LISTENING : "Hablar: dictar el mensaje por voz") : undefined) : unsupportedHint}
         disabled={!voiceSupported || (disabled && !listening)}
         onClick={listening ? stop : start}
       >
-        {listening ? "Escuchando… (pulsa para parar)" : "Hablar"}
+        {icon ? <MicrophoneIcon /> : listening ? LISTENING : "Hablar"}
       </button>
       {!voiceSupported ? (
         <span id={hint} className="voice-input-line">
