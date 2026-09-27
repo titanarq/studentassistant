@@ -10,7 +10,7 @@ afterEach(() => {
 // 2026-09-24 12:00 UTC: the same calendar day in every time zone the tests may run in.
 const SEP_24 = Date.UTC(2026, 8, 24, 12);
 
-it("lists every subject with its topics, opening each in Construir with Estudiar and Ficha beside it", async () => {
+it("lists every subject with its topics, each name leading to its card and Construir / Estudiar beside it", async () => {
   const fetchMock = stubApi({
     "/api/subjects": jsonResponse({
       subjects: [
@@ -39,17 +39,18 @@ it("lists every subject with its topics, opening each in Construir with Estudiar
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
   const historia = await screen.findByRole("region", { name: "Historia" });
   const link = within(historia).getByRole("link", { name: "Tema 4 — La Revolución Francesa" });
-  expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-francesa/workspace");
+  expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-francesa");
   const row = link.closest("li") as HTMLElement;
   expect(row).toHaveTextContent("Última sesión: 24 de septiembre de 2026 · 4 dudas por revisar");
+  expect(within(row).getByRole("link", { name: "Construir" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/workspace",
+  );
   expect(within(row).getByRole("link", { name: "Estudiar" })).toHaveAttribute(
     "href",
     "/subjects/historia/topics/revolucion-francesa/study",
   );
-  expect(within(row).getByRole("link", { name: "Ficha" })).toHaveAttribute(
-    "href",
-    "/subjects/historia/topics/revolucion-francesa",
-  );
+  expect(within(row).queryByRole("link", { name: "Ficha" })).not.toBeInTheDocument();
   const roman = within(historia).getByRole("link", { name: "El Imperio romano" });
   expect(roman.closest("li")).toHaveTextContent("Sesión abierta");
   expect(within(historia).getByRole("link", { name: "Sesión abierta" })).toHaveAttribute(
@@ -83,7 +84,7 @@ it("shows a topic without the 1.1 fields (older backend) with just its name", as
   render(<App />);
 
   const link = await screen.findByRole("link", { name: "Tema 1" });
-  expect(link.closest("li")).toHaveTextContent(/^Tema 1EstudiarFicha$/);
+  expect(link.closest("li")).toHaveTextContent(/^Tema 1ConstruirEstudiar$/);
 });
 
 it("shows the empty desk when there are no subjects yet", async () => {

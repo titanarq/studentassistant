@@ -116,11 +116,29 @@
   text-decoration: none;
 }
 
-/* Estudiar · Ficha (#368): the topic's other two screens, small, after the row's details. */
-.desk-topic-links {
+/* Construir · Estudiar (#368): the topic's two screens, explicit buttons after the row's details. */
+.desk-topic-modes {
   display: inline-flex;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  gap: var(--space-2);
   margin-left: var(--space-3);
+  vertical-align: middle;
+}
+
+.desk-topic-modes a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.9rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-m);
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.desk-topic-modes a:hover {
+  background: var(--accent-soft);
 }
 
 /* Creating (#368): "Nueva asignatura" below the notebooks, "Nuevo tema" in each one. */
@@ -153,15 +171,14 @@
 }
 
 @media (max-width: 48rem) {
-  .desk-topic-links {
+  .desk-topic-modes {
     display: flex;
-    margin-left: 0;
+    margin: var(--space-2) 0 0;
   }
 
-  .desk-topic-links a {
-    display: inline-flex;
-    align-items: center;
+  .desk-topic-modes a {
     min-height: 2.75rem;
+    padding-inline: var(--space-4);
   }
 
   .desk-topic-name {
