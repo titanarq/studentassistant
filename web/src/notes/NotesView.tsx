@@ -29,6 +29,11 @@ export interface NotesViewProps {
    */
   focusSections?: ReadonlySet<string>;
   /**
+   * A footnote label whose citing blocks are highlighted like `focusSections` (the study chat's
+   * source chips, #336): every top-level block that cites `[^label]` anywhere inside it.
+   */
+  focusLabel?: string | null;
+  /**
    * "¿Por qué pusiste esto?" on a block: the block, the anchor of its section, if any, and its
    * number in that section as the backend counts blocks (from 1, after the section heading; before
    * the first section, from the start of the notes, the `# title` included).
@@ -72,6 +77,23 @@ function citesIa(text: string): boolean {
   return footnoteRefs(text).includes(IA_LABEL);
 }
 
+/** Whether `block` cites `[^label]` in any of its texts. */
+function blockCites(block: Block, label: string): boolean {
+  switch (block.type) {
+    case "heading":
+    case "paragraph":
+      return footnoteRefs(block.text).includes(label);
+    case "table":
+      return [block.header, ...block.rows].flat().some((cell) => footnoteRefs(cell).includes(label));
+    case "list":
+      return block.items.some((item) => item.some((child) => blockCites(child, label)));
+    case "quote":
+      return block.blocks.some((child) => blockCites(child, label));
+    default:
+      return false;
+  }
+}
+
 function safeHref(href: string): string | null {
   return /^(https?:|mailto:|#)/i.test(href) ? href : null;
 }
@@ -82,6 +104,7 @@ export default function NotesView({
   activeLabel = null,
   changedSections,
   focusSections,
+  focusLabel,
   onAskWhy,
   askDisabled = false,
   resolveImage,
@@ -254,7 +277,8 @@ export default function NotesView({
     }
   };
 
-  const wrap = changedSections !== undefined || focusSections !== undefined || onAskWhy !== undefined;
+  const wrap =
+    changedSections !== undefined || focusSections !== undefined || focusLabel !== undefined || onAskWhy !== undefined;
   const headings: { level: number; anchor: string | null }[] = [];
   let number = 0;
   const body = tree.blocks.map((b, index) => {
@@ -269,7 +293,9 @@ export default function NotesView({
     }
     const section = [...headings].reverse().find((h) => h.anchor !== null)?.anchor ?? null;
     const changed = headings.some((h) => h.anchor !== null && changedSections?.has(h.anchor));
-    const focused = headings.some((h) => h.anchor !== null && focusSections?.has(h.anchor));
+    const focused =
+      headings.some((h) => h.anchor !== null && focusSections?.has(h.anchor)) ||
+      (typeof focusLabel === "string" && blockCites(b, focusLabel));
     const askable = onAskWhy !== undefined && b.type !== "heading" && b.type !== "rule";
     const classes = ["notes-block", changed && "notes-changed", focused && "notes-focus"].filter(Boolean).join(" ");
     return (

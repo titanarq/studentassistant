@@ -8,13 +8,28 @@
 import { type ChatRef, readRefs, type StreamHandlers, type StreamOutcome, streamTurn } from "../chat/api";
 import { type ReadResult, topicPath } from "../desk/api";
 
+/**
+ * How the tutor answers: `spoken` for the voice tutor (the default), `written` for the study
+ * screen's question chat (#334, #336): short Markdown citing sections as `[§anchor]` too.
+ */
+export type TutorStyle = "spoken" | "written";
+
+/** A section of the current notes a written answer cites (`[§anchor]`), with its heading's title. */
+export interface SectionRef {
+  anchor: string;
+  title: string;
+}
+
 /** What the page uses of the backend's `TutorAnswer`, the `result` event of a question. */
 export interface TutorAnswer {
+  style: TutorStyle;
   question: string;
-  /** The answer, with the notes' `[^label]` marks (see `spokenText`). */
+  /** The answer, with the notes' `[^label]` marks (see `spokenText`) and, written, `[§anchor]` ones. */
   reply: string;
   /** The notes' footnotes the answer cites, in order. */
   refs: ChatRef[];
+  /** The sections of the notes a written answer cites, in order; empty when spoken. */
+  sections: SectionRef[];
   warning: string | null;
 }
 
@@ -30,9 +45,26 @@ type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const optionalText = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
 
+export function readSections(value: unknown): SectionRef[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((section) =>
+    isObject(section) && typeof section.anchor === "string" && section.anchor !== ""
+      ? [{ anchor: section.anchor, title: optionalText(section.title) ?? section.anchor }]
+      : [],
+  );
+}
+
 export function readTutorAnswer(body: unknown): TutorAnswer | null {
   if (!isObject(body) || typeof body.reply !== "string" || typeof body.question !== "string") return null;
-  return { question: body.question, reply: body.reply, refs: readRefs(body.refs), warning: optionalText(body.warning) };
+  return {
+    // Turns recorded before #334 carry no style: they were spoken.
+    style: body.style === "written" ? "written" : "spoken",
+    question: body.question,
+    reply: body.reply,
+    refs: readRefs(body.refs),
+    sections: readSections(body.sections),
+    warning: optionalText(body.warning),
+  };
 }
 
 export function readTutorHistory(body: unknown): TutorTurn[] | null {
@@ -72,14 +104,23 @@ export async function fetchTutorHistory(subjectId: string, topicId: string): Pro
   return turns === null ? { kind: "error", status: response.status } : { kind: "ok", value: turns };
 }
 
-/** `POST .../tutor`: asks one question and reads the answer's stream. */
+/**
+ * `POST .../tutor`: asks one question and reads the answer's stream. Without `style` the body
+ * carries none and the backend answers `spoken`.
+ */
 export function askTutor(
   subjectId: string,
   topicId: string,
   question: string,
-  { confirmOverCap = false, ...handlers }: StreamHandlers & { confirmOverCap?: boolean } = {},
+  {
+    confirmOverCap = false,
+    style,
+    ...handlers
+  }: StreamHandlers & { confirmOverCap?: boolean; style?: TutorStyle } = {},
 ): Promise<TutorOutcome> {
-  return streamTurn(tutorPath(subjectId, topicId), { question, confirm_over_cap: confirmOverCap }, readTutorAnswer, handlers);
+  const body: Record<string, unknown> = { question, confirm_over_cap: confirmOverCap };
+  if (style !== undefined) body.style = style;
+  return streamTurn(tutorPath(subjectId, topicId), body, readTutorAnswer, handlers);
 }
 
 export function describeTutorFailure(result: Exclude<TutorOutcome, { kind: "ok" }>): string {

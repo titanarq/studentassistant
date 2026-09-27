@@ -10,7 +10,7 @@ import OptionContent from "./OptionContent";
 import OptionPanel, { OPTION_PANEL_ID } from "./OptionPanel";
 import { type OptionKey, STATE_LABELS, type StudyOption, studyOptions } from "./options";
 import ReviewsToday from "./ReviewsToday";
-import StudyChatSlot from "./StudyChatSlot";
+import StudyChat from "./chat/StudyChat";
 import "../notes/notes.css";
 import "./study.css";
 
@@ -81,7 +81,7 @@ function OptionButton({
 /**
  * `/subjects/<subject>/topics/<topic>/study`, "Estudiar" (#333, epic #332): the study screen of a
  * topic. Left, "Repasos para hoy" for the topic, the study options with their state and the
- * question chat slot; right, the document read-only with "Editar en Construir". Opening an option
+ * question chat (`StudyChat`, #336), whose citation chips scroll to and highlight a section or open a source; right, the document read-only with "Editar en Construir". Opening an option
  * slides `OptionPanel` over the right edge of the document with the existing page embedded, and
  * the sections the item shown is about are highlighted in the document and scrolled to. A
  * provenance footnote opens its source in the same place. Below 900 px the columns become one,
@@ -92,7 +92,12 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
   const [notes, setNotes] = useState<ReadResult<TopicNotes> | null>(null);
   const [materials, setMaterials] = useState<ReadResult<Materials> | null>(null);
   const [openKey, setOpenKey] = useState<OptionKey | null>(null);
-  const [source, setSource] = useState<{ label: string; definition: string | undefined } | null>(null);
+  const [source, setSource] = useState<{
+    label: string;
+    definition: string | undefined;
+    /** Opened by a chip of the question chat: the blocks citing it are highlighted too. */
+    fromChat?: boolean;
+  } | null>(null);
   const [focus, setFocus] = useState<string[]>([]);
   const [view, setView] = useState<StudyView>("study");
   const buttons = useRef(new Map<OptionKey, HTMLButtonElement>());
@@ -128,17 +133,27 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
   const anchorLabel = useCallback((anchor: string) => titles.get(anchor) ?? anchor, [titles]);
   const focusSections = useMemo(() => new Set(focus.filter((anchor) => titles.has(anchor))), [focus, titles]);
 
-  // The first highlighted section comes into view, at the top of the document.
-  useEffect(() => {
-    const first = focus.find((anchor) => titles.has(anchor));
-    if (first === undefined) return;
+  // Brings the element of the document with that `id` into view, at the top of the document.
+  const scrollDocumentTo = useCallback((id: string) => {
     const container = documentRef.current;
-    const target = [...(container?.querySelectorAll<HTMLElement>("[id]") ?? [])].find((e) => e.id === first);
+    const target = [...(container?.querySelectorAll<HTMLElement>("[id]") ?? [])].find((e) => e.id === id);
     // Only the document scrolls (never the page), so the options stay where they are.
     if (container === null || target === undefined || typeof container.scrollTo !== "function") return;
     const top = target.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
     container.scrollTo({ top: Math.max(0, top - 16), behavior: "smooth" });
-  }, [focus, titles]);
+  }, []);
+
+  // The first highlighted section comes into view.
+  useEffect(() => {
+    const first = focus.find((anchor) => titles.has(anchor));
+    if (first !== undefined) scrollDocumentTo(first);
+  }, [focus, titles, scrollDocumentTo]);
+
+  // A source chip of the chat: the first place the notes cite it comes into view.
+  const chatLabel = source?.fromChat === true ? source.label : null;
+  useEffect(() => {
+    if (chatLabel !== null) scrollDocumentTo(`fnref-${chatLabel}-1`);
+  }, [chatLabel, scrollDocumentTo]);
 
   // The focus goes back to the button that opened what was just closed, once it is shown again.
   useEffect(() => {
@@ -182,6 +197,23 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
     (label: string, element: HTMLElement) => {
       sourceTrigger.current = element;
       setSource({ label, definition: tree?.footnotes.find((f) => f.label === label)?.text });
+    },
+    [tree],
+  );
+
+  // A section chip of the chat: the document shows that section, highlighted.
+  const openChatSection = useCallback((anchor: string) => {
+    setSource(null);
+    setFocus([anchor]);
+    setView("document");
+  }, []);
+
+  // A source chip of the chat: its source opens as a footnote's does and its blocks are highlighted.
+  const openChatSource = useCallback(
+    (label: string, element: HTMLElement) => {
+      sourceTrigger.current = element;
+      setSource({ label, definition: tree?.footnotes.find((f) => f.label === label)?.text, fromChat: true });
+      setView("document");
     },
     [tree],
   );
@@ -245,7 +277,14 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
               </ul>
             )}
           </section>
-          <StudyChatSlot />
+          <StudyChat
+            subjectId={subjectId}
+            topicId={topicId}
+            sections={titles}
+            hasNotes={notes === null ? null : notes.kind !== "not-found"}
+            onOpenSection={openChatSection}
+            onOpenSource={openChatSource}
+          />
         </div>
         <section className="study-right" aria-label="Documento" data-panel={overlay ? "open" : undefined}>
           <div className="study-document" ref={documentRef}>
@@ -273,6 +312,7 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
                 onOpenSource={openSource}
                 activeLabel={source?.label ?? null}
                 focusSections={focusSections}
+                focusLabel={chatLabel}
               />
             )}
           </div>

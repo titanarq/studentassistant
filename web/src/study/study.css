@@ -150,17 +150,6 @@
   white-space: nowrap;
 }
 
-/* ---- The chat slot (#336) ---- */
-
-.study-chat {
-  margin: 0;
-}
-
-.study-chat-placeholder {
-  margin: 0;
-  color: var(--ink-muted);
-}
-
 /* ---- The document and the panel over its right edge ---- */
 
 .study-right {
