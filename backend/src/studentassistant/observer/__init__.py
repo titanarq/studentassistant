@@ -2,6 +2,7 @@
 
 from studentassistant.observer.assistant_request import (
     ASSISTANT_REQUEST_KIND,
+    CAPTURE_KINDS,
     REQUEST_KINDS,
     TARGET_KINDS,
     AskedDoubtRef,
@@ -10,6 +11,7 @@ from studentassistant.observer.assistant_request import (
     RequestKind,
     RequestSource,
     SourcesLookup,
+    base_source_id,
 )
 from studentassistant.observer.digest import (
     DigestOnEnd,
@@ -85,6 +87,8 @@ __all__ = [
     "ASSISTANT_REQUEST_KIND",
     "REQUEST_KINDS",
     "TARGET_KINDS",
+    "CAPTURE_KINDS",
+    "base_source_id",
     "CAPTURE_EVENT_KIND",
     "CAPTURE_ID_KEY",
     "COMPACTED_EVENT_KIND",

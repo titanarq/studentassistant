@@ -16,6 +16,14 @@ resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro" -- a
    `confirmed_style_rules` when the student confirms in the chat a rule proposed in an earlier turn.
    A turn with no tool call is a chat-only answer.
 
+**The student's selection** (#433): a typed workspace message carries what the student selected
+in Recursos (`selected_sources`). The selected pages are sent after the topic's sources, just
+before the message and marked as the current selection (`inputs.selection_input`: a captured
+page's transcription and always its image, a PDF page's text), and their images take the image
+budget first (`max_page_images`), so «reescribe esto con el texto de la captura» works on them.
+An empty selection (a typed message with nothing selected) tells the editor so: it asks which
+pages «esto» is instead of guessing. `None` (a spoken request, the old notes chat) says nothing.
+
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
 turn leaves. A failing change is sent back with the Spanish errors (a `tool_result` error), at most
@@ -95,7 +103,9 @@ from studentassistant.editor.inputs import (
     MAX_PAGE_IMAGES,
     DigestReader,
     EditorInput,
+    SelectionInput,
     assemble_input,
+    selection_input,
 )
 from studentassistant.editor.notes_format import (
     FidelityMode,
@@ -792,6 +802,16 @@ def _history_text(turns: list[ChatTurn]) -> str:
     return "\n".join(lines).rstrip()
 
 
+NO_SELECTION_NOTE = (
+    "(El estudiante no tiene ninguna fuente seleccionada en Recursos. Si su mensaje habla de"
+    " «esto», «esta captura» o «estas páginas» sin nombrarlas, no adivines cuáles son: pregúntale"
+    " de qué páginas habla; puede seleccionarlas en Recursos o decirte su número.)"
+)
+SELECTION_NOTE = (
+    "(El estudiante tiene seleccionadas en Recursos las fuentes de «Selección actual del"
+    " estudiante», más arriba: «esto» y «estas páginas» son esas.)"
+)
+
 SPOKEN_NOTE = (
     "(El estudiante lo ha dicho en voz alta mientras estudiaba: es la transcripción literal de lo"
     " que dijo, con sus posibles errores de reconocimiento.)"
@@ -799,9 +819,17 @@ SPOKEN_NOTE = (
 
 
 def _turn_text(
-    turns: list[ChatTurn], notes: str, mode: str, message: str, *, spoken: bool = False
+    turns: list[ChatTurn],
+    notes: str,
+    mode: str,
+    message: str,
+    *,
+    spoken: bool = False,
+    selected: Sequence[str] | None = None,
 ) -> str:
     heading = "## Nuevo mensaje del estudiante\n\n" + (f"{SPOKEN_NOTE}\n\n" if spoken else "")
+    if selected is not None:
+        heading += f"{SELECTION_NOTE if selected else NO_SELECTION_NOTE}\n\n"
     return (
         "## Conversación hasta ahora\n\n"
         f"{_history_text(turns)}\n\n"
@@ -1033,8 +1061,13 @@ async def revise_notes(
     turn_id: str | None = None,
     live: LiveSink | None = None,
     host: str | None = None,
+    selected_sources: Sequence[str] | None = None,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
+
+    `selected_sources` is the student's Recursos selection of a typed message (#433),
+    topic-relative ids in order (a PDF page as `<pdf>#page=K`): sent first within the image
+    budget and marked; `[]` tells the editor nothing is selected; `None` says nothing.
 
     `request` is the spoken request the turn answers (`message` is then its raw `text`): the turn
     is stored with `origin` `voice` and that reference. `turn_id` is stored as given.
@@ -1062,6 +1095,19 @@ async def revise_notes(
         lambda: _read_turns(vault, subject_slug, topic_slug, student_edits=True)
     )
     prompt = load_prompt(PROMPT_NAME)
+    selection: SelectionInput | None = None
+    if selected_sources:
+        selection = await asyncio.to_thread(
+            partial(
+                selection_input,
+                vault,
+                subject_slug,
+                topic_slug,
+                list(selected_sources),
+                max_page_images=max_page_images,
+                max_attachment_bytes=max_attachment_bytes,
+            )
+        )
     assembled: EditorInput = await asyncio.to_thread(
         assemble_input,
         vault,
@@ -1069,16 +1115,28 @@ async def revise_notes(
         topic_slug,
         prompt=prompt,
         digest=digest,
-        max_page_images=max_page_images,
-        max_attachment_bytes=max_attachment_bytes,
+        max_page_images=max_page_images - (len(selection.images) if selection else 0),
+        max_attachment_bytes=max_attachment_bytes
+        - (selection.attachment_bytes if selection else 0),
         instruction=REVISE_INSTRUCTION,
     )
     notes = _seeded(base, assembled.topic_title)
     turn = {
         "type": "text",
-        "text": _turn_text(turns, notes, assembled.fidelity_mode, text, spoken=request is not None),
+        "text": _turn_text(
+            turns,
+            notes,
+            assembled.fidelity_mode,
+            text,
+            spoken=request is not None,
+            selected=None if selected_sources is None else list(selected_sources),
+        ),
     }
-    messages: list[dict[str, Any]] = [{"role": "user", "content": [*assembled.content, turn]}]
+    # The selection goes after the cached prefix (the topic's sources), just before the turn.
+    chosen = selection.content if selection else []
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": [*assembled.content, *chosen, turn]}
+    ]
     tool = strict_tool(
         EDIT_TOOL,
         "Apply this turn's changes to the notes: edit ops, new footnotes, a summary, and the"
@@ -1119,11 +1177,26 @@ async def revise_notes(
                 "context",
                 model=client.model,
                 prompt_hash=prompt.hash,
-                detail={"reason": "revise", **assembled.summary()},
+                detail={
+                    "reason": "revise",
+                    **assembled.summary(),
+                    **(
+                        {
+                            "selected_sources": list(selected_sources or ()),
+                            "selected_images": selection.images if selection else [],
+                        }
+                        if selected_sources is not None
+                        else {}
+                    ),
+                },
             )
+            chosen_record = selection.record_content if selection else []
             await conversation.record(
                 "user",
-                message={"role": "user", "content": [*assembled.record_content, turn]},
+                message={
+                    "role": "user",
+                    "content": [*assembled.record_content, *chosen_record, turn],
+                },
                 model=client.model,
             )
         await conversation.record(

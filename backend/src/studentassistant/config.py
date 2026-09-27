@@ -583,6 +583,7 @@ DEFAULT_OBSERVER_CONTEXT_TAIL_SEGMENTS = 8
 DEFAULT_OBSERVER_REQUEST_DEBOUNCE_SECONDS = 1.5
 DEFAULT_OBSERVER_REQUEST_MAX_WAIT_SECONDS = 8.0
 DEFAULT_OBSERVER_REQUEST_WINDOW_SEGMENTS = 12
+DEFAULT_OBSERVER_MAX_SELECTED_SOURCES = 20
 DEFAULT_OBSERVER_STOP_TIMEOUT_SECONDS = 20.0
 
 RequestDetection = Literal["observer", "wake_word", "off"]
@@ -669,6 +670,9 @@ class ObserverSettings(BaseModel):
     request_max_wait_seconds: float = Field(default=DEFAULT_OBSERVER_REQUEST_MAX_WAIT_SECONDS, gt=0)
     # How many of the newest finals each request-detection call shows.
     request_window_segments: int = Field(default=DEFAULT_OBSERVER_REQUEST_WINDOW_SEGMENTS, ge=1)
+    # The most sources a workspace chat message may carry as its Recursos selection (#433,
+    # `selected_source_ids`); a longer selection is refused with a 422.
+    max_selected_sources: int = Field(default=DEFAULT_OBSERVER_MAX_SELECTED_SOURCES, ge=1)
     # At shutdown the observer loop and the request detector wait this long for their calls in
     # flight, then cancel them (#408); the systemd unit's `TimeoutStopSec` is well above it.
     stop_timeout_seconds: float = Field(default=DEFAULT_OBSERVER_STOP_TIMEOUT_SECONDS, gt=0)

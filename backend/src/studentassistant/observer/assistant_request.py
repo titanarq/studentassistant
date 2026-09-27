@@ -74,8 +74,10 @@ class AssistantRequest(BaseModel):
     span's finals in order (empty for a typed request); `t_start_ms`/`t_end_ms` its session times.
     `targets` are the topic-relative source ids an `incorporate`/`set_aside`/`restore` acts on;
     `pending_id` and `answer` the doubt a `doubt_answer` answers and what the student said (the
-    text, or a suggestion's number). `message_id` ties a typed request to its message. Events
-    written before #327 read unchanged.
+    text, or a suggestion's number). `message_id` ties a typed request to its message.
+    `selected_source_ids` are the sources the student had selected in Recursos when typing the
+    message (#433; topic-relative, a PDF page as `<pdf>#page=K`), in their order: the referent of
+    «esto» / «estas páginas». Events written before #327 or #433 read unchanged.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -92,6 +94,7 @@ class AssistantRequest(BaseModel):
     pending_id: str | None = Field(default=None, min_length=1, max_length=200)
     answer: str | None = Field(default=None, min_length=1, max_length=ANSWER_MAX_CHARS)
     message_id: str | None = Field(default=None, pattern=r"^msg-[0-9a-f]{8,32}$")
+    selected_source_ids: list[SourceId] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_span(self) -> AssistantRequest:
@@ -170,16 +173,46 @@ class AskedDoubtRef(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+PAGE_FRAGMENT = "#page="
+"""A PDF page's id is `<pdf source id>#page=K`."""
+
+
+def base_source_id(source_id: str) -> str:
+    """The stored source an id names: `sources/pdf/doc.pdf#page=3` -> `sources/pdf/doc.pdf`."""
+    return source_id.partition("#")[0]
+
+
 class RequestContext(BaseModel):
-    """The topic's sources and the doubt asked now: the uncached context of a detector call."""
+    """The topic's sources and the doubt asked now: the uncached context of a detector call.
+
+    `selected` is the student's Recursos selection of a typed message (#433), in order; `None`
+    for a spoken request, which has no selection (no block is rendered then).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     sources: list[RequestSource] = Field(default_factory=list)
     doubt: AskedDoubtRef | None = None
+    selected: list[str] | None = None
 
     def source(self, source_id: str) -> RequestSource | None:
-        return next((s for s in self.sources if s.source_id == source_id), None)
+        """The stored source `source_id` names (a PDF page's id names its PDF)."""
+        base = base_source_id(source_id)
+        return next((s for s in self.sources if s.source_id == base), None)
+
+    def is_selected(self, source_id: str) -> bool:
+        """Whether the selection holds `source_id`'s stored source (or one of its pages)."""
+        base = base_source_id(source_id)
+        return any(base_source_id(selected) == base for selected in self.selected or ())
+
+    def _selected_line(self, source_id: str) -> str:
+        source = self.source(source_id)
+        if source is None:  # the route checked it; a source removed meanwhile
+            return f"{source_id}: (no longer a source of the topic)"
+        _, _, page = source_id.partition(PAGE_FRAGMENT)
+        if page:
+            return f"{source_id}: page {page} of {source.line()}"
+        return source.line()
 
     def render(self) -> str:
         """The context block of a call (English frame, the student's Spanish names)."""
@@ -196,6 +229,13 @@ class RequestContext(BaseModel):
             lines.append(f"Doubt asked in the chat now: {doubt.pending_id} «{doubt.question}»")
             for number, suggestion in enumerate(doubt.suggestions, start=1):
                 lines.append(f"  suggestion {number}: {suggestion}")
+        if self.selected is not None:
+            lines.append("")
+            if self.selected:
+                lines.append("Selected by the student now (in Recursos), in order:")
+                lines += [f"- {self._selected_line(source_id)}" for source_id in self.selected]
+            else:
+                lines.append("Selected by the student now (in Recursos): nothing.")
         return "\n".join(lines)
 
 
@@ -208,6 +248,7 @@ __all__ = [
     "ANSWER_MAX_CHARS",
     "ASSISTANT_REQUEST_KIND",
     "CAPTURE_KINDS",
+    "PAGE_FRAGMENT",
     "REQUEST_KINDS",
     "SUMMARY_MAX_CHARS",
     "TARGET_KINDS",
@@ -220,4 +261,5 @@ __all__ = [
     "RequestSource",
     "SourceState",
     "SourcesLookup",
+    "base_source_id",
 ]

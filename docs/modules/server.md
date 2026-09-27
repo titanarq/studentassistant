@@ -643,8 +643,8 @@ Routes registered today:
   into the detector and the typed classifier: the topic's `editor.source_status` rows and the
   open doubt last asked in the chat (`editor.doubts.doubt_chat_turns`).
 - **Typed workspace messages** (`server/workspace_routes.py`, #327):
-  `POST /api/subjects/{subject_id}/topics/{topic_id}/workspace/messages` `{text}` (1..4000
-  characters) -> 202 `{message_id, requests: [AssistantRequest], classified}`. The text is
+  `POST /api/subjects/{subject_id}/topics/{topic_id}/workspace/messages` `{text,
+  selected_source_ids?}` (1..4000 characters) -> 202 `{message_id, requests: [AssistantRequest], classified}`. The text is
   classified by `observer.requests.MessageClassifier` (`app.state.message_classifier`, built with
   an `llm_transport` whatever `[observer] request_detection` or `enabled` say) and each request is
   persisted as `assistant.request` (origin `user`, `detector: "typed"`, id `req-t<n>`,
@@ -658,6 +658,24 @@ Routes registered today:
   request (its `message_id`, or a new one for a spoken request); a `turn_id` not waiting for a
   confirmation 404 (Spanish detail), a `turn_id` with `text` or without `confirm_over_cap` 422.
   `POST .../notes/chat` (and its own `confirm_over_cap`) stays for the old notes page.
+  **The Recursos selection** (#433): `selected_source_ids` (optional) is what the student has
+  selected in the Recursos tab (#432), in order: topic-relative source ids
+  (`sources/notes/page-003.jpg`; a PDF page as `<pdf>#page=K`, accepted and kept), at most
+  `[observer] max_selected_sources` (default 20), repeats dropped. It is checked by
+  `assistant_requests.check_selection` against `editor.source_status` (set-aside sources count):
+  too many ids, an id that is not a source of the topic, or a fragment other than a PDF's
+  `#page=K` is a 422 with a Spanish `detail`; with `confirm_over_cap` it is a 422. It goes to
+  `MessageClassifier.classify(selected=...)` (the referent of «esto», «estas páginas»; nothing
+  selected and nothing named: a `question` asking which pages), is kept on every request of the
+  message (`AssistantRequest.selected_source_ids`, persisted, so a confirmation past the cap and
+  a replay after a restart keep it) and echoed by `request.detected`. An `edit`/`question` turn
+  passes it to `editor.revise_notes(selected_sources=...)` (an empty list for a typed message
+  with nothing selected, so the editor asks instead of guessing; `None` for a spoken request).
+  An `incorporate` uses its `targets` as before. A `set_aside`/`restore` whose targets hold a
+  selected source that is not a captured page (a PDF, a web page) leaves it alone and says so in
+  the reply («… no se puede apartar: solo se apartan y recuperan páginas capturadas (apuntes o
+  libro).»), the rest applied. A body without the field is accepted as before; the classifier is
+  then told nothing is selected.
 - **The workspace stream** (`server/workspace.py` `WorkspaceHub`, `server/workspace_routes.py`,
   #315), for the study workspace's chat and document:
   `GET /api/subjects/{subject_id}/topics/{topic_id}/workspace/stream` -> `text/event-stream`
@@ -669,7 +687,9 @@ Routes registered today:
   persisted or replayed (a reconnecting client reloads `GET .../notes/chat` and `GET .../notes`).
   Each event is `event: <name>` plus one line of JSON (the list is open; later tasks add kinds):
   - `request.detected` `{request_id, kind, summary, origin: voice|typed, transcript: {session_id,
-    segment_ids, t_start_ms, t_end_ms, text}, targets?}`: a spoken or typed request was queued;
+    segment_ids, t_start_ms, t_end_ms, text}, targets?, selected_source_ids?}`: a spoken or typed
+    request was queued (`selected_source_ids`: the Recursos selection its typed message carried,
+    #433);
   - `turn.started` `{turn_id, request_id|null, origin: typed|voice, kind:
     revise|prepare_notes|incorporate|set_aside|restore|doubt_answer|study}` (`incorporate`: one
     incorporation, e.g. each batch of a batched "prepárame el tema", #326);

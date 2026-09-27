@@ -575,6 +575,106 @@ def _topic_block(
     return "\n".join(lines) + "\n"
 
 
+SELECTION_HEADING = "## Selección actual del estudiante (Recursos)"
+SELECTION_INTRO = (
+    "El estudiante tiene seleccionadas estas fuentes en la pestaña Recursos, en este orden, al"
+    " escribir su mensaje: son a lo que se refiere con «esto», «esta captura», «estas páginas» o"
+    " «el texto de estas», salvo que el mensaje nombre otra fuente. Cítalas como cualquier otra"
+    " fuente del catálogo."
+)
+SELECTION_SET_ASIDE = (
+    "(Está apartada: no está en el catálogo de fuentes citables; si el estudiante quiere usarla,"
+    " dile que la recupere antes.)"
+)
+SELECTION_ABOVE = "(Su contenido está entre las fuentes del tema, más arriba.)"
+
+
+@dataclass
+class SelectionInput:
+    """The student's Recursos selection laid out for one editor turn (`selection_input`)."""
+
+    content: list[dict[str, Any]]
+    record_content: list[dict[str, Any]]
+    images: list[str] = field(default_factory=list)
+    omitted: list[str] = field(default_factory=list)
+    attachment_bytes: int = 0
+
+
+def selection_input(
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    selected: list[str],
+    *,
+    max_page_images: int = MAX_PAGE_IMAGES,
+    max_attachment_bytes: int = MAX_ATTACHMENT_BYTES,
+) -> SelectionInput:
+    """The selected sources (#433), in order, marked as the student's current selection: each
+    captured page with its transcription and always its image, a PDF page with its text, a
+    pasted image with the image, anything else by name. Its images come out of the same
+    `max_page_images` / `max_attachment_bytes` budget first; the caller gives `assemble_input`
+    what is left. An id that is no longer a stored source is skipped. Blocking.
+    """
+    builder = _Builder(max_page_images, max_attachment_bytes)
+    prefix = topic_directory(vault, subject_slug, topic_slug).relative_to(vault.path).as_posix()
+    stored = {
+        _topic_relative(source, prefix): source
+        for source in list_sources(vault, subject_slug, topic_slug)
+    }
+    excluded = set_aside_ids(vault, subject_slug, topic_slug)
+    chosen = [stored[sid.partition("#")[0]] for sid in selected if sid.partition("#")[0] in stored]
+    book = (
+        get_book(vault, subject_slug, topic_slug) if any(s.kind == "book" for s in chosen) else None
+    )
+    builder.text(f"{SELECTION_HEADING}\n\n{SELECTION_INTRO}\n")
+    for source_id in selected:
+        base, _, fragment = source_id.partition("#")
+        source = stored.get(base)
+        if source is None:
+            continue
+        aside = f"\n{SELECTION_SET_ASIDE}" if base in excluded else ""
+        if source.kind in PAGE_KIND_TEXT:
+            number = _page_number(base)
+            text = page_citation_text(
+                source.kind, number, source.meta, book.title if book else None
+            )
+            transcription = _transcription(vault, source)
+            body = (
+                f"Transcripción de la página:\n\n{transcription.strip()}"
+                if transcription is not None and transcription.strip()
+                else "(Sin transcripción: lee la página en la imagen.)"
+            )
+            builder.text(f"### Seleccionada: {text} ({base}){aside}\n{body}\n")
+            image = _image_block(vault, source)
+            if image is not None:
+                builder.attachment(image[0], image[1], base, "image")
+        elif source.kind == "pdf" and fragment.startswith("page="):
+            meta = source.meta or {}
+            name = str(meta.get("original_name") or base)
+            page = _int(fragment.removeprefix("page="), 0)
+            page_text = read_pdf_page_text(vault, source.path, page) if page >= 1 else None
+            body = page_text.text if page_text is not None else SELECTION_ABOVE
+            label = f"PDF «{name}», página {original_page(meta, page)}"
+            builder.text(f"### Seleccionada: {label} ({source_id})\n{body}\n")
+        elif source.kind == "images":
+            builder.text(f"### Seleccionada: imagen pegada ({base}){aside}\n")
+            image = _image_block(vault, source)
+            if image is not None:
+                builder.attachment(image[0], image[1], base, "image")
+        else:
+            name = str(
+                (source.meta or {}).get("original_name") or (source.meta or {}).get("title") or base
+            )
+            builder.text(f"### Seleccionada: {name} ({base}){aside}\n{SELECTION_ABOVE}\n")
+    return SelectionInput(
+        content=builder.content,
+        record_content=builder.record,
+        images=builder.images,
+        omitted=builder.omitted,
+        attachment_bytes=max_attachment_bytes - builder.budget,
+    )
+
+
 def fidelity_mode_of(value: str) -> FidelityMode:
     """The topic's fidelity mode; anything unknown is the strict default (ADR-0005)."""
     return value if value in FIDELITY_MODES else DEFAULT_FIDELITY  # type: ignore[return-value]
