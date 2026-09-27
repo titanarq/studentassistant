@@ -39,7 +39,7 @@ function voiceResult(turnId: string, requestId: string, extra: Record<string, un
 
 type Stream = ReturnType<typeof streamResponse>;
 
-function setup(routes: Record<string, Response | (() => Response | Promise<Response>)> = {}) {
+function setup(routes: Record<string, Response | (() => Response | Promise<Response>)> = {}, { capturing = false } = {}) {
   const streams: Stream[] = [];
   const reloadNotes = vi.fn(async () => undefined);
   const doubtsChanged = vi.fn();
@@ -62,18 +62,20 @@ function setup(routes: Record<string, Response | (() => Response | Promise<Respo
     doubtsKey: 0,
     doubtsChanged,
   };
-  render(
+  const view = (now: boolean) => (
     <WorkspaceContext.Provider value={state}>
-      <WorkspaceChatSlot onOpenSource={onOpenSource} retryDelays={[5]} />
-    </WorkspaceContext.Provider>,
+      <WorkspaceChatSlot onOpenSource={onOpenSource} retryDelays={[5]} capturing={now} />
+    </WorkspaceContext.Provider>
   );
+  const { rerender } = render(view(capturing));
+  const setCapturing = (now: boolean) => rerender(view(now));
   const opened = async (count = 1) => {
     await waitFor(() => expect(streams).toHaveLength(count));
     return streams[count - 1];
   };
   const calls = (path: string, method = "GET") =>
     fetchMock.mock.calls.filter(([input, init]) => input === path && ((init as RequestInit | undefined)?.method ?? "GET") === method);
-  return { streams, reloadNotes, doubtsChanged, onOpenSource, fetchMock, opened, calls };
+  return { streams, reloadNotes, doubtsChanged, onOpenSource, fetchMock, opened, calls, setCapturing };
 }
 
 const log = () => screen.getByRole("log", { name: "Conversación con el asistente" });
@@ -94,7 +96,8 @@ it("shows the history, then follows a spoken request live until its result, and 
   });
   expect(await screen.findByText("Pon un ejemplo")).toBeInTheDocument();
   expect(screen.getByText("Añadido un ejemplo.")).toBeInTheDocument();
-  expect(log()).toHaveAttribute("aria-live", "polite");
+  // The log itself is not a live region: only the latest turn is announced (#412).
+  expect(log()).toHaveAttribute("aria-live", "off");
 
   const stream = await opened();
   act(() => stream.push(detected("req-1", "Una tabla con las tres causas")));
@@ -465,7 +468,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   });
   const stream = await opened();
   const input = screen.getByLabelText("Mensaje para el asistente");
-  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
 
   act(() => stream.push(sseEvent("doubt.asked", ASKED)));
   const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
@@ -505,7 +508,7 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   expect(await within(answer).findByText("Pone «escrito».")).toBeInTheDocument();
   expect(await within(doubt).findByText("Respondida: Pone «escrito».")).toBeInTheDocument();
   expect(within(doubt).getByText("Duda resuelta")).toBeInTheDocument();
-  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
   expect(doubtsChanged).toHaveBeenCalledTimes(2);
 });
 
@@ -625,7 +628,7 @@ it("merges the new turn kinds of the history after a reconnect without duplicate
   // A live entry keeps the diff it received.
   expect(within(incorporated).getByRole("button", { name: "Ver los cambios" })).toBeInTheDocument();
   expect(screen.getByText("He resuelto 2 dudas con las fuentes.")).toHaveClass("ws-chat-line");
-  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(screen.getByLabelText("Mensaje para el asistente")).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
 });
 
 it("drops the reply streamed so far on reply.restart", async () => {
@@ -860,4 +863,117 @@ it("shows no Ir a Estudiar button on other turns, nor on a study turn without a 
   expect(await screen.findByText("He puesto una tabla con las tres causas.")).toBeInTheDocument();
   expect(await screen.findByText("He cerrado la captura y marcado los apuntes v5 como versión de estudio.")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Ir a Estudiar" })).toBeNull();
+});
+
+// ---- #412: the log follows the newest turn, only the latest turn is announced ----
+
+/** Gives the log a layout (jsdom has none): its height, its content's height and a spied scrollTop. */
+function layOut(element: HTMLElement, { height = 200, content = 1000 } = {}) {
+  let top = 0;
+  const sets = vi.fn((value: number) => {
+    top = value;
+  });
+  Object.defineProperty(element, "clientHeight", { configurable: true, get: () => height });
+  Object.defineProperty(element, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(element, "scrollTop", { configurable: true, get: () => top, set: sets });
+  return {
+    sets,
+    grow: (by: number) => {
+      content += by;
+    },
+    scrollTo: (value: number) => {
+      top = value;
+      fireEvent.scroll(element);
+    },
+  };
+}
+
+it("scrolls the log to the newest turn as turns arrive and a reply streams", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  const area = layOut(log());
+  act(() => stream.push(detected("req-1", "Una tabla con las tres causas")));
+  await screen.findByText(/Pediste: Una tabla/);
+  await waitFor(() => expect(area.sets).toHaveBeenLastCalledWith(1000));
+
+  area.sets.mockClear();
+  area.grow(300);
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" }));
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-1", text: "He puesto ", attempt: 1 }));
+  });
+  await screen.findByText("He puesto");
+  await waitFor(() => expect(area.sets).toHaveBeenLastCalledWith(1300));
+  expect(screen.queryByRole("button", { name: "Nuevos mensajes ↓" })).toBeNull();
+});
+
+it("does not scroll when the student scrolled up, and offers «Nuevos mensajes ↓» instead", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  const area = layOut(log());
+  act(() => stream.push(detected("req-1", "Primera petición")));
+  await screen.findByText(/Primera petición/);
+  // The student reads further up.
+  area.scrollTo(100);
+  area.sets.mockClear();
+
+  area.grow(200);
+  act(() => stream.push(detected("req-2", "Segunda petición")));
+  await screen.findByText(/Segunda petición/);
+  expect(area.sets).not.toHaveBeenCalled();
+  const follow = await screen.findByRole("button", { name: "Nuevos mensajes ↓" });
+
+  fireEvent.click(follow);
+  expect(area.sets).toHaveBeenLastCalledWith(1200);
+  expect(screen.queryByRole("button", { name: "Nuevos mensajes ↓" })).toBeNull();
+
+  // Back at the end, the log follows again by itself.
+  area.sets.mockClear();
+  area.grow(100);
+  act(() => stream.push(detected("req-3", "Tercera petición")));
+  await screen.findByText(/Tercera petición/);
+  await waitFor(() => expect(area.sets).toHaveBeenLastCalledWith(1300));
+});
+
+it("announces only the latest turn, never the history", async () => {
+  const { opened } = setup({
+    [CHAT]: jsonResponse(history([turn({ turn_id: "turn-old", message: "Pon un ejemplo", reply: "Añadido un ejemplo." })], true)),
+  });
+  const latest = screen.getByTestId("ws-chat-latest");
+  expect(latest).toHaveAttribute("aria-live", "polite");
+  expect(await screen.findByText("Añadido un ejemplo.")).toBeInTheDocument();
+  expect(latest).toBeEmptyDOMElement();
+
+  const stream = await opened();
+  act(() => stream.push(detected("req-1", "Una tabla con las tres causas")));
+  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: En cola…$/));
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" }));
+    stream.push(sseEvent("reply.delta", { turn_id: "turn-1", text: "He puesto ", attempt: 1 }));
+  });
+  // A streamed fragment is not read out: the status is, until the reply is complete.
+  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: El asistente está pensando…$/));
+  act(() => stream.push(sseEvent("turn.result", voiceResult("turn-1", "req-1"))));
+  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: He puesto una tabla con las tres causas\.$/));
+  expect(latest).not.toHaveTextContent("Añadido un ejemplo.");
+});
+
+it("invites speaking only while a capture is running", async () => {
+  const { opened, setCapturing } = setup({}, { capturing: true });
+  await opened();
+  const input = screen.getByLabelText("Mensaje para el asistente");
+  expect(input).toHaveAttribute("placeholder", "Escribe o habla: «pon un ejemplo aquí»…");
+  expect(await screen.findByText(/hablando o escribiendo/)).toBeInTheDocument();
+
+  setCapturing(false);
+  expect(input).toHaveAttribute("placeholder", "Escribe: «pon un ejemplo aquí»…");
+  expect(screen.queryByText(/habla/)).toBeNull();
+});
+
+it("describes the … of a spoken request in Spanish", async () => {
+  const { opened } = setup();
+  const stream = await opened();
+  act(() => stream.push(detected("req-1", "Una tabla con las tres causas")));
+  const more = await screen.findByRole("button", { name: "Ver lo que dijiste" });
+  expect(more).toHaveAccessibleDescription("Muestra la transcripción de lo que dijiste y cuándo lo dijiste");
 });

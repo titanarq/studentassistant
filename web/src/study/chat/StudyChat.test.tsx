@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "../../test/mockApi";
-import StudyChat, { BUSY_SENTENCE, MAX_QUESTION_CHARS, STALE_SECTION, THINKING } from "./StudyChat";
+import StudyChat, { BUSY_SENTENCE, FOLLOW_BUTTON, MAX_QUESTION_CHARS, STALE_SECTION, THINKING } from "./StudyChat";
 
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const TUTOR = `${BASE}/tutor`;
@@ -78,7 +78,7 @@ async function askQuestion(text: string) {
   fireEvent.submit(input.closest("form") as HTMLFormElement);
 }
 
-it("shows the topic's earlier written questions, not the voice tutor's, as a polite log", async () => {
+it("shows the topic's earlier written questions, not the voice tutor's, as a log that is not announced", async () => {
   renderChat({
     [TUTOR]: jsonResponse({
       turns: [
@@ -90,7 +90,9 @@ it("shows the topic's earlier written questions, not the voice tutor's, as a pol
 
   expect(await within(log()).findByText("¿Qué causas tuvo?")).toBeInTheDocument();
   expect(screen.queryByText("¿Pregunta hablada?")).toBeNull();
-  expect(log()).toHaveAttribute("aria-live", "polite");
+  // The log itself is not a live region, and the history is not announced (#412).
+  expect(log()).toHaveAttribute("aria-live", "off");
+  expect(screen.getByTestId("study-chat-latest")).toHaveTextContent(/^$/);
   // Light Markdown, no raw HTML.
   expect(within(log()).getByText("población").tagName).toBe("STRONG");
 });
@@ -442,4 +444,76 @@ it("puts a suggested phrase in the input without sending it", async () => {
   suggest({ text: "hazme un quiz", id: 2 });
   await waitFor(() => expect(input).toHaveValue("hazme un quiz"));
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+});
+
+// ---- #412: the log follows the newest turn, only the latest turn is announced ----
+
+/** Gives the log a layout (jsdom has none): its height, its content's height and a spied scrollTop. */
+function layOut(element: HTMLElement, { height = 200, content = 1000 } = {}) {
+  let top = 0;
+  const sets = vi.fn((value: number) => {
+    top = value;
+  });
+  Object.defineProperty(element, "clientHeight", { configurable: true, get: () => height });
+  Object.defineProperty(element, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(element, "scrollTop", { configurable: true, get: () => top, set: sets });
+  return {
+    sets,
+    grow: (by: number) => {
+      content += by;
+    },
+    scrollTo: (value: number) => {
+      top = value;
+      fireEvent.scroll(element);
+    },
+  };
+}
+
+it("follows the streamed answer to the end of the log, and announces only the finished latest turn", async () => {
+  const stream = streamResponse();
+  renderChat({ [TUTOR]: jsonResponse({ turns: [turn()] }), [`POST ${TUTOR}`]: () => stream.response });
+  await within(log()).findByText("¿Qué causas tuvo?");
+  const latest = screen.getByTestId("study-chat-latest");
+  expect(latest).toHaveAttribute("aria-live", "polite");
+  expect(latest).toBeEmptyDOMElement();
+  const area = layOut(log());
+
+  await askQuestion("¿Y las consecuencias?");
+  await waitFor(() => expect(area.sets).toHaveBeenLastCalledWith(1000));
+  await waitFor(() => expect(latest).toHaveTextContent(`Asistente: ${THINKING}`));
+
+  area.sets.mockClear();
+  area.grow(250);
+  stream.push(sseEvent("reply.delta", { text: "Crecieron las ciudades", attempt: 1 }));
+  await within(log()).findByText(/Crecieron las ciudades/);
+  await waitFor(() => expect(area.sets).toHaveBeenLastCalledWith(1250));
+  // A fragment is not read out.
+  expect(latest).toHaveTextContent(`Asistente: ${THINKING}`);
+
+  stream.push(sseEvent("result", answer({ question: "¿Y las consecuencias?", reply: "Crecieron las ciudades [§causas].[^p2]" })));
+  stream.close();
+  await waitFor(() => expect(latest).toHaveTextContent(/^Asistente: Crecieron las ciudades\.$/));
+  expect(latest).not.toHaveTextContent("población");
+});
+
+it("does not scroll when the student scrolled up, and offers «Nuevos mensajes ↓» instead", async () => {
+  const stream = streamResponse();
+  renderChat({ [TUTOR]: jsonResponse({ turns: [turn()] }), [`POST ${TUTOR}`]: () => stream.response });
+  await within(log()).findByText("¿Qué causas tuvo?");
+  const area = layOut(log());
+  await askQuestion("¿Y las consecuencias?");
+  await within(log()).findByText(THINKING);
+  // The student reads the earlier answer.
+  area.scrollTo(0);
+  area.sets.mockClear();
+
+  area.grow(300);
+  stream.push(sseEvent("reply.delta", { text: "Crecieron las ciudades", attempt: 1 }));
+  await within(log()).findByText(/Crecieron las ciudades/);
+  expect(area.sets).not.toHaveBeenCalled();
+
+  fireEvent.click(await screen.findByRole("button", { name: FOLLOW_BUTTON }));
+  expect(area.sets).toHaveBeenLastCalledWith(1300);
+  expect(screen.queryByRole("button", { name: FOLLOW_BUTTON })).toBeNull();
+  stream.close();
 });

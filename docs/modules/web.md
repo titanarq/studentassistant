@@ -159,8 +159,8 @@
     server error stays in the open form, in Spanish as the form shows it (a web page the topic
     already had keeps the panel open with the form's notice).
   - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
-    #317; the notes page keeps `EditorChat`). "Chat con el asistente": an `aria-live="polite"`
-    `role="log"` list of turns, oldest first. A spoken request shows "Por voz · HH:MM" and
+    #317; the notes page keeps `EditorChat`). "Chat con el asistente": a `role="log"` list
+    of turns, oldest first (not itself a live region since #412, see below). A spoken request shows "Por voz · HH:MM" and
     "Pediste: <request_summary>" (the short line of what was asked; `summary` stays the applied
     change's) with a **…** button (`aria-expanded`, `aria-controls`; "Ver lo que dijiste" /
     "Ocultar lo que dijiste") that shows the raw `transcript.text` and its session time range
@@ -263,6 +263,30 @@
     - The request's rendering is one switch on the entry's origin (`Request` in `ChatPanel.tsx`:
       voice, typed, or `system` for what the assistant does on its own), the reply's on its kind
       (`Reply`, `DoubtEntry`).
+    - **Input on screen, log following the newest turn (#412).** On a wide screen at least 40rem
+      tall (`workspace.css`, `min-width: 56.3125rem and min-height: 40rem`) the page is one
+      viewport high: the header on top, each column scrolling inside its share. On the left the
+      tabs' panel (`.workspace-sources`: camera preview, controls, transcript, photos) shrinks and
+      scrolls, and the chat below keeps at least 18rem with its form pinned at the bottom; the
+      capture preview is capped at 32vh and the transcript at 20vh there, scoped to `.workspace`
+      so `/capture` is unchanged. The log (`.ws-chat-log`) is its own scroll area (60vh at most
+      outside that layout) and follows the newest turn through `src/chat/useFollowLog.ts`
+      (`useFollowLog(content) -> {ref, onScroll, unseen, follow}`: on every change of `content` --
+      a turn added, its status or its streamed reply grown -- it sets `scrollTop` to the end,
+      unless the student scrolled more than 48px up; then **Nuevos mensajes ↓** shows until they
+      come back to the end or press it; sending a message follows again). Only the latest turn is
+      announced: the log is `aria-live="off"`, and a visually hidden `aria-live="polite"` region
+      (`data-testid="ws-chat-latest"`, `latestLine(entry)`) says "Asistente: <status>" while a
+      turn is sent, queued or running (a whole-topic run: its running batch) and "Asistente:
+      <reply>" once it is done, never a streamed fragment, never a turn read from the history
+      (only turns seen on their way on this page, and a doubt asked in the chat). The **…** of a
+      spoken request has a `title` and an `aria-describedby` text ("Muestra la transcripción de lo
+      que dijiste y cuándo lo dijiste"). `WorkspaceChatSlot` takes `capturing` (the page's
+      Captura state) and passes it to `ChatPanel`: the placeholder says "Escribe o habla: «pon un
+      ejemplo aquí»…" only while a capture runs, else "Escribe: «pon un ejemplo aquí»…" (a doubt:
+      "Responde a la duda (escribiendo o de viva voz) o pide otra cosa…" / "Responde a la duda o
+      escribe otra cosa…"), and so do the empty-chat hint and a doubt's hint: the panel has no
+      microphone of its own.
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
     **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
@@ -366,7 +390,7 @@
     `sin_generar` "Sin generar" (also an option the answer does not list).
   - Left, bottom: the question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
     documento" that answers questions about the document and **never edits the notes** (the only
-    requests it sends are `GET` and `POST .../tutor`). Its `log` (`aria-live="polite"`) shows the
+    requests it sends are `GET` and `POST .../tutor`). Its `log` (a scroll area, `aria-live="off"`, #412) shows the
     topic's earlier **written** turns of `GET .../tutor` (the voice tutor's spoken ones are left
     out), then the fixed line "Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve
     a Construir." (a link to `.../workspace`) and a text input ("Pregunta sobre el documento…",
@@ -384,6 +408,12 @@
     "Continuar igualmente" (the same question with `confirm_over_cap`); another question of the
     topic running (409) "Espera a que termine la respuesta anterior."; no notes (409) "Todavía
     no hay apuntes: constrúyelos en Construir."; anything else the backend's Spanish `detail`.
+    Since #412 the log is its own scroll area (55vh at most) and follows the newest turn as the
+    answer streams (`useFollowLog`, as the workspace chat; asking a question follows again),
+    unless the student scrolled up, then **Nuevos mensajes ↓**. A visually hidden
+    `aria-live="polite"` region (`data-testid="study-chat-latest"`) says "Asistente: Pensando…"
+    (or the `generation.started` text) while a question runs and "Asistente: <answer>" (without
+    its `[§…]`/`[^…]` marks) once it ended; the history is never announced.
   - **Generation turns** (#367, backend #366): a request such as «hazme un quiz» is detected by
     the backend, which generates the material on the same `POST .../tutor` stream. The chat reads
     it with `chat/api.ts`'s `askStudyChat` (`style: "written"`; `chat/api.ts`'s `streamTurn`
