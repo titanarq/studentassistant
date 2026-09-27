@@ -198,6 +198,13 @@
       "Respondida: <resolution>" (and "Respondiste: «…»" when the history knows the answer).
       While one is asked, the input's placeholder is "Responde a la duda o escribe otra cosa…".
       `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
+    - **"Ya está, quiero estudiar"** (a `study` request, #335, #337): "Pasando a Estudiar…"
+      while it runs, then the backend's one line («He cerrado la captura y marcado los apuntes v5
+      como versión de estudio.») and one link styled as a button, **Ir a Estudiar**, to the
+      turn's `action.path` (the study screen). Only a `turn.result` of kind `study` whose
+      `action` is `{kind: "go_study", path}` with an in-app path (`/...`) gets it; no other turn
+      shows any button of its own. These turns are not in the history, so the button does not
+      survive a reload (human decision). `study.marked` needs nothing in the chat.
     - The header's pending-doubts counter is read again on every `doubt.asked`,
       `doubt.resolved` and `doubts.auto_resolved` (`WorkspaceState.doubtsChanged`).
     - `chat/api.ts`: `fetchWorkspaceHistory` (`GET .../notes/chat` read with `turn_id`,
@@ -206,8 +213,9 @@
       events decoded, `doubt.asked`, `doubt.resolved`, `doubts.auto_resolved` and
       `incorporation.progress` included; unknown ones are `null`, the list is open),
       `readOutcome` (a `RevisionResult`, a `prepare_notes` `GenerationResult`, an
-      `IncorporationResult`, a `TriageTurn` or a `doubt_answer` `ResolutionResult`, as one
-      `TurnOutcome`; a triage one with its `targets`), `postMessage(s, t, text)` (`POST
+      `IncorporationResult`, a `TriageTurn`, a `doubt_answer` `ResolutionResult` or a `study`
+      `StudyTurn`, as one `TurnOutcome`; a triage one with its `targets`, a study one with its
+      `action`), `postMessage(s, t, text)` (`POST
       .../workspace/messages`, the typed messages) and `confirmOverCap(s, t, turnId)` (the same
       route with `{confirm_over_cap: true, turn_id}`, for "Continuar igualmente", #351).
     - `chat/sources.ts`: `sourceName(id)` («página 3», «página 83 del libro», else the Recursos
@@ -312,20 +320,32 @@
     is the visual editor; the raw Markdown mode stays for anything it cannot show.
 - **Study screen** (`/subjects/<s>/topics/<t>/study`, "Estudiar", `src/study/`, #333, epic #332):
   the second mode of a topic, beside the workspace (Construir). `ModeSwitch({subjectId, topicId,
-  current: "build" | "study"})` is the header switch **Construir · Estudiar** (a `nav` "Modo del
-  tema" with two links, the current one `aria-current="page"`), shown in the study header and
-  mounted in the workspace header; today it only navigates (ending the capture and labelling the
-  "versión de estudio" is #337). Two columns:
+  current: "build" | "study", navigate?})` is the header switch **Construir · Estudiar** (a `nav`
+  "Modo del tema" with two links, the current one `aria-current="page"`), shown in the study
+  header and mounted in the workspace header. **Construir** is a plain link to `.../workspace`
+  (the notes stay editable there). **Estudiar**, from Construir (#337), posts `POST .../study`
+  (#335, `study/api.ts` `switchToStudy`: the backend ends the topic's capture session -- a capture
+  page open on the workspace sees its session closed, #319 -- and labels the current notes
+  "versión de estudio"), showing "Pasando a Estudiar…" (`aria-disabled`, further clicks ignored)
+  and opening `.../study` only on success (`navigate`, `window.location.assign` by default). `409
+  notes_busy` says "Se están preparando los apuntes; espera a que terminen." and anything else
+  (no notes, unreachable backend) the backend's Spanish `detail` or a Spanish fallback, below
+  the switch (`role="alert"`); nothing navigates then and there is no confirmation dialog. From
+  the study screen Estudiar posts nothing. The header also names the study version from `GET
+  .../study` (`fetchStudyState`): "Apuntes vN · versión de estudio" and, when `study_current` is
+  false, "Has cambiado los apuntes después de la versión de estudio (vN)." (informative only);
+  nothing when no version was marked yet. Two columns:
   - Left, top: "Repasos para hoy" (`ReviewsToday`) -- this topic's entry of `GET
     /api/practice/summary` (`desk/practiceSummary.ts`): "N para repasar · M nuevas" with
     "Repasar ahora" (opens **Tarjetas de memoria**), else "Nada que repasar hoy." with
     "Próximo repaso: <fecha>." when there is one.
-  - Left, middle: the study options (`options.ts`, `studyOptions(materials)`) in the order
+  - Left, middle: the study options (`options.ts`, `studyOptions(studyState)`) in the order
     **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`), **Examen**
     (its `questions`), **Quiz** (kind `quiz`), **Tarjetas de memoria** (the practice queue, kind
-    `flashcards`); each a button with `aria-expanded` and a text badge of the kind's state from
-    `GET .../generated`: "Listo", "Desactualizado" (its `stale_reason` as `title`) or "Sin
-    generar".
+    `flashcards`); each a button with `aria-expanded` and a text badge of its `options[].state`
+    from `GET .../study` (#337; no longer computed from `GET .../generated`): `listo` "Listo",
+    `desactualizado` "Desactualizado" (its `stale_reason` as `title`, else a generic reason) or
+    `sin_generar` "Sin generar" (also an option the answer does not list).
   - Left, bottom: the question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
     documento" that answers questions about the document and **never edits the notes** (the only
     requests it sends are `GET` and `POST .../tutor`). Its `log` (`aria-live="polite"`) shows the

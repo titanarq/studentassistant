@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { artifact, materialsBody } from "../materials/testMaterials";
 import { NOTES } from "../notes/testNotes";
 import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import StudyPage, { sectionTitles } from "./StudyPage";
@@ -10,19 +9,37 @@ const BASE = "/api/subjects/historia/topics/revolucion-industrial";
 const PAGE = "/subjects/historia/topics/revolucion-industrial";
 const BUILT_AT = "2026-09-25T18:00:00Z";
 
-const READY = materialsBody([
-  artifact("esquema", "Esquema", ["esquema.md"]),
-  artifact("quiz", "Quiz", ["quiz.json"]),
-  artifact("flashcards", "Flashcards", ["flashcards.apkg"]),
-  artifact("examen", "Ejercicios y examen", ["examen.md", "examen.yaml"]),
-]);
+const KINDS = { esquema: "esquema", ejercicios: "examen", examen: "examen", quiz: "quiz", tarjetas: "flashcards" };
 
-const MIXED = materialsBody([
-  artifact("esquema", "Esquema", ["esquema.md"]),
-  artifact("quiz", "Quiz", ["quiz.json"], { stale: true, stale_reason: "Los apuntes cambiaron en la v3." }),
-  artifact("flashcards", "Flashcards", ["flashcards.apkg"]),
-  artifact("examen", "Ejercicios y examen"),
-]);
+/** A `GET .../study` body: each option `listo` unless `states` says otherwise. */
+function studyBody(
+  states: Record<string, [string, string | null]> = {},
+  label: { version: number; current: boolean } | null = { version: 5, current: true },
+) {
+  return {
+    subject: "historia",
+    topic: "revolucion-industrial",
+    study_version:
+      label === null
+        ? null
+        : { version: label.version, tag: `historia/revolucion-industrial/apuntes-v${label.version}`, marked_at: BUILT_AT },
+    study_current: label?.current ?? false,
+    options: Object.entries(KINDS).map(([key, kind]) => {
+      const [state, reason] = states[key] ?? ["listo", null];
+      return { key, kind, state, stale_reason: reason, notes_version: state === "sin_generar" ? null : 2 };
+    }),
+    created_tag: false,
+    ended_session: null,
+  };
+}
+
+const READY = studyBody();
+
+const MIXED = studyBody({
+  quiz: ["desactualizado", "Los apuntes cambiaron en la v3."],
+  ejercicios: ["sin_generar", null],
+  examen: ["sin_generar", null],
+});
 
 function summary(topics: Record<string, unknown>[]) {
   return jsonResponse({ now: "2026-09-26T08:00:00Z", topics, totals: { due: 0, new: 0, topics: topics.length }, warnings: [] });
@@ -118,7 +135,7 @@ function routes(overrides: Record<string, Response | (() => Response)> = {}) {
       topics: [{ topic_id: "revolucion-industrial", subject_id: "historia", name: "La Revolución Industrial" }],
     }),
     [`${BASE}/notes`]: jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", text: NOTES, version: 5 }),
-    [`${BASE}/generated`]: jsonResponse(READY),
+    [`${BASE}/study`]: jsonResponse(READY),
     [`${BASE}/generated/files/esquema.md`]: new Response("# Esquema del tema\n\n- Contexto\n- Causas\n"),
     "/api/practice/summary": summary([TOPIC_PRACTICE]),
     [`${BASE}/practice`]: practice(),
@@ -191,6 +208,30 @@ it("shows the options, today's reviews, the question chat and the document in re
   expect(names).toEqual(["Esquema", "Ejercicios", "Examen", "Quiz", "Tarjetas de memoria"]);
 });
 
+it("names the versión de estudio in the header", async () => {
+  renderPage();
+
+  const header = screen.getByRole("banner");
+  expect(await within(header).findByText(/^Apuntes v5 ·/)).toHaveTextContent("Apuntes v5 · versión de estudio");
+  expect(within(header).queryByText(/Has cambiado los apuntes/)).toBeNull();
+});
+
+it("says the notes changed after the versión de estudio, with nothing to do about it", async () => {
+  renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({}, { version: 4, current: false })) });
+
+  const header = screen.getByRole("banner");
+  expect(await within(header).findByText("Has cambiado los apuntes después de la versión de estudio (v4).")).toBeInTheDocument();
+  expect(within(header).getByText(/^Apuntes v4 ·/)).toBeInTheDocument();
+  expect(within(header).queryByRole("button", { name: /versión/ })).toBeNull();
+});
+
+it("shows no study label when no version was marked yet", async () => {
+  renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({}, null)) });
+
+  await options();
+  expect(screen.queryByText(/versión de estudio/)).toBeNull();
+});
+
 it("says when the next review is when there is nothing to review today", async () => {
   renderPage({ "/api/practice/summary": summary([{ ...TOPIC_PRACTICE, due: 0, new: 0, next_due: "2026-09-28T08:00:00Z" }]) });
 
@@ -200,7 +241,7 @@ it("says when the next review is when there is nothing to review today", async (
 });
 
 it("shows each option's state as a text badge: Listo, Desactualizado with its reason, Sin generar", async () => {
-  renderPage({ [`${BASE}/generated`]: jsonResponse(MIXED) });
+  renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
 
   await options();
   expect(within(optionButton(/^Esquema/)).getByText("Listo")).toBeInTheDocument();
@@ -209,6 +250,25 @@ it("shows each option's state as a text badge: Listo, Desactualizado with its re
   expect(within(optionButton(/^Ejercicios/)).getByText("Sin generar")).toBeInTheDocument();
   expect(within(optionButton(/^Examen/)).getByText("Sin generar")).toBeInTheDocument();
   expect(within(optionButton(/^Tarjetas de memoria/)).getByText("Listo")).toBeInTheDocument();
+});
+
+it("reads the states from GET .../study, not from GET .../generated", async () => {
+  const { fetchMock } = renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({ tarjetas: ["desactualizado", null] })) });
+
+  await options();
+  // No reason from the backend: the generic one.
+  expect(within(optionButton(/^Tarjetas de memoria/)).getByText("Desactualizado")).toHaveAttribute(
+    "title",
+    "Los apuntes han cambiado desde que se generó.",
+  );
+  expect(fetchMock).toHaveBeenCalledWith(`${BASE}/study`);
+  expect(fetchMock).not.toHaveBeenCalledWith(`${BASE}/generated`);
+});
+
+it("says when the state of the material cannot be read", async () => {
+  renderPage({ [`${BASE}/study`]: jsonResponse({ detail: "boom" }, 503) });
+
+  expect(await screen.findByText(/No se pudo leer el estado del material/)).toBeInTheDocument();
 });
 
 it.each([
@@ -266,7 +326,7 @@ it("opens Tarjetas de memoria from Repasos para hoy, with the ratings and source
 });
 
 it("says an option is not generated yet and what to ask the chat, with no Generar button", async () => {
-  const { fetchMock } = renderPage({ [`${BASE}/generated`]: jsonResponse(MIXED) });
+  const { fetchMock } = renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
   await options();
   fireEvent.click(optionButton(/^Ejercicios/));
   const panel = screen.getByRole("region", { name: "Ejercicios" });
@@ -278,7 +338,7 @@ it("says an option is not generated yet and what to ask the chat, with no Genera
 });
 
 it("shows the reason and the chat hint above a stale option, with no generate form", async () => {
-  renderPage({ [`${BASE}/generated`]: jsonResponse(MIXED) });
+  renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
   await options();
   fireEvent.click(optionButton(/^Quiz/));
   const panel = screen.getByRole("region", { name: "Quiz" });
