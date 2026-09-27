@@ -16,6 +16,7 @@ Current version: **`protocol_version` 1.6**.
 | 1.4 | `hello.ack` and `notice` gain the optional `vocabulary_hints` (see "Vocabulary hints") |
 | 1.5 | new server message `stt.status`: the server-side STT provider's state (see "STT status") |
 | 1.6 | `rest.sessions.end.request` gains the optional `prepare_notes`, `rest.sessions.end.response` the optional `notes_generation`; new `GET .../notes/generation` (see "Notes generation") |
+| 1.6 (#440) | no bump, nothing a client reads is added: `prepare_notes` is accepted but ignored, `notes_generation` is no longer sent (it was optional) and `GET .../notes/generation` and `rest.topics.notes.generation.response` are removed (see "Notes generation") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -90,7 +91,6 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
 | `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
 | `POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages` | `rest.topics.web_pages.create.request` | `rest.topics.web_pages.create.response` |
-| `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` | -- | `rest.topics.notes.generation.response` |
 
 A new endpoint is not a version bump: its messages are new types, never new fields of an old
 one, and a backend that predates it answers 404, which a client reports as "update the server".
@@ -160,33 +160,21 @@ A session is about exactly one topic of one subject, fixed when it starts.
   `/ws/sessions/{session_id}`), `protocol_version` and `received_capture_ids`, the captures the
   backend already stored so a resuming client re-uploads only the rest.
 - `rest.sessions.end.request`: `client_time_ms`, `reason` (`button` | `command`) and, since
-  1.6, the optional `prepare_notes` (see "Notes generation").
-- `rest.sessions.end.response`: `session_id`, `status: "ended"`, `ended_at_ms` and, since 1.6
-  and only when the request said `prepare_notes: true`, `notes_generation`.
+  1.6, the optional `prepare_notes`, ignored since #440 (see "Notes generation").
+- `rest.sessions.end.response`: `session_id`, `status: "ended"`, `ended_at_ms`. (1.6 added the
+  optional `notes_generation`; no backend sends it since #440.)
 
 ### Notes generation
 
-Since 1.6. "Ya está, prepárame el tema" is one step: a client ends the session with
-`prepare_notes: true`. The backend ends it exactly as without the flag (the observer's last
-events and the topic digest are written first) and answers at once; then it generates the
-topic's notes (Claude Opus, minutes) in the background. `notes_generation` in the end response
-says `started`, `running` (a generation of that topic was already running; none is added) or
-`unavailable` (the backend does not use Claude).
-
-`GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` ->
-`rest.topics.notes.generation.response`, polled instead of holding a request open:
-`subject_id`, `topic_id`, `status` and, depending on it, `started_at_ms`, `finished_at_ms`,
-`version`, `draft`, `warning`, `detail`:
-
-| `status` | meaning |
-|---|---|
-| `idle` | no generation of the topic since the backend started |
-| `running` | one is running (`started_at_ms`) |
-| `done` | notes written: `version` (`apuntes-vN`; absent for a `draft` that did not pass the provenance validator), `draft`, optional Spanish `warning` |
-| `failed` | Claude refused or did not answer, or a server error; the notes are untouched; Spanish `detail` |
-| `needs_confirmation` | a cost cap is reached and nothing was spent; Spanish `detail`. The student confirms through the web's `POST .../notes/generate` with `confirm_over_cap: true` |
-
-The status lives in the backend's memory: after a restart every topic is `idle` again.
+Removed in #440 (the protocol stays 1.6). Protocol 1.6 let a client end a session with
+`prepare_notes: true` so the backend generated the topic's notes in the background, answered
+`notes_generation` (`started` | `running` | `unavailable`) in the end response and reported the
+generation through `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation`
+(`rest.topics.notes.generation.response`). No client used it after the web (#413) and Android
+(#431) stopped asking; the notes are prepared from the workspace chat ("prepárame el tema").
+Since #440 the backend still accepts `prepare_notes` in an end body, so an old client keeps
+working, but ignores it: the session ends normally, the response has no `notes_generation` and
+nothing is generated. The polling route answers 404.
 
 ### Capture upload (idempotent burst)
 

@@ -5,7 +5,6 @@ import com.titanarq.studentassistant.protocol.CaptureTrigger
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadStatus
 import com.titanarq.studentassistant.protocol.ClientKind
-import com.titanarq.studentassistant.protocol.NotesGenerationStart
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.ProtocolJson
@@ -265,12 +264,12 @@ class OkHttpBackendClientTest {
     }
 
     @Test
-    fun `the phone's end carries no prepare_notes and still reads a backend's notes_generation answer`() = runTest {
-        enqueue("""{"session_id":"s1","status":"ended","ended_at_ms":5,"notes_generation":"unavailable"}""")
+    fun `the phone's end carries no prepare_notes`() = runTest {
+        enqueue("""{"session_id":"s1","status":"ended","ended_at_ms":5}""")
 
         val result = client.endSession(backend, "s1", SessionEndRequest(4, SessionEndReason.BUTTON))
 
-        assertEquals(NotesGenerationStart.UNAVAILABLE, value(result).notesGeneration)
+        assertEquals(5L, value(result).endedAtMs)
         assertEquals(json("""{"client_time_ms":4,"reason":"button"}"""), json(taken().body.readUtf8()))
     }
 

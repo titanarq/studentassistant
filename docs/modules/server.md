@@ -96,15 +96,10 @@ Routes registered today:
     `received_capture_ids` lists the captures already stored for the session (the `capture_id`s
     of its `capture.stored` events, in log order; see the capture upload below), so a resuming
     client re-uploads only the rest.
-    Since 1.6 the end body may say `prepare_notes: true` ("ya está, prepárame el tema", #258):
-    the end runs exactly as without it (end hooks: observer flush, transcript drain, digest;
-    `end_session`; checkpoint and push) and answers at once; then the route starts
-    `editor.generate.generate_notes` for the session's topic in a background task
-    (`NotesGenerator.start_background`, the same per-topic lock as `POST .../notes/generate`).
-    The response adds `notes_generation`: `started`, `running` (a generation of the topic
-    already held the lock; nothing is duplicated) or `unavailable` (no `llm_transport`). Without
-    the flag the response has no `notes_generation`. The app's shutdown gives running background
-    generations a few seconds (`NotesGenerator.shutdown`), then cancels them.
+    The end body's `prepare_notes` (protocol 1.6, #258) is still accepted, so an old client
+    that sends it keeps working, but it is ignored since #440: ending a session never starts a
+    notes generation and the response never has `notes_generation`. The notes are prepared from
+    the workspace chat ("prepárame el tema", `assistant_requests.py`) or `POST .../notes/generate`.
   - Errors, as `{"detail": "...", "code"?: "..."}` (see "Error bodies" below): an unknown
     subject, topic or session is 404; another session active or unended (start, resume) is 409
     `session_open` with its id in `X-Open-Session-Id`; resuming or
@@ -408,17 +403,9 @@ Routes registered today:
   live-session sink for the doubts; a refused request is an `IncorporationError` with the Spanish
   message to show (more than the limit, a set-aside source: «La página N está apartada
   (<motivo>); recupérala antes si quieres incorporarla.»).
-- `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` (`notes_routes.py`,
-  protocol 1.6 `rest.topics.notes.generation.response`, #258): the topic's latest notes
-  generation since the backend started, background (an end with `prepare_notes`) or through
-  `POST .../notes/generate`, kept in memory by the `NotesGenerator` (`status(subject, topic)`).
-  `status` is `idle` (none; always so without an `llm_transport`), `running`, `done` (with
-  `version`, `draft` and an optional `warning` of the `GenerationResult`), `failed` (a Spanish
-  `detail`: Claude refused or did not answer, or a server error; the notes are untouched) or
-  `needs_confirmation` (a reached cost cap, nothing spent, `detail` the cost-cap sentence; the
-  student confirms through `POST .../notes/generate` with `confirm_over_cap`); `started_at_ms`
-  and `finished_at_ms` on the backend clock. An unknown topic 404, a vault that cannot be opened
-  503. Clients poll it instead of holding a request open while Opus writes.
+- `GET /api/subjects/{subject_id}/topics/{topic_id}/notes/generation` (protocol 1.6, #258) is
+  removed (#440): it only polled the background generation of an end with `prepare_notes`, which
+  no client asks for any more; the `NotesGenerator` no longer keeps a per-topic status.
 - **The doubts API** (`server/doubts_routes.py`, `doubts_router()`), web-only, not phone
   protocol, for the pending panel (#80): thin over `editor.doubts` (`docs/modules/editor.md`),
   over the vault and `GitSync` of the `SessionService`, host `SessionService.host` for the review

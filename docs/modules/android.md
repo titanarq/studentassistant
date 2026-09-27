@@ -289,7 +289,8 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   (`CaptureScreen(onHome)`). The `SessionHolder` keeps the session until then: leaving calls
   `closeEnded()`, which clears it. The former «Terminar y preparar apuntes» button (#272), its
   `NOTES` phase, `NotesProgress` / `NotesGenerationPoller` and `BackendClient.notesGeneration` are
-  gone; the protocol mirror (`SessionEndRequest.prepareNotes`, `NotesGenerationStatus`, ...) stays.
+  gone; the protocol mirror keeps `SessionEndRequest.prepareNotes` (never sent; the backend ignores it
+  since #440, which also removed `NotesGenerationStatus` and `SessionEndResponse.notesGeneration`).
 - **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
   transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
   (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes

@@ -7,10 +7,8 @@ active or unended, with code `session_open` -- see `server.errors` -- and its id
 `X-Open-Session-Id` header; a session already ended; a vault pull that hit a conflict at session
 start, whose detail names the conflicting paths) is 409, and a vault that cannot be opened is 503.
 Optional fields are left out rather than sent as `null`, as the protocol's schemas want.
-An end with `prepare_notes: true` (1.6) answers as soon as the session has ended and then starts
-generating the topic's notes in the background (`NotesGenerator.start_background`); the response's
-`notes_generation` says whether it `started`, one was already `running`, or the backend has no
-Claude transport (`unavailable`).
+An end body's `prepare_notes` (protocol 1.6) is still accepted from old clients and ignored
+(#440): ending a session never starts a notes generation.
 `GET /api/sessions/{id}/health` (#262, web-only) answers the session's failure counts
 (`session_health.py`): observer calls, page transcriptions, the vault's push streak, and whether the
 observer is paused by a cost cap; every count 0 for a healthy session.
@@ -30,7 +28,6 @@ from studentassistant.protocol import PROTOCOL_VERSION, ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.auth import Principal
 from studentassistant.server.errors import ApiError
-from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.session_health import SessionHealth, SessionHealthResponse
 from studentassistant.server.sessions import (
     ActiveSessionExistsError,
@@ -128,23 +125,14 @@ def session_router() -> APIRouter:
     async def end_session(
         request: Request, session_id: SessionId, body: protocol.SessionEndRequest
     ) -> protocol.SessionEndResponse:
-        service = _service(request)
+        # `body.prepare_notes` (old clients, #440) is deliberately not read.
         async with _http_errors():
-            topic = await service.topic_of(session_id) if body.prepare_notes else None
-            ended = await service.end(
+            return await _service(request).end(
                 session_id,
                 client_time_ms=body.client_time_ms,
                 reason=body.reason,
                 principal=_principal(request),
             )
-        if not body.prepare_notes:
-            return ended
-        # The end (observer flush, digest, checkpoint) is done: generate in the background.
-        generator: NotesGenerator | None = request.app.state.notes
-        start: protocol.NotesGenerationStart = "unavailable"
-        if generator is not None and topic is not None:
-            start = generator.start_background(service, *topic)
-        return ended.model_copy(update={"notes_generation": start})
 
     @router.get("/sessions/{session_id}/health")
     async def session_health(request: Request, session_id: SessionId) -> SessionHealthResponse:

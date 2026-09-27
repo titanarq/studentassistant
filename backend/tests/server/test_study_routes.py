@@ -179,7 +179,6 @@ def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_versi
     assert app.state.sessions.active is None and _ended(topic, session_id)
     # No "prepárame el tema": no Claude call, no generation.
     assert fake.requests == []
-    assert app.state.notes.status(topic.subject, topic.topic).status == "idle"
     events = subscription.drain()
     [marked] = [e.data for e in events if e.event == "study.marked"]
     assert marked == {"version": 1, "tag": f"{topic.subject}/{topic.topic}/apuntes-v1"}
