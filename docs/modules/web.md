@@ -44,21 +44,13 @@
   ha podido subir a GitHub (N veces): …"), nothing while the session is healthy and never a
   modal: the screen asks `GET /api/sessions/{id}/health` every `HEALTH_POLL_MS` (15 s; the first
   ask after one interval, one ask at a time) while the session runs, and stops on **Terminar**, a
-  lost connection, unmount or a 404. Next to **Terminar**, **Terminar y preparar apuntes** (#271)
-  ends the session through the same call with `prepare_notes: true` (protocol 1.6; plain
-  **Terminar** sends no `prepare_notes` and leaves as before) and, once ended, the screen gives
-  way to "Preparar los apuntes" (`NotesProgress`), which follows the background generation:
-  `GET /api/subjects/{s}/topics/{t}/notes/generation` every `NOTES_POLL_MS` (3 s, the first
-  poll after one interval) while the status is `running` ("Preparando los apuntes…"), stopping
-  on a final status or unmount. `done` links to the topic's notes page ("Los apuntes están
-  listos (versión N)." / the draft warning with "Revisar el borrador", plus the backend's
-  `warning`); `failed` shows the `detail` and links to the topic page to retry;
-  `needs_confirmation` says the spending cap was reached and links to the topic page, where
-  **Prepárame el tema** confirms; `idle` says the backend lost track of it (restarted). An end
-  answering `notes_generation: "running"` is followed like `started`; `unavailable` (or no
-  field, an older backend) says the notes cannot be prepared now and polls nothing. A poll that
-  got no answer (unreachable, 5xx) keeps polling with a line saying so; a refusal stops with its
-  sentence. **Volver** returns to the picker (`onEnded`). The page runs on the PC itself under loopback trust
+  lost connection, unmount or a 404. The web has no **Terminar y preparar apuntes** since #413
+  (human decision 2026-09-27: it stays only on the Android app): **Terminar** ends the session
+  with the 1.0 body (no `prepare_notes`), and on the standalone page it leads to "Sesión
+  terminada" (`SessionEnded` in `CapturePage.tsx`), which says the notes are built in Construir,
+  where the chat prepares the whole topic on request («prepárame el tema»), links **Abrir en
+  Construir** (`.../workspace` of the session's topic) and offers **Volver a la lista de
+  sesiones** (the picker). The page runs on the PC itself under loopback trust
   (`docs/modules/server.md`), so it asks for no token and stores nothing: no token, no session
   state, no offline spool (the Android app owns the spool).
 - **Capture reconnect** (#411): a dropped capture connection (a backend restart, a blip) no
@@ -87,6 +79,14 @@
   before leaving only while a burst is uploading or pending or the socket's queue is not empty.
   Inside the study workspace (`CapturePage` with `preset`, `CaptureScreen` `embedded`) a
   session ended elsewhere says to go on in Construir or Estudiar instead of the list of sessions.
+- **Embedded capture in the workspace's Captura tab** (#413): `CaptureScreen` `embedded` is a
+  `section` ("Captura en curso") with an `h2`, not a `main` with an `h1` (the workspace owns
+  both), and shows no "Dudas pendientes" line (the workspace header counts them; the doubts are
+  asked in the chat). Its buttons are **Capturar**, **Importante**, **Libro** / **Apuntes** and
+  **Terminar**, the voice commands' buttons (VISION §5.3); the whole topic is prepared by asking
+  the chat («prepárame el tema»), never by a button. The standalone `/capture` keeps its `main`,
+  `h1` and doubts line, and has no «Terminar y preparar apuntes» either (see above); the Android
+  app keeps its own. The former `NotesProgress` view and `fetchNotesGeneration` are gone.
 - **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
   offers "Preguntar al tutor" (section "Estudiar con el tutor"; `SessionPicker`'s optional
   `onTutor(TutorTopic {subjectId, topicId, subjectName, topicName})`), and `CapturePage` shows
@@ -122,8 +122,10 @@
 - **Study workspace** (`/subjects/<s>/topics/<t>/workspace`, "Espacio de estudio", `src/workspace/`,
   #312, epic #311): one screen for a topic, opened from the study desk (the row's **Construir**, "Sesión
   abierta", a created topic; #368) and from the topic page's **Construir**. The header has the crumbs, the topic name and the open-doubts counter ("N dudas
-  pendientes", from `GET .../pending?status=open`, read again whenever the document changes,
-  linking to the pending page). Next to it, in one wrapping row (`.workspace-meta`, also below
+  pendientes", from `GET .../pending?status=open`, read again whenever the document changes;
+  plain text since #413, not a link to the legacy pending page, with the tooltip
+  `DOUBTS_TOOLTIP` saying the doubts are asked and answered in the chat, epic #311). The page's
+  root is its `main` (#413), so the embedded capture has none of its own. Next to it, in one wrapping row (`.workspace-meta`, also below
   900 px, no horizontal scroll; #372): a **Versiones** link to `.../versions` (`VersionsPage`),
   shown once the notes are read, whose accessible name carries the current `vN`; and the spend
   line (`WorkspaceCost`): "Esta sesión: <importe>" (`GET /api/cost` with the topic's open
@@ -549,7 +551,9 @@ token):
   `failures.ts`, #368), and inside it only `api.ts` and
   `sessionSocket.ts` reach the network:
   - `CapturePage.tsx`: `CapturePage({now?, preset?, onRunningChange?})` -- shows `SessionPicker`
-    until a session is open, then `CaptureScreen` keyed by `session_id`, so a second session in
+    until a session is open, then `CaptureScreen` keyed by `session_id` (`embedded` when there
+    is a `preset`), then, standalone only, `SessionEnded` after **Terminar** (#413; with a
+    `preset` an end goes straight back to `TopicSessionStart`), so a second session in
     the same visit is a new component and not the old one with new props. That state is all the
     page remembers: nothing of a session survives a reload. With `preset` `{subjectId, topicId}`
     (#312) `TopicSessionStart` replaces the picker: no subject/topic lists and no tutor, just
@@ -559,7 +563,7 @@ token):
     their create forms; for the chosen topic it resumes `open_session_id` or starts a new
     session, and reports the result as `OpenedSession {session, subjectName, topicName}`.
   - `CaptureScreen.tsx`: `CaptureScreen({session, subjectName, topicName, onEnded?, now?,
-    playShutter?, flashMs?, notesPollMs?})` -- the running session, where socket, transcriber and camera meet:
+    playShutter?, flashMs?, embedded?, longOutageMs?, reconnectDelaysMs?})` -- the running session, where socket, transcriber and camera meet:
     it builds the transcriber `hello.ack.stt_mode` asks for, uploads each burst, renders the
     buttons, the thumbnails, the transcript and the pending counter, and owns every Spanish
     message of the page. Also exports `captureCapabilities()` (which omits `audio_format` when
@@ -570,19 +574,14 @@ token):
     unusable answer, which keeps the previous lines), `healthLines(health)` (the Spanish lines,
     none when healthy) and `sessionHealthPath(id)`. The body is checked by hand (web-only route,
     no protocol schema).
-  - `NotesProgress.tsx` (#271): `NotesProgress({subjectId, topicId, subjectName, topicName,
-    start, onClose?, intervalMs = NOTES_POLL_MS})` -- the follow-up view after **Terminar y
-    preparar apuntes**; `start` is the end response's `notes_generation`. Also exports
-    `progressFromStart`, `progressFromStatus` and `progressFromResult` (the pure mapping to
-    `NotesProgressState`).
   - `wakeLock.ts`: `ScreenWakeLock({wakeLock?, visibility?})` -- `start()` / `stop()`
     (both idempotent) and `held`; requests `navigator.wakeLock.request("screen")`, re-requests on
     `visibilitychange` to visible after the browser released it, releases a lock that arrives
     after `stop()`, and never throws or reports.
   - `api.ts`: the REST client -- `listSubjects()`, `createSubject(name)`, `listTopics(id)`,
     `createTopic(id, name)`, `startSession(subjectId, topicId, clientTimeMs)`,
-    `resumeSession(id)`, `endSession(id, reason, clientTimeMs, prepareNotes = false)`,
-    `fetchNotesGeneration(subjectId, topicId)` (`notesGenerationPath`, since 1.6) and
+    `resumeSession(id)`, `endSession(id, reason, clientTimeMs)` (never `prepare_notes`, #413)
+    and
     `uploadCaptures(id, metadata, images)` (multipart: the `METADATA_PART` part plus one
     `image_N` part per still). Every call decodes its answer with the `src/protocol/` decoders
     and returns `ApiResult<T>` = `{kind: "ok", value} | {kind: "refused", status, detail} |

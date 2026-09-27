@@ -14,11 +14,18 @@
  * and opens no session; "Volver" returns to the picker.
  *
  * With `preset` (the study workspace's **Captura** tab, #312) the subject and topic are given:
- * `TopicSessionStart` replaces the picker (no tutor), and `onRunningChange` tells the host
- * whether a session is on screen.
+ * `TopicSessionStart` replaces the picker (no tutor), `onRunningChange` tells the host whether a
+ * session is on screen, and the screen runs `embedded` (#413). An end there goes straight back to
+ * `TopicSessionStart`: the student is already in Construir.
+ *
+ * Standalone, **Terminar** leads to `SessionEnded` (#413): the topic's notes are built in its
+ * workspace, so the step links to it («Abrir en Construir») and offers the picker again. The web
+ * has no «Terminar y preparar apuntes» (human decision 2026-09-27, it stays on the Android app):
+ * the whole topic is prepared by asking the workspace chat («prepárame el tema»).
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { topicPath } from "../desk/api";
 import CaptureScreen from "./CaptureScreen";
 import TutorScreen from "../tutor/TutorScreen";
 import SessionPicker, { type OpenedSession, type TutorTopic } from "./SessionPicker";
@@ -40,14 +47,23 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange }:
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
+  const [ended, setEnded] = useState<OpenedSession | null>(null);
+  const standalone = preset === undefined;
   const onSession = useCallback((session: OpenedSession) => setOpened(session), []);
-  const onEnded = useCallback(() => setOpened(null), []);
+  const onEnded = useCallback(() => {
+    if (standalone) setEnded(opened);
+    setOpened(null);
+  }, [standalone, opened]);
+  const onEndedClosed = useCallback(() => setEnded(null), []);
   const [tutor, setTutor] = useState<TutorTopic | null>(null);
   const onTutor = useCallback((topic: TutorTopic) => setTutor(topic), []);
   const onTutorClosed = useCallback(() => setTutor(null), []);
 
   if (opened === null && preset !== undefined) {
     return <TopicSessionStart subjectId={preset.subjectId} topicId={preset.topicId} onSession={onSession} now={now} />;
+  }
+  if (opened === null && ended !== null) {
+    return <SessionEnded ended={ended} onClose={onEndedClosed} />;
   }
   if (opened === null && tutor !== null) {
     return <TutorScreen key={`${tutor.subjectId}/${tutor.topicId}`} {...tutor} onClose={onTutorClosed} />;
@@ -61,7 +77,38 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange }:
       topicName={opened.topicName}
       now={now}
       onEnded={onEnded}
-      embedded={preset !== undefined}
+      embedded={!standalone}
     />
+  );
+}
+
+/**
+ * The standalone page's step after **Terminar** (#413): the session is over, and the topic goes
+ * on in its workspace, whose chat prepares the whole topic on request.
+ */
+function SessionEnded({ ended, onClose }: { ended: OpenedSession; onClose: () => void }) {
+  const { subject_id: subjectId, topic_id: topicId } = ended.session;
+  return (
+    <main className="capture-page capture-ended">
+      <header className="capture-header">
+        <h1>Sesión terminada</h1>
+        <p className="page-context">
+          {ended.subjectName} · {ended.topicName}
+        </p>
+      </header>
+      <section className="capture-step" aria-label="Qué hacer ahora">
+        <h2>Y ahora</h2>
+        <p>
+          Lo que has capturado ya está guardado. Los apuntes del tema se construyen en Construir:
+          allí puedes pedirle al chat «prepárame el tema».
+        </p>
+        <p>
+          <a href={`${topicPath(subjectId, topicId)}/workspace`}>Abrir en Construir</a>
+        </p>
+        <button type="button" onClick={onClose}>
+          Volver a la lista de sesiones
+        </button>
+      </section>
+    </main>
   );
 }

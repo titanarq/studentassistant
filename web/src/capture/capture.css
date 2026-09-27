@@ -1,5 +1,5 @@
-/* The capture page (`/capture`, #40): the session picker, the capture screen and "Preparar los
-   apuntes". It runs on the laptop (camera and microphone) and at phone width. */
+/* The capture page (`/capture`, #40): the session picker, the capture screen and the ended
+   session's step. It runs on the laptop (camera and microphone) and at phone width. */
 
 .capture-page {
   --page-width: 56rem;
@@ -13,7 +13,7 @@
   margin-bottom: 0;
 }
 
-/* One step of the picker (subject, topic, session, tutor) or of the notes progress. */
+/* One step of the picker (subject, topic, session, tutor) or of the ended session. */
 .capture-step {
   margin: 0 0 var(--space-4);
   padding: var(--space-4) var(--space-5) var(--space-3);

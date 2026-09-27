@@ -49,7 +49,6 @@ import {
   type SessionSocketEvent,
   WEB_SPEECH_PROVIDER,
 } from "./sessionSocket";
-import NotesProgress from "./NotesProgress";
 import { type ClientTranscriber, type TranscriberProblemCode } from "./transcriber";
 import { useSessionHealth } from "./sessionHealth";
 import { ScreenWakeLock } from "./wakeLock";
@@ -402,11 +401,11 @@ export interface CaptureScreenProps {
   playShutter?: () => void;
   /** How long a burst's flash covers the preview. */
   flashMs?: number;
-  /** How often the notes generation is polled after "Terminar y preparar apuntes". */
-  notesPollMs?: number;
   /**
-   * Since #411: the screen is the study workspace's Captura tab, so a session that ended
-   * elsewhere points to Construir and Estudiar instead of the list of sessions.
+   * The screen is the study workspace's Captura tab: since #411 a session that ended elsewhere
+   * points to Construir and Estudiar instead of the list of sessions, and since #413 the screen is
+   * a section with an `h2` (the workspace has the page's `main` and `h1`) and has no doubts line
+   * of its own (the workspace header counts them, and the doubts are asked in the chat).
    */
   embedded?: boolean;
   /** How long an outage lasts before the blocking message; `LONG_OUTAGE_MS` by default. */
@@ -423,7 +422,6 @@ export default function CaptureScreen({
   now = Date.now,
   playShutter = shutterClick,
   flashMs = FLASH_MS,
-  notesPollMs,
   embedded = false,
   longOutageMs = LONG_OUTAGE_MS,
   reconnectDelaysMs,
@@ -500,11 +498,6 @@ export default function CaptureScreen({
   const [reactivating, setReactivating] = useState(false);
   /** Since #256: the tab was hidden mid-session, so transcription may have paused meanwhile. */
   const [hiddenTabNotice, setHiddenTabNotice] = useState(false);
-  /**
-   * Since #271: the session ended with `prepare_notes`, so the screen gives way to the generation's
-   * progress; `onEnded` waits for the student's "Volver" there.
-   */
-  const [prepared, setPrepared] = useState<SessionEndResponse | null>(null);
 
   const flash = useCallback(() => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
@@ -906,14 +899,14 @@ export default function CaptureScreen({
    * Terminar: the session ends on the backend first and the devices are given back after, so a
    * refusal of the end is a refusal the student still reads with the session on the page. Either
    * way the camera, the microphone and the socket stop: an end that failed is not a reason to keep
-   * a laptop's light on. "Terminar y preparar apuntes" (#271, `prepareNotes`) is the same end with
-   * `prepare_notes: true`, after which the screen follows the notes generation instead of leaving.
+   * a laptop's light on. There is no "Terminar y preparar apuntes" on the web since #413 (it stays
+   * on the Android app): the whole topic is prepared by asking the workspace chat for it.
    */
-  async function finish(prepareNotes = false) {
+  async function finish() {
     setEnding(true);
     endingRef.current = true;
     closedWhileEnding.current = undefined;
-    const result = await endSession(session.session_id, "button", now(), prepareNotes);
+    const result = await endSession(session.session_id, "button", now());
     endingRef.current = false;
     stopped.current = true;
     runtime.current.wakeLock?.stop();
@@ -926,8 +919,7 @@ export default function CaptureScreen({
     runtime.current.socket?.close();
     runtime.current.socket = null;
     if (result.kind === "ok") {
-      if (prepareNotes) setPrepared(result.value);
-      else onEnded?.(result.value);
+      onEnded?.(result.value);
       return;
     }
     setEnding(false);
@@ -962,24 +954,14 @@ export default function CaptureScreen({
         ? "Transcribe el servidor: esta página le envía el audio del micrófono."
         : null;
 
-  if (prepared !== null) {
-    return (
-      <NotesProgress
-        subjectId={session.subject_id}
-        topicId={session.topic_id}
-        subjectName={subjectName}
-        topicName={topicName}
-        start={prepared.notes_generation}
-        onClose={() => onEnded?.(prepared)}
-        intervalMs={notesPollMs}
-      />
-    );
-  }
+  // Inside the workspace the page's `main` and `h1` are the workspace's own (#413).
+  const Root = embedded ? "section" : "main";
+  const Title = embedded ? "h2" : "h1";
 
   return (
-    <main className="capture-page capture-screen">
+    <Root className="capture-page capture-screen" aria-label={embedded ? "Captura en curso" : undefined}>
       <header className="capture-header">
-        <h1>Capturar una sesión de estudio</h1>
+        <Title>Capturar una sesión de estudio</Title>
         <p className="page-context">
           {subjectName} · {topicName}
         </p>
@@ -1055,9 +1037,6 @@ export default function CaptureScreen({
         <button type="button" className="capture-end" disabled={ending} onClick={() => void finish()}>
           {ending ? "Terminando la sesión…" : "Terminar"}
         </button>
-        <button type="button" className="capture-end" disabled={ending} onClick={() => void finish(true)}>
-          Terminar y preparar apuntes
-        </button>
       </section>
 
       {health.length > 0 && (
@@ -1068,9 +1047,11 @@ export default function CaptureScreen({
         </ul>
       )}
 
-      <p className="capture-pending" role="status" aria-label="Dudas pendientes">
-        {pendingLine}
-      </p>
+      {!embedded && (
+        <p className="capture-pending" role="status" aria-label="Dudas pendientes">
+          {pendingLine}
+        </p>
+      )}
 
       <section className="capture-transcript" aria-label="Transcripción en directo">
         <h2>Transcripción</h2>
@@ -1100,6 +1081,6 @@ export default function CaptureScreen({
           </ul>
         )}
       </section>
-    </main>
+    </Root>
   );
 }

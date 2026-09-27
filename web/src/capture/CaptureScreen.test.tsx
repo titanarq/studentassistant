@@ -939,95 +939,37 @@ describe("the student's buttons", () => {
     expect(JSON.parse(post?.init.body as string)).not.toHaveProperty("prepare_notes");
   });
 
-  describe("Terminar y preparar apuntes (#271)", () => {
-    const GENERATION_PATH = `/api/subjects/${SESSION.subject_id}/topics/${SESSION.topic_id}/notes/generation`;
-    const POLL_MS = 1_000;
+  it("is a section with an h2 and no doubts line of its own inside the workspace (#413)", async () => {
+    renderScreen({ embedded: true });
+    await open();
+    await push({ type: "notice", pending_count: 3, server_time_ms: NOW });
+    expect(screen.queryByRole("main")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Captura en curso" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Capturar una sesión de estudio" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Dudas pendientes" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/dudas pendientes/)).not.toBeInTheDocument();
+  });
 
-    function generation(status: string, extra: Record<string, unknown> = {}) {
-      return jsonResponse({
-        subject_id: SESSION.subject_id,
-        topic_id: SESSION.topic_id,
-        status,
-        ...extra,
-      });
-    }
+  it("keeps its main, h1 and doubts line on /capture", async () => {
+    renderScreen();
+    await open();
+    expect(screen.getByRole("main")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Capturar una sesión de estudio" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Dudas pendientes" })).toBeInTheDocument();
+  });
 
-    for (const start of ["started", "running"] as const) {
-      it(`ends with prepare_notes and follows a generation that is ${start}`, async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
-        try {
-          const ended = vi.fn();
-          const answers = [generation("running"), generation("done", { version: 4 })];
-          backend({
-            [END_PATH]: () => jsonResponse({ ...ENDED, notes_generation: start }),
-            [GENERATION_PATH]: () => answers.shift() ?? generation("done", { version: 4 }),
-          });
-          renderScreen({ onEnded: ended, notesPollMs: POLL_MS });
-          await open();
-
-          await act(async () => {
-            fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
-          });
-          const post = sent.find((call) => call.path === END_PATH);
-          expect(JSON.parse(post?.init.body as string)).toEqual({
-            client_time_ms: NOW,
-            reason: "button",
-            prepare_notes: true,
-          });
-          // The devices are given back, and the screen stays to follow the generation.
-          expect(fakes.videoTrack.readyState).toBe("ended");
-          expect(ended).not.toHaveBeenCalled();
-          expect(await screen.findByText(/Preparando los apuntes…/)).toBeInTheDocument();
-
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(POLL_MS);
-          });
-          expect(screen.getByText(/Preparando los apuntes…/)).toBeInTheDocument();
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(POLL_MS);
-          });
-          expect(screen.getByText("Los apuntes están listos (versión 4).")).toBeInTheDocument();
-          expect(screen.getByRole("link", { name: "Abrir los apuntes" })).toHaveAttribute(
-            "href",
-            "/subjects/biologia/topics/fotosintesis/notes",
-          );
-          const polls = sent.filter((call) => call.path === GENERATION_PATH).length;
-          expect(polls).toBe(2);
-
-          // A final status stops the polling.
-          await act(async () => {
-            await vi.advanceTimersByTimeAsync(POLL_MS * 3);
-          });
-          expect(sent.filter((call) => call.path === GENERATION_PATH)).toHaveLength(polls);
-
-          fireEvent.click(screen.getByRole("button", { name: "Volver" }));
-          expect(ended).toHaveBeenCalledWith({ ...ENDED, notes_generation: start });
-        } finally {
-          vi.useRealTimers();
-        }
-      });
-    }
-
-    it("says so when the backend cannot prepare notes, and polls nothing", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
-      try {
-        backend({ [END_PATH]: () => jsonResponse({ ...ENDED, notes_generation: "unavailable" }) });
-        renderScreen({ notesPollMs: POLL_MS });
+  describe("no «Terminar y preparar apuntes» on the web (#413)", () => {
+    for (const embedded of [false, true]) {
+      it(`offers only Terminar ${embedded ? "inside the workspace" : "on /capture"}`, async () => {
+        renderScreen({ embedded });
         await open();
-        await act(async () => {
-          fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
-        });
-        expect(
-          await screen.findByText(/El servidor no puede preparar los apuntes ahora/),
-        ).toBeInTheDocument();
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(POLL_MS * 3);
-        });
-        expect(sent.some((call) => call.path === GENERATION_PATH)).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
+        for (const name of ["Capturar", "Importante", "Libro", "Apuntes", "Terminar"]) {
+          expect(screen.getByRole("button", { name })).toBeInTheDocument();
+        }
+        expect(screen.queryByRole("button", { name: /preparar apuntes/ })).not.toBeInTheDocument();
+      });
+    }
   });
 
   describe("the backend closes the socket while the session ends (#319)", () => {
@@ -1064,40 +1006,6 @@ describe("the student's buttons", () => {
         expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
       });
     }
-
-    it("follows the notes generation without a lost connection (the real case)", async () => {
-      const GENERATION_PATH = `/api/subjects/${SESSION.subject_id}/topics/${SESSION.topic_id}/notes/generation`;
-      let answer!: (response: Response) => void;
-      const held = new Promise<Response>((resolve) => {
-        answer = resolve;
-      });
-      backend({
-        [END_PATH]: () => held,
-        [GENERATION_PATH]: () =>
-          jsonResponse({
-            subject_id: SESSION.subject_id,
-            topic_id: SESSION.topic_id,
-            status: "running",
-          }),
-      });
-      renderScreen();
-      await open();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Terminar y preparar apuntes" }));
-      });
-      await act(async () => {
-        socket().serverClose(4404, "session s is no longer active");
-      });
-      // What the student saw on 2026-09-26 while the end was still being answered.
-      expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
-      await act(async () => {
-        answer(jsonResponse({ ...ENDED, notes_generation: "started" }));
-      });
-
-      expect(await screen.findByText(/Preparando los apuntes…/)).toBeInTheDocument();
-      expect(screen.queryByText(/Se ha perdido la conexión/)).not.toBeInTheDocument();
-    });
 
     it("shows the lost connection too when the end then fails", async () => {
       const end = heldEnd();
@@ -1323,8 +1231,18 @@ describe("CapturePage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Terminar" }));
     });
 
-    expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
+    // Since #413 the end points to the topic's workspace, and the picker is one click away.
+    expect(await screen.findByRole("heading", { name: "Sesión terminada" })).toBeInTheDocument();
     expect(fakes.videoTrack.readyState).toBe("ended");
+    expect(screen.getByText(/prepárame el tema/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Abrir en Construir" })).toHaveAttribute(
+      "href",
+      "/subjects/biologia/topics/fotosintesis/workspace",
+    );
+    expect(screen.queryByRole("button", { name: /preparar apuntes/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Volver a la lista de sesiones" }));
+    expect(await screen.findByRole("heading", { name: "Asignaturas" })).toBeInTheDocument();
   });
 
   it("leads from the chosen topic to the voice tutor and back, without opening a session", async () => {

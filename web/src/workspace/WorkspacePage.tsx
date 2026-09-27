@@ -19,6 +19,9 @@ export type NarrowView = "document" | "left" | "chat";
 
 export { EMPTY_NOTES } from "./DocumentPanel";
 
+/** The doubts counter's tooltip (#413): where the doubts are answered. */
+export const DOUBTS_TOOLTIP = "Las dudas te las pregunta el chat de este espacio; contéstalas allí.";
+
 const VIEWS: Array<[NarrowView, string]> = [
   ["document", "Documento"],
   ["left", "Captura/Recursos"],
@@ -31,7 +34,8 @@ const VIEWS: Array<[NarrowView, string]> = [
  * **Recursos** (the topic's sources and the sources viewer) above the chat, and on the right the
  * topic's document (`apuntes.md`), which the student can also edit (`DocumentPanel`, #316). A
  * provenance footnote opens its source in **Recursos**. The capture tab stays mounted while hidden, so a running session goes on.
- * The header also carries the doubts counter, a **Versiones** link to the notes' history and the
+ * The header also carries the doubts counter (plain text since #413: the doubts are asked in the
+ * chat, never on the legacy `/pending` page, epic #311), a **Versiones** link to the notes' history and the
  * spend of the open session or of the topic (`WorkspaceCost`, #372).
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat.
  */
@@ -108,7 +112,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
 
   return (
     <WorkspaceContext.Provider value={state}>
-      <div className="workspace" data-view={view}>
+      <main className="workspace" data-view={view}>
         <header className="workspace-header">
           <p className="crumbs">
             <a href={base}>← Tema {topicName}</a>
@@ -120,12 +124,13 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
           <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
           <p className="page-context">Tema {topicName}</p>
           <div className="workspace-meta">
-            <p className="workspace-pending" role="status" aria-label="Dudas pendientes">
-              {pending === null ? null : (
-                <a href={`${base}/pending`}>
-                  {pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
-                </a>
-              )}
+            <p
+              className="workspace-pending"
+              role="status"
+              aria-label="Dudas pendientes"
+              title={pending === null ? undefined : DOUBTS_TOOLTIP}
+            >
+              {pending === null ? null : pending === 1 ? "1 duda pendiente" : `${pending} dudas pendientes`}
             </p>
             {notes.kind === "ready" && (
               <p className="workspace-versions">
@@ -197,7 +202,7 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
             <DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />
           </section>
         </div>
-      </div>
+      </main>
     </WorkspaceContext.Provider>
   );
 }
