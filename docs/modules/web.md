@@ -151,9 +151,12 @@
     cambios** (`aria-expanded`, shows the existing `DiffView`) for a change seen live, or **Ver las
     versiones** (the topic's versions page) for one read from the history, which has no diffs; a
     `turn.error` shows "No se pudo completar: <detail>" (`role="alert"`), and a
-    `cost_cap_reached` one **Continuar igualmente**, which repeats it with `confirm_over_cap`
-    (a spoken edit or question is re-sent as a typed message with its raw text; "prepárame el
-    tema" through `POST .../notes/generate`; offered only for those kinds). Below, a textarea
+    `cost_cap_reached` one **Continuar igualmente**, which confirms that request past the cap
+    through `POST .../workspace/messages` `{confirm_over_cap: true, turn_id}` (#351): the same
+    request as it was classified, whatever its kind (`edit`, `question`, "prepárame el tema",
+    `incorporate`, `doubt_answer`; never a batch of a run), goes back to "En cola…" and its new
+    turn (same `request_id`) streams into the same entry; a refused confirmation (404: it no
+    longer waits, e.g. after a restart) shows its detail. Below, a textarea
     "Mensaje para el asistente" (Enter sends, Shift+Enter is a new line) with **Enviar**
     (disabled while empty or while this page's post or undo runs) and **Deshacer el último
     cambio** (`POST .../notes/chat/undo`, as the notes page's chat). While the stream is down:
@@ -165,8 +168,8 @@
       `requests` (`req-t<n>`) then take its place as queued entries ("En cola…"; a second
       request of the same message shows "Y además: <summary>") until their turns stream in (a
       typed `request.detected` of the stream for one already shown adds nothing). A refusal shows
-      "No se pudo completar: <detail>" (`role="alert"`) under the message. `POST .../notes/chat`
-      is only used by "Continuar igualmente".
+      "No se pudo completar: <detail>" (`role="alert"`) under the message. The panel never posts
+      to `POST .../notes/chat` (#351).
     - **Incorporations** (`kind: incorporate`): "Incorporadas: página 3, página 4" (each source
       a button that opens it in **Recursos**, like provenance clicks), the reply, "Cambio
       aplicado" with its diff (the history's incorporation turns carry their diff), and "Ha
@@ -176,8 +179,12 @@
       `incorporate` turn without request) listed below it ("Tandas de la preparación"). A run
       started elsewhere (the end of a session) gets an entry "Preparación del tema" of its own,
       finished when its progress is complete or the generation's `notes.changed` arrives.
-    - **Triage** (`set_aside` / `restore` turns, `triage` in the history): the request, then one
-      short line, the backend's reply («He apartado la página 9.»).
+    - **Triage** (`set_aside` / `restore` turns, `triage` in the history): the request, then
+      short lines. A set-aside whose `targets` carry triage reasons (#351) shows one line per
+      target with the Recursos tab's reason text (`resources/state.ts` `reasonText`): «Página 9
+      apartada: en blanco», «Página 4 apartada», «Página 1 ya estaba apartada: repetida de la
+      página 2» (the page a button that opens it in Recursos); otherwise (a restore, no reasons,
+      an older turn) the backend's reply («He apartado la página 9.»).
     - **Doubts** (`doubt.asked` / `doubt.resolved`, #325; `doubt` turns of the history): a
       highlighted entry "Asistente · Duda" with the question, the suggestions as a numbered list
       (`<ol>` "Sugerencias"), for a contradiction each option with its source ("Página 3:
@@ -197,9 +204,9 @@
       `incorporation.progress` included; unknown ones are `null`, the list is open),
       `readOutcome` (a `RevisionResult`, a `prepare_notes` `GenerationResult`, an
       `IncorporationResult`, a `TriageTurn` or a `doubt_answer` `ResolutionResult`, as one
-      `TurnOutcome`), `postMessage(s, t, text)` (`POST .../workspace/messages`, the typed
-      messages) and `sendTyped(s, t, message, {confirmOverCap, onDelta, onRestart})` (`POST
-      .../notes/chat` through `src/chat/api.ts`'s `streamTurn`, for "Continuar igualmente").
+      `TurnOutcome`; a triage one with its `targets`), `postMessage(s, t, text)` (`POST
+      .../workspace/messages`, the typed messages) and `confirmOverCap(s, t, turnId)` (the same
+      route with `{confirm_over_cap: true, turn_id}`, for "Continuar igualmente", #351).
     - `chat/sources.ts`: `sourceName(id)` («página 3», «página 83 del libro», else the Recursos
       title); the item that opens a source in Recursos is `resources.ts`'s `sourceItem(id)`
       (`OpenSource` takes that item's `definition` as its optional third argument).
@@ -211,11 +218,10 @@
       page's sends. Turns are keyed by `turn_id`; a queued request by `request_id` until its
       `turn.started`; a doubt by `doubt:<pending_id>`, an auto-resolution line by
       `auto:<pending_ids>`; a batch carries its run's key as `parent`. A typed message is a
-      "Enviando…" entry until the POST answers (its first request keeps that entry's key). A
-      "Continuar igualmente" resend starts as a local entry fed by its own POST stream; the typed
-      `revise` `turn.started` the workspace stream broadcasts meanwhile is adopted by it, and the
-      POST's `result` carries the real `turn_id`, so a wrongly adopted turn (another tab's) is
-      split off again. A history read replaces the entries it has (by `turn_id` or those keys,
+      "Enviando…" entry until the POST answers (its first request keeps that entry's key).
+      "Continuar igualmente" (`confirm.start`) puts the stopped entry back in the queue without
+      its turn, so the request's new `turn.started` (same `request_id`) takes it again; it is
+      offered (`canRetry`) for an entry with a `turn_id` and a `request_id`. A history read replaces the entries it has (by `turn_id` or those keys,
       keeping a live entry's key -- so a doubt is announced once -- and its diff) and keeps, after
       it, the live ones it does not have yet; a `doubt_answer` entry whose doubt the history shows
       answered is dropped, and so is a queued typed request whose typed turn (same words, not

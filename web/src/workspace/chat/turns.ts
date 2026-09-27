@@ -8,10 +8,9 @@
  *   its own `request.detected`, whichever comes first) -- as "En cola…" by `request_id`, in
  *   arrival order, and becomes its turn on `turn.started`. A typed message shows "Enviando…"
  *   until the POST answers.
- * - "Continuar igualmente" past the cost cap still sends through `POST .../notes/chat` (a local
- *   entry fed by its own stream); the typed `revise` `turn.started` the workspace stream
- *   broadcasts meanwhile is adopted by it, and the POST's `result`, which carries the real
- *   `turn_id`, splits a wrongly adopted turn (another tab's) off again.
+ * - "Continuar igualmente" past the cost cap (#351) confirms the stopped turn through `POST
+ *   .../workspace/messages` `{confirm_over_cap, turn_id}`: the entry goes back to "En cola…"
+ *   without its turn, and the request's new `turn.started` (same `request_id`) takes it again.
  * - A whole-topic run ("prepárame el tema", batched, #326) is one entry of kind `prepare_notes`
  *   with its `incorporation.progress`; each batch (an `incorporate` turn without request) is an
  *   entry whose `parent` is that run (a run started elsewhere gets an entry of its own).
@@ -30,15 +29,14 @@ import type {
   DoubtView,
   HistoryTurn,
   PostOutcome,
-  SendOutcome,
   SpokenSpan,
   TriageDecision,
+  TriageTarget,
   TurnOrigin,
   TurnOutcome,
   WorkspaceEvent,
   WorkspaceHistory,
 } from "./api";
-import { DISCONNECTED_TURN } from "./api";
 
 export type TurnStatus = "sending" | "queued" | "running" | "done" | "failed";
 
@@ -79,16 +77,14 @@ export interface ChatEntry {
   failure: string | null;
   /** The turn stopped at a reached cost cap: "Continuar igualmente" repeats it confirmed. */
   overCap: boolean;
-  /** A send of this page runs for the entry; its own stream feeds it until a turn is adopted. */
-  local: boolean;
-  /** A typed turn whose own stream broke before any turn was adopted: the history may have it. */
-  orphan: boolean;
   fromHistory: boolean;
   /** `incorporate`: the sources incorporated; `triage`: the ones set aside or restored. */
   sourceIds: string[];
   /** `incorporate`: the doubts it raised (known live only). */
   doubts: number;
   decision: TriageDecision | null;
+  /** `triage` (`set_aside`): each target and its triage reasons. */
+  targets: TriageTarget[];
   /** `doubt`: the doubt asked. */
   doubt: DoubtView | null;
   /** `doubt_answer`: the doubt answered. */
@@ -112,11 +108,9 @@ export type ChatAction =
   /** A typed message goes to `POST .../workspace/messages`. */
   | { type: "post.start"; key: string; message: string; time: string }
   | { type: "post.done"; key: string; result: PostOutcome }
-  /** A send over `POST .../notes/chat` or `.../notes/generate` starts; `replace` reuses that entry. */
-  | { type: "local.start"; key: string; message: string; kind?: string; time: string; replace?: string }
-  | { type: "local.delta"; key: string; text: string; attempt: number }
-  | { type: "local.restart"; key: string; attempt: number }
-  | { type: "local.done"; key: string; result: SendOutcome }
+  /** "Continuar igualmente" on the entry: its turn is confirmed past the cost cap. */
+  | { type: "confirm.start"; key: string }
+  | { type: "confirm.done"; key: string; result: PostOutcome }
   | { type: "undone"; commit: string };
 
 /** `set_aside` / `restore` turns are one kind in the chat, as in the history. */
@@ -124,11 +118,12 @@ export function entryKind(kind: string): string {
   return kind === "set_aside" || kind === "restore" ? "triage" : kind;
 }
 
-/** The kinds "Continuar igualmente" can repeat confirmed. */
-const RETRYABLE = new Set(["revise", "edit", "question", "prepare_notes"]);
+/** The kinds "Continuar igualmente" can repeat confirmed (every one that calls Claude). */
+const RETRYABLE = new Set(["revise", "edit", "question", "prepare_notes", "incorporate", "doubt_answer"]);
 
+/** A request's turn stopped at the cost cap: the backend keeps it for a confirmation. */
 export function canRetry(entry: ChatEntry): boolean {
-  return entry.overCap && entry.parent === null && RETRYABLE.has(entry.kind);
+  return entry.overCap && entry.parent === null && entry.turnId !== null && entry.requestId !== null && RETRYABLE.has(entry.kind);
 }
 
 function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
@@ -156,12 +151,11 @@ function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
     refs: [],
     failure: null,
     overCap: false,
-    local: false,
-    orphan: false,
     fromHistory: false,
     sourceIds: [],
     doubts: 0,
     decision: null,
+    targets: [],
     doubt: null,
     pendingId: null,
     progress: null,
@@ -206,6 +200,7 @@ function fromHistory(turn: HistoryTurn, key: string, live: ChatEntry | undefined
     sourceIds: turn.sourceIds,
     doubts: live?.doubts ?? 0,
     decision: turn.decision,
+    targets: turn.targets,
     doubt: turn.doubt,
     progress: live?.progress ?? null,
     parent: live?.parent != null && liveKeys.has(live.parent) ? live.parent : null,
@@ -232,7 +227,7 @@ function mergeHistory(state: ChatState, history: WorkspaceHistory): ChatState {
   const typed = turns.filter((t) => t.origin === "typed" && t.message !== null && t.message !== "" && t.turnId !== null);
   const claimed = new Set<ChatEntry>();
   const doneElsewhere = (e: ChatEntry): boolean => {
-    if (e.origin !== "typed" || e.local || e.turnId !== null || e.requestId === null || e.status !== "queued") return false;
+    if (e.origin !== "typed" || e.turnId !== null || e.requestId === null || e.status !== "queued") return false;
     const since = e.time !== null ? Date.parse(e.time) - SKEW_MS : Number.NEGATIVE_INFINITY;
     const match = typed.find(
       (t) => !claimed.has(t) && t.message === e.message && (t.time === null || !(Date.parse(t.time) < since)) && !byTurn.has(t.turnId as string),
@@ -246,8 +241,7 @@ function mergeHistory(state: ChatState, history: WorkspaceHistory): ChatState {
       !e.fromHistory &&
       !keys.has(e.key) &&
       !(e.turnId !== null && turnIds.has(e.turnId)) &&
-      !(e.requestId !== null && requestIds.has(e.requestId) && !e.local) &&
-      !(e.orphan && turns.some((t) => t.origin === "typed" && t.message === e.message)) &&
+      !(e.requestId !== null && requestIds.has(e.requestId)) &&
       !(e.kind === "doubt_answer" && e.pendingId !== null && e.status === "done" && answered.has(e.pendingId)) &&
       !doneElsewhere(e),
   );
@@ -298,6 +292,7 @@ function applyOutcome(entry: ChatEntry, outcome: TurnOutcome): Partial<ChatEntry
     sourceIds: outcome.sourceIds.length > 0 ? outcome.sourceIds : entry.sourceIds,
     doubts: outcome.doubts,
     decision: outcome.decision ?? entry.decision,
+    targets: outcome.targets.length > 0 ? outcome.targets : entry.targets,
     pendingId: outcome.pendingId ?? entry.pendingId,
   };
 }
@@ -316,12 +311,7 @@ function openRun(state: ChatState): ChatEntry | undefined {
 function onTurnStarted(state: ChatState, event: Extract<WorkspaceEvent, { type: "turn.started" }>): ChatState {
   if (state.entries.some((e) => e.turnId === event.turnId)) return state;
   const kind = entryKind(event.kind);
-  const byRequest = event.requestId !== null ? state.entries.find((e) => e.requestId === event.requestId && e.turnId === null) : undefined;
-  const adoptable =
-    byRequest ??
-    (event.origin === "typed" && kind === "revise"
-      ? state.entries.find((e) => e.local && e.turnId === null && e.status === "running" && e.kind !== "prepare_notes")
-      : undefined);
+  const adoptable = event.requestId !== null ? state.entries.find((e) => e.requestId === event.requestId && e.turnId === null) : undefined;
   if (adoptable !== undefined) {
     return update(state, adoptable.key, (e) => ({
       turnId: event.turnId,
@@ -463,55 +453,6 @@ function onEvent(state: ChatState, event: WorkspaceEvent): ChatState {
   }
 }
 
-/** Moves a wrongly adopted turn out of `entry` into an entry of its own. */
-function splitOff(state: ChatState, entry: ChatEntry): ChatState {
-  if (entry.turnId === null) return state;
-  const other = blank(entry.turnId, {
-    turnId: entry.turnId,
-    status: entry.status === "failed" ? "failed" : "running",
-    reply: entry.reply,
-    attempt: entry.attempt,
-    time: entry.time,
-  });
-  const at = state.entries.findIndex((e) => e.key === entry.key);
-  const entries = [...state.entries];
-  entries.splice(at, 0, other);
-  return { ...state, entries };
-}
-
-function onLocalDone(state: ChatState, key: string, result: SendOutcome): ChatState {
-  const entry = state.entries.find((e) => e.key === key);
-  if (entry === undefined) return state;
-  if (result.kind === "ok") {
-    const { outcome } = result;
-    let next = state;
-    if (entry.turnId !== null && outcome.turnId !== null && entry.turnId !== outcome.turnId) next = splitOff(next, entry);
-    if (outcome.turnId !== null) {
-      // An entry the workspace stream made for this turn before it was told whose it was.
-      next = { ...next, entries: next.entries.filter((e) => e.key === key || e.turnId !== outcome.turnId) };
-    }
-    next = update(next, key, (e) => ({ ...applyOutcome(e, outcome), turnId: outcome.turnId ?? e.turnId, local: false }));
-    return undoable(outcome) ? { ...next, canUndo: true } : next;
-  }
-  if (result.kind === "failed") {
-    const { failure } = result;
-    let next = state;
-    if (failure.beforeTurn && entry.turnId !== null) next = splitOff(next, entry);
-    return update(next, key, (e) => ({
-      local: false,
-      status: "failed",
-      turnId: failure.beforeTurn ? null : e.turnId,
-      failure: failure.detail,
-      overCap: failure.overCap,
-    }));
-  }
-  // Interrupted: an adopted turn goes on through the workspace stream; otherwise the history
-  // (read again by the caller) shows what the backend kept.
-  if (entry.turnId !== null && entry.status === "running") return update(state, key, () => ({ local: false }));
-  if (entry.status === "done") return update(state, key, () => ({ local: false }));
-  return update(state, key, () => ({ local: false, orphan: true, status: "failed", failure: DISCONNECTED_TURN }));
-}
-
 /** The POST answered: its requests take the "Enviando…" entry's place (or bind the ones already shown). */
 function onPostDone(state: ChatState, key: string, result: PostOutcome): ChatState {
   const at = state.entries.findIndex((e) => e.key === key);
@@ -552,43 +493,22 @@ export function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return append(state, blank(action.key, { status: "sending", origin: "typed", message: action.message, time: action.time }));
     case "post.done":
       return onPostDone(state, action.key, action.result);
-    case "local.start": {
-      const fresh = {
+    case "confirm.start":
+      // Back to the queue without its turn: the request's new `turn.started` takes it again.
+      return update(state, action.key, () => ({
         turnId: null,
-        status: "running" as const,
+        status: "queued",
         reply: "",
         attempt: 1,
         failure: null,
         overCap: false,
-        local: true,
-        orphan: false,
-        applied: false,
-        summary: null,
-        diff: null,
-        commit: null,
         warning: null,
-      };
-      if (action.replace !== undefined && state.entries.some((e) => e.key === action.replace)) {
-        return update(state, action.replace, () => fresh);
-      }
-      const entry = blank(action.key, { ...fresh, kind: action.kind ?? "revise", message: action.message, time: action.time });
-      return append(state, entry);
-    }
-    case "local.delta": {
-      const entry = state.entries.find((e) => e.key === action.key);
-      if (entry === undefined || !entry.local || entry.turnId !== null || action.attempt < entry.attempt) return state;
-      return update(state, action.key, (e) => ({
-        attempt: action.attempt,
-        reply: (action.attempt > e.attempt ? "" : e.reply) + action.text,
       }));
+    case "confirm.done": {
+      const { result } = action;
+      if (result.kind === "ok") return state;
+      return update(state, action.key, () => ({ status: "failed", failure: result.detail }));
     }
-    case "local.restart": {
-      const entry = state.entries.find((e) => e.key === action.key);
-      if (entry === undefined || !entry.local || entry.turnId !== null) return state;
-      return update(state, action.key, () => ({ attempt: action.attempt, reply: "" }));
-    }
-    case "local.done":
-      return onLocalDone(state, action.key, action.result);
     case "undone":
       return {
         ...state,

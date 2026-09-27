@@ -2,17 +2,16 @@
  * The wire side of the workspace chat panel (#317, epic #311): the conversation so far (`GET
  * .../notes/chat`, read with the voice fields #315 added), the events of the topic's workspace
  * stream (`GET .../workspace/stream`) decoded one by one, and typed messages, which go to the
- * request classifier (`postMessage`, `POST .../workspace/messages`, #327/#329; `sendTyped` over
- * `POST .../notes/chat` is left for "Continuar igualmente" past the cost cap). Bodies are read
+ * request classifier (`postMessage`, `POST .../workspace/messages`, #327/#329), as does "Continuar
+ * igualmente" past the cost cap (`confirmOverCap`, #351). Bodies are read
  * leniently, like `src/chat/api.ts`: unknown fields ignored, missing optional ones defaulted, and
  * an event that is not understood is `null` (the stream's list of events is open).
  */
 
 import { type ReadResult, topicPath } from "../../desk/api";
-import { generateNotes } from "../../topic/PrepareTopic";
 import { isOverCap } from "../../pending/doubts";
 import { errorCode } from "../../protocol";
-import { type ChatRef, chatPath, readRefs, readRevision, type RevisionResult, streamTurn, type StreamHandlers } from "../../chat/api";
+import { type ChatRef, chatPath, readRefs, readRevision, type RevisionResult } from "../../chat/api";
 
 type Json = Record<string, unknown>;
 
@@ -69,6 +68,27 @@ function readDoubt(body: Json, refs: unknown): DoubtView | null {
   };
 }
 
+/**
+ * One target of a set-aside asked in the chat and why (#351): its triage reasons (`blank`,
+ * `duplicate`, `blurry`, `partial`, `same_content`, as `sources.triage` names them), the page it
+ * repeats, and whether it was set aside before the request.
+ */
+export interface TriageTarget {
+  sourceId: string;
+  reasons: string[];
+  duplicateOf: string | null;
+  already: boolean;
+}
+
+function readTargets(value: unknown): TriageTarget[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((target) =>
+    isObject(target) && typeof target.source_id === "string"
+      ? [{ sourceId: target.source_id, reasons: strings(target.reasons), duplicateOf: optionalText(target.duplicate_of), already: target.already === true }]
+      : [],
+  );
+}
+
 /** The raw stretch of the transcript a spoken request came from. */
 export interface SpokenSpan {
   requestId: string | null;
@@ -104,6 +124,8 @@ export interface HistoryTurn {
   sourceIds: string[];
   /** `triage`: what was done. */
   decision: TriageDecision | null;
+  /** `triage` (`set_aside`): each target and its reasons; empty for a restore or an old turn. */
+  targets: TriageTarget[];
   /** `doubt`: the doubt asked. */
   doubt: DoubtView | null;
   /** `doubts_resolved`: the doubts the editor settled from the sources. */
@@ -151,6 +173,7 @@ function readHistoryTurn(body: unknown): HistoryTurn | null {
     diff: optionalText(body.diff),
     sourceIds: strings(body.source_ids),
     decision: body.kind === "triage" ? decisionOf(body.summary) : null,
+    targets: body.kind === "triage" ? readTargets(body.targets) : [],
     doubt: body.kind === "doubt" ? readDoubt(body, body.doubt_refs) : null,
     pendingIds: strings(body.pending_ids),
   };
@@ -212,11 +235,13 @@ export interface TurnOutcome {
   /** `incorporate`: how many doubts it raised. */
   doubts: number;
   decision: TriageDecision | null;
+  /** `triage` (`set_aside`): each target and its reasons. */
+  targets: TriageTarget[];
   /** `doubt_answer`: the doubt answered. */
   pendingId: string | null;
 }
 
-const OUTCOME_EXTRAS = { sourceIds: [], doubts: 0, decision: null, pendingId: null } satisfies Partial<TurnOutcome>;
+const OUTCOME_EXTRAS = { sourceIds: [], doubts: 0, decision: null, targets: [], pendingId: null } satisfies Partial<TurnOutcome>;
 
 /** The reply a "prepárame el tema" turn shows, which has no reply of its own. */
 function generationReply(body: Json): string {
@@ -295,6 +320,7 @@ export function readOutcome(body: unknown): TurnOutcome | null {
     doubts: Array.isArray(body.doubts) ? body.doubts.length : 0,
     // A `TriageTurn` of a `set_aside` / `restore` turn.
     decision: decisionOf(body.decision) ?? decisionOf(kind),
+    targets: readTargets(body.targets),
     pendingId: null,
   };
 }
@@ -412,85 +438,6 @@ export function readWorkspaceEvent(event: string, data: string): WorkspaceEvent 
   }
 }
 
-/** The failure of a typed message or a retried request, in Spanish. */
-export interface SendFailure {
-  detail: string;
-  overCap: boolean;
-  /** Refused before any turn started (e.g. another operation holds the notes). */
-  beforeTurn: boolean;
-}
-
-export type SendOutcome = { kind: "ok"; outcome: TurnOutcome } | { kind: "failed"; failure: SendFailure } | { kind: "interrupted" };
-
-const BEFORE_TURN = new Set([404, 409, 422, 503]);
-
-const readTypedOutcome = (body: unknown): TurnOutcome | null => readOutcome(body);
-
-function failureOf(result: { kind: "refused"; status: number; detail: string; overCap: boolean } | { kind: "error"; status: number } | { kind: "unreachable" }): SendFailure {
-  switch (result.kind) {
-    case "refused":
-      // A reached cost cap, a Claude failure (502) or a crash (500) come from inside the turn; an
-      // unknown topic, another operation holding the notes, an invalid body or no editor (404,
-      // 409, 422, 503) are answered before any turn starts.
-      return { detail: result.detail, overCap: result.overCap, beforeTurn: !result.overCap && BEFORE_TURN.has(result.status) };
-    case "error":
-      return { detail: `El servidor respondió con un error (${result.status}).`, overCap: false, beforeTurn: false };
-    case "unreachable":
-      return { detail: "No se pudo conectar con el servidor.", overCap: false, beforeTurn: true };
-  }
-}
-
-/**
- * Sends one typed message straight to the editor (`POST .../notes/chat`, streamed): only for
- * "Continuar igualmente" past a reached cost cap, since `workspace/messages` has no confirmation.
- * `handlers` get the reply as the typed turn's own stream writes it.
- */
-export async function sendTyped(
-  subjectId: string,
-  topicId: string,
-  message: string,
-  { confirmOverCap = false, ...handlers }: StreamHandlers & { confirmOverCap?: boolean } = {},
-): Promise<SendOutcome> {
-  const result = await streamTurn(
-    chatPath(subjectId, topicId),
-    { message, confirm_over_cap: confirmOverCap },
-    readTypedOutcome,
-    handlers,
-  );
-  if (result.kind === "ok") return { kind: "ok", outcome: result.value };
-  if (result.kind === "interrupted") return { kind: "interrupted" };
-  return { kind: "failed", failure: failureOf(result) };
-}
-
-/** "Continuar igualmente" on a "prepárame el tema" stopped at the cost cap. */
-export async function confirmPrepareNotes(subjectId: string, topicId: string): Promise<SendOutcome> {
-  const result = await generateNotes(subjectId, topicId, true);
-  if (result.kind !== "ok") return { kind: "failed", failure: failureOf(result) };
-  const { draft, version, warning } = result.value;
-  return {
-    kind: "ok",
-    outcome: {
-      turnId: null,
-      requestId: null,
-      kind: "prepare_notes",
-      message: null,
-      transcript: null,
-      requestSummary: null,
-      reply: generationReply({ draft, version }),
-      applied: !draft,
-      summary: null,
-      notesChanged: !draft,
-      changedSections: [],
-      diff: null,
-      commit: null,
-      warning,
-      ...OUTCOME_EXTRAS,
-    },
-  };
-}
-
-export const DISCONNECTED_TURN = "Se cortó la conexión con el asistente antes de terminar; el documento muestra lo que quedó guardado.";
-
 /** One request the classifier made of a typed message (`AssistantRequest`). */
 export interface PostedRequest {
   requestId: string;
@@ -527,13 +474,28 @@ export function workspaceMessagesPath(subjectId: string, topicId: string): strin
  * spoken one and is answered 202 with the requests it became, queued in the backend; their turns
  * then come through the workspace stream. A refusal is its Spanish `detail`.
  */
-export async function postMessage(subjectId: string, topicId: string, message: string): Promise<PostOutcome> {
+export function postMessage(subjectId: string, topicId: string, message: string): Promise<PostOutcome> {
+  return postToMessages(subjectId, topicId, { text: message });
+}
+
+/**
+ * "Continuar igualmente" (#351): `POST .../workspace/messages` `{confirm_over_cap: true, turn_id}`
+ * queues again, confirmed past the cost cap, the request whose turn `turnId` stopped at the cap --
+ * as it was classified, whatever its kind -- and answers 202 with it; its new turn comes through
+ * the workspace stream with the same `request_id`. A refusal (e.g. 404: it no longer waits for a
+ * confirmation) is its Spanish `detail`.
+ */
+export function confirmOverCap(subjectId: string, topicId: string, turnId: string): Promise<PostOutcome> {
+  return postToMessages(subjectId, topicId, { confirm_over_cap: true, turn_id: turnId });
+}
+
+async function postToMessages(subjectId: string, topicId: string, payload: Json): Promise<PostOutcome> {
   let response: Response;
   try {
     response = await fetch(workspaceMessagesPath(subjectId, topicId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: message }),
+      body: JSON.stringify(payload),
     });
   } catch {
     return { kind: "failed", detail: "No se pudo conectar con el servidor." };

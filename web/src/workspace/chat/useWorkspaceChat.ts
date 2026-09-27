@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { undoLastTurn } from "../../chat/api";
 import { describeFailure } from "../../desk/api";
 import { describeActionFailure } from "../../pending/doubts";
-import { confirmPrepareNotes, fetchWorkspaceHistory, postMessage, type SendOutcome, sendTyped, type WorkspaceEvent } from "./api";
+import { confirmOverCap, fetchWorkspaceHistory, postMessage, type WorkspaceEvent } from "./api";
 import { connectWorkspaceStream } from "./stream";
 import { canRetry, type ChatEntry, INITIAL_CHAT, reduceChat } from "./turns";
 
@@ -11,7 +11,7 @@ export type Connection = "connecting" | "live" | "down";
 export interface WorkspaceChat {
   entries: ChatEntry[];
   canUndo: boolean;
-  /** What this page is running: a typed message being posted (or a retry), an undo, or nothing. */
+  /** What this page is running: a typed message being posted (or a confirmation), an undo, or nothing. */
   busy: "send" | "undo" | null;
   /** A doubt asked in the chat waits for its answer. */
   doubtAsked: boolean;
@@ -42,7 +42,8 @@ const DOUBT_EVENTS = new Set<WorkspaceEvent["type"]>(["doubt.asked", "doubt.reso
  * The state of the workspace chat panel (#317, #329): the history, the live workspace stream
  * (every reconnect re-reads the history and the notes, so nothing that happened meanwhile is
  * missed or shown twice), typed messages (to the request classifier, `POST .../workspace/messages`),
- * the undo of the latest applied turn and "Continuar igualmente". Every `notes.changed` of the
+ * the undo of the latest applied turn and "Continuar igualmente" (the stopped request confirmed
+ * past the cost cap through the same route, #351). Every `notes.changed` of the
  * stream reloads the document, with the sections the turn touched highlighted when the turn is
  * known; every doubt asked or resolved calls `onDoubtsChanged`.
  */
@@ -117,52 +118,6 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
     return close;
   }, [subjectId, topicId, loadHistory]);
 
-  const run = useCallback(
-    async (key: string, work: () => Promise<SendOutcome>) => {
-      const result = await work();
-      running.current = false;
-      if (!mounted.current) return;
-      setBusy(null);
-      dispatch({ type: "local.done", key, result });
-      if (result.kind === "ok") {
-        if (result.outcome.notesChanged) reload.current(result.outcome.changedSections);
-      } else if (result.kind === "interrupted") {
-        // The turn runs on in the backend: what it saved shows up in the history and the notes.
-        await loadHistory();
-        reload.current([]);
-      }
-    },
-    [loadHistory],
-  );
-
-  const start = useCallback(
-    (message: string, replace: string | undefined, kind?: string): string | null => {
-      if (running.current) return null;
-      running.current = true;
-      const key = replace ?? `local${++counter.current}`;
-      setBusy("send");
-      setNotice(null);
-      dispatch({ type: "local.start", key, message, kind, replace, time: new Date().toISOString() });
-      return key;
-    },
-    [],
-  );
-
-  const sendMessage = useCallback(
-    (message: string, replace?: string, confirmOverCap = false) => {
-      const key = start(message, replace);
-      if (key === null) return;
-      void run(key, () =>
-        sendTyped(subjectId, topicId, message, {
-          confirmOverCap,
-          onDelta: (text, attempt) => dispatch({ type: "local.delta", key, text, attempt }),
-          onRestart: (attempt) => dispatch({ type: "local.restart", key, attempt }),
-        }),
-      );
-    },
-    [subjectId, topicId, start, run],
-  );
-
   const send = useCallback(
     (message: string) => {
       const text = message.trim();
@@ -185,16 +140,20 @@ export function useWorkspaceChat({ subjectId, topicId, reloadNotes, retryDelays,
   const retry = useCallback(
     (key: string) => {
       const entry = entries.current.find((e) => e.key === key);
-      if (entry === undefined || !canRetry(entry)) return;
-      if (entry.kind === "prepare_notes") {
-        const started = start(entry.message ?? "", key, "prepare_notes");
-        if (started !== null) void run(started, () => confirmPrepareNotes(subjectId, topicId));
-        return;
-      }
-      const message = entry.message ?? entry.transcript?.text ?? "";
-      if (message.trim() !== "") sendMessage(message, key, true);
+      if (entry === undefined || !canRetry(entry) || entry.turnId === null || running.current) return;
+      const turnId = entry.turnId;
+      running.current = true;
+      setBusy("send");
+      setNotice(null);
+      dispatch({ type: "confirm.start", key });
+      void confirmOverCap(subjectId, topicId, turnId).then((result) => {
+        running.current = false;
+        if (!mounted.current) return;
+        setBusy(null);
+        dispatch({ type: "confirm.done", key, result });
+      });
     },
-    [subjectId, topicId, start, run, sendMessage],
+    [subjectId, topicId],
   );
 
   const undo = useCallback(async () => {

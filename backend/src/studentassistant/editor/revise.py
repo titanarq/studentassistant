@@ -114,6 +114,7 @@ from studentassistant.llm import (
     load_prompt,
     strict_tool,
 )
+from studentassistant.sources.triage import TriageReason
 from studentassistant.vault import (
     ConversationRecord,
     GitSync,
@@ -326,6 +327,21 @@ class ChatRef(_Strict):
     path: str | None = Field(default=None, description="Topic-relative file of the source.")
 
 
+class TriageTarget(_Strict):
+    """One target of a `set_aside` from the chat and why it is set aside (#351).
+
+    `reasons` are the capture's triage reasons (`sources.triage.TriageReason`: `blank`,
+    `duplicate`, `blurry`, `partial`, `same_content`) -- empty when the student set aside a page
+    triage found nothing wrong with; `duplicate_of` is the page it repeats (topic-relative) for
+    `duplicate` / `same_content`. `already` when it was set aside before the request.
+    """
+
+    source_id: str
+    reasons: list[TriageReason] = Field(default_factory=list)
+    duplicate_of: str | None = None
+    already: bool = False
+
+
 class ChatTurn(_Strict):
     """One turn of the conversation as the web chat shows it.
 
@@ -341,7 +357,9 @@ class ChatTurn(_Strict):
     (what was incorporated), `summary`, `reply`, `diff` and `commit`; undone like a `revise` turn.
 
     `triage` is captures set aside or restored from the chat (#327): `source_ids`, `summary`
-    (`set_aside` or `restore`) and the short `reply` («He apartado la página 3.»).
+    (`set_aside` or `restore`), the short `reply` («He apartado la página 3.») and, for a
+    `set_aside`, `targets` (each target with its triage reasons, #351; empty for a restore and
+    for records written before).
 
     `doubt` is a doubt the chat asked (#325): `pending_id`, `question` (also the `reply`),
     `suggestions`, `options`, `refs` (the sources it is about), `status` (`open` until answered)
@@ -388,6 +406,9 @@ class ChatTurn(_Strict):
         default_factory=list, description="`incorporate`: the sources incorporated."
     )
     diff: str = Field(default="", description="`incorporate`: unified diff of `apuntes.md`.")
+    targets: list[TriageTarget] = Field(
+        default_factory=list, description="`triage` (`set_aside`): each target and its reasons."
+    )
 
 
 class _ExplanationView(BaseModel):
@@ -430,6 +451,11 @@ class TriageTurn(_Strict):
     message: str = Field(description="What was asked, as the chat shows it.")
     reply: str = Field(description="The short Spanish line of what was done.")
     applied: bool = Field(default=True, description="False when nothing changed.")
+    targets: list[TriageTarget] = Field(
+        default_factory=list,
+        description="`set_aside`: every target (set aside now or before) and its triage reasons;"
+        " empty for a `restore` and for records written before #351.",
+    )
 
 
 def record_triage_turn(
@@ -575,6 +601,7 @@ def _read_turns(
                     applied=triage.applied,
                     summary=triage.decision,
                     source_ids=triage.source_ids,
+                    targets=triage.targets,
                 )
             )
             continue
@@ -1288,6 +1315,7 @@ __all__ = [
     "NothingToUndoError",
     "RevisionError",
     "RevisionResult",
+    "TriageTarget",
     "TriageTurn",
     "TurnOrigin",
     "UndoConflictError",
