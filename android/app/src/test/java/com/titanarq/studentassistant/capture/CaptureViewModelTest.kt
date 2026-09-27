@@ -374,6 +374,44 @@ class CaptureViewModelTest {
     }
 
     @Test
+    fun `going to the background sends pause and coming back sends resume`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel)
+
+        viewModel.onBackground()
+        runCurrent()
+        assertEquals(Button(ButtonName.PAUSE, null, clock.now), sockets.last.sent.last())
+
+        viewModel.onForeground()
+        runCurrent()
+        assertEquals(Button(ButtonName.RESUME, null, clock.now), sockets.last.sent.filterIsInstance<Button>().last())
+        assertEquals(
+            listOf(ButtonName.PAUSE, ButtonName.RESUME),
+            sockets.last.sent.filterIsInstance<Button>().map { it.button },
+        )
+        viewModel.leave()
+    }
+
+    @Test
+    fun `a reconnect in the background says pause again`() = runTest(main.dispatcher) {
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.onBackground()
+        runCurrent()
+
+        sockets.last.drop()
+        advanceTimeBy(100)
+        runCurrent()
+        sockets.last.open()
+        runCurrent()
+        sockets.last.receive(HelloAck("1.5", SttMode.CLIENT, null, 0, clock.now))
+        runCurrent()
+
+        assertEquals(ButtonName.PAUSE, sockets.last.sent.filterIsInstance<Button>().last().button)
+        viewModel.leave()
+    }
+
+    @Test
     fun `the vocabulary hints of hello_ack reach the transcriber and a notice replaces them`() = runTest(main.dispatcher) {
         val viewModel = viewModel()
         viewModel.start()

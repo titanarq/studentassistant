@@ -21,11 +21,18 @@
  * blocking message. A burst whose upload failed on the network or a 5xx waits as «Pendiente de
  * subir» and goes up again after the reconnect; the page asks before being left while any upload
  * or queued frame is still pending.
+ *
+ * The capture runs only while the tab is visible (#425). A hidden tab stops sending: the camera and
+ * the recognizer (or the audio stream) stop, the socket stays open and says `button: pause`, and the
+ * page shows «Captura en pausa». Visible again, it says `resume` and starts both again. A session no
+ * client sends to for a while is ended by the backend itself, which the page reads as «La sesión
+ * terminó por inactividad».
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ClientCapabilities,
+  HelloAck,
   Session,
   SessionEndResponse,
   SourceKind,
@@ -184,12 +191,23 @@ const PROTOCOL_REFUSED: Blocking = {
 };
 
 /**
- * What the student reads on coming back to a tab that was hidden mid-session (#256): Chrome throttles
- * a background tab, and the recognizer of `client` mode can go quiet with it. It is a caution and
- * not a failure -- the session went on -- so it is a status line and it clears on the next final.
+ * What the page says while its tab is hidden (#425): the capture is paused, not lost. It replaced
+ * the #256 notice that transcription may have paused in a hidden tab: now it always does, on
+ * purpose, and starts again when the tab is back.
  */
-const HIDDEN_TAB_NOTICE =
-  "Mientras esta pestaña estaba oculta, la transcripción puede haberse pausado. Si has hablado entonces, repítelo.";
+const PAUSED_NOTICE = "Captura en pausa: la pestaña está oculta";
+
+/**
+ * What the backend's close reason ends with when it ended the session itself because no capture
+ * client was sending (#425, `server/capture_liveness.py`).
+ */
+const IDLE_CLOSE_MARK = "(idle)";
+
+/** The backend ended the session because no capture client was sending to it (#425). */
+const ENDED_IDLE: Blocking = {
+  message:
+    "La sesión terminó por inactividad: ningún dispositivo estaba enviando datos. Empieza o reanuda una sesión para seguir.",
+};
 
 const CAPTURE_FAILURE = "No se han podido tomar las fotografías";
 const UPLOAD_FAILURE = "El servidor no ha guardado las fotografías";
@@ -496,8 +514,10 @@ export default function CaptureScreen({
    */
   const [cameraLost, setCameraLost] = useState<string | null>(null);
   const [reactivating, setReactivating] = useState(false);
-  /** Since #256: the tab was hidden mid-session, so transcription may have paused meanwhile. */
-  const [hiddenTabNotice, setHiddenTabNotice] = useState(false);
+  /** Since #425: the tab is hidden, so the capture is paused (nothing is sent). */
+  const [paused, setPaused] = useState(false);
+  /** The same, for the socket's events and the device start, which run outside a render. */
+  const pausedRef = useRef(false);
 
   const flash = useCallback(() => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
@@ -617,8 +637,6 @@ export default function CaptureScreen({
     switch (event.kind) {
       case "transcript":
         setSegments((current) => mergeSegment(current, event.event));
-        // Text is flowing again, so whatever the hidden tab paused has resumed.
-        if (event.event.type === "transcript.final") setHiddenTabNotice(false);
         break;
       case "command":
         // `capture_now` is the only command of protocol v1, so there is nothing else to dispatch.
@@ -672,6 +690,8 @@ export default function CaptureScreen({
         break;
       case "reconnected":
         if (stopped.current) return;
+        // A new connection counts as sending until it hears otherwise: a hidden tab says so again.
+        if (pausedRef.current) runtime.current.socket?.sendButton("pause", clock.current());
         clearOutage();
         setConnection("open");
         setBlocking((current) => (current === DISCONNECTED ? null : current));
@@ -698,7 +718,11 @@ export default function CaptureScreen({
         runtime.current.wakeLock?.stop();
         if (event.kind === "closed" && event.code === SESSION_NOT_ACTIVE_CLOSE) {
           setConnection("ended");
-          const ended = settings.current.embedded ? ENDED_ELSEWHERE_EMBEDDED : ENDED_ELSEWHERE;
+          const ended = event.reason.endsWith(IDLE_CLOSE_MARK)
+            ? ENDED_IDLE
+            : settings.current.embedded
+              ? ENDED_ELSEWHERE_EMBEDDED
+              : ENDED_ELSEWHERE;
           setBlocking({ ...ended, detail: event.reason || undefined });
           return;
         }
@@ -730,15 +754,73 @@ export default function CaptureScreen({
     });
     const wakeLock = new ScreenWakeLock();
     wakeLock.start();
-    let tabWasHidden = false;
+    /** The `hello.ack` the devices start by, once the handshake answered. */
+    let acknowledged: HelloAck | null = null;
+    /** Bumped by every stop of the devices, so a start still awaiting the camera gives up. */
+    let devices = 0;
+    const stopDevices = (): void => {
+      devices += 1;
+      runtime.current.transcriber?.stop();
+      runtime.current.transcriber = null;
+      camera.stop();
+      setCameraOn(false);
+    };
+    /** The camera, then the recognizer or the audio stream of the connection's STT mode. */
+    const startDevices = async (ack: HelloAck): Promise<void> => {
+      const run = devices;
+      const current = (): boolean => !disposed && run === devices && !pausedRef.current;
+      try {
+        await camera.start(preview.current);
+        if (current()) setCameraOn(true);
+      } catch (problem) {
+        if (current()) setTrouble(cameraMessage(problem));
+      }
+      if (!current()) return;
+      const transcriber: ClientTranscriber =
+        ack.stt_mode === "server"
+          ? new AudioStreamTranscriber(
+              {
+                onSegment: () => {
+                  // The backend transcribes the audio itself and sends the transcript back.
+                },
+                onProblem: (problem) => {
+                  if (!disposed) setTrouble(transcriberMessage(problem));
+                },
+              },
+              { sink: socket, audioFormat: ack.audio_format ?? undefined },
+            )
+          : new WebSpeechTranscriber(
+              {
+                onSegment: (segment, kind) => socket.sendTranscript(segment, kind),
+                onProblem: (problem) => {
+                  if (!disposed) setTrouble(transcriberMessage(problem));
+                },
+              },
+              { vocabularyHints: vocabularyHints.current ?? [] },
+            );
+      runtime.current.transcriber = transcriber;
+      try {
+        await transcriber.start();
+      } catch (problem) {
+        if (!disposed) setTrouble(transcriberMessage(problem));
+      }
+    };
+    // Since #425 the capture runs only while the tab is visible: hidden, nothing is sent and the
+    // backend is told `pause`; visible again, `resume` and the devices start again.
     const onVisibilityChange = (): void => {
       if (stopped.current) return;
-      if (document.visibilityState === "hidden") {
-        tabWasHidden = true;
-      } else if (tabWasHidden) {
-        tabWasHidden = false;
-        setHiddenTabNotice(true);
+      const hidden = document.visibilityState === "hidden";
+      if (hidden === pausedRef.current) return;
+      pausedRef.current = hidden;
+      setPaused(hidden);
+      if (hidden) {
+        stopDevices();
+        socket.sendButton("pause", clock.current());
+        return;
       }
+      socket.sendButton("resume", clock.current());
+      setCameraLost(null);
+      if (acknowledged !== null) void startDevices(acknowledged);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     // Leaving the page while a burst or a queued frame has not reached the backend loses it, so
@@ -774,6 +856,10 @@ export default function CaptureScreen({
     vocabularyHints.current = null;
 
     let disposed = false;
+    pausedRef.current = document.visibilityState === "hidden";
+    setPaused(pausedRef.current);
+    // A screen opened in a hidden tab says so right after its `hello`.
+    if (pausedRef.current) socket.sendButton("pause", clock.current());
     void (async () => {
       const handshake = await socket.handshake;
       if (disposed) return;
@@ -790,41 +876,8 @@ export default function CaptureScreen({
       setConnection("open");
       setSttMode(handshake.ack.stt_mode);
       vocabularyHints.current ??= handshake.ack.vocabulary_hints ?? [];
-      try {
-        await camera.start(preview.current);
-        if (!disposed) setCameraOn(true);
-      } catch (problem) {
-        if (!disposed) setTrouble(cameraMessage(problem));
-      }
-      if (disposed) return;
-      const transcriber: ClientTranscriber =
-        handshake.ack.stt_mode === "server"
-          ? new AudioStreamTranscriber(
-              {
-                onSegment: () => {
-                  // The backend transcribes the audio itself and sends the transcript back.
-                },
-                onProblem: (problem) => {
-                  if (!disposed) setTrouble(transcriberMessage(problem));
-                },
-              },
-              { sink: socket, audioFormat: handshake.ack.audio_format ?? undefined },
-            )
-          : new WebSpeechTranscriber(
-              {
-                onSegment: (segment, kind) => socket.sendTranscript(segment, kind),
-                onProblem: (problem) => {
-                  if (!disposed) setTrouble(transcriberMessage(problem));
-                },
-              },
-              { vocabularyHints: vocabularyHints.current ?? [] },
-            );
-      runtime.current.transcriber = transcriber;
-      try {
-        await transcriber.start();
-      } catch (problem) {
-        if (!disposed) setTrouble(transcriberMessage(problem));
-      }
+      acknowledged = handshake.ack;
+      if (!pausedRef.current) await startDevices(handshake.ack);
     })();
 
     return () => {
@@ -915,7 +968,6 @@ export default function CaptureScreen({
     runtime.current.camera?.stop();
     setCameraOn(false);
     setCameraLost(null);
-    setHiddenTabNotice(false);
     runtime.current.socket?.close();
     runtime.current.socket = null;
     if (result.kind === "ok") {
@@ -977,9 +1029,9 @@ export default function CaptureScreen({
         </p>
       )}
       {trouble !== null && <p role="alert">{trouble}</p>}
-      {hiddenTabNotice && (
-        <p role="status" aria-label="Aviso de pestaña oculta">
-          {HIDDEN_TAB_NOTICE}
+      {paused && !ending && connection !== "ended" && connection !== "lost" && (
+        <p role="status" aria-label="Captura en pausa">
+          {PAUSED_NOTICE}
         </p>
       )}
       {sttWarning !== null && (

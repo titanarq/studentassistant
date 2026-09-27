@@ -361,7 +361,11 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   open with its buffers, so no line is lost or sent twice; a reconnect meanwhile does not restart
   the microphone. Back in the foreground the microphone restarts in the connection's STT mode (a
   new transcriber, so new segment ids; audio `seq` continues on the same connection) and
-  `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). The camera preview is
+  `micPaused` shows «Micrófono en pausa» for `PAUSE_NOTICE_MS` (4 s). Since #425
+  `onBackground()` also sends `button: pause` and `onForeground()` `button: resume` over the
+  session socket, and a reconnect in the background says `pause` again after its `hello.ack`, so
+  the backend knows the app stopped sending (and ends the session itself after `[server]
+  capture_idle_end_seconds` with nothing sending). The camera preview is
   bound to the same lifecycle through CameraX, which closes the camera on `ON_STOP`.
 
 ## Still capture (#46)

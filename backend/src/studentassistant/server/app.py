@@ -47,6 +47,7 @@ from studentassistant.server.assistant_requests import AssistantRequestConsumer,
 from studentassistant.server.auth import BearerAuthMiddleware
 from studentassistant.server.book_routes import book_router
 from studentassistant.server.bus import SessionBus
+from studentassistant.server.capture_liveness import CaptureLiveness
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
 from studentassistant.server.devices import DeviceStore
@@ -148,7 +149,9 @@ def create_app(
 
     The app's lifespan drives that sync: while the app serves, an open vault gets the background
     commit/push loop (`SessionService.startup`), and shutdown stops it and flushes what is pending
-    (`SessionService.shutdown`).
+    (`SessionService.shutdown`). The capture liveness watchdog (`capture_liveness.py`, #425) runs
+    with the lifespan too: it ends a capture session no client has been sending to for `[server]
+    capture_idle_end_seconds`, generating nothing.
 
     `recorder` (`serve --record`) records every session's client inputs through the WebSocket
     gateway and the capture upload; each recording is finished when its session ends (or the app
@@ -199,12 +202,17 @@ def create_app(
         app.state.bus, vault=vault, sync=sync, vault_settings=vault_settings
     )
     app.state.recorder = recorder
+    # A capture session no client is sending to ends itself after the grace period (#425).
+    app.state.liveness = CaptureLiveness(
+        app.state.sessions, grace_seconds=server.capture_idle_end_seconds
+    )
     app.state.gateway = SessionGateway(
         app.state.bus,
         app.state.sessions,
         stt,
         provider_factory=buffered_provider_from_settings,
         recorder=recorder,
+        liveness=app.state.liveness,
     )
     # Bus `transcript.final` events -> each session's `transcript.jsonl` (started by the lifespan).
     app.state.transcripts = TranscriptPipeline(app.state.bus, app.state.bus.attached)
@@ -403,9 +411,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if web_searcher is not None:
         web_searcher.start()
     await sessions.startup()
+    liveness: CaptureLiveness = app.state.liveness
+    liveness.start()
     try:
         yield
     finally:
+        # First, so no idle end starts while the consumers its end hooks wait for are stopping.
+        await liveness.stop()
         await transcripts.stop()
         await commands.stop()
         if transcriber is not None:

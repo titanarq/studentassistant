@@ -218,6 +218,8 @@ class CaptureViewModel(
                         // Only a new `hello.ack` brings hints here: a later `notice` may have replaced them.
                         state.vocabularyHints?.let(::useVocabularyHints)
                         startMic(state.sttMode)
+                        // A new connection counts as sending (#425): in the background, say so again.
+                        if (inBackground) connection.send(Button(ButtonName.PAUSE, null, clock.nowMillis()))
                     }
                 }
             },
@@ -253,7 +255,8 @@ class CaptureViewModel(
     /**
      * The app went to the background (`ON_STOP`): the microphone stops (an utterance in progress
      * is settled as a final and sent first). The socket stays open and keeps its buffers, so
-     * nothing is lost or sent twice.
+     * nothing is lost or sent twice. Since #425 it also says `button: pause`, so the backend knows
+     * this client stopped sending (and ends the session on its own if nothing sends for long).
      */
     fun onBackground() {
         if (inBackground) return
@@ -263,16 +266,18 @@ class CaptureViewModel(
         val wasListening = micMode != null
         stopMic()
         if (wasListening || _state.value.phase == CapturePhase.RUNNING) _state.update { it.copy(micPaused = true) }
+        sendButton(ButtonName.PAUSE)
     }
 
     /**
      * Back in the foreground (`ON_START`): the microphone restarts in the connection's STT mode
      * (or at the next `hello.ack` when not connected now); «Micrófono en pausa» stays for
-     * [PAUSE_NOTICE_MS].
+     * [PAUSE_NOTICE_MS]. Since #425 it says `button: resume` first.
      */
     fun onForeground() {
         if (!inBackground) return
         inBackground = false
+        sendButton(ButtonName.RESUME)
         val state = connection?.state?.value
         if (state is ConnectionState.Connected) startMic(state.sttMode)
         if (_state.value.micPaused) {

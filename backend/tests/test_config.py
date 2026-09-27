@@ -228,3 +228,14 @@ def test_the_digest_timezone_defaults_to_the_local_zone_and_refuses_an_unknown_n
     monkeypatch.setenv("SA_OBSERVER__DIGEST_TIMEZONE", "Europe/Atlantida")
     with pytest.raises(ValidationError, match="unknown timezone 'Europe/Atlantida'"):
         Settings()
+
+
+def test_capture_idle_end_seconds_defaults_to_five_minutes_and_reads_the_env(
+    config_toml: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert Settings().server.capture_idle_end_seconds == 300.0
+    monkeypatch.setenv("SA_SERVER__CAPTURE_IDLE_END_SECONDS", "42")
+    assert Settings().server.capture_idle_end_seconds == 42.0
+    monkeypatch.setenv("SA_SERVER__CAPTURE_IDLE_END_SECONDS", "0")
+    with pytest.raises(ValueError):
+        Settings()

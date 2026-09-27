@@ -55,6 +55,11 @@ change is logged and published once as a persisted `stt.status` event (`{"state"
 provider is degraded gets the current status right after `hello.ack`. A socket never sends the
 same state twice in a row.
 
+Capture liveness (#425): with a `CaptureLiveness`, a socket counts as a capture client from its
+`hello.ack` until it closes, and each `button` `pause` / `resume` it sends sets its paused flag
+there, so the watchdog can end a session no client is sending to. A socket of a session the
+watchdog ended is closed as not active with a reason ending in `(idle)`.
+
 Recording (`serve --record`): with a `SessionRecorder`, the handshake opens the session's
 recording, and each accepted client transcript message, `button`/`marker` and fed audio frame is
 appended to it (in a worker thread) as it is received; a recording that cannot be written is logged
@@ -105,6 +110,7 @@ from studentassistant.protocol import (
 from studentassistant.protocol.base import ProtocolModel
 from studentassistant.server.auth import WS_POLICY_VIOLATION, authenticate_websocket
 from studentassistant.server.bus import SessionBus, SessionNotAttachedError, Subscription
+from studentassistant.server.capture_liveness import IDLE_CLOSE_MARK, CaptureLiveness
 from studentassistant.server.recorder import SessionRecorder
 from studentassistant.server.sessions import OpenSession, SessionService
 from studentassistant.server.vocabulary import SessionVocabulary, TopicTerms, load_topic_terms
@@ -235,6 +241,7 @@ class SessionGateway:
     (default: `InMemoryTranscriptSink`), `provider_factory` a session's server-side provider
     (default: `provider_from_settings`), `clock` gives backend epoch ms. Tests replace them.
     `recorder`, when given, records every session's client inputs (`serve --record`).
+    `liveness`, when given, is told which sockets are connected and paused (#425).
     `terms_loader` reads a session's topic terms for its vocabulary hints (default: the vault
     through `sessions`).
 
@@ -252,6 +259,7 @@ class SessionGateway:
         clock: Callable[[], int] = _now_ms,
         recorder: SessionRecorder | None = None,
         terms_loader: TermsLoader | None = None,
+        liveness: CaptureLiveness | None = None,
     ) -> None:
         self.bus = bus
         self.sessions = sessions
@@ -260,6 +268,7 @@ class SessionGateway:
         self.provider_factory = provider_factory
         self.clock = clock
         self.recorder = recorder
+        self.liveness = liveness
         self.terms_loader: TermsLoader = terms_loader or self._load_terms
         self._states: dict[str, ReceiveState] = {}
         # The session `end_session` last ran for: it is never served again (ended sessions are
@@ -270,6 +279,13 @@ class SessionGateway:
     def has_ended(self, session_id: str) -> bool:
         """True once `end_session` ran for `session_id`."""
         return self._ended == session_id
+
+    def not_active_reason(self, session_id: str, default: str) -> str:
+        """The close reason for a socket of a session that is not active: `default`, or the
+        idle end's reason when the liveness watchdog ended the session."""
+        if self.liveness is not None and self.liveness.ended_idle(session_id):
+            return f"session {session_id} ended: no capture client was sending {IDLE_CLOSE_MARK}"
+        return default
 
     def state_for(self, session_id: str) -> ReceiveState:
         """The session's receive state; states of any other session are forgotten (at most one
@@ -448,6 +464,8 @@ class _Connection:
         # Whether the negotiated version has `stt.status`, and the last state this socket sent.
         self.sends_stt_status = False
         self.sent_stt_state: SttState = "ok"
+        # This socket's registration with the capture liveness watchdog, once it said hello.
+        self.liveness_token: int | None = None
 
     # -- time ----------------------------------------------------------------------------------
 
@@ -489,7 +507,10 @@ class _Connection:
             or self.gateway.has_ended(self.session_id)
         ):
             raise _RefusedError(
-                f"session {self.session_id} is not active: start or resume it first",
+                self.gateway.not_active_reason(
+                    self.session_id,
+                    f"session {self.session_id} is not active: start or resume it first",
+                ),
                 CLOSE_UNKNOWN_SESSION,
             )
         self.session = session
@@ -499,11 +520,16 @@ class _Connection:
             name=f"ws:{self.session_id}", session_id=self.session_id, kinds=SUBSCRIBED_KINDS
         )
         forwarder: asyncio.Task[None] | None = None
+        liveness = self.gateway.liveness
         try:
             await self._handshake(hello)
+            if liveness is not None:
+                self.liveness_token = liveness.connected(self.session_id)
             forwarder = asyncio.create_task(self._forward(subscription))
             await self._receive_loop()
         finally:
+            if liveness is not None and self.liveness_token is not None:
+                liveness.disconnected(self.liveness_token)
             subscription.close()
             if forwarder is not None:
                 forwarder.cancel()
@@ -636,6 +662,13 @@ class _Connection:
                 payload["source"] = event.source
             await self._publish_client_event(BUTTON, payload, event.client_time_ms)
             await self._record_event(event)
+            liveness = self.gateway.liveness
+            if (
+                liveness is not None
+                and self.liveness_token is not None
+                and event.button in ("pause", "resume")
+            ):
+                liveness.set_paused(self.liveness_token, event.button == "pause")
         elif isinstance(event, Marker):
             payload = {} if event.label is None else {"label": event.label}
             await self._publish_client_event(MARKER, payload, event.client_time_ms)
@@ -756,7 +789,10 @@ class _Connection:
 
     def _not_active(self) -> _RefusedError:
         return _RefusedError(
-            f"session {self.session_id} is no longer active", CLOSE_UNKNOWN_SESSION
+            self.gateway.not_active_reason(
+                self.session_id, f"session {self.session_id} is no longer active"
+            ),
+            CLOSE_UNKNOWN_SESSION,
         )
 
     # -- bus -> client -------------------------------------------------------------------------
