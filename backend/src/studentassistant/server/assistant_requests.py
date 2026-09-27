@@ -777,6 +777,8 @@ class AssistantRequestConsumer:
             if self.doubts is None
             else self.doubts.live(queued.subject_id, queued.topic_id),
             host=self.sessions.host,
+            # An `edit` answered only in prose is re-asked once, then flagged (#452).
+            expects_change=queued.request.kind == "edit",
         )
 
     async def _prepare(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:

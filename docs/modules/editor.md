@@ -442,7 +442,12 @@ mode, and the student's message.
   `confirmed_style_rules` (a rule proposed in an earlier turn and still pending that the student
   confirms in the chat: appended with `style_guide.append_rules`), `doubts` (#325: the
   `EditorDoubt`s the change leaves unresolved, never written into the notes)). No tool call: a
-  chat-only turn, nothing written but the conversation. After an applied change its doubts are
+  chat-only turn, nothing written but the conversation -- except for a request classified `edit`
+  (`expects_change`, set by the server's request consumer, #452): an answer without the call is
+  re-asked once (`NO_CALL_NOTE`: call `apply_edits` with the change, or say plainly nothing
+  changed and why; the chat gets a `reply.restart`), and a turn that still calls no tool carries
+  `NO_CHANGE_WARNING` («Los apuntes no han cambiado…»), so a reply that only *says* it changed the
+  notes never passes silently. A `question` keeps chat-only answers without a re-ask. After an applied change its doubts are
   recorded with `doubts.raise_doubts` (`live`, `host`: `revise_notes`' parameters; the server
   passes its sink into the topic's live session); their ids are the result's `doubts`, and a
   failure to record them is a `warning`, the change kept.

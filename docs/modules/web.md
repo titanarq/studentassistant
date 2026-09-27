@@ -250,7 +250,8 @@
     "Ocultar lo que dijiste") that shows the raw `transcript.text` and its session time range
     (`00:02:34–00:03:10`) and hides it again; a typed turn shows "Escribiste" and the message.
     Then "Asistente" and the reply: "En cola…" for a `request.detected` whose turn has not
-    started (several keep their order), "El asistente está pensando…" once it started, the text
+    started (several keep their order), «Respondiendo…» once it started (with a small spinner while the entry is on its way and has no
+    text yet, #452), the text
     streamed from `reply.delta` (dropped on `reply.restart`; deltas of an older attempt ignored),
     replaced by the authoritative `turn.result`; "Cambio aplicado: <summary>" with **Ver los
     cambios** (`aria-expanded`, shows the existing `DiffView`) for a change seen live, or **Ver las
@@ -275,8 +276,9 @@
       .../workspace/messages` `{text}` (#327), or `{text, selected_source_ids: [...]}` when the
       Recursos selection is not empty (#432; topic-relative ids in selection order; the backend
       resolves «esto», «estas páginas» against them, #433, and ignored the field before it). The
-      selection is kept after a send, for a follow-up on the same pages. The message shows "Enviando…" until the 202; its
-      `requests` (`req-t<n>`) then take its place as queued entries ("En cola…"; a second
+      selection is kept after a send, for a follow-up on the same pages. The message shows in the history at once as
+      "Escribiste" with «Respondiendo…» and the spinner (the input is emptied only once it is
+      there, #452) until the 202; its `requests` (`req-t<n>`) then take its place as queued entries ("En cola…"; a second
       request of the same message shows "Y además: <summary>") until their turns stream in (a
       typed `request.detected` of the stream for one already shown adds nothing). A refusal shows
       "No se pudo completar: <detail>" (`role="alert"`) under the message. The panel never posts
@@ -337,7 +339,13 @@
       page's sends. Turns are keyed by `turn_id`; a queued request by `request_id` until its
       `turn.started`; a doubt by `doubt:<pending_id>`, an auto-resolution line by
       `auto:<pending_ids>`; a batch carries its run's key as `parent`. A typed message is a
-      "Enviando…" entry until the POST answers (its first request keeps that entry's key).
+      sending entry until the POST answers (its first request keeps that entry's key; a typed
+      `request.detected` with the same text binds it in place first). Request ids are only
+      matched among the entries still on their way on this page (`isOpen`: typed ids restart per
+      session, #452), so an older finished `req-t1` never swallows a new message; a POST that
+      queued no request keeps the message, failed in Spanish. While an entry waits (queued or
+      running) and the stream says nothing for `QUIET_MS` (20 s, doubling up to 60 s), the
+      history is read again, so an answer the stream missed still shows.
       "Continuar igualmente" (`confirm.start`) puts the stopped entry back in the queue without
       its turn, so the request's new `turn.started` (same `request_id`) takes it again; it is
       offered (`canRetry`) for an entry with a `turn_id` and a `request_id`. A history read replaces the entries it has (by `turn_id` or those keys,
