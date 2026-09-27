@@ -4,9 +4,6 @@ Guía para la primera prueba de verdad en este PC (el portátil `Titan`): unos 2
 cuaderno o el libro delante de la cámara del portátil, hablando, y después revisar los apuntes en
 la web. Complementa a `install.md` (instalación y `doctor` en detalle).
 
-> **Pendiente:** los comandos de voz ("mira aquí", "ya está, prepárame el tema") llegan con
-> #47; mientras tanto se usan los botones de `/capture`.
-
 Marcado con **(tú)**: pasos interactivos que tienes que hacer a mano (claves, GitHub, permisos
 del navegador, hablar). Lo demás son comandos que se pueden copiar tal cual.
 
@@ -100,8 +97,19 @@ código vale 5 minutos y un solo uso. Para esta prueba en el portátil no hace f
 5. **Libro** / **Apuntes** indican de qué es la página siguiente; **Importante** marca el momento.
 6. Al acabar, pulsa **Terminar**.
 
-Cuando #47 esté fusionado podrás decir "mira aquí" (captura), "ahora el libro" y "ya está,
-prepárame el tema" en lugar de pulsar los botones.
+Decir "mira aquí", "mira esto", "captura" o "haz foto" también dispara una captura, igual que
+"siguiente" o "pasamos página" pasa a la página siguiente. El resto de frases de la gramática
+("ahora el libro", "vuelvo a mis apuntes", "ahora el pdf", "esto es importante" / "importante",
+"pausa", "reanuda", "busca en internet ...") por ahora solo quedan grabadas como eventos
+`voice.command` de la sesión, sin disparar ninguna acción por sí solas: para cambiar de fuente,
+marcar un momento importante o terminar sigue haciendo falta pulsar **Libro** / **Apuntes** /
+**Importante** / **Terminar**.
+
+Lo que le pides al asistente hablando durante la sesión sí lo entiende y lo lleva a cabo: "ya
+está, prepárame el tema", "incorpora la página 3", "aparta la 9" o un cambio en los apuntes se
+detectan y se ejecutan solos (modo por defecto `[observer] request_detection = "observer"`; con
+`wake_word` hace falta empezar diciendo "anel"), así que **Prepárame el tema** ya no es la única
+forma de pedirlo.
 
 ## 6. "Prepárame el tema" y revisión (tú)
 
