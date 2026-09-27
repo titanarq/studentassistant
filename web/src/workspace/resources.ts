@@ -10,7 +10,9 @@
  *   one per counted source; web snapshots are named after their title (`NNN-<slug>.md`), so only
  *   the ones the notes cite can be opened, the rest are counted (`uncitedWebs`); images pasted
  *   into the notes (`sources/images/`, #316) are listed when the notes cite them.
- * - Cited sources the list lacks (PDF pages, transcript spans) follow.
+ * - Cited sources the list lacks (PDF pages, transcript spans) follow. With the list, such a stored
+ *   source is marked `unlisted`: it may have been retired (#451), so the tab shows it only once its
+ *   metadata says it was not (#456).
  * Every item carries a footnote-like `label` and `definition`, which is what `SourcePanel` opens.
  */
 
@@ -89,6 +91,8 @@ export interface ResourceItem {
   label: string;
   definition: string;
   title: string;
+  /** Only the notes cite it; the topic's source list lacks it (it may have been retired, #451). */
+  unlisted?: boolean;
 }
 
 export interface ResourceGroup {
@@ -218,7 +222,11 @@ export function resourceList(sources: ListedSource[] | SourceCounts | null, tree
     const where = keyOf(provenance);
     if (where === null) continue;
     if (where.group === "web") citedWebs.add(where.key);
-    add(where.group, { key: where.key, label: footnote.label, definition: footnote.text, title: provenance.text });
+    const item: ResourceItem = { key: where.key, label: footnote.label, definition: footnote.text, title: provenance.text };
+    // A cited stored source the list lacks may have been retired (#451, #456): the tab waits for
+    // its metadata before showing it.
+    if (listed !== null && where.group !== "transcript") item.unlisted = true;
+    add(where.group, item);
   }
 
   return {

@@ -180,42 +180,52 @@
     (`fetchTopicSources`, `GET .../sources`, #323, read again each time the tab is shown) and the
     notes' provenance footnotes: every stored `notes`/`book`/`pdf`/`web`/`images` source by its
     real file, in the backend's order, uncited webs included, then the cited sources the list
-    lacks (PDF pages, transcript spans). When that request does not answer a list (a backend older
+    lacks (PDF pages, transcript spans). A cited stored source the list lacks is marked
+    `unlisted` and shown only once its metadata was read and does not say `removed` (#456): a
+    source the student retired (#451) never comes back through a footnote, while the footnote
+    itself keeps opening it in the viewer. When that request does not answer a list (a backend older
     than #323, any failure) it falls back to the summary counts (`GET .../summary`; a failure of
     that read is the tab's error): handwritten/book pages and PDFs are numbered `page-001…` up to
-    the count, webs (named after their title) are openable only when the notes cite them, the
-    rest counted ("Hay N webs guardadas que los apuntes todavía no citan."), and images pasted
+    the count, webs (named after their title) are openable only when the notes cite them (the
+    rest are not shown; #461 dropped the "Hay N webs…" line), and images pasted
     into the notes (`sources/images/img-NNN.<ext>`, #316) are listed when the notes cite them. Each stored
     source is one card (thumbnail -- the flattened `page-NNN.page.jpg`, else the capture; a PDF's
-    first page image; the pasted image -- its name, "Página 3 · apuntes", "Libro, página 83",
-    "PDF «nombre»", "Web: …", "Imagen pegada 1", and a state chip), derived by
-    `resourceStates` (`resources/state.ts`, #328):
-    - **Pendiente**: kept and not cited by the current notes;
-    - **Incorporada**: kept and linked by a provenance footnote definition of the current notes
-      (`citedSources`, via `parseProvenance`), so it follows `notes.changed` without a request;
+    first page image; the pasted image -- and below it one muted, ellipsized line with its name,
+    "Página 3 · apuntes", "Libro, página 83", "PDF «nombre»", "Web: …", "Imagen pegada 1"; no
+    state chip since #461), its state derived by `resourceStates` (`resources/state.ts`, #328):
+    - pending: kept and not cited by the current notes -- no mark at all;
+    - incorporated ("added", #461): kept and linked by a provenance footnote definition of the
+      current notes (`citedSources`, via `parseProvenance`), so it follows `notes.changed`
+      without a request. It shows a small round badge with a check in the thumbnail's
+      bottom-right corner (`role="img"`, `aria-label` and `title` «Incorporada a los apuntes»,
+      `INCORPORATED_LABEL`);
     - **Apartada**: the sidecar's `triage.status` is `set_aside` (#324), read from
       `GET /api/sources/{id}/meta`, with its reasons in Spanish (`blank` "En blanco",
       `duplicate` "Repetida de la página N" from `duplicate_of`, `blurry` "Borrosa", `partial`
       "Puede estar cortada", `same_content` "Mismo contenido que la página N") and "(la
       apartaste tú)" when `decided_by` is `student`.
-    A `flagged` capture is **Pendiente** (or **Incorporada**) plus "Aviso: <reason>"; a source
+    A `flagged` capture is pending (or incorporated) plus a small «!» badge in the thumbnail's
+    bottom-left corner (`aria-label`/`title` "Aviso: <reason>"); a source
     without a `triage` block (stored before #324, or not a capture), or whose metadata cannot be
     read, is kept. Kept sources come first in source order, then a collapsed "Apartadas (N)"
-    group (a disclosure button with `aria-expanded`); above them the counts "N pendientes · M
-    incorporadas · K apartadas" and the hint (`RESOURCES_HINT`) to select pages and ask the
-    assistant in the chat («Selecciona páginas y pídeselo al asistente en el chat (p. ej.
-    «incorpora el texto de estas»).»). The only per-card action is **delete** (#450): a trash
+    group (a disclosure button with `aria-expanded`), a set-aside card's reason as a muted line
+    under its name. No counts line and no hint paragraph since #461 (both read as a log). The
+    only per-card action is **delete** (#450): a trash
     button over the thumbnail's top-right corner («Borrar <title>») opens an inline confirmation
     over the card («¿Borrar esta fuente?» with **Borrar** / **Cancelar**, focus on Cancelar,
     Escape cancels and gives the focus back; never `window.confirm`); **Borrar** calls
-    `deleteSource(vaultId)` (`resources.ts`, `DELETE /api/sources/{vault_id}`) and on success the
-    list is read again. The backend retires the source (#451, a soft delete: its files stay and a
+    `deleteSource(vaultId)` (`resources.ts`, `DELETE /api/sources/{vault_id}`, the same
+    `sourceUrl` path the reads use); on a 204 the card leaves at once (the tab keeps the retired
+    `vault_id`s for its lifetime, so neither a stale cached meta nor a footnote brings it back)
+    and the list and metadata are read again. The backend retires the source (#451, a soft delete: its files stay and a
     citation of it keeps resolving, but it leaves the topic's source list) and answers 204. A
     405/501 (an older backend) says «No se pudo borrar: Este servidor todavía no permite borrar
-    fuentes.», any other refusal its `detail`, with **Cerrar**. Cited transcript
-    spans follow, without a state. The metadata is read by `useSourceMetas`
+    fuentes.», any other refusal its `detail`, with **Cerrar**. `decodeSourceMeta` accepts the
+    meta's optional `removed` boolean (#451; before #461 the strict decoder refused the whole
+    meta once the backend sent it). Cited transcript spans follow, as plain buttons under
+    "Fragmentos de la transcripción" (no count badge since #461). The metadata is read by `useSourceMetas`
     (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
-    source; every listed source is read again each time the tab is shown and after each change
+    source (every listed or cited stored source, the `unlisted` ones too); every one is read again each time the tab is shown and after each change
     of the notes (a new tree), which is how a `capture.triaged` change shows up. Choosing a
     source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
     (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
@@ -237,15 +247,23 @@
     chip's short title (`chipTitle`: «Pág. 3», «Libro p. 12», the PDF's name, the web's title,
     «Imagen 1»). After each read of the list, ids no longer listed are dropped (`prune`; the
     pure helpers `toggled`, `ranged`, `pruned` are tested on their own).
-    Above the list, one **Añadir fuente** button (`resources/AddSource.tsx`, #384) opens a
-    small inline panel with three choices -- **PDF**, **Página web**, **Libro de texto** -- each
-    showing the topic page's existing form as is (`PdfUploadForm`, `WebPageForm`,
-    `BookTitleForm`, which gained an optional `onSaved`), and **Cancelar**. A successful add (a
-    PDF imported, a new web page stored, the book title saved) closes the panel, leaves a short
-    `role="status"` line («PDF «Tema 4.pdf» añadido.») and re-reads the source list and the
-    metadata, as a new `refreshKey` does, so the new source shows in its group; a validation or
-    server error stays in the open form, in Spanish as the form shows it (a web page the topic
-    already had keeps the panel open with the form's notice).
+    **Adding sources (#461, replacing #384's «Añadir fuente» panel).** Under the scrolling list,
+    a compact icon toolbar (`resources/AddSourceToolbar.tsx`, `role="group"` «Añadir fuentes»;
+    `position: sticky; bottom: 0` inside the tab panel, so it stays at the bottom of the
+    Captura/Recursos box while the list scrolls) has three icon buttons with Spanish
+    `aria-label`/`title`: **Añadir una página web** («Añadir una página web (URL)») opens a small
+    popover above the toolbar with the address («Dirección de la página», focused) and **Añadir**
+    (`addWebPage`, `POST .../web-pages`); **Subir archivos PDF** opens the file picker (several
+    PDFs at once, `multiple`), each uploaded whole in turn (`uploadPdf`, `POST .../sources/pdf`;
+    the page range stays on the topic page's `PdfUploadForm`), with «Subiendo N de M…» while it
+    runs; **Libro de texto** («Título del libro de texto») shows the topic page's
+    `BookTitleForm` in the popover (its heading visually hidden). A success closes the popover and
+    re-reads the source list and the metadata (as a new `refreshKey` does), with no status line
+    or log; a refusal stays in the popover as a Spanish `role="alert"` (an invalid address, the
+    backend's `detail`, «No se ha añadido «x.pdf»: …» per refused PDF with **Cerrar**, «Esa página
+    ya era una fuente del tema: «…».»). Escape, or the same button again, closes the popover and
+    gives the focus back to its button. With no source at all the list says «Este tema todavía no
+    tiene fuentes: captura páginas en la pestaña Captura o añádelas abajo.».
   - Left, bottom: the chat slot `WorkspaceChatSlot`, the live chat panel (`src/workspace/chat/`,
     #317; the notes page keeps `EditorChat`). A section named "Chat con el asistente" (its
     `aria-label`; no visible heading since #458, to save height): a `role="log"` list
@@ -653,7 +671,8 @@ token):
     page remembers: nothing of a session survives a reload. With `preset` `{subjectId, topicId}`
     (#312) `TopicSessionStart` replaces the picker: no subject/topic lists and no tutor, just
     "Empezar una sesión nueva" / "Continuar la sesión abierta" for that topic (same resume-or-start
-    rule as the picker); `onRunningChange(running)` reports whether a session's screen is shown.
+    rule as the picker; since #461 no sentence about the session above the button, and inside the
+    workspace its «Capturar» heading is visually hidden, the Captura tab names it); `onRunningChange(running)` reports whether a session's screen is shown.
   - `SessionPicker.tsx`: `SessionPicker({onSession?, now?})` -- subject and topic lists with
     their create forms; for the chosen topic it resumes `open_session_id` or starts a new
     session, and reports the result as `OpenedSession {session, subjectName, topicName}`.

@@ -74,11 +74,7 @@ export default function TopicSessionStart({ subjectId, topicId, onSession, now =
       {topic.state === "failed" && <p role="alert">{topic.message}</p>}
       {topic.state === "ready" && (
         <>
-          <p>
-            {topic.topic.open_session_id === undefined
-              ? "Este tema no tiene ninguna sesión sin terminar."
-              : "Este tema tiene una sesión sin terminar: puedes continuarla donde la dejaste."}
-          </p>
+          {/* #461: no sentence about the session; the button says whether it starts or continues. */}
           <button
             type="button"
             className="capture-primary"

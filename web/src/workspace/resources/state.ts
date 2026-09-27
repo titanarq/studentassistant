@@ -17,12 +17,6 @@ export type SourceKind = "notes" | "book" | "pdf" | "web" | "images";
 
 export type SourceState = "pending" | "incorporated" | "set_aside";
 
-export const STATE_LABELS: Record<SourceState, string> = {
-  pending: "Pendiente",
-  incorporated: "Incorporada",
-  set_aside: "Apartada",
-};
-
 /** A stored source of the topic: its kind and file under `sources/<kind>/`. */
 export interface SourceRef {
   kind: SourceKind;
@@ -191,6 +185,18 @@ export function thumbnailOf(vaultId: string, ref: SourceRef): { src: string; fal
 }
 
 /**
+ * Whether a source was retired by the student (#451, a soft delete): the meta's `removed`, or a
+ * `removed` mapping in its sidecar. Such a source stays out of the tab even when the notes still
+ * cite it (#456); the citation itself keeps opening it.
+ */
+export function isRemoved(meta: SourceMeta | null | undefined): boolean {
+  if (meta === null || meta === undefined) return false;
+  if (meta.removed === true) return true;
+  const mark = meta.meta?.removed;
+  return typeof mark === "object" && mark !== null && !Array.isArray(mark);
+}
+
+/**
  * The tab's entries, from the listed items (`resourceList`, in their order), the current notes
  * and the sources' metadata read so far (`undefined` while unread, `null` when it failed: kept).
  * One entry per stored source: the same PDF cited at several pages is one source.
@@ -217,6 +223,9 @@ export function resourceStates(
     if (seen.has(key)) continue;
     seen.add(key);
     const vaultId = sourceVaultId(subjectId, topicId, ref.kind, ref.file);
+    const read = metas.get(vaultId);
+    // A retired source is never listed (#456); one only the notes cite waits for its metadata.
+    if (isRemoved(read) || (item.unlisted === true && read === undefined)) continue;
     const sidecar = metas.get(vaultId)?.meta ?? null;
     const triage = triageOf(sidecar);
     const state: SourceState =
@@ -247,14 +256,4 @@ export function resourceStates(
     },
     others,
   };
-}
-
-/** "2 pendientes · 1 incorporada · 3 apartadas". */
-export function countsText(counts: SourceCountsByState): string {
-  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-  return [
-    plural(counts.pending, "pendiente", "pendientes"),
-    plural(counts.incorporated, "incorporada", "incorporadas"),
-    plural(counts.setAside, "apartada", "apartadas"),
-  ].join(" · ");
 }

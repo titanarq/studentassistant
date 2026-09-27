@@ -5,7 +5,6 @@ import { NOTES } from "../../notes/testNotes";
 import { resourceList } from "../resources";
 import {
   citedSources,
-  countsText,
   reasonText,
   resourceStates,
   sourceNumber,
@@ -123,11 +122,6 @@ it("recomputes incorporada from the notes alone", () => {
     [],
   );
   expect(after.kept.find((e) => e.ref.file === "page-003.jpg")?.state).toBe("incorporated");
-});
-
-it("writes the counts with singular and plural", () => {
-  expect(countsText({ pending: 2, incorporated: 1, setAside: 0 })).toBe("2 pendientes · 1 incorporada · 0 apartadas");
-  expect(countsText({ pending: 1, incorporated: 3, setAside: 1 })).toBe("1 pendiente · 3 incorporadas · 1 apartada");
 });
 
 it("runs at most `limit` tasks at once", async () => {
