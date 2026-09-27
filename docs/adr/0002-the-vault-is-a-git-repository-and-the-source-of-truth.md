@@ -40,3 +40,7 @@ installing the app and configuring GitHub.
 - A new PC is: install app -> `studentassistant setup` -> clone vault -> index rebuild.
 - The vault is browsable on GitHub itself: notes render and their provenance footnotes link to
   the source images (ADR-0005).
+- A source the student removes is *retired*, never deleted: `vault.remove_source` marks its
+  sidecar `removed` and every listing leaves it out, while its files and git history stay, so a
+  citation of it keeps resolving. Only the purge (ADR-0003) deletes source files (burst
+  originals). (#451)
