@@ -77,17 +77,41 @@ APUNTES DEFINITIVOS ──► esquema · quiz · flashcards · ejercicios/examen
 3. «Mira aquí» (o el botón 📷) → el móvil hace una ráfaga de fotos en alta resolución, vibra y
    hace «clic» para que sepas que está capturado. El backend se queda con la más nítida.
 4. «Siguiente» → nueva página. «Ahora el libro» → cambia el contexto de fuente a *libro*.
-5. En la pantalla ves la transcripción en vivo y un contador discreto de **dudas pendientes**.
-   El sistema nunca te interrumpe durante la captura.
-6. «Ya está, prepárame el tema» → termina la sesión y Opus genera la primera versión.
-7. En el PC abres la web: los apuntes, cada párrafo con su procedencia (clic → ves tu hoja
-   manuscrita o el minuto de la conversación). Revisas conversando:
-   «esta parte está demasiado resumida», «pon un ejemplo aquí», «no inventes nada que no esté en
-   mis fuentes», «esta explicación del libro es mejor, usa esa».
-8. Resolución de dudas: Opus resuelve solo lo que puede con tus fuentes (y te dice de dónde lo ha
-   sacado) y te pregunta el resto, una a una: «Hay una contradicción entre tus apuntes y el libro
-   sobre esta fecha, ¿cuál uso? ¿conservo una nota con lo que pone en tus apuntes?».
-9. Cada cambio queda versionado (Apuntes v1, v2, v3…) y sincronizado con GitHub.
+5. En el portátil tienes una sola **pantalla de estudio** con dos columnas. A la izquierda,
+   arriba, las pestañas **Captura** (la cámara y la transcripción en vivo) y **Recursos** (las
+   fuentes del tema que ya has capturado: páginas, libro, PDF, webs); debajo, el **chat** con el
+   asistente. A la derecha, el **documento** que se está construyendo: los apuntes del tema, cada
+   párrafo con su procedencia (clic → la fuente se abre en *Recursos*). Un contador discreto de
+   **dudas pendientes**; el sistema nunca te interrumpe mientras capturas.
+6. Mientras hablas, el asistente distingue cuándo le estás pidiendo algo («pon esto como
+   definición», «haz una tabla con las tres causas», «esta explicación del libro es mejor, usa
+   esa») y se lo pasa al editor (Opus), que cambia el documento en ese momento. En el chat no ves
+   toda la transcripción: ves un resumen breve de cada petición (con «…» para desplegar
+   exactamente lo que dijiste) y la respuesta del editor. También puedes escribirle. «Prepárame el
+   tema» sigue ahí como una petición más: redacta el tema completo con todo lo capturado.
+7. El documento sólo cambia por dos caminos: lo que pides en el chat y lo que editas tú
+   directamente (un editor visual donde puedes pegar imágenes, que se guardan como fuentes, e
+   insertar tablas; o el Markdown en bruto con el botón **Edición**). Cada cambio, tuyo o del
+   editor, es una versión nueva y el editor siempre trabaja sobre la última: nada de lo que
+   escribes se pierde. Revisas conversando: «esta parte está demasiado resumida», «pon un ejemplo
+   aquí», «no inventes nada que no esté en mis fuentes».
+8. Cuando el documento te convence, pasas a **Estudiar**: con el interruptor **Construir ·
+   Estudiar** de la cabecera o diciéndolo en el chat («ya está, quiero estudiar»). El asistente
+   cierra la sesión de captura, marca esa versión de los apuntes como **versión de estudio** y te
+   deja un único botón **Ir a Estudiar**. Es sólo una etiqueta: los apuntes siguen siendo tuyos;
+   si vuelves a Construir y los cambias, hay una versión nueva y el material hecho con la anterior
+   aparece como **Desactualizado**.
+9. En **Estudiar** tienes a la izquierda los **repasos para hoy**, las opciones de estudio
+   (**Esquema, Ejercicios, Examen, Quiz, Tarjetas de memoria**, cada una lista, desactualizada o
+   sin generar) y un **chat de preguntas** sobre el documento, que responde citando la sección y la
+   fuente («§ Funciones del lenguaje», «p3») y nunca cambia los apuntes. A la derecha, el documento
+   en modo lectura (con un enlace **Editar en Construir**). Al abrir una opción, se desliza un
+   panel sobre el borde del documento y se resalta la parte del documento de la que trata cada
+   tarjeta o pregunta.
+10. Resolución de dudas: Opus resuelve solo lo que puede con tus fuentes (y te dice de dónde lo ha
+    sacado) y te pregunta el resto, una a una: «Hay una contradicción entre tus apuntes y el libro
+    sobre esta fecha, ¿cuál uso? ¿conservo una nota con lo que pone en tus apuntes?».
+11. Cada cambio queda versionado (Apuntes v1, v2, v3…) y sincronizado con GitHub.
 
 ## 5. Mejoras sobre la idea original
 
@@ -107,7 +131,10 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
 3. **Comandos de voz deterministas.** «Mira aquí», «siguiente», «importante», «ahora el libro»,
    «ya está, prepárame el tema» se detectan con una gramática configurable sobre la transcripción,
    sin LLM: latencia mínima, coste cero y comportamiento predecible. Sonnet se reserva para
-   *entender*, no para *obedecer*. Cada comando tiene también su botón.
+   *entender*, no para *obedecer*. Cada comando tiene también su botón. Las peticiones al
+   asistente no son comandos: por defecto las interpreta Sonnet sobre la transcripción; como
+   alternativa, la palabra de activación «anel» («anel, haz una tabla…») las detecta la misma
+   gramática determinista. Se elige en la configuración para poder compararlas.
 4. **Transcripción de cada página como fuente derivada.** Al capturar, Sonnet (visión) pasa la
    página a Markdown conservando la estructura (flechas y esquemas como listas anidadas o
    diagramas), marca las palabras dudosas `[[?soberanía]]` y usa lo que dijiste alrededor de la
@@ -135,6 +162,8 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
    local. Git es la fuente de verdad; la base de datos SQLite local es sólo una caché derivada.
 9. **Versiones = git.** «Apuntes v3» es una etiqueta git; se pueden ver diferencias entre
    versiones y volver atrás. Los ficheros *append-only* se fusionan sin conflictos (`merge=union`).
+   La **versión de estudio** es la versión etiquetada con la que estudias: una marca, no una
+   congelación.
 10. **Captura resiliente.** Si se cae la Wi-Fi, el móvil sigue grabando en local y sube lo
     pendiente al reconectar; ninguna foto ni minuto de voz se pierde.
 11. **Simulador de sesiones.** `studentassistant replay` reproduce una sesión grabada (audio +

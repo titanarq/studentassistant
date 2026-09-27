@@ -12,13 +12,20 @@ state is whatever we feed them. It must also be auditable ("why did you put this
 - A study session is an **append-only event log** (`events.jsonl`) plus the transcript
   (`transcript.jsonl`). Event kinds include: session lifecycle, transcript segment final,
   capture stored, voice/button command, source context change, marker (important), observer
-  state ops, pending item added/resolved, page transcription stored.
+  state ops, pending item added/resolved, page transcription stored, capture triaged
+  (`capture.triaged`), assistant request detected from the transcript or typed in the chat
+  (`assistant.request`, origin `observer`, `stt` for the wake word, `user` when typed; kinds
+  include `study`), notes edited by the student (`notes.edited`, origin `user`).
 - Every event has a monotonically increasing `seq`, a session-relative timestamp, its origin
-  (`phone`, `stt`, `observer`, `editor`, `user`) and a schema version.
+  (`phone`, `stt`, `observer`, `editor`, `sources`, `user`) and a schema version. `sources` is
+  what the sources module produces on its own (page transcription, capture triage); a student's
+  own decision about a source (set aside, restore) stays `user`.
 - The observer's knowledge state (outline, section assignment of segments, concepts, capture <->
   segment links, source context, pending items) is a **pure fold** of the events: the observer
   emits *state ops*, never a mutable blob. Snapshots in `state/` are an optimisation, always
   reproducible from the log.
+- The web's workspace stream (`notes.changed`, `study.marked` `{version, tag}`, chat turn events)
+  is a live view for the browser, not part of the log.
 - Each LLM role's conversation is persisted as JSONL in the vault (`conversations/`), with model
   id, prompt file hash and usage per call, so a role can be resumed on another PC.
 

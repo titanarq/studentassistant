@@ -8,7 +8,7 @@ Status: accepted (2026-09-24)
 | STT | Pluggable (ADR-0008). Default client-side Google: Web Speech API (web capture page), Android SpeechRecognizer. Optional server-side: faster-whisper `large-v3-turbo` on the RTX 2060 (CUDA `int8_float16`, CPU fallback) as an optional extra; one cloud provider |
 | Images | Pillow + OpenCV (headless) for sharpness, crop, deskew |
 | PDF | PyMuPDF for page rendering/text; Claude native PDF input for the editor |
-| LLM | `anthropic` Python SDK (ADR-0004); server tools `web_search_20260209` / `web_fetch_20260209` for web search |
+| LLM | `anthropic` Python SDK, or the Claude Code CLI headless on the user's subscription (ADR-0004, `[llm] backend`); server tools `web_search_20260209` / `web_fetch_20260209` for web search (under Claude Code, the CLI's `WebSearch` / `WebFetch` for the web search role only) |
 | Storage | git CLI via subprocess on the vault (ADR-0002); SQLite (stdlib, FTS5) as derived index |
 | Web | React + Vite + TypeScript, vitest; built assets served by FastAPI; web capture page with `getUserMedia`, ImageCapture, Web Speech API, AudioWorklet |
 | Android | Kotlin, JDK 17, Compose Material 3, CameraX, AudioRecord, OkHttp WebSocket, kotlinx.serialization, QR scanning (ZXing embedded, no Play Services dependency), DataStore; `minSdk` 28, `targetSdk` 35 |
