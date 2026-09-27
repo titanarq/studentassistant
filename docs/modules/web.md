@@ -705,7 +705,7 @@ token):
 - `src/topic/`: `TopicPage` (`← Mesa de estudio` link, heading "Tema <topic name>", "Asignatura
   <subject name>", the ids until the lists answer), reached from the topic's name on the desk, has at
   the top the pair **Construir** (`.../workspace`) / **Estudiar** (`.../study`), plain links in a
-  `nav` "Abrir el tema" (#368; it replaced the single "Abrir espacio de estudio" link), then shows `TopicCard`, `PrepareTopic`,
+  `nav` "Abrir el tema" (#368; it replaced the single "Abrir espacio de estudio" link), then shows `TopicCard`, a line sending the student to Construir,
   `MaterialsPanel` ("Material de estudio", `src/materials/`, below), `PdfUploadForm`,
   `WebSearchPanel`, `WebPageForm`, `BookTitleForm` and `TopicCostBlock` (below the phone
   breakpoint, 48rem, `topic/topic.css` on `main.topic-page`: one column, full-width fields,
@@ -718,7 +718,11 @@ token):
   is named `outline`/`quiz`/`flashcards`/`exam`/`slides` or their Spanish names, `MATERIALS`).
   Generating, previewing and downloading each material is `MaterialsPanel` (#79; the card's
   former "Descargas" row moved there, per material).
-  `PrepareTopic` ("Prepárame el tema", below) sits above the materials and the upload form.
+  There is no "Prepárame el tema" button (#434, removed with `PrepareTopic`): nothing writes the
+  notes on a click. Above the materials a line reads "Para redactar los apuntes, ve a Construir y
+  pídeselo al asistente en el chat.", its "Construir" a link to `topicWorkspacePath`; the whole-topic
+  generation is asked for in the workspace chat (the chat's `prepare_notes` request, which still
+  uses `POST .../notes/generate`).
   `PdfUploadForm` ("Añadir un PDF": a file input, an optional "Páginas" text such as `82-94`, sent
   as typed). `api.ts`: `uploadPdf(subjectId, topicId, file, pages)` posts the multipart form to
   `POST /api/subjects/{s}/topics/{t}/sources/pdf` -> `{kind: "ok", imported} | {kind: "refused",
@@ -829,8 +833,9 @@ token):
     section's anchor and its number as the backend counts blocks (from 1 after a heading of level
     2 or deeper; before the first section from the start, the `# title` included); the page asks
     `chat.ask({section, block, quote: blockExcerpt(block)}, whyQuestion(block, section))`
-    (`POST .../notes/why`, #69), and the answer's sources open in the `SourcePanel`. A topic without notes (404) shows `PrepareTopic` under the
-    backend's detail and reads the notes again when it is done; the chat appears once notes exist.
+    (`POST .../notes/why`, #69), and the answer's sources open in the `SourcePanel`. A topic without notes (404) shows, under the
+    backend's detail, the same line with the "Construir" link as the topic page (#434: no button
+    writes the notes; they are asked for in the workspace chat); the chat appears once notes exist.
 - `src/chat/` (#71): the chat with the editor over the editor chat API (docs/modules/server.md).
   - `sse.ts`: `readSse(body, onEvent)`, a reader of a `text/event-stream` body from a `fetch` POST
     (events split at blank lines, `event:` + joined `data:` lines, comments ignored; rejects when
@@ -1048,12 +1053,6 @@ token):
   `fetchGeneratedText` (`ReadResult`), `generateMaterial(s, t, kind, confirmOverCap)`
   (`ActionResult<Generated>`: `kind`, `notesVersion`, `warnings`), `fileUrl`, `previewPath`,
   `generatedName`; lenient readers `readGenerators`, `readMaterials`, `readGenerated`.
-- `src/topic/PrepareTopic.tsx` (#80): "Prepárame el tema" on the topic page. `generateNotes(s, t,
-  confirmOverCap)` posts `POST .../notes/generate`; when the result is not a draft the component
-  then calls `POST .../doubts/review`, as the doubts API asks of the web, and shows "Apuntes v<N>
-  listos.", what the review did and a "Ver las dudas" link to the panel. A draft is reported and
-  not reviewed. Refusals are shown in Spanish; a reached cost cap offers "Continuar igualmente",
-  which repeats the step that stopped with `confirm_over_cap`. The topic card reloads afterwards.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.

@@ -156,3 +156,17 @@ it("opens the topic in Construir or Estudiar from the top of the page", () => {
   );
   expect(screen.queryByRole("link", { name: "Abrir espacio de estudio" })).not.toBeInTheDocument();
 });
+
+it("has no «Prepárame el tema» button: it sends the student to ask in the Construir chat", async () => {
+  stubApi({ "/api/subjects": SUBJECTS, "/api/subjects/historia/topics": TOPICS, [SUMMARY_PATH]: summary(0) });
+
+  renderPage();
+
+  const hint = (await screen.findByText(/pídeselo al asistente en el chat/)).closest("p") as HTMLElement;
+  expect(within(hint).getByRole("link", { name: "Construir" })).toHaveAttribute(
+    "href",
+    "/subjects/historia/topics/revolucion-francesa/workspace",
+  );
+  expect(screen.queryByRole("region", { name: "Prepárame el tema" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Prepárame el tema/ })).not.toBeInTheDocument();
+});

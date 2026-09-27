@@ -263,20 +263,14 @@ it("reads the conversation again when the stream is cut", async () => {
   expect(within(chat).getByRole("button", { name: "Deshacer el último cambio" })).toBeEnabled();
 });
 
-it("offers to prepare the topic when there are no notes yet, and shows them once written", async () => {
-  let notesReads = 0;
+it("shows no chat while the topic has no notes, and no button that writes them", async () => {
   stubApi({
     "/api/subjects/historia/topics": TOPICS,
-    [`${BASE}/notes`]: () =>
-      notesReads++ === 0 ? jsonResponse({ detail: "Todavía no hay apuntes de este tema." }, 404) : notes(NOTES, 1),
+    [`${BASE}/notes`]: jsonResponse({ detail: "Todavía no hay apuntes de este tema." }, 404),
     [CHAT]: jsonResponse(history()),
-    [`POST ${BASE}/notes/generate`]: jsonResponse({ draft: false, version: 1, warning: null }),
-    [`POST ${BASE}/doubts/review`]: jsonResponse({ auto_resolved: [], asked: [], notes_changed: false, warning: null }),
   });
   render(<NotesPage subjectId="historia" topicId="revolucion-industrial" />);
   expect(await screen.findByText("Todavía no hay apuntes de este tema.")).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Hablar con el editor" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Prepárame el tema" }));
-  expect(await screen.findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
-  expect(screen.getByRole("region", { name: "Hablar con el editor" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Prepárame el tema" })).toBeNull();
 });
