@@ -725,8 +725,8 @@ Routes registered today:
       Spanish line, e.g. "Preparando un quiz de 10 preguntas de dificultad variada con tus
       apuntes v4…" (the newest `apuntes-vN`, none when untagged);
     - then `result` `{kind: "generation", option, material_kind, question, reply, items,
-      warnings, study}`: `reply` e.g. "Listo: 10 preguntas. Ábrelo en «Quiz»." (slides: "Listas
-      las diapositivas: descárgalas desde la ficha del tema."), `items` the material's item
+      warnings, study}`: `reply` e.g. "Listo: 10 preguntas. Ábrelo en «Quiz»." (slides, #380: "Listas:
+      9 diapositivas. Ábrelas en «Diapositivas»."), `items` the material's item
       count, `warnings` the generation's (Spanish), `study` the fresh `StudyState` of
       `GET .../study`;
     - or `error` `{status, detail, code?}` as the tutor's: a reached cap 409 `cost_cap_reached`
@@ -780,11 +780,19 @@ Routes registered today:
     `detail` when the topic has no notes (nothing is ended then), 404 unknown topic, 503 vault.
   - `GET .../study` -> `StudyState` (reads only): `study_version` (`{version, tag, marked_at}` or
     null), `study_current` (the notes still equal the label) and `options`, one per study option
-    `{key: esquema|ejercicios|examen|quiz|tarjetas, kind, state: listo|desactualizado|sin_generar,
-    stale_reason, notes_version}` from `generators.materials_status` (ejercicios and examen both
-    from kind `examen`, tarjetas from `flashcards`; `notes_version` the `apuntes-vN` the material
-    was built from). Staleness is the generators' own: an edit after a material was built makes
-    it `desactualizado`. 404 unknown topic, 503 vault.
+    `{key: esquema|ejercicios|examen|quiz|tarjetas|diapositivas, kind, state:
+    listo|desactualizado|sin_generar, stale_reason, notes_version}`, six in that order, from
+    `generators.materials_status` (ejercicios and examen both from kind `examen`, tarjetas from
+    `flashcards`, diapositivas from the slides generator's kind `diapositivas`, #380;
+    `notes_version` the `apuntes-vN` the material was built from). Staleness is the generators'
+    own: an edit after a material was built makes it `desactualizado`. 404 unknown topic, 503
+    vault. Every response embedding a `StudyState` (`POST .../study`, the study chat's generation
+    `result.study`, the `study` turn) carries the same six options. The slides' downloads need
+    nothing more in the study state: `GET .../topics/{t}/generated` lists the `diapositivas`
+    artifact's `files` (vault-relative: `generated/diapositivas.md` always, plus
+    `diapositivas.pdf` and `diapositivas.pptx` when Marp exported them) and
+    `GET .../generated/files/{name}` (`name` relative to `generated/`) serves each as a download
+    -- the calls `web/src/materials/` already makes (`fetchMaterials`, `fileUrl`).
 - **The subject style guide API** (`server/style_guide_routes.py`, `style_guide_router()`),
   web-only, thin over `editor.style_guide` (`docs/modules/editor.md`), over the vault and
   `GitSync` of the `SessionService`; no Claude call. Each answers a `StyleGuide` (`subject`,

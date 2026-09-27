@@ -46,7 +46,7 @@ from studentassistant.generators.quiz import KIND as QUIZ_KIND
 from studentassistant.generators.slides import KIND as SLIDES_KIND
 
 GenerationOption = Literal["esquema", "ejercicios", "examen", "quiz", "tarjetas", "diapositivas"]
-"""The study option a generation fills (`StudyOptionKey`, plus `diapositivas`)."""
+"""The study option a generation fills (`StudyOptionKey` of `study_routes.py`)."""
 
 OPTION_TITLES: dict[GenerationOption, str] = {
     "esquema": "Esquema",
@@ -400,7 +400,7 @@ def result_reply(request: GenerationRequest, counts: dict[str, int], items: int)
     «Quiz»."); `counts` splits an exam's items (`exercises`, `questions`) when known."""
     title = OPTION_TITLES[request.option]
     if request.option == "diapositivas":
-        done = "Listas las diapositivas: descárgalas desde la ficha del tema."
+        done = f"Listas: {_plural(items, 'diapositiva', 'diapositivas')}. Ábrelas en «{title}»."
     else:
         if request.option == "esquema":
             what = f"el esquema tiene {_plural(items, 'apartado', 'apartados')}"

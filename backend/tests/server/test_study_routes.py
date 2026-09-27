@@ -173,6 +173,7 @@ def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_versi
         "examen": "sin_generar",
         "quiz": "sin_generar",
         "tarjetas": "sin_generar",
+        "diapositivas": "sin_generar",
     }
     app: Any = client.app
     assert app.state.sessions.active is None and _ended(topic, session_id)
@@ -259,7 +260,9 @@ def test_the_state_reports_each_option_and_goes_stale_after_an_edit(
         "examen": ("examen", "listo", None),
         "quiz": ("quiz", "listo", None),
         "tarjetas": ("flashcards", "listo", None),
+        "diapositivas": ("diapositivas", "sin_generar", None),
     }
+    assert [o["key"] for o in state["options"]][-1] == "diapositivas"
     assert {o["key"]: o.get("notes_version") for o in state["options"]}["quiz"] == 1
 
     # An edit after labelling: still labelled, but not current, and the materials are stale.
