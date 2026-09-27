@@ -1485,6 +1485,85 @@ describe("a dropped connection (#411)", () => {
     expect(fakes.workletNodes).toHaveLength(1);
   });
 
+  it("switches from the recognizer to the audio stream when the backend comes back in server mode (#447)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open("client");
+    const recognition = fakes.recognitions[0];
+    await act(async () => {
+      socket().serverClose(1012);
+    });
+
+    const next = await reconnect(1000, "server");
+
+    expect(recognition.abortCount).toBeGreaterThan(0);
+    await waitFor(() => expect(fakes.workletNodes).toHaveLength(1), { timeout: LOAD_TIMEOUT });
+    expect(fakes.recognitions).toHaveLength(1);
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Transcribe el servidor",
+    );
+    // The camera went on through the switch.
+    expect(fakes.devices.getUserMediaCalls.filter((call) => call.video)).toHaveLength(1);
+    expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent(
+      "La cámara está en marcha.",
+    );
+    await speak(0);
+    expect(audioSeqs(next)).toEqual([0]);
+    expect(next.closeCalls).toEqual([]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("switches from the audio stream to the recognizer when the backend comes back in client mode (#447)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open("server");
+    expect(fakes.recognitions).toHaveLength(0);
+    await act(async () => {
+      socket().serverClose(1012);
+    });
+
+    const next = await reconnect(1000, "client");
+
+    expect(fakes.audioTrack.readyState).toBe("ended");
+    await waitFor(() => expect(fakes.recognitions).toHaveLength(1), { timeout: LOAD_TIMEOUT });
+    const recognition = fakes.recognitions[0];
+    expect(recognition.startCount).toBe(1);
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Transcribe este navegador",
+    );
+    await act(async () => {
+      recognition.emitResult([{ transcript: "el estroma", final: true }]);
+    });
+    const types = next.sentText.map((text) => (JSON.parse(text) as SentFrame).type);
+    expect(types).toEqual(["hello", "transcript.client.final"]);
+    expect(next.sentBinary).toEqual([]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("starts the new mode's transcriber only when a hidden tab comes back (#447)", async () => {
+    fakeTimers();
+    renderScreen({ reconnectDelaysMs: [1000] });
+    await open("client");
+    await act(async () => {
+      restores.push(setVisibility("hidden"));
+    });
+    await act(async () => {
+      socket().serverClose(1012);
+    });
+
+    await reconnect(1000, "server");
+    expect(fakes.workletNodes).toHaveLength(0);
+    expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveTextContent(
+      "Transcribe el servidor",
+    );
+
+    await act(async () => {
+      restores.push(setVisibility("visible"));
+    });
+    await waitFor(() => expect(fakes.workletNodes).toHaveLength(1), { timeout: LOAD_TIMEOUT });
+    expect(fakes.recognitions).toHaveLength(1);
+  });
+
   it("clears the long-outage message once the connection comes back", async () => {
     fakeTimers();
     renderScreen({ longOutageMs: 3000, reconnectDelaysMs: [5000] });

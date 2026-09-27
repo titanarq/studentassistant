@@ -472,7 +472,11 @@ describe("client events", () => {
 
   it("sends an audio frame as the very bytes it was given, after the text frames", async () => {
     const harness = openSession();
-    await answerHello(harness);
+    await answerHello(harness, {
+      ...example<HelloAck>("server.hello.ack"),
+      stt_mode: "server",
+      audio_format: { encoding: "pcm16", sample_rate_hz: 16000, channels: 1 },
+    });
 
     harness.socket.sendAudio(AUDIO_FRAME);
 
@@ -812,5 +816,42 @@ describe("reconnect (#411)", () => {
 
     expect(seqs(session.sockets[0])).toEqual([0]);
     expect(seqs(next)).toEqual([0]);
+  });
+
+  it("sends a server-mode backend no transcript of the client's recognizer after a mode switch (#447)", async () => {
+    const session = await running();
+    session.sockets[0].serverClose(1012);
+    session.socket.sendTranscript(FINAL, "final");
+    session.socket.sendButton("important", CLIENT_TIME_MS);
+    expect(session.socket.queuedCount).toBe(2);
+
+    const next = await reconnect(session, 1);
+    expect(session.socket.sttMode).toBe("server");
+    expect(session.events.at(-1)).toEqual({ kind: "reconnected", ack: SERVER_ACK });
+    // The kept final is dropped (the backend would close with 1008); the button still goes out.
+    expect(types(next)).toEqual(["hello", "button"]);
+
+    session.socket.sendTranscript(FINAL, "final");
+    session.socket.sendTranscript(PARTIAL, "partial");
+    session.socket.sendAudio(frame(0));
+    expect(types(next)).toEqual(["hello", "button"]);
+    expect(seqs(next)).toEqual([0]);
+  });
+
+  it("sends a client-mode backend no audio after a mode switch (#447)", async () => {
+    const session = await running(undefined, { ack: SERVER_ACK });
+    session.socket.sendAudio(frame(0));
+    session.sockets[0].serverClose(1012);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const next = session.sockets[1];
+    next.serverOpen();
+    next.serverMessage(JSON.stringify(example("server.hello.ack")));
+    expect(session.socket.sttMode).toBe("client");
+
+    session.socket.sendAudio(frame(1));
+    session.socket.sendTranscript(FINAL, "final");
+    expect(next.sentBinary).toEqual([]);
+    expect(types(next)).toEqual(["hello", "transcript.client.final"]);
   });
 });

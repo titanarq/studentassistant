@@ -79,6 +79,12 @@
   the backend as a duplicate and answered with the same ack). In a running connection an
   `ack` never reaches the next number. The audio of the outage itself is lost; the microphone
   keeps running. A hidden tab (#425) says `pause` again on the new connection in either mode.
+  A reconnect may answer with the other `stt_mode` (a backend restarted with another config,
+  #447): from that `hello.ack` on the socket sends only what the new mode takes (no audio to a
+  client-mode backend; no `transcript.client.*`, kept finals included, to a server-mode one,
+  which would close with 1008), and the screen, on `reconnected`, stops the running transcriber
+  and starts the new mode's one (the camera goes on; a hidden tab starts it when it comes back)
+  and updates the mode in "Estado de la conexión".
   The screen meanwhile keeps the camera, the recognizer (or audio stream) and the wake lock running and the controls
   enabled, shows «Reconectando…» in "Estado de la conexión" and, after a reconnect,
   «Conexión recuperada» for `RECOVERED_MS` (5 s); only after `LONG_OUTAGE_MS` (2 min) of outage

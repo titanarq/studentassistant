@@ -233,6 +233,11 @@ type Phase = "connecting" | "live" | "reconnecting" | "closed";
  * "Resume"), and a frame sent before it arrived is dropped by the backend as a duplicate and
  * answered with the same ack. In a running connection an `ack` never reaches the next number, so
  * the rule only ever acts after a (re)connect. Audio of the outage itself is not kept.
+ *
+ * A reconnect may answer with another `stt_mode` than the first `hello.ack` (a backend restarted
+ * with another config, #447). The socket then sends only what the new mode takes -- no audio to a
+ * client-mode backend, no `transcript.client.*` (kept or new) to a server-mode one -- and the page
+ * switches its transcriber on `reconnected`.
  */
 export class SessionSocket {
   /** The absolute URL this socket dials. */
@@ -338,6 +343,8 @@ export class SessionSocket {
    */
   sendAudio(frame: Uint8Array<ArrayBuffer>): void {
     if (this.phase === "reconnecting") return;
+    // A client-mode backend closes on audio (#447): a reconnect may have switched the mode.
+    if (this.ack !== null && this.ack.stt_mode !== "server") return;
     if (this.transmit(withSeq(frame, this.audioSeq))) this.audioSeq += 1;
   }
 
@@ -458,7 +465,9 @@ export class SessionSocket {
     if (this.phase === "reconnecting") {
       this.phase = "live";
       this.attempts = 0;
-      for (const message of this.offline.splice(0)) this.transmit(JSON.stringify(message));
+      for (const message of this.offline.splice(0)) {
+        if (this.suits(message)) this.transmit(JSON.stringify(message));
+      }
       this.notify({ kind: "reconnected", ack });
       return;
     }
@@ -594,7 +603,18 @@ export class SessionSocket {
       this.keep(message);
       return;
     }
+    if (!this.suits(message)) return;
     this.transmit(JSON.stringify(message));
+  }
+
+  /**
+   * Whether the current connection's STT mode takes this message (#447): a server-mode backend
+   * closes on `transcript.client.*`, and a reconnect may land on a backend that restarted in the
+   * other mode. What the client's recognizer heard then is dropped, not sent into a refusal: the
+   * backend transcribes the audio of the transcriber the page switches to.
+   */
+  private suits(message: ClientEvent): boolean {
+    return !(this.ack?.stt_mode === "server" && message.type.startsWith("transcript.client."));
   }
 
   private keep(message: ClientEvent): void {
