@@ -27,8 +27,8 @@ order**:
     the session is still active.
   - `prepare_notes`: "prepárame el tema" through the same `NotesGenerator.generate` as the button
     and with the same rule: never past a reached cost cap without the student's confirmation, so a
-    reached cap is a `turn.error` with code `cost_cap_reached` (the student confirms through
-    `POST .../notes/generate`), never a silent spend. A generation that wrote the notes is a
+    reached cap is a `turn.error` with code `cost_cap_reached` (the student confirms it, below),
+    never a silent spend. A generation that wrote the notes is a
     `notes.changed` (origin `generation`), then `turn.result` (the `GenerationResult`); in the
     batched mode (#326) each batch is its own `incorporate` turn on the stream too.
   - `incorporate` (#327): `NotesGenerator.incorporate` of the request's `targets` (one small
@@ -46,6 +46,13 @@ order**:
 - A failure is a `turn.error` `{turn_id, request_id, status, detail, code?}` with the status the
   same failure has over REST (a reached cap 409 `cost_cap_reached`, a Claude failure 502, ...).
   The next request of the topic runs anyway.
+- A request stopped at the cost cap is kept (in memory, the last `STOPPED_PER_TOPIC` of each
+  topic, keyed by the failed turn's `turn_id`) so the student can confirm it: `confirm` (`POST
+  .../workspace/messages` `{confirm_over_cap: true, turn_id}`, #351) queues the same, already
+  classified request again with `confirm_over_cap` threaded to its handler (`revise_notes`,
+  `NotesGenerator.generate`, `NotesGenerator.incorporate`, `answer_doubt`); it is not
+  classified again and not announced again (no second `request.detected`), and its new turn
+  carries the same `request_id`. A request is confirmed once; after a restart nothing is kept.
 
 Shutdown (`stop`) closes the bus subscription and gives the running turns
 `SHUTDOWN_TIMEOUT_SECONDS` to finish before cancelling them; still-queued requests are dropped
@@ -55,6 +62,7 @@ with a log line (they stay in the session's `events.jsonl`).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 import uuid
@@ -80,6 +88,7 @@ from studentassistant.editor.incorporate import IncorporationError, SourceStatus
 from studentassistant.editor.revise import (
     REPLY_DELTA,
     ChatRequestRef,
+    TriageTarget,
     TriageTurn,
     record_triage_turn,
     revise_notes,
@@ -125,8 +134,13 @@ from studentassistant.server.workspace import (
     TurnKind,
     WorkspaceHub,
 )
+from studentassistant.sources import triage_status
 from studentassistant.sources.triage import (
     CAPTURE_TRIAGED_KIND,
+    REASON_TEXT,
+    TRIAGE_REASONS,
+    TriageReason,
+    TriageResult,
     change_for,
     set_capture_triage,
     triaged_payload,
@@ -146,6 +160,8 @@ CLAIM_POLL_SECONDS = 0.1
 CLAIM_TIMEOUT_SECONDS = 600.0
 """How long a request waits for the topic's notes lock before it fails as busy."""
 SHUTDOWN_TIMEOUT_SECONDS = 5.0
+STOPPED_PER_TOPIC = 32
+"""How many requests stopped at the cost cap each topic keeps for a confirmation."""
 
 BUSY_DETAIL = (
     "No se ha podido atender la petición: el editor lleva demasiado tiempo ocupado con los"
@@ -153,6 +169,10 @@ BUSY_DETAIL = (
 )
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 UNKNOWN_SOURCE_DETAIL = "No encuentro esa página entre las fuentes del tema."
+NOT_STOPPED_DETAIL = (
+    "Esa petición ya no está esperando confirmación (quizá ya se hizo o el servidor se reinició):"
+    " vuelve a pedirla."
+)
 
 TURN_KINDS: Mapping[str, TurnKind] = {
     "edit": "revise",
@@ -172,6 +192,10 @@ class _BusyError(Exception):
     """The topic's notes lock stayed taken for `claim_timeout` seconds."""
 
 
+class NotStoppedError(LookupError):
+    """`confirm` of a turn that is not a request stopped at the cost cap (any more)."""
+
+
 @dataclass(frozen=True)
 class QueuedRequest:
     """One request waiting for its turn."""
@@ -180,6 +204,8 @@ class QueuedRequest:
     topic_id: str
     session_id: str
     request: AssistantRequest
+    confirm_over_cap: bool = False
+    """The student confirmed going past a reached cost cap (`AssistantRequestConsumer.confirm`)."""
 
     def reference(self) -> ChatRequestRef:
         return ChatRequestRef(
@@ -236,6 +262,8 @@ class AssistantRequestConsumer:
         self._workers: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._typed_lock = asyncio.Lock()
         self._typed_counts: dict[str, int] = {}
+        self._stopped: dict[tuple[str, str], dict[str, QueuedRequest]] = {}
+        """Per topic, the requests stopped at the cost cap by their failed turn id, oldest first."""
 
     # -- lifecycle -------------------------------------------------------------------------------
 
@@ -320,11 +348,14 @@ class AssistantRequestConsumer:
                 **({"targets": list(request.targets)} if request.targets else {}),
             },
         )
-        key = (subject_id, topic_id)
+        self._enqueue(queued)
+
+    def _enqueue(self, queued: QueuedRequest) -> None:
+        key = (queued.subject_id, queued.topic_id)
         self._queues.setdefault(key, deque()).append(queued)
         if key not in self._workers:
             task = asyncio.create_task(
-                self._work(key), name=f"assistant-requests-{subject_id}-{topic_id}"
+                self._work(key), name=f"assistant-requests-{key[0]}-{key[1]}"
             )
             self._workers[key] = task
 
@@ -386,9 +417,35 @@ class AssistantRequestConsumer:
                     error,
                     exc_info=status == 500,
                 )
+            if code == ErrorCode.COST_CAP_REACHED.value:
+                self._remember_stopped(broadcast.turn_id, queued)
             broadcast.error(status, detail, code)
         finally:
             self.generator.release(queued.subject_id, queued.topic_id)
+
+    def _remember_stopped(self, turn_id: str, queued: QueuedRequest) -> None:
+        stopped = self._stopped.setdefault((queued.subject_id, queued.topic_id), {})
+        stopped[turn_id] = queued
+        while len(stopped) > STOPPED_PER_TOPIC:
+            del stopped[next(iter(stopped))]
+
+    def confirm(self, subject_id: str, topic_id: str, turn_id: str) -> TypedMessageResult:
+        """Queue again, confirmed past the cost cap, the request whose turn `turn_id` stopped at
+        the cap (#351): the same request, not classified again; its new turn streams as usual.
+
+        Raises:
+            NotStoppedError: `turn_id` is not a request of the topic stopped at the cap (never
+                was, already confirmed, or forgotten: a restart, or `STOPPED_PER_TOPIC` newer ones).
+        """
+        stopped = self._stopped.get((subject_id, topic_id), {})
+        queued = stopped.pop(turn_id, None)
+        if queued is None:
+            raise NotStoppedError(turn_id)
+        self._enqueue(dataclasses.replace(queued, confirm_over_cap=True))
+        request = queued.request
+        return TypedMessageResult(
+            message_id=request.message_id or f"msg-{uuid.uuid4().hex[:16]}", requests=[request]
+        )
 
     async def _claim(self, subject_id: str, topic_id: str, holder: str) -> None:
         deadline = time.monotonic() + self.claim_timeout
@@ -429,6 +486,7 @@ class AssistantRequestConsumer:
             on_reply=broadcast.reply,
             on_event=self._publisher(queued.subject_id, queued.topic_id),
             request=queued.chat_request(),
+            confirm_over_cap=queued.confirm_over_cap,
             turn_id=broadcast.turn_id,
             live=None
             if self.doubts is None
@@ -437,8 +495,13 @@ class AssistantRequestConsumer:
         )
 
     async def _prepare(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
-        # Never `confirm_over_cap`: a reached cap is a `turn.error` the student confirms.
-        return await self.generator.generate(self.sessions, queued.subject_id, queued.topic_id)
+        # Never past a reached cap unconfirmed: that is a `turn.error` the student confirms.
+        return await self.generator.generate(
+            self.sessions,
+            queued.subject_id,
+            queued.topic_id,
+            confirm_over_cap=queued.confirm_over_cap,
+        )
 
     async def _incorporate(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
         return await self.generator.incorporate(
@@ -449,6 +512,7 @@ class AssistantRequestConsumer:
             on_reply=broadcast.reply,
             request=queued.chat_request(),
             turn_id=broadcast.turn_id,
+            confirm_over_cap=queued.confirm_over_cap,
         )
 
     async def _set_aside(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
@@ -468,18 +532,29 @@ class AssistantRequestConsumer:
         sync = self.sessions.sync
         s, t = queued.subject_id, queued.topic_id
         rows = {row.source_id: row for row in await asyncio.to_thread(source_status, vault, s, t)}
+        triage = (
+            await asyncio.to_thread(triage_status, vault, s, t) if decision == "set_aside" else {}
+        )
         done: list[SourceStatus] = []
         unchanged: list[SourceStatus] = []
         owed: list[SourceStatus] = []
+        targets: dict[str, TriageTarget] = {}
         for target in queued.request.targets:
             row = rows.get(target)
             if row is None:
                 raise _UnknownSourceError(target)
-            if (row.state == "apartada") == (decision == "set_aside"):
+            already = (row.state == "apartada") == (decision == "set_aside")
+            reason: str | None = None
+            if decision == "set_aside":
+                targets[target] = _target(target, triage.get(target), already=already)
+                reasons = targets[target].reasons
+                # A flagged page ("puede estar cortada") keeps its reason once set aside.
+                reason = reasons[0] if len(reasons) == 1 else None
+            if already:
                 unchanged.append(row)
                 continue
             result = await asyncio.to_thread(
-                set_capture_triage, vault, s, t, target, decision, sync=sync
+                set_capture_triage, vault, s, t, target, decision, reason=reason, sync=sync
             )
             change = await asyncio.to_thread(change_for, vault, s, t, target, result)
             await self._write_event(
@@ -492,7 +567,12 @@ class AssistantRequestConsumer:
                 owed.append(row)
         live = self._live_session(s, t) is not None
         reply = _triage_reply(
-            decision, done, unchanged, owed, transcribing=self.transcribing and live
+            decision,
+            done,
+            unchanged,
+            owed,
+            transcribing=self.transcribing and live,
+            targets=targets,
         )
         await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
         turn = TriageTurn(
@@ -504,6 +584,7 @@ class AssistantRequestConsumer:
             message=queued.request.text,
             reply=reply,
             applied=bool(done),
+            targets=list(targets.values()),
         )
         await asyncio.to_thread(record_triage_turn, vault, s, t, turn)
         if sync is not None:
@@ -532,6 +613,7 @@ class AssistantRequestConsumer:
             _doubt_answer(request.answer),
             client=client,
             sync=sync,
+            confirm_over_cap=queued.confirm_over_cap,
             host=self.sessions.host,
             live=None if self.doubts is None else self.doubts.live(s, t),
         )
@@ -775,8 +857,42 @@ def _has_transcription(vault: Vault, source_path: str) -> bool:
     return True
 
 
-def _labels(rows: list[SourceStatus]) -> str:
-    labels = [row.label for row in rows]
+def _target(source_id: str, result: TriageResult | None, *, already: bool) -> TriageTarget:
+    """A `set_aside` target with the reasons its triage gives (none for a page triage kept)."""
+    reasons: list[TriageReason] = []
+    duplicate_of = None
+    if result is not None and result.status != "kept":
+        reasons = [r for r in result.reasons if r in TRIAGE_REASONS]
+        if {"duplicate", "same_content"} & set(reasons):
+            duplicate_of = result.duplicate_of
+    return TriageTarget(
+        source_id=source_id, reasons=reasons, duplicate_of=duplicate_of, already=already
+    )
+
+
+def _reason_text(target: TriageTarget | None) -> str | None:
+    """«página en blanco», «repetida de la página 1», ...; None without reasons."""
+    if target is None or not target.reasons:
+        return None
+    texts: list[str] = []
+    for code in target.reasons:
+        text = REASON_TEXT.get(code, code)
+        if code in ("duplicate", "same_content") and target.duplicate_of:
+            path = PurePosixPath(target.duplicate_of)
+            digits = path.name.removeprefix("page-").split(".", 1)[0]
+            if digits.isdigit():
+                text = f"{text} de la página {int(digits)}"
+        texts.append(text)
+    return ", ".join(texts)
+
+
+def _labels(rows: list[SourceStatus], targets: Mapping[str, TriageTarget] | None = None) -> str:
+    """«la página 3 y la página 4»; with `targets`, each with its reason: «la página 9 (página
+    en blanco)»."""
+    labels = []
+    for row in rows:
+        reason = _reason_text((targets or {}).get(row.source_id))
+        labels.append(row.label if reason is None else f"{row.label} ({reason})")
     return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " y " + labels[-1]
 
 
@@ -791,11 +907,13 @@ def _triage_reply(
     owed: list[SourceStatus],
     *,
     transcribing: bool,
+    targets: Mapping[str, TriageTarget] | None = None,
 ) -> str:
-    """The short chat entry of a set-aside or restore request, Spanish."""
+    """The short chat entry of a set-aside or restore request, Spanish; a target set aside
+    with a triage reason says it in brackets («He apartado la página 9 (página en blanco).»)."""
     parts: list[str] = []
     if done and decision == "set_aside":
-        parts.append(f"He apartado {_labels(done)}.")
+        parts.append(f"He apartado {_labels(done, targets)}.")
     elif done:
         line = f"He recuperado {_labels(done)}"
         if owed:
@@ -816,7 +934,8 @@ def _triage_reply(
             if decision == "set_aside"
             else ("no estaban apartadas" if many else "no estaba apartada")
         )
-        parts.append(_sentence(f"{_labels(unchanged)} {state}."))
+        which = _labels(unchanged, targets if decision == "set_aside" else None)
+        parts.append(_sentence(f"{which} {state}."))
     return " ".join(parts) or "No había nada que cambiar."
 
 
@@ -882,7 +1001,9 @@ __all__ = [
     "request_context",
     "sources_lookup",
     "TURN_KINDS",
+    "NOT_STOPPED_DETAIL",
     "AssistantRequestConsumer",
+    "NotStoppedError",
     "QueuedRequest",
     "TypedMessageResult",
 ]

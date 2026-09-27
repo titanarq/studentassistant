@@ -2,7 +2,8 @@ import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useState } f
 import DiffView from "../../chat/DiffView";
 import type { OpenSource } from "../../chat/EditorChat";
 import { sourceItem } from "../resources";
-import type { DoubtView, SpokenSpan } from "./api";
+import { reasonText } from "../resources/state";
+import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
 import { capitalized, sourceName } from "./sources";
 import { canRetry, type ChatEntry } from "./turns";
 import type { WorkspaceChat } from "./useWorkspaceChat";
@@ -156,6 +157,30 @@ function Sources({ sourceIds, onOpenSource }: { sourceIds: string[]; onOpenSourc
   );
 }
 
+/** «en blanco», «repetida de la página 2»: the Recursos tab's reason text, mid-sentence. */
+const lowered = (text: string): string => text.charAt(0).toLowerCase() + text.slice(1);
+
+/**
+ * A set-aside with triage reasons (#351), one line per target: «Página 9 apartada: en blanco»,
+ * «Página 1 ya estaba apartada: repetida de la página 2», «Página 4 apartada».
+ */
+function TriageLines({ targets, onOpenSource }: { targets: TriageTarget[]; onOpenSource?: OpenSource }) {
+  return (
+    <div className="ws-chat-triage">
+      {targets.map((target) => {
+        const reasons = target.reasons.map((reason) => lowered(reasonText(reason, target.duplicateOf)));
+        return (
+          <p key={target.sourceId} className="ws-chat-line">
+            <SourceButton sourceId={target.sourceId} onOpenSource={onOpenSource} text={capitalized(sourceName(target.sourceId))} />
+            {target.already ? " ya estaba apartada" : " apartada"}
+            {reasons.length > 0 ? `: ${reasons.join(", ")}` : ""}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function doubtsLine(count: number): string {
   return count === 1 ? "Ha surgido 1 duda: te la pregunto aquí." : `Han surgido ${count} dudas: te las pregunto aquí, de una en una.`;
 }
@@ -234,8 +259,12 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, batches }: Re
   const text = entry.reply !== "" ? entry.reply : placeholder;
   if (entry.kind === "doubt" && entry.doubt !== null) return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} />;
   if (entry.kind === "doubts_resolved") return <p className="ws-chat-line">{entry.reply}</p>;
+  if (entry.kind === "triage" && entry.status === "done" && entry.decision === "set_aside" && entry.targets.some((t) => t.reasons.length > 0)) {
+    return <TriageLines targets={entry.targets} onOpenSource={onOpenSource} />;
+  }
   if (entry.kind === "triage" && entry.status !== "failed" && text !== null) {
-    // One short line of what was set aside or restored.
+    // One short line of what was set aside or restored (a set-aside with no triage reason, a
+    // restore, or a turn recorded before the reasons were).
     return <p className={entry.reply === "" ? "ws-chat-line ws-chat-waiting" : "ws-chat-line"}>{text}</p>;
   }
   const batch = entry.parent !== null;

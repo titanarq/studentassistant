@@ -30,7 +30,7 @@ from studentassistant.editor.doubts import DECISION_TOOL, REVIEW_TOOL
 from studentassistant.editor.revise import EDIT_TOOL
 from studentassistant.llm import FakeClaude, LLMAPIError
 from studentassistant.observer import ASSISTANT_REQUEST_KIND
-from studentassistant.observer.requests import TOOL_NAME
+from studentassistant.observer.requests import TOOL_NAME, ReportedRequest
 from studentassistant.server.app import create_app
 from studentassistant.server.assistant_requests import AssistantRequestConsumer
 from studentassistant.server.doubt_chat import DoubtChat
@@ -44,6 +44,7 @@ from studentassistant.vault import (
     read_notes,
     read_topic_events,
     sources_directory,
+    update_page_meta,
 )
 
 LOCAL_BASE_URL = "http://localhost:8765"
@@ -69,6 +70,7 @@ def make_app(
         *,
         doubts: bool = False,
         request_detection: str = "observer",
+        llm: LlmSettings | None = None,
     ) -> FastAPI:
         return create_app(
             static_dir=tmp_path / "no-web-build",
@@ -83,7 +85,7 @@ def make_app(
                     enabled=False,
                     request_detection=request_detection,  # type: ignore[arg-type]
                 ),
-                llm=LlmSettings(),
+                llm=llm or LlmSettings(),
                 editor=EditorSettings(doubts_in_chat=doubts, incorporate_batch_size=1),
             ),
         )
@@ -199,8 +201,12 @@ def _events(topic: GenerateTopic | ReviseTopic, kind: str) -> list[tuple[str, st
     ]
 
 
-def _third_page(topic: GenerateTopic | ReviseTopic, *, aside: bool) -> None:
+def _third_page(
+    topic: GenerateTopic | ReviseTopic, *, aside: bool, triage: dict[str, Any] | None = None
+) -> None:
     meta = {"triage": {"status": "set_aside", "reasons": ["blurry"]}} if aside else {}
+    if triage is not None:
+        meta = {"triage": triage}
     put_source(topic.vault, topic.subject, topic.topic, "notes", "page.jpg", b"\xff\xd8 3", meta)
 
 
@@ -620,3 +626,175 @@ def test_a_doubt_answer_is_refused_without_an_asked_doubt(
     reask = fake.requests[1].messages[-1]["content"]
     assert any("no doubt is asked" in str(block) for block in reask)
     _settle(client)
+
+
+# -- confirmed past the cost cap (#351) ----------------------------------------------------------
+
+
+class _ScriptedClassifier:
+    """The classifier's answer without a Claude call, so the cap stops only the editor's."""
+
+    def __init__(self, *requests: ReportedRequest) -> None:
+        self.requests = list(requests)
+
+    async def classify(self, *_args: Any, **_kwargs: Any) -> list[ReportedRequest]:
+        return self.requests
+
+
+def test_a_typed_incorporation_stopped_at_the_cap_is_confirmed_and_incorporates(
+    make_app: AppFactory, fake: FakeClaude, topic: GenerateTopic
+) -> None:
+    app = make_app(fake, llm=LlmSettings(max_usd_per_day=0))
+    with _client(app) as client:
+        app.state.message_classifier = _ScriptedClassifier(
+            ReportedRequest(
+                kind="incorporate",
+                summary="Incorporar la página 1",
+                segment_ids=["m1"],
+                targets=[PAGE_1],
+            )
+        )
+        subscription = _subscribe(client, topic)
+        posted = client.post(f"{_base(topic)}/workspace/messages", json={"text": "incorpora la 1"})
+        assert posted.status_code == 202, posted.text
+        [request] = posted.json()["requests"]
+        assert request["kind"] == "incorporate"
+        _settle(client)
+        events = subscription.drain()
+        assert _names(events) == ["request.detected", "turn.started", "turn.error"]
+        error = events[-1].data
+        assert error["code"] == "cost_cap_reached" and error["status"] == 409
+        assert error["request_id"] == request["request_id"]
+        assert fake.requests == []
+
+        _incorporation(fake, 1)
+        confirmed = client.post(
+            f"{_base(topic)}/workspace/messages",
+            json={"confirm_over_cap": True, "turn_id": error["turn_id"]},
+        )
+        assert confirmed.status_code == 202, confirmed.text
+        body = confirmed.json()
+        assert body["message_id"] == posted.json()["message_id"]
+        assert [r["request_id"] for r in body["requests"]] == [request["request_id"]]
+        _settle(client)
+
+        # Not classified again, not announced again: the same request, incorporated.
+        assert [r.role for r in fake.requests] == ["editor"]
+        events = subscription.drain()
+        assert _names(events) == ["turn.started", "turn.result", "notes.changed"]
+        started = events[0].data
+        result = next(e.data for e in events if e.event == "turn.result")
+        assert started["kind"] == "incorporate" and started["request_id"] == request["request_id"]
+        assert started["turn_id"] != error["turn_id"]
+        assert result["applied"] is True and result["source_ids"] == [PAGE_1]
+        notes = read_notes(topic.vault, topic.subject, topic.topic)
+        assert notes is not None and "{#pagina-1}" in notes
+        turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+        assert [t["kind"] for t in turns] == ["incorporate"]  # no `revise` of the raw text
+
+        # Confirmed once.
+        again = client.post(
+            f"{_base(topic)}/workspace/messages",
+            json={"confirm_over_cap": True, "turn_id": error["turn_id"]},
+        )
+        assert again.status_code == 404 and "vuelve a pedirla" in again.json()["detail"]
+
+
+def test_a_spoken_edit_stopped_at_the_cap_is_confirmed(
+    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+) -> None:
+    topic = make_revise_topic(tmp_vault)
+    with _client(make_app(fake, llm=LlmSettings(max_usd_per_day=0))) as client:
+        session_id = _start(client, topic)
+        subscription = _subscribe(client, topic)
+        _publish(client, session_id, _spoken(1, "edit", "pon un ejemplo"))
+        _settle(client)
+        error = subscription.drain()[-1]
+        assert error.event == "turn.error" and error.data["code"] == "cost_cap_reached"
+        assert fake.requests == []
+
+        fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="De acuerdo.")
+        confirmed = client.post(
+            f"{_base(topic)}/workspace/messages",
+            json={"confirm_over_cap": True, "turn_id": error.data["turn_id"]},
+        )
+        assert confirmed.status_code == 202, confirmed.text
+        assert confirmed.json()["message_id"].startswith("msg-")
+        _settle(client)
+        events = subscription.drain()
+        assert _names(events) == ["turn.started", "turn.result"]
+        assert events[0].data["origin"] == "voice" and events[0].data["request_id"] == "req-1"
+        assert [r.role for r in fake.requests] == ["editor"]
+        turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+        assert turns[-1]["origin"] == "voice" and turns[-1]["request_summary"] == "pon un ejemplo"
+
+
+def test_confirmation_errors(client: TestClient, topic: GenerateTopic) -> None:
+    url = f"{_base(topic)}/workspace/messages"
+    unknown = client.post(url, json={"confirm_over_cap": True, "turn_id": "turn-nope"})
+    assert unknown.status_code == 404
+    assert client.post(url, json={"turn_id": "turn-nope"}).status_code == 422
+    both = {"confirm_over_cap": True, "turn_id": "turn-nope", "text": "hola"}
+    assert client.post(url, json=both).status_code == 422
+
+
+# -- the reason of a set-aside (#351) ------------------------------------------------------------
+
+
+def test_a_set_aside_says_each_target_s_triage_reason(
+    client: TestClient, topic: GenerateTopic
+) -> None:
+    # Page 3 was flagged as maybe cut off; page 1 was already set aside as a repeat of page 2;
+    # page 2 has nothing wrong with it.
+    _third_page(topic, aside=False, triage={"status": "flagged", "reasons": ["partial"]})
+    first = sources_directory(topic.vault, topic.subject, topic.topic, "notes") / "page-001.jpg"
+    update_page_meta(
+        topic.vault,
+        first.relative_to(topic.vault.path).as_posix(),
+        {"triage": {"status": "set_aside", "reasons": ["duplicate"], "duplicate_of": PAGE_2}},
+    )
+    session_id = _start(client, topic)
+    subscription = _subscribe(client, topic)
+
+    _publish(
+        client,
+        session_id,
+        _spoken(1, "set_aside", "aparta la 3, la 2 y la 1", targets=[PAGE_3, PAGE_2, PAGE_1]),
+    )
+    _settle(client)
+
+    events = subscription.drain()
+    reply = (
+        "He apartado la página 3 (cortada) y la página 2."
+        " La página 1 (repetida de la página 2) ya estaba apartada."
+    )
+    assert _replies(events) == reply
+    result = events[-1].data
+    assert result["source_ids"] == [PAGE_3, PAGE_2]
+    assert result["targets"] == [
+        {"source_id": PAGE_3, "reasons": ["partial"], "duplicate_of": None, "already": False},
+        {"source_id": PAGE_2, "reasons": [], "duplicate_of": None, "already": False},
+        {"source_id": PAGE_1, "reasons": ["duplicate"], "duplicate_of": PAGE_2, "already": True},
+    ]
+    # The flagged page keeps its reason once set aside.
+    assert triage_status(topic.vault, topic.subject, topic.topic)[PAGE_3].reasons == ["partial"]
+    [turn] = [t for t in client.get(f"{_base(topic)}/notes/chat").json()["turns"]]
+    assert turn["kind"] == "triage" and turn["reply"] == reply
+    assert turn["targets"] == result["targets"]
+
+
+def test_a_set_aside_of_a_blank_page_and_a_restore_carry_no_reason_line_when_none(
+    client: TestClient, topic: GenerateTopic
+) -> None:
+    _third_page(topic, aside=False, triage={"status": "flagged", "reasons": ["blank"]})
+    session_id = _start(client, topic)
+    subscription = _subscribe(client, topic)
+    _publish(client, session_id, _spoken(1, "set_aside", "aparta la 3", targets=[PAGE_3]))
+    _settle(client)
+    assert _replies(subscription.drain()) == "He apartado la página 3 (página en blanco)."
+
+    _publish(client, session_id, _spoken(2, "restore", "recupera la 3", targets=[PAGE_3]))
+    _settle(client)
+    events = subscription.drain()
+    assert _replies(events).startswith("He recuperado la página 3")
+    assert events[-1].data["targets"] == []

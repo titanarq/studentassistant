@@ -13,6 +13,15 @@ are always classified. Errors: an empty or too long text 422, an unknown topic 4
 cannot be opened 503, a server without Claude 503. `POST .../notes/chat` stays for the old notes
 page.
 
+`{confirm_over_cap: true, turn_id}` (no `text`, #351) is "Continuar igualmente" on a turn of the
+stream that stopped at the cost cap (`turn.error` `cost_cap_reached`): the request that turn ran
+is queued again as it was classified, confirmed past the cap (`AssistantRequestConsumer.confirm`),
+and answered 202 with that one request; its new turn streams here with the same `request_id`.
+Any request kind (`edit`, `question`, `prepare_notes`, `incorporate`, `doubt_answer`) is
+confirmed this way. A `turn_id` that is not such a turn (never was, already confirmed, or
+forgotten after a restart) 404; `text` together with `turn_id`, or `turn_id` without
+`confirm_over_cap`, 422.
+
 Everything that happens to the topic's chat and document while the stream is open, as the hub of
 `server/workspace.py` delivers it (`request.detected`, `turn.started`, `reply.delta`,
 `reply.restart`, `turn.result`, `turn.error`, `notes.changed`; the list is open). Every event's
@@ -35,11 +44,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from studentassistant.observer.requests import MessageClassifier
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.assistant_requests import AssistantRequestConsumer, TypedMessageResult
+from studentassistant.server.assistant_requests import (
+    NOT_STOPPED_DETAIL,
+    AssistantRequestConsumer,
+    NotStoppedError,
+    TypedMessageResult,
+)
 from studentassistant.server.revise_routes import sse
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.server.workspace import WorkspaceClosedError, WorkspaceHub
@@ -56,9 +70,23 @@ MAX_MESSAGE_CHARS = 4000
 
 
 class WorkspaceMessage(BaseModel):
-    """The body of `POST .../workspace/messages`."""
+    """The body of `POST .../workspace/messages`: a typed `text`, or the confirmation past the
+    cost cap of the request whose turn `turn_id` stopped there (`confirm_over_cap`)."""
 
-    text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    text: str | None = Field(default=None, min_length=1, max_length=MAX_MESSAGE_CHARS)
+    confirm_over_cap: bool = False
+    turn_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> WorkspaceMessage:
+        if self.turn_id is not None:
+            if self.text is not None:
+                raise ValueError("a confirmation carries a turn_id and no text")
+            if not self.confirm_over_cap:
+                raise ValueError("a turn_id is only sent with confirm_over_cap")
+        elif self.text is None:
+            raise ValueError("text is required")
+        return self
 
 
 CONNECTED = b": connected\n\n"
@@ -120,7 +148,7 @@ def workspace_router() -> APIRouter:
     async def message(
         request: Request, subject_id: SubjectId, topic_id: TopicId, body: WorkspaceMessage
     ) -> TypedMessageResult:
-        if not body.text.strip():
+        if body.turn_id is None and not (body.text or "").strip():
             raise HTTPException(status_code=422, detail="El mensaje está vacío.")
         consumer: AssistantRequestConsumer | None = request.app.state.assistant_requests
         if consumer is None:
@@ -134,8 +162,13 @@ def workspace_router() -> APIRouter:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
+        if body.turn_id is not None:
+            try:
+                return consumer.confirm(subject_id, topic_id, body.turn_id)
+            except NotStoppedError as error:
+                raise HTTPException(status_code=404, detail=NOT_STOPPED_DETAIL) from error
         classifier: MessageClassifier | None = request.app.state.message_classifier
-        return await consumer.post_message(subject_id, topic_id, body.text, classifier)
+        return await consumer.post_message(subject_id, topic_id, body.text or "", classifier)
 
     return router
 

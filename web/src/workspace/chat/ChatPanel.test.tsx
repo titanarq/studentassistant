@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DIFF, history, revision, turn } from "../../chat/testChat";
-import { jsonResponse, sseEvent, sseResponse, streamResponse, stubApi } from "../../test/mockApi";
+import { jsonResponse, sseEvent, streamResponse, stubApi } from "../../test/mockApi";
 import { type WorkspaceState, WorkspaceContext } from "../state";
 import WorkspaceChatSlot from "../WorkspaceChatSlot";
 import { clock } from "./ChatPanel";
@@ -280,6 +280,60 @@ it("shows a set-aside or restore request as one short line", async () => {
   expect(await within(entry).findByText("He apartado la página 9.")).toHaveClass("ws-chat-line");
   expect(within(entry).queryByText("Asistente")).toBeNull();
   expect(within(entry).queryByText(/Cambio aplicado/)).toBeNull();
+});
+
+it("says why each page was set aside, from the triage turn's reasons", async () => {
+  const { opened } = setup({
+    [CHAT]: jsonResponse(
+      history([
+        turn({
+          time: "2026-09-25T10:02:00Z",
+          kind: "triage",
+          turn_id: "turn-old",
+          message: "recupera la 2",
+          reply: "He recuperado la página 2.",
+          summary: "restore",
+          source_ids: ["sources/notes/page-002.jpg"],
+          targets: [],
+          commit: null,
+        }),
+      ]),
+    ),
+  });
+  const stream = await opened();
+  expect(await screen.findByText("He recuperado la página 2.")).toHaveClass("ws-chat-line");
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-5", kind: "set_aside", summary: "Apartar la 9, la 4 y la 1", origin: "voice", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-5", request_id: "req-5", origin: "voice", kind: "set_aside" }));
+    stream.push(
+      sseEvent("turn.result", {
+        turn_id: "turn-5",
+        request_id: "req-5",
+        kind: "set_aside",
+        origin: "voice",
+        request: { request_id: "req-5", summary: "Apartar la 9, la 4 y la 1", ...TRANSCRIPT },
+        decision: "set_aside",
+        source_ids: ["sources/notes/page-009.jpg", "sources/notes/page-004.jpg"],
+        targets: [
+          { source_id: "sources/notes/page-009.jpg", reasons: ["blank"], duplicate_of: null, already: false },
+          { source_id: "sources/notes/page-004.jpg", reasons: [], duplicate_of: null, already: false },
+          { source_id: "sources/notes/page-001.jpg", reasons: ["duplicate"], duplicate_of: "sources/notes/page-002.jpg", already: true },
+        ],
+        message: TRANSCRIPT.text,
+        reply: "He apartado la página 9 (página en blanco) y la página 4. La página 1 (repetida de la página 2) ya estaba apartada.",
+        applied: true,
+      }),
+    );
+  });
+  const entry = (await screen.findByText(/Pediste: Apartar la 9/)).closest("li") as HTMLElement;
+  const lines = await within(entry).findAllByText(/apartada/);
+  expect(lines.map((line) => line.textContent)).toEqual([
+    "Página 9 apartada: en blanco",
+    "Página 4 apartada",
+    "Página 1 ya estaba apartada: repetida de la página 2",
+  ]);
+  lines.forEach((line) => expect(line).toHaveClass("ws-chat-line"));
+  expect(within(entry).queryByText(/He apartado/)).toBeNull();
 });
 
 it("says so when a typed message is refused", async () => {
@@ -592,35 +646,84 @@ it("drops the reply streamed so far on reply.restart", async () => {
   expect(screen.queryByText(/Stale/)).toBeNull();
 });
 
-it("shows a turn error in Spanish and offers to go on over the cost cap", async () => {
+const OVER_CAP = { status: 409, detail: "Se ha alcanzado el límite de gasto del tema.", code: "cost_cap_reached" };
+
+it("shows a turn error in Spanish and goes on over the cost cap through workspace/messages", async () => {
   const { opened, calls } = setup({
-    [`POST ${CHAT}`]: () => sseResponse([["result", voiceResult("turn-2", "req-1")]]),
+    [`POST ${MESSAGES}`]: () => posted([{ request_id: "req-1", kind: "edit", summary: "Una tabla con las tres causas", text: TRANSCRIPT.text }]),
   });
   const stream = await opened();
   act(() => {
     stream.push(detected("req-1", "Una tabla con las tres causas"));
     stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" }));
-    stream.push(
-      sseEvent("turn.error", {
-        turn_id: "turn-1",
-        request_id: "req-1",
-        status: 409,
-        detail: "Se ha alcanzado el límite de gasto del tema.",
-        code: "cost_cap_reached",
-      }),
-    );
+    stream.push(sseEvent("turn.error", { turn_id: "turn-1", request_id: "req-1", ...OVER_CAP }));
   });
   expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo completar: Se ha alcanzado el límite de gasto del tema.");
 
   fireEvent.click(screen.getByRole("button", { name: "Continuar igualmente" }));
-  await waitFor(() => expect(calls(CHAT, "POST")).toHaveLength(1));
-  expect(JSON.parse(String((calls(CHAT, "POST")[0][1] as RequestInit).body))).toEqual({
-    message: TRANSCRIPT.text,
-    confirm_over_cap: true,
+  await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(1));
+  expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ confirm_over_cap: true, turn_id: "turn-1" });
+  expect(calls(CHAT, "POST")).toHaveLength(0);
+  expect(await screen.findByText("En cola…")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-2", request_id: "req-1", origin: "voice", kind: "revise" }));
+    stream.push(sseEvent("turn.result", voiceResult("turn-2", "req-1")));
   });
   expect(await screen.findByText("He puesto una tabla con las tres causas.")).toBeInTheDocument();
-  expect(screen.queryByRole("alert")).toBeNull();
   expect(within(log()).getAllByRole("listitem")).toHaveLength(1);
+});
+
+it("offers and confirms an incorporation stopped at the cost cap, end to end", async () => {
+  const { opened, calls, reloadNotes } = setup({
+    [`POST ${MESSAGES}`]: (() => {
+      let posts = 0;
+      return () =>
+        posts++ === 0
+          ? posted([typedRequest("req-t1", "incorporate", "Incorporar las páginas 3 y 4", "incorpora la 3 y la 4", { targets: ["sources/notes/page-003.jpg", "sources/notes/page-004.jpg"] })])
+          : posted([typedRequest("req-t1", "incorporate", "Incorporar las páginas 3 y 4", "incorpora la 3 y la 4")]);
+    })(),
+  });
+  const stream = await opened();
+  await type("incorpora la 3 y la 4");
+  const entry = (await within(log()).findByText("incorpora la 3 y la 4")).closest("li") as HTMLElement;
+  expect(await within(entry).findByText("En cola…")).toBeInTheDocument();
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-4", request_id: "req-t1", origin: "typed", kind: "incorporate" }));
+    stream.push(sseEvent("turn.error", { turn_id: "turn-4", request_id: "req-t1", ...OVER_CAP }));
+  });
+  const go = await within(entry).findByRole("button", { name: "Continuar igualmente" });
+  fireEvent.click(go);
+  await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(2));
+  expect(JSON.parse(String((calls(MESSAGES, "POST")[1][1] as RequestInit).body))).toEqual({ confirm_over_cap: true, turn_id: "turn-4" });
+  expect(calls(CHAT, "POST")).toHaveLength(0);
+
+  act(() => {
+    stream.push(sseEvent("turn.started", { turn_id: "turn-5", request_id: "req-t1", origin: "typed", kind: "incorporate" }));
+    stream.push(sseEvent("turn.result", incorporation("turn-5", "req-t1")));
+    stream.push(sseEvent("notes.changed", { revision: "e".repeat(64), origin: "editor", summary: "Causas", turn_id: "turn-5" }));
+  });
+  expect(await within(entry).findByText("He añadido las causas de las páginas 3 y 4.")).toBeInTheDocument();
+  expect(within(entry).getByText(/Incorporadas:/)).toHaveTextContent("Incorporadas: página 3, página 4");
+  expect(within(entry).queryByRole("alert")).toBeNull();
+  expect(within(log()).getAllByRole("listitem")).toHaveLength(1);
+  await waitFor(() => expect(reloadNotes).toHaveBeenCalled());
+});
+
+it("says so when a confirmation is refused", async () => {
+  const { opened } = setup({
+    [`POST ${MESSAGES}`]: jsonResponse({ detail: "Esa petición ya no está esperando confirmación: vuelve a pedirla." }, 404),
+  });
+  const stream = await opened();
+  act(() => {
+    stream.push(detected("req-1", "Una tabla"));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-1", request_id: "req-1", origin: "voice", kind: "revise" }));
+    stream.push(sseEvent("turn.error", { turn_id: "turn-1", request_id: "req-1", ...OVER_CAP }));
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Continuar igualmente" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("vuelve a pedirla");
+  expect(screen.queryByRole("button", { name: "Continuar igualmente" })).toBeNull();
 });
 
 it("shows an error without the cap offer for other failures", async () => {

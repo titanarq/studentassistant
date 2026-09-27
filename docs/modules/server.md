@@ -559,8 +559,8 @@ Routes registered today:
     still active.
   - `prepare_notes`: "prepárame el tema" through `NotesGenerator.generate` (the batched mode of
     #326 by default: each batch an `incorporate` turn), the same generation as the button, never
-    with `confirm_over_cap`: a reached cap is `turn.error` 409 with code `cost_cap_reached` (the
-    student confirms through `POST .../notes/generate`), never a silent spend.
+    past a reached cap unconfirmed: that is `turn.error` 409 with code `cost_cap_reached` (the
+    student confirms it like any other request, below), never a silent spend.
   - `incorporate`: `NotesGenerator.incorporate(targets)` (#326), a turn of kind `incorporate`; a
     refused incorporation (a set-aside page, too many sources, an unknown one) is `turn.error` 422
     with the editor's Spanish message.
@@ -571,14 +571,27 @@ Routes registered today:
     «He recuperado la página 3; se está transcribiendo.» / «...; se transcribirá en la próxima
     sesión del tema.», «La página 1 no estaba apartada.») and recorded as a `triage` chat turn
     (`editor.record_triage_turn`, `ChatTurn.kind` `triage`); `notes.changed` untouched;
-    `turn.result` is the `TriageTurn`. An unknown target is `turn.error` 404.
+    `turn.result` is the `TriageTurn`. An unknown target is `turn.error` 404. A `set_aside`
+    (#351) also says why: `TriageTurn.targets` (and the history's `ChatTurn.targets`) lists every
+    target -- set aside now, or `already` before -- with the reasons its capture triage gives
+    (`reasons`, `sources.triage.TriageReason` codes, and `duplicate_of`; empty for a page triage
+    kept), and the reply names them in brackets («He apartado la página 9 (página en blanco) y
+    la página 4.», «La página 1 (repetida de la página 2) ya estaba apartada.»). A flagged page
+    set aside keeps its one reason in its sidecar (`set_capture_triage(reason=...)`). A `restore`
+    carries no targets; a set-aside with no reason reads as before.
   - `doubt_answer`: `editor.answer_doubt(pending_id, answer)` (#325; digits pick that suggestion,
     anything else is the answer's words) under the notes lock, the resolution streamed as the
     reply, then `doubt.resolved` (+ `notes.changed` when the notes changed) and the next doubt
     through the `DoubtChat`; `turn.result` is the `ResolutionResult`. A closed or unknown doubt is
     `turn.error` (409 `doubt_closed`, 404).
   A failure is a `turn.error` with the status the same failure has over REST; the topic's next
-  request runs anyway. Shutdown gives running turns 5 s, then cancels them; still-queued requests
+  request runs anyway. A request stopped at the cost cap (`turn.error` `cost_cap_reached`) is kept
+  in memory (the last `STOPPED_PER_TOPIC`, 32, of each topic, by the failed turn's `turn_id`) for
+  a confirmation (#351): `AssistantRequestConsumer.confirm(s, t, turn_id)` queues the same,
+  already classified request again with `QueuedRequest.confirm_over_cap`, threaded to
+  `revise_notes`, `NotesGenerator.generate`, `NotesGenerator.incorporate` and `answer_doubt`; it
+  is not classified or announced again (no second `request.detected`) and its new turn carries
+  the same `request_id`. Confirmed once; nothing is kept across a restart (`NotStoppedError`). Shutdown gives running turns 5 s, then cancels them; still-queued requests
   are dropped with a log line (they stay in `events.jsonl`).
   The request classifiers' context (`sources_lookup(sessions)`, `request_context`) is wired here
   into the detector and the typed classifier: the topic's `editor.source_status` rows and the
@@ -594,7 +607,11 @@ Routes registered today:
   message with no request, or a classifier failure (`classified: false`), becomes one `edit` (a
   `question` when it has a `?`) with the raw text, so nothing typed is lost. Errors: an empty text
   422, an unknown topic 404, a vault that cannot be opened 503, no `llm_transport` 503.
-  `POST .../notes/chat` stays for the old notes page.
+  `{confirm_over_cap: true, turn_id}` instead of `text` (#351) is "Continuar igualmente" on a turn
+  stopped at the cost cap: `AssistantRequestConsumer.confirm` (above), answered 202 with the one
+  request (its `message_id`, or a new one for a spoken request); a `turn_id` not waiting for a
+  confirmation 404 (Spanish detail), a `turn_id` with `text` or without `confirm_over_cap` 422.
+  `POST .../notes/chat` (and its own `confirm_over_cap`) stays for the old notes page.
 - **The workspace stream** (`server/workspace.py` `WorkspaceHub`, `server/workspace_routes.py`,
   #315), for the study workspace's chat and document:
   `GET /api/subjects/{subject_id}/topics/{topic_id}/workspace/stream` -> `text/event-stream`
