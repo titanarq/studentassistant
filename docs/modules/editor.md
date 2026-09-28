@@ -267,9 +267,13 @@ block number, instead of rewriting them. Meant for the edit loop (#63) as well.
   that is missing, malformed or already taken, an empty title, a level outside 2-6 or an unknown
   `after`; nothing is applied then. The
   result is not validated here: callers run `validate`.
-- `describe_sections(notes) -> str`: the block map (`#anchor -- heading`, then `bloque N (kind):
-  opening words`) sent to the editor so it can address blocks; notes without sections say so and
-  point at `add_section`.
+- `describe_sections(notes, settled=()) -> str`: the block map (`#anchor -- heading`, then
+  `bloque N (kind): opening words`) sent to the editor so it can address blocks; notes without
+  sections say so and point at `add_section`. A block whose key is in `settled`
+  (`reviewed.settled_blocks`) is marked `[revisado]` (`SETTLED_MARK`), with one legend line
+  (`SETTLED_LEGEND`) at the end. Every block map the editor sees (revision turns, incorporations,
+  the doubts review and answer, and their re-asks after a student save) passes the topic's
+  settled blocks.
 
 ### Doubts resolution -- `doubts.py`
 The observer's pending doubts (#55) worked through after the notes exist, with the `editor` role
@@ -651,8 +655,9 @@ call.
 - `StudentEditResult`: `subject`, `topic`, `revision`, `commit`, `diff`, `notes` (as saved),
   `changed_sections` (anchors whose section was added, removed, changed or moved:
   `versions.compare_notes`), `normalised` (the server changed the text), `notes_changed`.
-- Written with it: a `student_edit` record in `conversations/editor.jsonl` (the result without
-  `notes`), read by the editor's next turn, and `on_event("notes.edited", {...result without
+- Written with it: a `notes.reviewed` record (reason `student_edit`, the keys of the blocks the
+  save added or changed: `reviewed.changed_block_keys`), a `student_edit` record in
+  `conversations/editor.jsonl` (the result without `notes`), read by the editor's next turn, and `on_event("notes.edited", {...result without
   notes, "origin": "user"})`.
 - Entry point: the server's `PUT /api/subjects/{s}/topics/{t}/notes` (`docs/modules/server.md`).
 
@@ -821,6 +826,25 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   `CostConfirmationRequiredError` and the llm errors as in `generate_notes`.
 - Entry point: the server's `GET/POST /api/subjects/{s}/topics/{t}/tutor` (SSE,
   `docs/modules/server.md`).
+
+### Reviewed and settled blocks -- `reviewed.py` (#474)
+What the student already reviewed is derived, not stored per block: append-only `notes.reviewed`
+records in `conversations/editor.jsonl` (the existing conversation API, no vault layout change),
+`detail = {"reason": "student_edit" | "doubt_closed", "blocks": [<key>, ...]}`.
+- `block_key(text) -> str`: SHA-256 (hex) of a block's text without footnote references,
+  whitespace collapsed. Editing a block changes its key, so it is no longer reviewed until it is
+  reviewed again; moving it or changing only its footnotes keeps it.
+- Written when the student saves the notes (`direct_edit.save_student_edit`: the blocks added or
+  changed, `changed_block_keys(before, after)`) and when the student answers or dismisses a doubt
+  (`doubts.answer_doubt` / `dismiss_doubt`, after the close: the blocks then citing its sources,
+  `blocks_citing(notes, item_sources(...))` -- its captures' pages, its source refs, the sessions
+  of its transcript segments). `record_reviewed` writes nothing without blocks, and a failure to
+  write is only logged.
+- `reviewed_keys(vault, s, t) -> set[str]`: every key the records cover.
+- `settled_blocks(vault, s, t, notes) -> set[str]`: the keys of the blocks of `notes` that are
+  reviewed, carry no `[[?` mark and cite no source an open doubt names (`open_doubt_sources`; a
+  doubt whose pages are all set aside by triage is never asked, so it does not count). The block
+  map marks them `[revisado]`.
 
 ### App feedback from the chat -- `feedback.py` (#472)
 The student reports a bug of the app itself or asks for an improvement («apunta una mejora: …»,

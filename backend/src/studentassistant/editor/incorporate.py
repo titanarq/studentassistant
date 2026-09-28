@@ -33,7 +33,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal, Protocol
@@ -85,6 +85,7 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.reviewed import settled_blocks
 from studentassistant.editor.revise import (
     EDIT_TOOL,
     INCORPORATION_RECORD,
@@ -362,12 +363,12 @@ INCORPORATE_INSTRUCTION = (
 )
 
 
-def _notes_block(notes: str, mode: str) -> str:
+def _notes_block(notes: str, mode: str, settled: Collection[str] = ()) -> str:
     return (
         "## Apuntes actuales\n\nConserva las anclas de las secciones y todo lo que no cambie.\n\n"
         f"{notes.rstrip()}\n\n"
         f"## Mapa de bloques de los apuntes actuales (modo de fidelidad «{mode}»)\n\n"
-        f"{describe_sections(notes)}\n"
+        f"{describe_sections(notes, settled)}\n"
     )
 
 
@@ -410,7 +411,7 @@ def assemble_incorporation(
     builder = _Builder(max_page_images, max_attachment_bytes)
     catalogue: list[CitableSource] = []
 
-    builder.text(_notes_block(notes, mode))
+    builder.text(_notes_block(notes, mode, settled_blocks(vault, subject_slug, topic_slug, notes)))
     builder.text("## Fuentes que incorporar ahora\n")
     book = (
         get_book(vault, subject_slug, topic_slug)
@@ -626,7 +627,9 @@ def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
     return {"role": "user", "content": content}
 
 
-def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
+def _stale_turn(
+    response: LLMResponse, notes: str, mode: str, settled: Collection[str] = ()
+) -> dict[str, Any]:
     reason = (
         f"No se ha aplicado el cambio: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
         " corresponden."
@@ -638,8 +641,8 @@ def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
     content.append(
         {
             "type": "text",
-            "text": f"{reason}\n\n{_notes_block(notes, mode)}\nRespeta lo que ha escrito el"
-            " estudiante: escribe otra vez una respuesta breve y llama a"
+            "text": f"{reason}\n\n{_notes_block(notes, mode, settled)}\nRespeta lo que ha"
+            " escrito el estudiante: escribe otra vez una respuesta breve y llama a"
             f" `{EDIT_TOOL}` con la incorporación completa sobre estos apuntes.",
         }
     )
@@ -818,7 +821,12 @@ async def incorporate_sources(
         if not errors or attempt > MAX_REASKS:
             break
         reask = (
-            _stale_turn(response, notes, assembled.fidelity_mode)
+            _stale_turn(
+                response,
+                notes,
+                assembled.fidelity_mode,
+                await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, notes),
+            )
             if stale
             else _reask_turn(response, errors)
         )

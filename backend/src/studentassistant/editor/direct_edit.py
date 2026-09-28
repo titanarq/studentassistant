@@ -17,9 +17,10 @@ The web's document editor sends the whole `apuntes.md` the student ended up with
    editor, another tab) changed them meanwhile it is `NotesChangedError`, carrying the current
    text and revision, and nothing is written; otherwise the notes are written
    (`vault.write_notes`) and committed at once (`Apuntes de <s>/<t> editados por el estudiante`).
-4. **Records** a `student_edit` record in `conversations/editor.jsonl` (the changed sections and
-   the diff), which the editor's next turn reads as part of the conversation, and sends
-   `notes.edited` (origin `user`) to `on_event`.
+4. **Records** a `notes.reviewed` record (`editor.reviewed`, reason `student_edit`: the blocks
+   the student added or changed) and a `student_edit` record in `conversations/editor.jsonl`
+   (the changed sections and the diff), which the editor's next turn reads as part of the
+   conversation, and sends `notes.edited` (origin `user`) to `on_event`.
 
 Missing notes have no revision: a save with `base_revision=None` starts a document from nothing
 (and is `NotesChangedError` once the topic has notes).
@@ -55,6 +56,7 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.reviewed import changed_block_keys, record_reviewed
 from studentassistant.editor.versions import PREAMBLE_KEY, compare_notes
 from studentassistant.vault import (
     ConversationRecord,
@@ -336,8 +338,9 @@ def _save(
     topic_slug: str,
     text: str,
     base_revision: str | None,
-) -> StudentEditResult:
-    """Normalise, validate, compare and write; blocking (a worker thread)."""
+) -> tuple[StudentEditResult, str]:
+    """Normalise, validate, compare and write; blocking (a worker thread). Also returns the notes
+    as they were before the save."""
     topic = get_topic(vault, subject_slug, topic_slug).topic
     if not text.strip():
         raise StudentEditInvalidError(["El documento está vacío: escribe algo antes de guardar."])
@@ -365,7 +368,7 @@ def _save(
                 commit = commit_now(
                     f"Apuntes de {subject_slug}/{topic_slug} editados por el estudiante"
                 )
-    return StudentEditResult(
+    result = StudentEditResult(
         subject=subject_slug,
         topic=topic_slug,
         revision=notes_revision(normalised),
@@ -376,6 +379,7 @@ def _save(
         normalised=normalised != text,
         notes_changed=changed,
     )
+    return result, current
 
 
 async def save_student_edit(
@@ -397,11 +401,20 @@ async def save_student_edit(
         StudentEditInvalidError: the normalised text does not pass `validate`; nothing written.
         SubjectNotFoundError, TopicNotFoundError, ...: the vault's errors for an unknown topic.
     """
-    result = await asyncio.to_thread(
+    result, before = await asyncio.to_thread(
         _save, vault, sync, subject_slug, topic_slug, text, base_revision
     )
     if not result.notes_changed:
         return result
+    await asyncio.to_thread(
+        record_reviewed,
+        vault,
+        subject_slug,
+        topic_slug,
+        "student_edit",
+        changed_block_keys(before, result.notes),
+        clock=clock,
+    )
     payload = result.model_dump(mode="json", exclude={"notes"})
     entry = ConversationRecord(time=clock(), kind=STUDENT_EDIT_RECORD, detail=payload)
     try:

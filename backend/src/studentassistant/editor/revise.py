@@ -75,7 +75,7 @@ import asyncio
 import difflib
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal
@@ -125,6 +125,7 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.reviewed import settled_blocks
 from studentassistant.editor.style_guide import (
     append_rules,
     new_rules,
@@ -857,6 +858,7 @@ def _turn_text(
     *,
     spoken: bool = False,
     selected: Sequence[str] | None = None,
+    settled: Collection[str] = (),
 ) -> str:
     heading = "## Nuevo mensaje del estudiante\n\n" + (f"{SPOKEN_NOTE}\n\n" if spoken else "")
     if selected is not None:
@@ -865,13 +867,15 @@ def _turn_text(
         "## Conversación hasta ahora\n\n"
         f"{_history_text(turns)}\n\n"
         f"## Mapa de bloques de los apuntes actuales (modo de fidelidad «{mode}»)\n\n"
-        f"{describe_sections(notes)}\n\n"
+        f"{describe_sections(notes, settled)}\n\n"
         f"{heading}"
         f"{message}\n"
     )
 
 
-def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
+def _stale_turn(
+    response: LLMResponse, notes: str, mode: str, settled: Collection[str] = ()
+) -> dict[str, Any]:
     """The re-ask after the notes changed under the turn: the new block map, apply again."""
     reason = (
         f"No se ha aplicado el cambio: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
@@ -885,7 +889,7 @@ def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
         {
             "type": "text",
             "text": f"{reason}\n\n## Mapa de bloques de los apuntes actuales (modo de fidelidad"
-            f" «{mode}»)\n\n{describe_sections(notes)}\n\nRespeta lo que ha escrito el"
+            f" «{mode}»)\n\n{describe_sections(notes, settled)}\n\nRespeta lo que ha escrito el"
             " estudiante: escribe otra vez una respuesta breve y llama a"
             f" `{EDIT_TOOL}` con el cambio completo sobre estos apuntes.",
         }
@@ -1164,6 +1168,7 @@ async def revise_notes(
         instruction=REVISE_INSTRUCTION + feedback_instruction(),
     )
     notes = _seeded(base, assembled.topic_title)
+    settled = await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, base)
     turn = {
         "type": "text",
         "text": _turn_text(
@@ -1173,6 +1178,7 @@ async def revise_notes(
             text,
             spoken=request is not None,
             selected=None if selected_sources is None else list(selected_sources),
+            settled=settled,
         ),
     }
     # The selection goes after the cached prefix (the topic's sources), just before the turn.
@@ -1309,7 +1315,12 @@ async def revise_notes(
         if not errors or attempt > MAX_REASKS:
             break
         reask = (
-            _stale_turn(response, notes, assembled.fidelity_mode)
+            _stale_turn(
+                response,
+                notes,
+                assembled.fidelity_mode,
+                await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, notes),
+            )
             if stale
             else _reask_turn(response, errors)
         )
