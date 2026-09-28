@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { type Block, footnoteRefs, IA_LABEL, type Inline, type NotesTree, parseInline } from "./markdown";
+import MermaidBlock from "./MermaidBlock";
 import { parseProvenance } from "./provenance";
 
 /**
@@ -267,6 +268,7 @@ export default function NotesView({
       case "rule":
         return <hr key={key} />;
       case "code":
+        if (b.lang.toLowerCase() === "mermaid") return <MermaidBlock key={key} source={b.text} />;
         return (
           <pre key={key} className="notes-code">
             <code>{b.text}</code>

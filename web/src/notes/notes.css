@@ -155,6 +155,25 @@
   line-height: 1.6;
 }
 
+/* A mermaid diagram (#479): mermaid's SVG, centred and never wider than the sheet. */
+.notes-mermaid {
+  margin: var(--space-3) 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.notes-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.notes-mermaid-error {
+  margin-top: var(--space-2);
+  color: var(--correction);
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+}
+
 /* The footnotes: the sources, in the sheet's smaller type. */
 .notes-footnotes {
   margin-top: var(--space-6);

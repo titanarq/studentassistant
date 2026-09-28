@@ -12,6 +12,7 @@ const EDITS: Record<string, string> = {
   "fuentes-finales.md": "profesor",
   "imagen.md": "resume",
   "listas-anidadas.md": "ferrocarril",
+  "mermaid.md": "resume",
   "referencias.md": "situación",
   "regla.md": "después",
   "tabla.md": "ventana",
