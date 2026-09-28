@@ -1084,7 +1084,11 @@ token):
     shows as a `notes-code` block; a source mermaid cannot parse stays that way plus
     «No se pudo dibujar el diagrama» (`notes-mermaid-error`), and the rest of the notes renders as
     usual. The visual editor keeps a mermaid fence as a code block and saves it unchanged
-    (fixture `noteEditor/fixtures/mermaid.md`).
+    (fixture `noteEditor/fixtures/mermaid.md`). `web/package.json` `overrides` pins `lodash-es`
+    to `4.18.1` (#482): mermaid 12.0.0 depends on `chevrotain ~11.1.2`, whose packages pin
+    `lodash-es` 4.17.23 exactly (high advisories GHSA-r5fr-rjxr-66jc, GHSA-f23m-r3pf-42rh; 4.18.0
+    is deprecated as a bad release), and npm's only suggested fix is a downgrade to mermaid 11.
+    Drop the override once a mermaid release depends on a fixed `lodash-es`.
   - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
     flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
     Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
