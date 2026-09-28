@@ -846,6 +846,30 @@ records in `conversations/editor.jsonl` (the existing conversation API, no vault
   doubt whose pages are all set aside by triage is never asked, so it does not count). The block
   map marks them `[revisado]`.
 
+### Overlapping captures: lock, contradictions, capture facts -- `overlap.py` (#474)
+Deterministic checks behind building the notes from successive, overlapping captures; an editor
+answer that breaks one is re-asked with the Spanish errors like any other validation error.
+- `settled_block_errors(before, after, settled) -> list[str]`: every settled block of `before`
+  must still be in `after` with the same `block_key` (text modulo footnote refs; it may move or
+  change its footnotes). Checked on every incorporation (`incorporate._check`) and on the doubts
+  review's auto-resolution edits (`doubts._check_review`). Not on a revision turn or a doubt
+  answer: there the student asks for the change.
+- `same_kind_contradiction_errors(doubts, requested) -> list[str]`: a `contradiction` doubt
+  between a requested capture and a capture of the same kind (notes/notes, book/book) not
+  requested now is refused: the editor keeps the notes' reading or replaces it when the new one is
+  clearly better. Captures incorporated together, and notes vs book, may still contradict. Checked
+  on incorporations (requested = the sources) and on revision turns with a Recursos selection
+  (requested = the selection).
+- `capture_facts(vault, s, t, requested, notes) -> str`: the `## Datos de cada captura` section
+  -- per capture of kind notes/book, the requested ones first, then those the notes cite: its
+  `[[?` marks (count and the first `MAX_LISTED_MARKS`), its sharpness (triage metrics, else the
+  selected still's) and its triage reasons in Spanish. Given in the incorporation input (after the
+  transcript segments) and after a revision turn's selection.
+- The doubts review (`review_doubts`), when the block map marks a settled block, gets
+  `SETTLED_REVIEW_RULE`: a doubt about what a settled block already says is auto-resolved without
+  edits, its evidence the source that block cites, never asked. This rule is the model's to follow;
+  only the lock above is checked.
+
 ### App feedback from the chat -- `feedback.py` (#472)
 The student reports a bug of the app itself or asks for an improvement («apunta una mejora: …»,
 «esto es un bug: …», «la app debería …») in the workspace chat (a revision turn, Construir) or the

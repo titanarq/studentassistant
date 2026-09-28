@@ -181,7 +181,8 @@ def capture_facts(
         elif marks:
             listed = ", ".join(f"`{mark}`" for mark in marks[:MAX_LISTED_MARKS])
             more = ", …" if len(marks) > MAX_LISTED_MARKS else ""
-            reading = f"{len(marks)} lecturas dudosas ({listed}{more})"
+            noun = "lectura dudosa" if len(marks) == 1 else "lecturas dudosas"
+            reading = f"{len(marks)} {noun} ({listed}{more})"
         else:
             reading = "ninguna lectura dudosa"
         sharpness = _sharpness(meta, triage.metrics)
