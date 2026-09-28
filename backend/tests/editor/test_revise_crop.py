@@ -31,6 +31,7 @@ from studentassistant.editor.revise import (
     REPLY_RESTART,
     NothingToUndoError,
     RevisionResult,
+    UndoConflictError,
     chat_history,
     revise_notes,
     undo_last_revision,
@@ -561,3 +562,73 @@ def test_undoing_a_crop_whose_sidecar_alone_a_batch_commit_took_retires_the_side
     images = crop.rsplit("/", 1)[0]
     assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
     assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def _crop_undo_and_crop_again(topic: ReviseTopic, sync: GitSync) -> tuple[RevisionResult, str]:
+    """Crop A, undo it (the revert removes both its files), then crop B: B reuses A's number and
+    path, and the latest recorded undo is still A's."""
+    _book_page(topic, _diagram())
+    first = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert first.crop is not None and first.crop.path is not None
+    _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _images(topic) == [] and not (topic.vault.path / first.crop.path).exists()
+    second = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert second.applied and second.crop is not None and second.crop.path == first.crop.path
+    assert _images(topic) == [second.crop.path] and LINK in _notes(topic)
+    return second, second.crop.path
+
+
+def test_an_earlier_undo_repair_never_retires_a_later_crop_that_reused_its_path(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    # The student removes the figure from the notes by hand but keeps the crop in Recursos: the
+    # next undo conflicts, and the repair of A's undo must not retire B's crop (#502).
+    _, crop = _crop_undo_and_crop_again(topic, sync)
+    notes = "\n".join(line for line in _notes(topic).splitlines() if line not in (LINK, FOOTNOTE))
+    write_notes(topic.vault, topic.subject, topic.topic, notes)
+    sync.checkpoint("fixture: the student removes the figure")
+    head = _git(topic.vault, "rev-parse", "HEAD")
+
+    with pytest.raises(UndoConflictError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == [crop]
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+    assert "recorte retirado" not in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def test_undoing_a_turn_that_dropped_a_reused_crop_keeps_that_crop(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    # Turn C drops B's figure; undoing C brings the citation back and B's crop stays active.
+    _, crop = _crop_undo_and_crop_again(topic, sync)
+    drop = {
+        "summary": "Quito el recorte",
+        "ops": [{"op": "delete_block", "section": "definicion", "block": 3}],
+    }
+    dropped = _revise(
+        topic, sync, FakeClaude().reply_tool(EDIT_TOOL, drop, text="Quitado."), "quita la figura"
+    )
+    assert dropped.applied and LINK not in _notes(topic) and FOOTNOTE not in _notes(topic)
+
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert undone.undone_commit == dropped.commit
+    assert LINK in _notes(topic) and FOOTNOTE in _notes(topic)
+    assert _images(topic) == [crop]
+    meta = read_source(topic.vault, crop).meta
+    assert meta is not None and "removed" not in meta
+    log = _git(topic.vault, "log", "-n", "3", "--format=%s")
+    assert "recorte retirado" not in log

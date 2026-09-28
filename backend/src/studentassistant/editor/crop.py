@@ -482,6 +482,10 @@ class CropRef(BaseModel):
     source_id: str | None = None
     path: str | None = None
     error: str | None = None
+    # The stored crop's identity, as its sidecar records it (#502): an undo retires the file at
+    # `path` only while it is still this one, never a later crop that reused the number.
+    sha256: str | None = None
+    added_at: datetime | None = None
 
 
 def crop_image_tool() -> dict[str, Any]:

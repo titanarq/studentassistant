@@ -518,12 +518,18 @@ mode, and the student's message.
   turn changes `apuntes.md`, so undoing it then is an `UndoConflictError`. A revert that would
   change no file (a turn applied before #410 whose files a batch commit took, so its commit does
   not carry them) is refused too, an `UndoConflictError` ("... deshacerlo no cambiaría nada"), with
-  nothing committed and **no** `notes.undone` recorded: the chat shows the error, never a success.
+  nothing committed for it (an earlier undo's crop repair aside, below) and **no** `notes.undone` recorded: the chat shows the error, never a success.
   A `crop_image` turn's crop the revert left in place (a batch commit took it first) is retired
   after the revert (#498, see the crop section), and only once `notes.undone` is recorded (#502):
-  a crash in between leaves a recorded undo, and every later `undo_last_revision` call -- even one
-  that ends in `NothingToUndoError` -- first re-runs the idempotent retirement for the latest
-  recorded undo's crop.
+  a crash in between leaves a recorded undo, and a later `undo_last_revision` call -- even one
+  that ends in `NothingToUndoError` or `UndoConflictError` -- first re-runs the idempotent
+  retirement for the latest recorded undo's crop, so either error may follow a `… (recorte
+  retirado)` repair commit. The repair runs only while no turn (revision or incorporation) has
+  been recorded after that undo, and only while the image at the path is still that turn's own
+  crop (its sidecar's `sha256` and `added_at` equal the ones the turn recorded in `crop`): a crop
+  number is reused once a revert removed both files, and a later crop at the same path is never
+  touched, cited or not. Only the latest undo is repaired; if two undos in a row both crashed
+  before their retirement, the older crop stays in Recursos until the student removes it.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
   (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `turn_id`,
   `origin` (`typed` | `voice`), `request_summary` (the spoken request's short line, `None` when
@@ -555,7 +561,8 @@ mode, and the student's message.
   typed turn.
 - Errors (`RevisionError`, Spanish): `InvalidMessageError` (empty, or over 4000 characters),
   `NothingToUndoError`, `UndoConflictError` (a file of the
-  turn changed afterwards -- a later turn, a regeneration, a doubt's edit); plus the llm errors as
+  turn changed afterwards -- a later turn, a regeneration, a doubt's edit); either may be preceded
+  by the repair commit of an earlier undo's crop retirement (see `undo_last_revision`); plus the llm errors as
   in `generate_notes`, with nothing written but the conversation records.
 - Limitations: a turn's write and its commit are one locked step, so its commit always carries its
   files; only a git lock busy past its timeout (another process holding git) leaves `commit`
@@ -1022,15 +1029,18 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   alone, the image then going with the turn's commit: the revert removes the image and the
   sidecar left behind is retired too (`vault.retire_orphan_sidecar`, #502). The retirement is
   idempotent -- a crop the revert removed whole or one retired already is left alone, and so is a
-  path the current notes cite (a later crop that reused the number) -- and runs after the
-  `notes.undone` record, re-run by the next undo if the process died in between (#502). A student save meanwhile is re-asked with the
+  path the current notes cite or an image that is no longer the turn's own (`crop.sha256` and
+  `crop.added_at`, a later crop that reused the number) -- and runs after the `notes.undone`
+  record, re-run by the next undo if the process died in between, until the next turn is
+  recorded (#502). A student save meanwhile is re-asked with the
   new block map, and the crop already made for the same source and region is reused, never cut
   twice. A crop stored in an attempt whose change is never applied is retired
   (`vault.remove_source`). A crop that fails (`CropError`: not an image, undecodable, blurry, box
   refused; the source not found) changes nothing: the turn ends, the streamed reply is dropped
   (`reply.restart`) and replaced by `CROP_FAILED_PREFIX` + the Spanish reason («No he podido añadir
   el recorte: …»), and the result's `crop` carries the error. `RevisionResult.crop` (`CropRef`:
-  `source`, `region`, `source_id` and `path` of the new image, or `error`) is in the `revision`
+  `source`, `region`, `source_id` and `path` of the new image, or `error`; `sha256` and
+  `added_at`, the stored crop's sidecar identity the undo checks, #502) is in the `revision`
   record and the `notes.edited` event, and `ChatTurn.crop` carries it into `chat_history`, so the
   workspace chat names the new image after a reload. The reply of a successful crop is the editor's own
   confirmation («He añadido el recorte del diagrama de la página 3.»). The request classifier's
