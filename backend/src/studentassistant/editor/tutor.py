@@ -24,9 +24,11 @@ Android app's. `style="written"` is the study screen's question chat (epic #332,
 also cites the sections of the current notes it draws on as `[§anchor]`; `sections` are those
 anchors, in order of first citation, that the notes have (`{anchor, title}`), and an anchor the
 notes lack is left out and named in `warning`. Each style is given only its own earlier turns as
-history. Neither style offers a tool nor writes anything under `notes/`: a request to change the
-document is answered with "Eso se cambia en Construir: pídeselo allí al asistente." (a prompt
-rule). Records written before the styles existed read as `spoken` with no `sections`.
+history. Neither style writes anything under `notes/` (the written style's one tool,
+`report_feedback`, records app feedback in the vault's inbox, #472, `feedback.py`): a request
+to change the document is answered with "Eso se cambia en Construir: pídeselo allí al
+asistente." (a prompt rule). Records written before the styles existed read as `spoken` with
+no `sections`.
 
 **Study chat turns the server decides** (it matches and runs them; this module only keeps them):
 a generated material (`tutor.generation`, `record_generation`, #366) and a question back about a
@@ -45,6 +47,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from studentassistant.editor.feedback import (
+    NOT_RECORDED_WARNING,
+    FeedbackRef,
+    confirmation,
+    excerpt,
+    feedback_instruction,
+    feedback_tool,
+    has_feedback_call,
+    parse_feedback,
+    record_feedback,
+)
 from studentassistant.editor.inputs import (
     MAX_ATTACHMENT_BYTES,
     MAX_PAGE_IMAGES,
@@ -150,6 +163,10 @@ class TutorAnswer(_Strict):
     )
     warning: str | None = None
     model: str | None = None
+    feedback: FeedbackRef | None = Field(
+        default=None,
+        description="Written style: the app feedback item the turn recorded (#472).",
+    )
 
 
 class TutorGeneration(_Strict):
@@ -200,6 +217,9 @@ class TutorTurn(_Strict):
         default=None, description="`generation` and `clarification` turns: the study option."
     )
     items: int | None = Field(default=None, description="`generation` turns: the item count.")
+    feedback: FeedbackRef | None = Field(
+        default=None, description="`answer` turns: the app feedback item recorded (#472)."
+    )
 
 
 class TutorHistory(_Strict):
@@ -276,6 +296,7 @@ def _read_turn_records(
             refs=answer.refs,
             sections=answer.sections,
             warning=answer.warning,
+            feedback=answer.feedback,
         )
         turns.append((answered, None))
     return turns
@@ -510,7 +531,7 @@ async def ask_tutor(
         digest=digest,
         max_page_images=max_page_images,
         max_attachment_bytes=max_attachment_bytes,
-        instruction=WRITTEN_INSTRUCTION if written else TUTOR_INSTRUCTION,
+        instruction=WRITTEN_INSTRUCTION + feedback_instruction() if written else TUTOR_INSTRUCTION,
     )
     turn = {"type": "text", "text": _turn_text(turns, text, style)}
 
@@ -521,6 +542,8 @@ async def ask_tutor(
     response = await client.create(
         [{"role": "user", "content": [*assembled.content, turn]}],
         system=assembled.system,
+        # The written chat's only tool records app feedback (#472); it never changes the notes.
+        **({"tools": [feedback_tool()], "tool_choice": {"type": "auto"}} if written else {}),
         prompt_hash=prompt.hash,
         confirm_over_cap=confirm_over_cap,
         on_text=on_text if on_reply is not None else None,
@@ -551,8 +574,33 @@ async def ask_tutor(
     if response.stop_reason == "refusal":
         raise RefusalError("the tutor declined to answer the question")
     reply = response.text.strip()
-    document = parse(notes)
+    feedback: FeedbackRef | None = None
     warnings: list[str] = []
+    if written and has_feedback_call(response):
+        report = parse_feedback(response)
+        if report is not None:
+            lines = [
+                line
+                for turn in turns[-2:]
+                for line in (f"Estudiante: {turn.question[:200]}", f"Tutor: {turn.reply[:200]}")
+            ]
+            feedback = await record_feedback(
+                vault,
+                report,
+                subject_slug=subject_slug,
+                topic_slug=topic_slug,
+                mode="estudiar",
+                route="study",
+                session_id=None,
+                chat_excerpt=excerpt(lines, text),
+                sync=sync,
+                clock=clock,
+            )
+        if feedback is None:
+            warnings.append(NOT_RECORDED_WARNING)
+        elif not reply:
+            reply = confirmation(feedback)
+    document = parse(notes)
     if not reply:
         warnings.append("El tutor no ha contestado. Prueba a preguntar otra vez.")
     elif response.stop_reason == "max_tokens":
@@ -572,6 +620,7 @@ async def ask_tutor(
         sections=sections,
         warning=" ".join(warnings) or None,
         model=model,
+        feedback=feedback,
     )
     await record(
         ANSWER_RECORD, model=model, prompt_hash=prompt.hash, detail=answer.model_dump(mode="json")

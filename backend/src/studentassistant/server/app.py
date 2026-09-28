@@ -50,6 +50,7 @@ from studentassistant.server.bus import SessionBus
 from studentassistant.server.capture_liveness import CaptureLiveness
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
+from studentassistant.server.feedback_routes import feedback_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.doubts_routes import doubts_router
@@ -365,6 +366,7 @@ def create_app(
     app.include_router(pairing_router(server, devices, app.state.codes))
     app.include_router(session_router())
     app.include_router(cost_router())
+    app.include_router(feedback_router())
     app.include_router(ws_router())
     app.include_router(captures_router())
     app.include_router(read_router())

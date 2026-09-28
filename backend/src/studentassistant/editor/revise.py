@@ -98,6 +98,17 @@ from studentassistant.editor.edits import (
     apply_edits,
     describe_sections,
 )
+from studentassistant.editor.feedback import (
+    NOT_RECORDED_WARNING,
+    FeedbackRef,
+    confirmation,
+    excerpt,
+    feedback_instruction,
+    feedback_tool,
+    has_feedback_call,
+    parse_feedback,
+    record_feedback,
+)
 from studentassistant.editor.inputs import (
     MAX_ATTACHMENT_BYTES,
     MAX_PAGE_IMAGES,
@@ -333,6 +344,10 @@ class RevisionResult(_Strict):
     errors: list[str] = Field(default_factory=list, description="The last check's errors.")
     warning: str | None = None
     model: str | None = None
+    feedback: FeedbackRef | None = Field(
+        default=None,
+        description="The app feedback item the turn recorded (`report_feedback`, #472).",
+    )
 
 
 class UndoResult(_Strict):
@@ -443,6 +458,9 @@ class ChatTurn(_Strict):
     diff: str = Field(default="", description="`incorporate`: unified diff of `apuntes.md`.")
     targets: list[TriageTarget] = Field(
         default_factory=list, description="`triage` (`set_aside`): each target and its reasons."
+    )
+    feedback: FeedbackRef | None = Field(
+        default=None, description="`revise`: the app feedback item the turn recorded (#472)."
     )
 
 
@@ -692,6 +710,7 @@ def _read_turns(
                 commit=result.commit,
                 warning=result.warning,
                 proposed_style_rules=new_rules(guide, result.proposed_style_rules),
+                feedback=result.feedback,
             )
         )
     return [
@@ -805,6 +824,8 @@ def _history_text(turns: list[ChatTurn]) -> str:
             lines.append(f"[Cambio aplicado: {turn.summary or 'sin resumen'}{state}]")
         elif turn.warning and turn.kind in ("revise", "incorporate"):
             lines.append("[No se aplicó ningún cambio: no pasó la validación.]")
+        if turn.feedback is not None:
+            lines.append(f"[Apuntado como comentario sobre la aplicación: {turn.feedback.title}]")
         if turn.proposed_style_rules:
             rules = "; ".join(f"«{rule}»" for rule in turn.proposed_style_rules)
             lines.append(f"[Propuesto para la guía de estilo, sin confirmar aún: {rules}]")
@@ -1073,6 +1094,7 @@ async def revise_notes(
     host: str | None = None,
     selected_sources: Sequence[str] | None = None,
     expects_change: bool = False,
+    session_id: str | None = None,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
 
@@ -1080,6 +1102,11 @@ async def revise_notes(
     `apply_edits` call is then re-asked once (`NO_CALL_NOTE`), and a turn that still calls no
     tool carries `NO_CHANGE_WARNING`, so a reply that only *says* it changed the notes never
     passes silently. A `question` (and the old notes chat) keeps chat-only answers as they are.
+
+    The editor may instead record app feedback with `report_feedback` (#472, `feedback.py`): the
+    item goes to the vault's feedback inbox with the turn's context (`session_id`, or the
+    spoken request's session), the result's `feedback` names it, and such a turn is never
+    re-asked for `apply_edits` nor flagged `NO_CHANGE_WARNING`.
 
     `selected_sources` is the student's Recursos selection of a typed message (#433),
     topic-relative ids in order (a PDF page as `<pdf>#page=K`): sent first within the image
@@ -1134,7 +1161,7 @@ async def revise_notes(
         max_page_images=max_page_images - (len(selection.images) if selection else 0),
         max_attachment_bytes=max_attachment_bytes
         - (selection.attachment_bytes if selection else 0),
-        instruction=REVISE_INSTRUCTION,
+        instruction=REVISE_INSTRUCTION + feedback_instruction(),
     )
     notes = _seeded(base, assembled.topic_title)
     turn = {
@@ -1160,6 +1187,8 @@ async def revise_notes(
         EditsOutput,
     )
     conversation = _Conversation(vault, subject_slug, topic_slug, clock)
+    feedback: FeedbackRef | None = None
+    feedback_failed = False
 
     model = client.model
     value: EditsOutput | None = None
@@ -1182,7 +1211,7 @@ async def revise_notes(
         response = await client.create(
             messages,
             system=assembled.system,
-            tools=[tool],
+            tools=[tool, feedback_tool()],
             tool_choice={"type": "auto"},
             prompt_hash=prompt.hash,
             confirm_over_cap=confirm_over_cap,
@@ -1226,6 +1255,18 @@ async def revise_notes(
         if response.stop_reason == "refusal":
             raise RefusalError("the editor declined to revise the notes")
         reply = response.text.strip()
+        if feedback is None and has_feedback_call(response):
+            feedback = await _record_feedback(
+                vault,
+                response,
+                subject_slug,
+                topic_slug,
+                session_id=session_id or (request.session_id if request is not None else None),
+                chat_excerpt=excerpt(_excerpt_lines(turns), text),
+                sync=sync,
+                clock=clock,
+            )
+            feedback_failed = feedback is None
         value, errors = _parse_call(response)
         stale = False
         if value is not None:
@@ -1251,7 +1292,9 @@ async def revise_notes(
                 stale = True
                 base, notes = current, _seeded(current, assembled.topic_title)
                 errors = [f"No se ha aplicado: {NOTES_CHANGED_NOTE}."]
-        no_call = expects_change and value is None and not errors
+        no_call = (
+            expects_change and value is None and not errors and not has_feedback_call(response)
+        )
         if no_call and not nudged and attempt <= MAX_REASKS:
             nudged = True
             await conversation.record(
@@ -1293,7 +1336,7 @@ async def revise_notes(
             " procedencia; los apuntes no han cambiado. Prueba a pedirlo de otra forma."
         )
         result = result.model_copy(update={"errors": errors, "warning": warning})
-    elif expects_change and value is None:
+    elif expects_change and value is None and feedback is None and not feedback_failed:
         result = result.model_copy(update={"warning": NO_CHANGE_WARNING})
     elif value is not None and edited is not None and applied is not None:
         paths, commit, new_mode, added = applied
@@ -1317,6 +1360,14 @@ async def revise_notes(
                 "commit": commit,
                 "warning": NOT_UNDOABLE_WARNING if paths and commit is None else None,
             }
+        )
+    if feedback is not None:
+        result = result.model_copy(
+            update={"feedback": feedback, "reply": result.reply or confirmation(feedback)}
+        )
+    elif feedback_failed:
+        result = result.model_copy(
+            update={"warning": _with_warning(result.warning, NOT_RECORDED_WARNING)}
         )
     if value is not None and not errors and value.doubts:
         try:
@@ -1344,6 +1395,45 @@ async def revise_notes(
     if result.applied:
         await _emit(on_event, NOTES_EDITED_KIND, _event_payload(payload), subject_slug, topic_slug)
     return result
+
+
+def _excerpt_lines(turns: list[ChatTurn]) -> list[str]:
+    """The last two chat turns, one line each side: the context kept with app feedback."""
+    lines: list[str] = []
+    for turn in [t for t in turns if t.kind != "student_edit"][-2:]:
+        if turn.message:
+            lines.append(f"Estudiante: {' '.join(turn.message.split())[:200]}")
+        if turn.reply:
+            lines.append(f"Editor: {' '.join(turn.reply.split())[:200]}")
+    return lines
+
+
+async def _record_feedback(
+    vault: Vault,
+    response: LLMResponse,
+    subject_slug: str,
+    topic_slug: str,
+    *,
+    session_id: str | None,
+    chat_excerpt: str,
+    sync: GitSync,
+    clock: Clock,
+) -> FeedbackRef | None:
+    report = parse_feedback(response)
+    if report is None:
+        return None
+    return await record_feedback(
+        vault,
+        report,
+        subject_slug=subject_slug,
+        topic_slug=topic_slug,
+        mode="construir",
+        route="workspace",
+        session_id=session_id,
+        chat_excerpt=chat_excerpt,
+        sync=sync,
+        clock=clock,
+    )
 
 
 def _event_payload(payload: dict[str, Any]) -> dict[str, Any]:
