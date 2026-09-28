@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 from datetime import UTC, datetime
 
@@ -241,3 +242,56 @@ def test_empty_region_is_refused_before_asking(tmp_vault: Vault) -> None:
     with pytest.raises(CropError):
         _crop(tmp_vault, subject, topic, page, fake, region="   ")
     assert fake.requests == []
+
+
+def test_a_file_opencv_cannot_decode_is_refused_before_asking(tmp_vault: Vault) -> None:
+    subject, topic = _topic(tmp_vault)
+    path = put_source(tmp_vault, subject, topic, "notes", "foto.gif", b"GIF89a broken", {})
+    page = path.relative_to(tmp_vault.path).as_posix()
+    fake = FakeClaude()
+
+    with pytest.raises(CropError, match="no es una imagen"):
+        _crop(tmp_vault, subject, topic, page, fake)
+
+    assert fake.requests == []
+    assert _images(tmp_vault, subject, topic) == []
+
+
+def _with_exif_orientation(jpeg: bytes, orientation: int) -> bytes:
+    """`jpeg` with an APP1 Exif segment holding only the Orientation tag (0x0112)."""
+    tiff = (
+        b"II*\x00\x08\x00\x00\x00"  # little-endian TIFF header, IFD0 at offset 8
+        + b"\x01\x00"  # one entry
+        + b"\x12\x01\x03\x00\x01\x00\x00\x00"  # Orientation, SHORT, count 1
+        + orientation.to_bytes(2, "little")
+        + b"\x00\x00"
+        + b"\x00\x00\x00\x00"  # no next IFD
+    )
+    payload = b"Exif\x00\x00" + tiff
+    segment = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    assert jpeg[:2] == b"\xff\xd8"
+    return jpeg[:2] + segment + jpeg[2:]
+
+
+def test_sonnet_sees_the_page_in_the_orientation_the_crop_is_applied_to(
+    tmp_vault: Vault,
+) -> None:
+    subject, topic = _topic(tmp_vault)
+    # Stored 800x600 with EXIF "rotate 90° clockwise": the page is 600 wide and 800 tall.
+    content = _with_exif_orientation(_jpeg(_diagram()), 6)
+    assert cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR).shape[:2] == (800, 600)
+    page = _page(tmp_vault, subject, topic, content)
+    fake = FakeClaude().reply_tool(TOOL_NAME, {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.5})
+
+    cropped = _crop(tmp_vault, subject, topic, page, fake)
+
+    [request] = fake.requests
+    block = request.messages[0]["content"][0]
+    shown = base64.b64decode(block["source"]["data"])
+    # What Claude got carries no orientation to apply: its raw pixels are already upright.
+    raw = cv2.imdecode(
+        np.frombuffer(shown, np.uint8), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
+    )
+    assert raw.shape[:2] == (800, 600) and block["source"]["media_type"] == "image/jpeg"
+    # The top half Claude saw is the top half cut: 600 wide, 400 tall.
+    assert (cropped.crop.width, cropped.crop.height) == (600, 400)

@@ -71,6 +71,24 @@ esto antes", "¿por qué pusiste esto?".
   "Propuesto para la guía de estilo, sin confirmar aún" --, copy that rule here exactly. Never put
   a rule here that was not proposed before.
 
+## The `crop_image` tool
+
+When the student asks for only part of a page as an image in the notes («pon solo el diagrama de
+la página 3», «recorta la tabla de esta foto», «mete el esquema de la captura seleccionada»), call
+`crop_image` once instead of `apply_edits`, never both in one turn, and one crop per request:
+
+- `source`: the `source_id` of the page, as the catalogue gives it (a PDF page as
+  `sources/pdf/<file>.pdf#page=K`): a page the notes cite or one the student selected in Recursos.
+- `region`: what to crop, in the student's words («el diagrama de la página 3»).
+- `op`, `section`, `block`: where the image goes, as in `apply_edits`: `insert_after` (after
+  block `block`, `0` = first) or `replace_block` (it replaces block `block`).
+- `summary`: one short Spanish sentence («Añado el recorte del diagrama de la página 3»).
+
+The crop is made, stored as a new source and inserted as an image cited «Imagen recortada N» for
+you: do not write the image link or its footnote yourself. Write your reply as the confirmation
+(«He añadido el recorte del diagrama de la página 3.»); if the crop cannot be made (the region is
+not found, it comes out blurry), nothing changes and the student is told why.
+
 ## Rules
 
 - Provenance: the edited notes are checked by the same validator as always. Every paragraph, list
@@ -113,7 +131,8 @@ esto antes", "¿por qué pusiste esto?".
   editó él mismo los apuntes"), and a block they wrote is cited `[^est]: Escrito por el
   estudiante`. Respect what they wrote: do not undo or reword it unless they ask; you may replace
   `[^est]` with the source it comes from when you are sure. A pasted image is cited as
-  `[Imagen pegada N](../sources/images/img-NNN.png)`; keep its block and its footnote.
+  `[Imagen pegada N](../sources/images/img-NNN.png)` and a cropped one `[Imagen recortada
+  N](../sources/images/img-NNN.jpg)`; keep its block and its footnote.
 - If the student changed the notes while you answered, your change is sent back with the new block
   map: redo it on those notes, keeping what the student wrote.
 - Follow the subject's style guide in every text you write, as in the first version.

@@ -88,6 +88,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from studentassistant.config import Settings
+from studentassistant.editor.crop import (
+    CROP_FAILED_PREFIX,
+    CROP_SOURCE_NOT_FOUND_MESSAGE,
+    CROP_TOOL,
+    CropError,
+    CropImageRequest,
+    CroppedImage,
+    CropRef,
+    crop_edit,
+    crop_image_tool,
+    crop_source_image,
+    crop_source_path,
+    placeholder_edit,
+)
 from studentassistant.editor.doubts import (
     PENDING_REVIEWED_RECORD,
     EditorDoubt,
@@ -126,7 +141,10 @@ from studentassistant.editor.inputs import (
 )
 from studentassistant.editor.notes_format import (
     FidelityMode,
+    ProvenanceError,
     notes_revision,
+    parse,
+    parse_provenance,
     topic_source_resolver,
     validate,
 )
@@ -156,11 +174,14 @@ from studentassistant.vault import (
     ConversationRecord,
     GitSync,
     RevertConflictError,
+    SourceNotFoundError,
+    SourcePathError,
     Vault,
     append_conversation_record,
     notes_path,
     read_conversation,
     read_notes,
+    remove_source,
     set_fidelity_mode,
     subject_directory,
     topic_directory,
@@ -368,6 +389,11 @@ class RevisionResult(_Strict):
     feedback: FeedbackRef | None = Field(
         default=None,
         description="The app feedback item the turn recorded (`report_feedback`, #472).",
+    )
+    crop: CropRef | None = Field(
+        default=None,
+        description="The page region the turn cropped (`crop_image`, #493): the new source, or"
+        " the Spanish reason it failed.",
     )
 
 
@@ -806,7 +832,8 @@ REVISE_INSTRUCTION = (
     "A continuación tienes la conversación hasta ahora, el mapa de bloques de los apuntes"
     " actuales y el nuevo mensaje del estudiante. Contesta primero con tu respuesta en texto y,"
     " si hay que cambiar algo, llama después una vez a `apply_edits` con todos los cambios de"
-    " este turno.\n"
+    " este turno; si pide solo una parte de una página como imagen, llama en su lugar a"
+    " `crop_image`.\n"
 )
 
 
@@ -895,7 +922,11 @@ def _turn_text(
 
 
 def _stale_turn(
-    response: LLMResponse, notes: str, mode: str, settled: Collection[str] = ()
+    response: LLMResponse,
+    notes: str,
+    mode: str,
+    settled: Collection[str] = (),
+    tool: str = EDIT_TOOL,
 ) -> dict[str, Any]:
     """The re-ask after the notes changed under the turn: the new block map, apply again."""
     reason = (
@@ -912,13 +943,13 @@ def _stale_turn(
             "text": f"{reason}\n\n## Mapa de bloques de los apuntes actuales (modo de fidelidad"
             f" «{mode}»)\n\n{describe_sections(notes, settled)}\n\nRespeta lo que ha escrito el"
             " estudiante: escribe otra vez una respuesta breve y llama a"
-            f" `{EDIT_TOOL}` con el cambio completo sobre estos apuntes.",
+            f" `{tool}` con el cambio completo sobre estos apuntes.",
         }
     )
     return {"role": "user", "content": content}
 
 
-def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
+def _reask_turn(response: LLMResponse, errors: list[str], tool: str = EDIT_TOOL) -> dict[str, Any]:
     listing = "\n".join(f"- {error}" for error in errors)
     reason = f"El cambio no se puede aplicar por estos motivos:\n\n{listing}"
     content: list[dict[str, Any]] = [
@@ -929,7 +960,7 @@ def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
         {
             "type": "text",
             "text": f"{reason}\n\nCorrígelos: escribe otra vez una respuesta breve y llama a"
-            f" `{EDIT_TOOL}` con el cambio completo corregido.",
+            f" `{tool}` con el cambio completo corregido.",
         }
     )
     return {"role": "user", "content": content}
@@ -949,6 +980,64 @@ def _parse_call(response: LLMResponse) -> tuple[EditsOutput | None, list[str]]:
     except (json.JSONDecodeError, ValidationError) as error:
         return None, [f"La entrada de `{EDIT_TOOL}` no es válida: {error}"]
     return value, []
+
+
+def _parse_crop_call(response: LLMResponse) -> tuple[CropImageRequest | None, list[str]]:
+    """The `crop_image` input (None without a call) and the errors of a malformed one (#493)."""
+    calls = [call for call in response.tool_calls if call.name == CROP_TOOL]
+    if not calls:
+        return None, []
+    if any(call.name == EDIT_TOOL for call in response.tool_calls):
+        return None, [
+            f"Llama a `{CROP_TOOL}` o a `{EDIT_TOOL}` en un turno, no a las dos: el recorte ya"
+            " inserta la imagen en los apuntes."
+        ]
+    if response.stop_reason == "max_tokens":
+        return None, ["La llamada quedó cortada por el límite de longitud: da un cambio más corto."]
+    if len(calls) > 1:
+        return None, [f"Llama a `{CROP_TOOL}` una sola vez: un recorte por petición."]
+    try:
+        value = CropImageRequest.model_validate(json.loads(calls[0].input_json))
+    except (json.JSONDecodeError, ValidationError) as error:
+        return None, [f"La entrada de `{CROP_TOOL}` no es válida: {error}"]
+    return value, []
+
+
+def _cited_files(notes: str | None) -> set[str]:
+    """The topic-relative files the notes' footnote definitions link (as
+    `incorporate.cited_source_paths`, which imports this module)."""
+    cited: set[str] = set()
+    for definition in parse(notes).footnotes if notes else ():
+        try:
+            provenance = parse_provenance(definition)
+        except ProvenanceError:
+            continue
+        if provenance.kind != "transcript" and provenance.path:
+            cited.add(provenance.path)
+    return cited
+
+
+def _crop_errors(
+    request: CropImageRequest, notes: str, base: str | None, selected: Sequence[str]
+) -> list[str]:
+    """What makes a `crop_image` call unusable before anything is cropped: a source neither
+    cited by the notes nor selected, an empty region or summary, an anchor that does not apply."""
+    errors: list[str] = []
+    allowed = {source_key(ref) for ref in (*_cited_files(base), *selected)}
+    if source_key(request.source.strip()) not in allowed:
+        errors.append(
+            f"`{CROP_TOOL}` solo recorta una página que citan los apuntes o que el estudiante ha"
+            f" seleccionado en Recursos; {request.source} no lo es."
+        )
+    if not request.region.strip():
+        errors.append("Indica en `region` qué parte de la página hay que recortar.")
+    if not request.summary.strip():
+        errors.append("Falta el resumen (`summary`) del cambio.")
+    try:
+        apply_edits(notes, [placeholder_edit(request)])
+    except EditError as error:
+        errors.extend(error.errors)
+    return errors
 
 
 def _rules(rules: list[str]) -> list[str]:
@@ -1033,6 +1122,7 @@ def _apply(
     edited: str,
     value: EditsOutput,
     current_mode: str,
+    extra_paths: Sequence[str] = (),
 ) -> tuple[list[str], str | None, str | None, list[str]]:
     """Write and commit one change as one locked step; blocking. `(paths, commit, new mode, rules
     added)`.
@@ -1059,6 +1149,8 @@ def _apply(
             paths.append(subject_file.relative_to(root).as_posix())
         if not paths:
             return [], None, None, []
+        # A crop's image and sidecar, stored before the lock: committed with the notes citing them.
+        paths.extend(extra_paths)
         commit = commit_now(
             f"Apuntes de {subject_slug}/{topic_slug} revisados: {_short(value.summary)}"
         )
@@ -1079,6 +1171,7 @@ def _apply_if_current(
     edited: str,
     value: EditsOutput,
     current_mode: str,
+    extra_paths: Sequence[str] = (),
 ) -> tuple[_Applied | None, str | None]:
     """Apply the change under the write lock when the notes are still `base`; blocking.
 
@@ -1098,6 +1191,7 @@ def _apply_if_current(
             edited=edited,
             value=value,
             current_mode=current_mode,
+            extra_paths=extra_paths,
         )
         return applied, current
 
@@ -1107,6 +1201,65 @@ def _seeded(stored: str | None, title: str) -> str:
     if stored is not None and stored.strip():
         return stored
     return f"# {' '.join(title.split()) or 'Apuntes'}\n"
+
+
+async def _crop_change(
+    request: CropImageRequest,
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    *,
+    notes: str,
+    base: str | None,
+    selected: Sequence[str],
+    cache: dict[tuple[str, str], CroppedImage],
+    client: LLMClient | None,
+    settings: Settings | None,
+) -> tuple[EditsOutput | None, list[str], CropRef | None, CroppedImage | None]:
+    """A `crop_image` call as a change: `(value, errors, crop, cropped image)`.
+
+    Errors to send back (a source not allowed, an anchor that does not apply) come before any
+    crop. A crop that fails is `crop.error` (Spanish) with no value: the turn ends there. A crop
+    made in an earlier attempt of the turn for the same source and region is reused.
+    """
+    source, region = request.source.strip(), request.region.strip()
+    errors = _crop_errors(request, notes, base, selected)
+    if errors:
+        return None, errors, None, None
+    image = cache.get((source, region))
+    if image is None:
+        try:
+            image = await crop_source_image(
+                vault,
+                subject_slug,
+                topic_slug,
+                crop_source_path(vault, subject_slug, topic_slug, source),
+                region,
+                settings=settings,
+                client=client,
+            )
+        except (SourcePathError, SourceNotFoundError):
+            return (
+                None,
+                [],
+                CropRef(source=source, region=region, error=CROP_SOURCE_NOT_FOUND_MESSAGE),
+                None,
+            )
+        except CropError as error:
+            return None, [], CropRef(source=source, region=region, error=str(error)), None
+        cache[(source, region)] = image
+    op, footnote = crop_edit(request, image)
+    value = EditsOutput(ops=[op], footnotes=[footnote], summary=request.summary)
+    ref = CropRef(source=source, region=region, source_id=image.source_id, path=image.path)
+    return value, [], ref, image
+
+
+async def _retire_crop(vault: Vault, image: CroppedImage) -> None:
+    """Retire a stored crop no applied change cites (`vault.remove_source`); never raises."""
+    try:
+        await asyncio.to_thread(remove_source, vault, image.path)
+    except Exception:
+        logger.exception("could not retire the unused crop %s", image.path)
 
 
 async def revise_notes(
@@ -1131,8 +1284,19 @@ async def revise_notes(
     selected_sources: Sequence[str] | None = None,
     expects_change: bool = False,
     session_id: str | None = None,
+    crop_client: LLMClient | None = None,
+    settings: Settings | None = None,
 ) -> RevisionResult:
     """One turn of the revision conversation (see the module docstring).
+
+    The editor may instead crop a region of a page with `crop_image` (#493): the source must be
+    one the notes cite or the selection holds, and the anchor must apply, else the call is sent
+    back like a failing change. The crop itself (`crop.crop_source_image`, through
+    `crop_client`, role `observer`, and `settings`) runs outside `apply_edits`; the stored crop is
+    then inserted, linked and cited «Imagen recortada N», by an ordinary edit op checked and
+    applied like any other, its files committed with the notes. A crop that fails (the source is
+    not an image, the region is not found, the cut is blurry) changes nothing: the reply is the
+    Spanish reason and the result's `crop` carries it.
 
     `expects_change` is set for a request classified `edit` (#452): an answer without an
     `apply_edits` call is then re-asked once (`NO_CALL_NOTE`), and a turn that still calls no
@@ -1236,6 +1400,11 @@ async def revise_notes(
     conversation = _Conversation(vault, subject_slug, topic_slug, clock)
     feedback: FeedbackRef | None = None
     feedback_failed = False
+    # The turn's one crop, kept across re-asks so the same request is never cropped twice.
+    cropped: dict[tuple[str, str], CroppedImage] = {}
+    crop: CropRef | None = None
+    crop_image: CroppedImage | None = None
+    tool_name = EDIT_TOOL
 
     model = client.model
     value: EditsOutput | None = None
@@ -1258,7 +1427,7 @@ async def revise_notes(
         response = await client.create(
             messages,
             system=assembled.system,
-            tools=[tool, feedback_tool()],
+            tools=[tool, crop_image_tool(), feedback_tool()],
             tool_choice={"type": "auto"},
             prompt_hash=prompt.hash,
             confirm_over_cap=confirm_over_cap,
@@ -1316,6 +1485,31 @@ async def revise_notes(
             feedback_failed = feedback is None
         # A feedback turn never changes the notes, even if the editor also called `apply_edits`.
         value, errors = (None, []) if has_feedback_call(response) else _parse_call(response)
+        crop_request, crop_errors = (
+            (None, []) if has_feedback_call(response) else _parse_crop_call(response)
+        )
+        tool_name = CROP_TOOL if crop_request is not None or crop_errors else EDIT_TOOL
+        crop, crop_image = None, None
+        if crop_errors:
+            value, errors = None, crop_errors
+        elif crop_request is not None:
+            value, errors, crop, crop_image = await _crop_change(
+                crop_request,
+                vault,
+                subject_slug,
+                topic_slug,
+                notes=notes,
+                base=base,
+                selected=list(selected_sources or ()),
+                cache=cropped,
+                client=crop_client,
+                settings=settings,
+            )
+            if crop is not None and crop.error is not None:
+                await conversation.record(
+                    "validation", detail={"attempt": attempt, "errors": [], "crop": crop.error}
+                )
+                break
         stale = False
         if value is not None:
             errors, edited = await asyncio.to_thread(
@@ -1340,6 +1534,7 @@ async def revise_notes(
                     edited=edited,
                     value=value,
                     current_mode=assembled.fidelity_mode,
+                    extra_paths=crop_image.paths if crop_image is not None else (),
                 )
             )
             if applied is None:
@@ -1367,9 +1562,10 @@ async def revise_notes(
                 notes,
                 assembled.fidelity_mode,
                 await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, notes),
+                tool_name,
             )
             if stale
-            else _reask_turn(response, errors)
+            else _reask_turn(response, errors, tool_name)
         )
         messages = [*messages, response.assistant_turn(), reask]
         await conversation.record("user", message=reask, model=model)
@@ -1386,7 +1582,20 @@ async def revise_notes(
         attempts=attempts,
         model=model,
     )
-    if errors:
+    # A crop stored in an attempt whose change was not applied is cited by nothing: retired.
+    kept = crop_image if applied is not None and not errors else None
+    for stored in cropped.values():
+        if stored is not kept:
+            await _retire_crop(vault, stored)
+    if kept is None and crop is not None and crop.error is None:
+        crop = None
+    if crop is not None and crop.error is not None:
+        failure = f"{CROP_FAILED_PREFIX}{crop.error}"
+        if on_reply is not None:
+            await on_reply(REPLY_RESTART, {"attempt": attempts + 1})
+            await on_reply(REPLY_DELTA, {"text": failure, "attempt": attempts + 1})
+        result = result.model_copy(update={"reply": failure, "crop": crop})
+    elif errors:
         warning = (
             "El editor no ha podido aplicar el cambio porque has cambiado los apuntes mientras"
             " respondía; los apuntes se quedan como los dejaste. Vuelve a pedírselo."
@@ -1409,6 +1618,7 @@ async def revise_notes(
                     if value.nothing_new and not changed
                     else value.summary.strip()
                 ),
+                "crop": crop,
                 "applied": bool(paths),
                 "summary": value.summary.strip() or None,
                 "ops": value.ops,

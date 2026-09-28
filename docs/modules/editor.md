@@ -935,17 +935,21 @@ with `studentassistant feedback mark` (`docs/modules/server.md`, CLI).
 ### Cropping a region of a page image -- `crop.py` (#484)
 The student asks for only part of a stored page («solo el diagrama de la página 3»); Sonnet
 locates the region and deterministic code cuts it out, cleans it up and stores it as a new,
-separately cited source. The original page is never modified. Wiring this into the workspace
-chat (the editor deciding to crop and citing the result in the same turn) is not done yet: a crop
-reads and writes the vault and calls Claude, so it cannot be an `EditOp` of the pure `apply_edits`
-pipeline.
+separately cited source. The original page is never modified. A crop reads and writes the vault
+and calls Claude, so it is not an `EditOp` of the pure `apply_edits` pipeline: the revise turn
+runs it first and then applies an ordinary edit citing it (`crop_image`, below, #493).
 - `await crop_source_image(vault, subject_slug, topic_slug, vault_relative_path, description, *,
   settings=None, client=None, added_at=None) -> CroppedImage`: reads the page with
   `vault.read_source` (a `notes` or `book` page, a PDF page thumbnail, any stored image of a
   media type in `inputs.IMAGE_MEDIA_TYPES`), locates the region, cleans the cut up and stores it.
-  Nothing is committed (the caller commits). Errors, each with nothing written: `SourcePathError`
-  / `SourceNotFoundError` bubble from `read_source`; `CropError` (a `ValueError`, Spanish
-  message) when the source is not an image Claude reads (`UNSUPPORTED_IMAGE_MESSAGE`) or the
+  Nothing is committed (the caller commits). The page is decoded once
+  (`captures.decode_image`, EXIF orientation applied) **before** any Claude call, and the image
+  sent to Sonnet is that decoded page re-encoded (`oriented_image`: PNG for a PNG, else JPEG at
+  `[sources] capture_jpeg_quality`, no EXIF left), so the box maps to the pixels Sonnet saw;
+  the cut is made on the same decoded pixels (`clean_decoded`). Errors, each with nothing written:
+  `SourcePathError` / `SourceNotFoundError` bubble from `read_source`; `CropError` (a
+  `ValueError`, Spanish message) when the source is not an image Claude reads, or one OpenCV
+  cannot decode (a GIF), both refused before the Sonnet call (`UNSUPPORTED_IMAGE_MESSAGE`), or the
   description is empty (`EMPTY_REGION_MESSAGE`); `RegionNotFoundError` (a `CropError`) when
   Claude refuses or gives no valid box after the re-ask; `BlurryCropError` (a `CropError`,
   `BLURRY_CROP_MESSAGE` «El recorte solicitado sale borroso; prueba con otra foto de la página.»);
@@ -986,8 +990,39 @@ pipeline.
   (`cropped_image_provenance`), and the properties `footnote_label` (`imgNNN`), `footnote`
   (`[^imgNNN]: [Imagen recortada N](../sources/images/img-NNN.<ext>)`) and `markdown`
   (`![Imagen recortada N](../sources/images/img-NNN.<ext>)`): what a caller needs to write an
-  `insert_after`/`replace_block` edit showing and citing the crop.
+  `insert_after`/`replace_block` edit showing and citing the crop; `paths` (the image and its
+  sidecar, vault-relative).
+- **From the workspace chat** (#493): a revise turn (`revise_notes`) offers the editor, next to
+  `apply_edits` and `report_feedback`, the strict tool `crop_image` (`CROP_TOOL`,
+  `CropImageRequest`: `source` -- a topic-relative source id as the catalogue gives it, a PDF page
+  as `sources/pdf/<file>.pdf#page=K`, whose rendered page `<stem>.pKKK.jpg` is what is cropped
+  (`crop_source_path`) --, `region`, `op` `insert_after` | `replace_block`, `section`, `block`,
+  `summary`). One crop per turn, never together with `apply_edits`. Before anything is cropped the
+  call is checked: the source must be one the notes cite or one of the Recursos selection, the
+  region and summary non-empty, and the anchor must apply (`placeholder_edit` through
+  `apply_edits`); a failure is sent back (`tool_result` error naming `crop_image`) like a failing
+  change. Then `crop_source_image` runs (client: `revise_notes(crop_client=...)`, role `observer`;
+  `settings`), outside `apply_edits` and outside the notes lock, and `crop_edit` builds an
+  ordinary `EditOp` whose `text` is the image link plus `[^imgNNN]` and the `NewFootnote` of
+  «Imagen recortada N»; that `EditsOutput` goes through the same `_check`, the notes lock and the
+  one locked write + checkpoint as any change, the crop's image and sidecar among the commit's
+  `paths` (so undoing the turn removes them too). A student save meanwhile is re-asked with the
+  new block map, and the crop already made for the same source and region is reused, never cut
+  twice. A crop stored in an attempt whose change is never applied is retired
+  (`vault.remove_source`). A crop that fails (`CropError`: not an image, undecodable, blurry, box
+  refused; the source not found) changes nothing: the turn ends, the streamed reply is dropped
+  (`reply.restart`) and replaced by `CROP_FAILED_PREFIX` + the Spanish reason («No he podido añadir
+  el recorte: …»), and the result's `crop` carries the error. `RevisionResult.crop` (`CropRef`:
+  `source`, `region`, `source_id` and `path` of the new image, or `error`) is in the `revision`
+  record and the `notes.edited` event. The reply of a successful crop is the editor's own
+  confirmation («He añadido el recorte del diagrama de la página 3.»). The request classifier's
+  prompt (`observer_requests`) lists these requests as `edit`, so a spoken or typed one reaches the
+  editor with `expects_change`.
 - Tests: `FakeClaude` scripts the box (valid, out of bounds and re-asked, refusal); fixture images
   built in the tests cover the sharp/blurred filter, a rotated rectangle deskewed and an
   axis-aligned one left as the plain crop, byte-identical output, and with `tmp_vault` the stored
-  file, its sidecar and the footnote (`tests/editor/test_crop_*.py`).
+  file, its sidecar and the footnote, an undecodable GIF refused without a call, and an EXIF-rotated
+  page shown upright to Sonnet (`tests/editor/test_crop_*.py`); the chat turn -- success with its
+  link, footnote, commit and undo, a cited PDF page, each failure, a source not allowed, crop and
+  `apply_edits` together, the crop outside the notes lock with a student save redone on, a retired
+  crop, the classifier prompt -- in `tests/editor/test_revise_crop.py`.
