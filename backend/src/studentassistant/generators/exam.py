@@ -44,6 +44,7 @@ from studentassistant.generators.base import (
     ItemProvenance,
     NoteSection,
 )
+from studentassistant.generators.diagrams import DIAGRAM_UNAVAILABLE, fences
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 
@@ -335,7 +336,23 @@ def inline_html(text: str) -> str:
 
 
 def text_html(text: str) -> str:
-    """A text of paragraphs (blank-line separated) and `- `/`1. ` lists as HTML blocks."""
+    """A text of paragraphs (blank-line separated), `- `/`1. ` lists and fenced code blocks as
+    HTML blocks. A ```` ```mermaid ```` fence cannot be drawn in the PDF: its code is kept, with
+    `DIAGRAM_UNAVAILABLE` after it (#481)."""
+    lines = text.strip().split("\n")
+    blocks: list[str] = []
+    done = 0
+    for fence in fences(lines):
+        blocks.append(_paragraphs_html("\n".join(lines[done : fence.start])))
+        blocks.append(f"<pre>{html.escape(fence.body, quote=False)}</pre>")
+        if fence.is_mermaid:
+            blocks.append(f'<p class="diagram-note">{DIAGRAM_UNAVAILABLE}</p>')
+        done = fence.end
+    blocks.append(_paragraphs_html("\n".join(lines[done:])))
+    return "".join(blocks)
+
+
+def _paragraphs_html(text: str) -> str:
     blocks: list[str] = []
     for block in re.split(r"\n\s*\n", text.strip()):
         lines = [line for line in block.splitlines() if line.strip()]
@@ -362,6 +379,8 @@ p { margin-top: 2pt; margin-bottom: 4pt; }
 .student { margin-top: 8pt; margin-bottom: 8pt; }
 .space { border: 1px solid #bbb; margin-top: 4pt; margin-bottom: 12pt; }
 .math { font-family: monospace; }
+pre { font-family: monospace; font-size: 9pt; margin-top: 2pt; margin-bottom: 2pt; }
+.diagram-note { color: #555; font-size: 9pt; font-style: italic; }
 .label { font-weight: bold; margin-top: 6pt; }
 .sources { color: #555; font-size: 9pt; font-style: italic; }
 table { border-collapse: collapse; margin-top: 2pt; margin-bottom: 4pt; }

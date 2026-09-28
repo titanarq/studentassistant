@@ -25,7 +25,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from studentassistant.llm import LLMResponse, load_prompt, strict_tool
 from studentassistant.vault import (
@@ -36,7 +36,12 @@ from studentassistant.vault import (
     Vault,
     add_feedback,
 )
-from studentassistant.vault.feedback import MAX_BODY_CHARS, MAX_EXCERPT_CHARS, MAX_TITLE_CHARS
+from studentassistant.vault.feedback import (
+    MAX_BODY_CHARS,
+    MAX_EXCERPT_CHARS,
+    MAX_TITLE_CHARS,
+    collapse_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +67,8 @@ class FeedbackReport(_Strict):
     )
     title: str = Field(
         min_length=1,
-        description="A short Spanish title of the item, at most 100 characters"
+        max_length=MAX_TITLE_CHARS,
+        description=f"A short Spanish title of the item, at most {MAX_TITLE_CHARS} characters"
         " (e.g. «El botón de capturar no responde en el móvil»).",
     )
     body: str = Field(
@@ -70,6 +76,13 @@ class FeedbackReport(_Strict):
         description="Spanish: the student's own words, quoted, then one or two sentences"
         " summarising what they report and where it happens.",
     )
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        # the vault's limit counts the collapsed title, so this one does too: a longer title is
+        # a malformed call (nothing recorded, the turn's warning says so), never cut silently
+        return collapse_title(value) if isinstance(value, str) else value
 
 
 class FeedbackRef(_Strict):
@@ -156,7 +169,7 @@ async def record_feedback(
             add_feedback,
             vault,
             report.kind,
-            _cut(" ".join(report.title.split()), MAX_TITLE_CHARS),
+            report.title,
             _cut(report.body, MAX_BODY_CHARS),
             context,
             clock=clock,

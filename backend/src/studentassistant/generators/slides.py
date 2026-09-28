@@ -47,6 +47,7 @@ from studentassistant.generators.base import (
     GeneratorOutput,
     ItemProvenance,
 )
+from studentassistant.generators.diagrams import fences, note_mermaid_fences
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 from studentassistant.vault import VaultError, get_subject, read_source, topic_directory
@@ -194,9 +195,20 @@ def _heading_text(text: str) -> str:
 
 
 def _bullet(text: str) -> str:
-    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    """`text` as one list item; the body of a fenced block in it keeps its indentation (a mermaid
+    `mindmap` depends on it)."""
+    raw = text.strip().splitlines()
+    lines: list[str] = []
+    done = 0
+    for fence in fences(raw):
+        lines += [line.strip() for line in raw[done : fence.start] if line.strip()]
+        lines += [raw[fence.start].strip(), *fence.body_lines]
+        if fence.closed:
+            lines.append(raw[fence.end - 1].strip())
+        done = fence.end
+    lines += [line.strip() for line in raw[done:] if line.strip()]
     first = re.sub(r"^([-*+]|\d+[.)])\s+", "", lines[0]) if lines else ""
-    return "\n".join([f"- {first}", *(f"  {line}" for line in lines[1:])])
+    return "\n".join([f"- {first}", *(f"  {line}".rstrip() for line in lines[1:])])
 
 
 def _directive(name: str, value: str) -> str:
@@ -260,7 +272,9 @@ class MarpExporter:
     """Runs Marp CLI on the deck, in a temporary directory, once for the PDF and once for PPTX.
 
     The deck and its figures are written there as they are laid out under `generated/`, and Marp
-    reads local images (`--allow-local-files`). A missing command, a failure or a timeout gives a
+    reads local images (`--allow-local-files`). Marp cannot draw mermaid, so its copy of the deck
+    has `diagrams.DIAGRAM_UNAVAILABLE` under every mermaid fence (the stored `diapositivas.md`
+    keeps the fence alone, which the web draws). A missing command, a failure or a timeout gives a
     warning, never an exception.
     """
 
@@ -290,7 +304,8 @@ class MarpExporter:
         exported = Exported()
         with tempfile.TemporaryDirectory(prefix="sa-marp-") as scratch:
             root = Path(scratch)
-            (root / MARKDOWN_NAME).write_text(markdown, encoding="utf-8")
+            # Marp draws no mermaid: its copy of the deck says so under each diagram (#481).
+            (root / MARKDOWN_NAME).write_text(note_mermaid_fences(markdown), encoding="utf-8")
             for name, content in assets.items():
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
