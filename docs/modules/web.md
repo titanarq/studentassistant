@@ -249,9 +249,22 @@
     (`resources/useSourceMetas.ts`) at most `META_CONCURRENCY` (4) at a time and cached per
     source (every listed or cited stored source, the `unlisted` ones too); every one is read again each time the tab is shown and after each change
     of the notes (a new tree), which is how a `capture.triaged` change shows up. Choosing a
-    source (set-aside ones too) shows it in the existing `SourcePanel` in place of the list
-    (static there, not floating; a pasted image as the zoomable image); "Cerrar" goes back to
-    the list.
+    source (set-aside ones too) hands it to the page (`onOpen(resource, trigger)`, the card's
+    button as the focus-return target), which since #473 shows its detail **over the document
+    column** (see the right column below); the Recursos list stays as it was in its box (before
+    #473 the `SourcePanel` replaced the list inside the box, where the capture was tiny).
+    **Controls over a thumbnail (#473).** The checkbox, the trash button and the corner badges are
+    "glass" so the page shows through them: a thin dark veil (`--glass-veil`, 28 % black) with a
+    light ring (`--glass-ring`, 75 % white), a light glyph and a 2 px `backdrop-filter` blur, all
+    defined on `.resource-card` in `workspace/workspace.css`. The dark veil keeps the ring and glyph
+    readable on a white page, the light ring keeps the control's edge visible on a dark photo.
+    Hover and keyboard focus make the veil denser (`--glass-veil-strong`), focus adds the accent
+    focus ring, a selected checkbox is solid accent with its check, and the trash button's hover or
+    focus fills it with the danger red (`--glass-danger`). The «Incorporada a los apuntes» and «!»
+    badges keep their colour but only partly opaque (`--glass-ok`, `--glass-warn`, 60 %): fixed
+    tints, not the theme tokens, since they sit on the image and the dark theme's pale `--ok` and
+    `--warn` would wash out the white glyph. `workspace/layout.test.ts` pins these rules (jsdom
+    paints nothing).
     **Thumbnails and the selection (#432, #450).** The grids are `minmax(min(8rem, 100%), 1fr)`
     columns (two at most below 36rem, no horizontal scroll) and each thumbnail fills its column's
     width at the image's natural aspect ratio (no empty band above or below, never cropped).
@@ -454,8 +467,22 @@
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
     **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
-    the document or in a chat answer) switches the left column to **Recursos** and opens that
-    source there. Without notes (404) it says "Todavía no hay apuntes: pídeselos al asistente en el
+    the document or in a chat answer), a chat source link or a Recursos card opens that source's
+    **detail over the document column** (#473): `SourcePanel`'s `overlay` variant in its own grid
+    cell over the document, so `DocumentPanel` is neither remounted nor scrolled and the left
+    column's tab does not change (a running capture is not paused by it). The detail has an X
+    close button top right (`aria-label` «Cerrar», `title` «Cerrar (Esc)»), the capture large and,
+    below it, its transcription; Escape anywhere closes it (unless something inside took the key)
+    and the focus goes back to what opened it. A notes/book page with a transcription can be
+    corrected there: «Editar la transcripción» turns it into a textarea («Corrige la
+    transcripción») with **Guardar** / **Cancelar** (Escape in the textarea leaves the edit, a
+    second Escape closes the detail); **Guardar** refuses a blank text («La transcripción no puede
+    quedar vacía.») and calls `saveTranscription(vaultId, text)` (`notes/api.ts`, `PUT
+    /api/sources/{vault_id}/transcription`, `server.md`); on success the stored text is shown with
+    «Transcripción guardada.», on a refusal «No se pudo guardar: <detail>» (a 405, an older
+    backend: «Este servidor todavía no permite corregir transcripciones.»; no network: the usual
+    unreachable message). The `panel` variant (the study desk's notes page) has no edit button.
+    Without notes (404) it says "Todavía no hay apuntes: pídeselos al asistente en el
     chat." and **Editar** starts a document from `# <topic name>` (saved with `base_revision:
     null`).
   - **Editar** replaces the document with the notes editor (`NoteEditor`, below), headed
@@ -472,8 +499,9 @@
     dejaste; al guardar se comprobará." and never replaces the student's text.
   - Below 900 px (56.25rem) the columns become one and a switch **Documento** |
     **Captura/Recursos** | **Chat** (`aria-pressed` buttons, the root's `data-view`) shows one
-    part; the others are `display: none`, never unmounted. A footnote switches to
-    Captura/Recursos.
+    part; the others are `display: none`, never unmounted. Opening a source (#473) shows its
+    detail in the document view's place (the switch moves to **Documento**), and closing it goes
+    back to the view it was opened from.
   - `state.ts`: `useWorkspaceState(subjectId, topicId) -> WorkspaceState {subjectId, topicId,
     notes, changedSections, reloadNotes(changedSections?)}`, where `notes` is `{kind: "loading"} |
     {kind: "ready", text, revision, version} | {kind: "empty"} | {kind: "failed", message}` from

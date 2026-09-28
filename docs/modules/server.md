@@ -300,6 +300,22 @@ Routes registered today:
     a source removed already is 404 (`"No existe esa fuente en la bóveda."`); an unreadable
     sidecar 409; an unopenable vault 503. Same LAN guard, Host allowlist and bearer check (loopback
     trust) as every web route.
+  - `PUT /api/sources/{vault_id:path}/transcription` (`server/source_routes.py`, #473): the
+    student's hand correction of a photographed page's transcription (the web's resource detail,
+    «Editar la transcripción»). Body `{"text": "..."}` (at most 200 000 characters). What is
+    pending in the vault is committed first (`Cambios pendientes antes de corregir una
+    transcripción`), so the machine's text stays in git history; `vault.edit_page_transcription`
+    then writes the text as `page-NNN.md` and records `transcription_edited: {at, by: student,
+    previous_sha256, original_sha256}` in the sidecar, and the correction is committed at once
+    (`Transcripción de <topic-relative id> de <s>/<t> corregida`). When the topic's session is the
+    active one, a persisted `page.transcription_edited` event (`TRANSCRIPTION_EDITED_KIND`, origin
+    `user`, payload `source_id`, `source_path`, `transcription_path`) goes on it; without a live
+    session the sidecar and the commit are the record. 200 with `{source_path,
+    transcription_path, text}` (the text as stored). 404 (`"No existe esa fuente en la bóveda."`)
+    for anything that is not a listed `notes`/`book` page; 409 «Esta página todavía no está
+    transcrita; no hay nada que corregir.» or «No se puede leer la ficha de esta página; no se ha
+    guardado.»; 422 «La transcripción no puede quedar vacía.» or «El texto parece contener una
+    clave o un secreto; no se ha guardado.»; 503 without a vault.
   - Both GET source routes go only through the vault's `read_source`: a path that is not a topic's
     `sources/<kind>/<file>` (absolute, `..` or `%2e%2e`, backslash, NUL, a symlink out of its
     directory) or names no file is 404 (`"No existe esa fuente en la bóveda."`); nothing outside

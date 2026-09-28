@@ -73,3 +73,44 @@ describe("workspace chat layout (#463)", () => {
     expect(declarations(twoColumns, ".workspace-chat .ws-chat-form textarea")["max-height"]).toMatch(/dvh/);
   });
 });
+
+/**
+ * #473: the checkbox, trash button and corner badges over a thumbnail used near-opaque paper
+ * backgrounds that hid the page. jsdom does no painting, so these tests pin that each control is
+ * translucent (the glass veil), keeps a ring and a blurred backdrop so it stays legible on light
+ * and dark images, and still has distinct hover, focus and selected states.
+ */
+describe("thumbnail controls over the image (#473)", () => {
+  /** The alpha of an `rgb(r g b / NN%)` colour, as a fraction. */
+  function alpha(color: string): number {
+    const match = /\/\s*([\d.]+)%\s*\)/.exec(color);
+    expect(match, `no alpha in ${color}`).not.toBeNull();
+    return Number(match![1]) / 100;
+  }
+
+  const glass = declarations(workspaceCss, ".resource-card");
+
+  it("gives every control a translucent veil, a ring and a blurred backdrop", () => {
+    expect(alpha(glass["--glass-veil"])).toBeLessThanOrEqual(0.35);
+    expect(alpha(glass["--glass-ok"])).toBeLessThanOrEqual(0.65);
+    expect(alpha(glass["--glass-warn"])).toBeLessThanOrEqual(0.65);
+    for (const selector of [".resource-check", ".resource-delete", ".resource-badge"]) {
+      const rule = declarations(workspaceCss, selector);
+      expect(rule["backdrop-filter"], selector).toMatch(/blur/);
+      expect(rule.border, selector).toContain("var(--glass-ring)");
+    }
+    expect(declarations(workspaceCss, ".resource-check").background).toBe("var(--glass-veil)");
+    expect(declarations(workspaceCss, ".resource-delete").background).toBe("var(--glass-veil)");
+    expect(declarations(workspaceCss, ".resource-badge-in").background).toBe("var(--glass-ok)");
+    expect(declarations(workspaceCss, ".resource-badge-warn").background).toBe("var(--glass-warn)");
+    expect(workspaceCss).not.toMatch(/var\(--paper\) 88%/);
+  });
+
+  it("keeps hover, focus and selected clearly different from the resting state", () => {
+    expect(declarations(workspaceCss, ".resource-check:hover").background).toBe("var(--glass-veil-strong)");
+    expect(declarations(workspaceCss, ".resource-check:has(input:focus-visible)").outline).toMatch(/accent/);
+    expect(declarations(workspaceCss, ".resource-selected .resource-check").background).toBe("var(--accent)");
+    expect(declarations(workspaceCss, ".resource-delete:hover").background).toBe("var(--glass-danger)");
+    expect(declarations(workspaceCss, ".resource-delete:focus-visible").outline).toMatch(/accent/);
+  });
+});

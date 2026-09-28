@@ -611,6 +611,25 @@
   opacity: 0.6;
 }
 
+/* #473: the controls over a thumbnail (checkbox, trash, corner badges) are "glass": a thin dark
+   veil with a light ring and a light glyph, blurred behind. The dark veil keeps the light ring and
+   glyph readable on a white page; the light ring keeps the control's edge visible on a dark photo;
+   both are faint enough that the image shows through. Hover and focus make the veil denser; the
+   selected checkbox turns solid accent, so the state never depends on the image. */
+
+.resource-card {
+  --glass-veil: rgb(20 20 20 / 28%);
+  --glass-veil-strong: rgb(20 20 20 / 55%);
+  --glass-ring: rgb(255 255 255 / 75%);
+  --glass-glyph: #fff;
+  --glass-shadow: 0 0 0 1px rgb(0 0 0 / 22%);
+  /* Fixed, not the theme's tokens: these sit on the image, not on the page's surface, and the
+     dark theme's pale --ok/--warn would wash out the white glyph. */
+  --glass-ok: rgb(34 105 63 / 60%);
+  --glass-warn: rgb(127 70 0 / 60%);
+  --glass-danger: rgb(179 38 30 / 85%);
+}
+
 /* #432, #450: the selection checkbox over the thumbnail's top-left corner, and the selected card. */
 
 .resource-check {
@@ -624,11 +643,19 @@
   width: 1.75rem;
   height: 1.75rem;
   box-sizing: border-box;
-  border: 2px solid var(--line-strong);
+  border: 2px solid var(--glass-ring);
   border-radius: var(--radius-s);
-  background: color-mix(in srgb, var(--paper) 88%, transparent);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 18%);
+  background: var(--glass-veil);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  box-shadow: var(--glass-shadow);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.resource-check:hover {
+  border-color: var(--glass-glyph);
+  background: var(--glass-veil-strong);
 }
 
 .resource-check input {
@@ -644,17 +671,20 @@
 .resource-check-mark {
   visibility: hidden;
   color: var(--on-accent);
+  text-shadow: 0 1px 1px rgb(0 0 0 / 35%);
   font-weight: 700;
   line-height: 1;
 }
 
 .resource-check:has(input:focus-visible) {
+  border-color: var(--glass-glyph);
+  background: var(--glass-veil-strong);
   outline: var(--focus-ring, 2px solid var(--accent));
   outline-offset: 2px;
 }
 
 .resource-selected .resource-check {
-  border-color: var(--accent);
+  border-color: var(--glass-glyph);
   background: var(--accent);
 }
 
@@ -684,18 +714,29 @@
   min-height: 0;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--glass-ring);
   border-radius: var(--radius-s);
-  background: color-mix(in srgb, var(--paper) 88%, transparent);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 18%);
-  color: var(--ink-muted);
+  background: var(--glass-veil);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  box-shadow: var(--glass-shadow);
+  color: var(--glass-glyph);
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 30%));
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
+/* Hover and focus: the danger colour fills the button, so it reads as "delete" on any image. */
 .resource-delete:hover,
 .resource-delete:focus-visible {
-  border-color: var(--correction);
-  color: var(--correction);
+  border-color: var(--glass-glyph);
+  background: var(--glass-danger);
+  color: var(--glass-glyph);
+}
+
+.resource-delete:focus-visible {
+  outline: var(--focus-ring, 2px solid var(--accent));
+  outline-offset: 2px;
 }
 
 .resource-confirm {
@@ -828,23 +869,28 @@
   justify-content: center;
   width: 1.25rem;
   height: 1.25rem;
+  box-sizing: border-box;
+  border: 1.5px solid var(--glass-ring);
   border-radius: 50%;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  box-shadow: var(--glass-shadow);
+  color: var(--glass-glyph);
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1;
 }
 
+/* #473: the badge keeps its colour (it is what tells "incorporada" from "aviso") but only
+   partly opaque, so the page's corner shows through. */
 .resource-badge-in {
   right: var(--space-1);
-  background: var(--ok);
-  color: var(--on-accent);
+  background: var(--glass-ok);
 }
 
 .resource-badge-warn {
   left: var(--space-1);
-  background: var(--warn);
-  color: var(--on-accent);
+  background: var(--glass-warn);
 }
 
 /* ---- Recursos: the bottom toolbar to add sources (#461) ---- */
