@@ -114,3 +114,35 @@ describe("thumbnail controls over the image (#473)", () => {
     expect(declarations(workspaceCss, ".resource-delete:focus-visible").outline).toMatch(/accent/);
   });
 });
+
+/**
+ * #473 (review of #477): the detail was pinned to column 2 / row 1 while the left column and the
+ * document were auto-placed, so opening it pushed the document into a new row under column 1 and
+ * collapsed the left column and the detail to zero height. jsdom does no grid layout, so these tests
+ * pin every item of the columns' grid to its cell: the left column alone in column 1, the document
+ * and the detail sharing column 2, row 1, with the detail stacked on top.
+ */
+describe("the source's detail over the document column (#473)", () => {
+  it("places the left column, the document and the detail in explicit cells", () => {
+    const left = declarations(workspaceCss, ".workspace-left");
+    expect(left["grid-column"]).toBe("1");
+    expect(left["grid-row"]).toBe("1");
+    const document = declarations(workspaceCss, ".workspace-document");
+    const detail = declarations(workspaceCss, ".workspace-detail");
+    expect(document["grid-column"]).toBe("2");
+    expect(document["grid-row"]).toBe("1");
+    expect(detail["grid-column"]).toBe(document["grid-column"]);
+    expect(detail["grid-row"]).toBe(document["grid-row"]);
+    expect(Number(detail["z-index"])).toBeGreaterThan(0);
+  });
+
+  it("keeps a single row in the two-column layout", () => {
+    const twoColumns = mediaBlock(workspaceCss, TWO_COLUMNS);
+    expect(declarations(twoColumns, ".workspace-columns")["grid-template-rows"]).toBe("minmax(0, 1fr)");
+    for (const selector of [".workspace-left", ".workspace-document", ".workspace-detail"]) {
+      const rule = declarations(twoColumns, selector);
+      expect(rule["grid-column"], selector).toBeUndefined();
+      expect(rule["grid-row"], selector).toBeUndefined();
+    }
+  });
+});

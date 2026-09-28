@@ -72,11 +72,20 @@
   align-items: start;
 }
 
+/* Explicit cells (#473): the source's detail shares the document's cell (column 2, row 1), so
+   auto-placement must never move the left column or the document into a row of their own. */
 .workspace-left {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+}
+
+.workspace-document {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .workspace-sources,
@@ -998,8 +1007,8 @@
 
 /* ---- A source's detail over the document column (#473) ---- */
 
-/* Its own cell of the columns' grid, on top of the document's: the document underneath keeps its
-   mount and its scroll. */
+/* The document's cell of the columns' grid (both pinned to column 2, row 1; the left column to
+   column 1, row 1), stacked on top of it: the document underneath keeps its mount and its scroll. */
 .workspace-detail {
   grid-column: 2;
   grid-row: 1;
