@@ -101,18 +101,24 @@ from studentassistant.sources import (
 )
 from studentassistant.sources.triage import format_retro, retro_triage
 from studentassistant.vault import (
+    FeedbackItem,
+    FeedbackNotFoundError,
     GitSync,
+    JsonlError,
     LedgerEntry,
     SecretRefused,
     SubjectNotFoundError,
     TopicNotFoundError,
     Vault,
+    VaultBusyError,
     VaultError,
+    list_feedback,
     list_subjects,
     list_topics,
     read_ledger,
     read_topic_events,
     require_topic,
+    set_feedback_status,
     topic_directory,
 )
 from studentassistant.vault.github import (
@@ -534,6 +540,90 @@ def vault_stats_command(
         typer.echo(stats.model_dump_json(indent=2))
     else:
         _print_vault_stats(stats)
+
+
+feedback_cli = typer.Typer(
+    help="The app feedback inbox: bugs and improvements the student reported in a chat (#472)."
+)
+cli.add_typer(feedback_cli, name="feedback")
+
+
+class FeedbackStatusOption(StrEnum):
+    """A status of an inbox item (`vault.feedback.FEEDBACK_STATUSES`), as a CLI choice."""
+
+    NUEVO = "nuevo"
+    TRIADO = "triado"
+    DESCARTADO = "descartado"
+
+
+def _open_feedback_vault() -> Vault:
+    try:
+        return Vault.open(Settings().vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+
+
+def _feedback_line(item: FeedbackItem) -> str:
+    issue = f"\t#{item.issue}" if item.issue is not None else ""
+    return (
+        f"{item.id}\t{item.status}\t{item.kind}\t{item.created_at:%Y-%m-%d %H:%M}"
+        f"\t{item.title}{issue}"
+    )
+
+
+@feedback_cli.command("list")
+def feedback_list(
+    status_filter: Annotated[
+        FeedbackStatusOption | None,
+        typer.Option("--status", help="Solo los elementos en este estado."),
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Salida en JSON para scripts.")] = False,
+) -> None:
+    """List the inbox, oldest first: id, status, kind, date, title and the triage issue."""
+    vault = _open_feedback_vault()
+    try:
+        items = list_feedback(vault, status_filter.value if status_filter else None)
+    except JsonlError as error:
+        typer.echo(f"No se puede leer el buzón de comentarios: {error}")
+        raise typer.Exit(code=1) from error
+    if as_json:
+        typer.echo(
+            json.dumps(
+                [item.model_dump(mode="json") for item in items], indent=2, ensure_ascii=False
+            )
+        )
+        return
+    if not items:
+        typer.echo("No hay comentarios en el buzón.")
+        return
+    for item in items:
+        typer.echo(_feedback_line(item))
+
+
+@feedback_cli.command("mark")
+def feedback_mark(
+    feedback_id: Annotated[str, typer.Argument(help="El elemento, p. ej. fb-3.")],
+    new_status: Annotated[FeedbackStatusOption, typer.Option("--status", help="El nuevo estado.")],
+    issue: Annotated[
+        int | None,
+        typer.Option("--issue", min=1, help="La issue del repositorio de código que lo recoge."),
+    ] = None,
+) -> None:
+    """Record a new status of an inbox item (appended; safe while the service runs)."""
+    vault = _open_feedback_vault()
+    try:
+        item = set_feedback_status(vault, feedback_id, new_status.value, issue)
+    except FeedbackNotFoundError as error:
+        typer.echo(f"No existe el comentario «{feedback_id}» en el buzón.")
+        raise typer.Exit(code=1) from error
+    except VaultBusyError as error:
+        typer.echo("El buzón está ocupado por otro proceso; vuelve a intentarlo.")
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"No se ha cambiado el estado: {error}")
+        raise typer.Exit(code=1) from error
+    typer.echo(_feedback_line(item))
 
 
 stt_cli = typer.Typer(help="Speech-to-text on this PC (server mode, ADR-0008).")

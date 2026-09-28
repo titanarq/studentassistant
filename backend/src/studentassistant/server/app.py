@@ -55,6 +55,7 @@ from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.errors import install_error_handler
 from studentassistant.server.exam_routes import exam_router
+from studentassistant.server.feedback_routes import feedback_router
 from studentassistant.server.generators_routes import MaterialGenerators, generators_router
 from studentassistant.server.live_routes import live_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware
@@ -365,6 +366,7 @@ def create_app(
     app.include_router(pairing_router(server, devices, app.state.codes))
     app.include_router(session_router())
     app.include_router(cost_router())
+    app.include_router(feedback_router())
     app.include_router(ws_router())
     app.include_router(captures_router())
     app.include_router(read_router())

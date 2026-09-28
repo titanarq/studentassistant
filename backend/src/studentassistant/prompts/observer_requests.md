@@ -50,6 +50,9 @@ A request is the student speaking TO the assistant about the notes or the topic,
 - «ya está, quiero estudiar», «vamos a estudiar esto», «pasa a estudiar», «ya hemos terminado,
   a estudiar» -> `study` (the student is done capturing the topic and wants to switch to studying
   it: the capture ends and the notes are marked as the study version).
+- a comment about the app itself, not about the notes or the topic: «apunta una mejora: que se
+  pueda …», «esto es un bug: no se guarda la foto», «la aplicación debería …» -> `question` (the
+  assistant records it for the developers; it never changes the notes).
 
 A `study` request is only the student asking to switch to studying now. Talking about studying
 as part of the content («esto hay que estudiarlo para el examen»), a plan for later («mañana

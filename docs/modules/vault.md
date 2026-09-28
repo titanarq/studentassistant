@@ -40,6 +40,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   study/quiz-results.jsonl                   every quiz attempt, graded (generators, #75)
   study/version.yaml                         the "versión de estudio" label + history (editor, #335)
   ledger.jsonl                               LLM usage and cost per call
+feedback/inbox.jsonl                         app bugs/improvements reported in a chat (editor, #472)
 ```
 
 Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents stripped); ids
@@ -277,6 +278,36 @@ reads it (None when absent); `study_file_path`. The editor's study label is `stu
 `get_topic`. Nothing here runs git. Imported from
 `studentassistant.vault.study` (not re-exported by the package).
 
+### Feedback inbox -- `feedback.py` (#472)
+`feedback/inbox.jsonl` at the vault root (not under a topic): the bugs and improvements of the
+app itself the student reported in the workspace chat or the study chat (`editor.feedback`). The
+maintainer triages it by hand with the CLI (`studentassistant feedback list|mark`,
+`docs/modules/server.md`); nothing here or anywhere in the backend calls GitHub. Append-only JSONL
+(`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`), two kinds of line:
+- `{"record": "item", "id", "created_at", "kind", "title", "body", "context"}` -- a new item:
+  `id` `fb-N` (one past the highest in the file), `kind` `bug` | `mejora`, `title` (≤ 140
+  characters, spaces collapsed), `body` (≤ 4000), `context` (`FeedbackContext`: `subject`,
+  `topic`, `route`, `session_id`, `mode` `construir` | `estudiar`, `excerpt` ≤ 1200 characters).
+- `{"record": "status", "id", "time", "status", "issue"}` -- a later change: `status` `nuevo` |
+  `triado` | `descartado`, `issue` the triage reference (an issue number of the code repository,
+  or `null`).
+
+Reading folds the lines in file order into `FeedbackItem`s (the entry's fields plus `status`,
+default `nuevo`, `issue` and `updated_at` from the last change); a repeated item id (a union merge
+of two PCs that both allocated it) keeps the first entry, a change for an unknown id is ignored.
+- `add_feedback(vault, kind, title, body, context=None, *, clock=None) -> FeedbackItem` -- allocates
+  the id and appends under the `feedback` lock (`VaultBusyError` after 30 s, nothing written),
+  creating `feedback/` on first use; `SecretRefused` or a `ValidationError` write nothing.
+- `set_feedback_status(vault, id, status, issue=None, *, clock=None) -> FeedbackItem` -- appends a
+  change under the same lock; `issue=None` keeps the item's current reference.
+  `FeedbackNotFoundError` (a `FeedbackError`, a `VaultError`) for a malformed or unknown id.
+- `list_feedback(vault, status=None)` (oldest first, filtered by status), `get_feedback(vault,
+  id)`, `feedback_path(vault)`; a line that is not a feedback line raises `JsonlError`.
+- The models (`FeedbackContext`, `FeedbackItem`, `FeedbackKind`, `FeedbackStatus`, `FeedbackMode`,
+  `FEEDBACK_KINDS`, `FEEDBACK_STATUSES`), the functions and errors are re-exported by the package.
+  Nothing here runs git: the caller notes the change for the sync loop (`editor.feedback`); a CLI
+  change is committed by whichever later batch commit stages the vault (`git add --all`).
+
 ### Notes and generated material -- `notes.py`
 `read_notes(vault, subject_slug, topic_slug)` returns the text of `notes/apuntes.md`, or `None`
 when it has not been written yet (a symlink or non-UTF-8 file is a `NotesError`, a `VaultError`).
@@ -312,7 +343,7 @@ crash never leaves the vault locked. `vault_lock(root, name)` returns the proces
 `VaultLock` of that name (one object per lock file, shared by the threads of the process;
 re-entrant per thread, only the outermost hold touches the file); `lock.hold(timeout)` is the
 context manager, and a lock not obtained in time raises `VaultBusyError` (a `VaultError`, Spanish
-message naming the lock) -- no wait is unbounded. Two locks exist:
+message naming the lock) -- no wait is unbounded. Three locks exist:
 - `directory_lock(root, directory)` -- one per `sources/<kind>/` (named by a hash of its
   vault-relative path), around number allocation and the writes under it (`sources.py`).
 - `git_lock(root)` -- around every git command `GitSync` runs, held for a whole operation (the
@@ -322,6 +353,8 @@ message naming the lock) -- no wait is unbounded. Two locks exist:
   returns `None` with `last_error` set and the batch still pending, `push_now` schedules a retry,
   `sync` is an `error` result, `list_notes_tags`/`create_notes_tag`/`revert_paths` raise
   `GitCommandError`, `rewrite_history` a `PurgeError`.
+- `vault_lock(root, "feedback")` -- around each write of the feedback inbox (`feedback.py`, #472):
+  the id allocation and its append, or the id check and a status change's append.
 A vault without a `.git/` directory only gets the in-process part. The batch commit stages
 `git add --all -- . ':(exclude,glob)**/.*.tmp'`: a writer's temporary file (`files.py`) is never
 staged, so a commit while another thread or process is mid-write neither fails on the file

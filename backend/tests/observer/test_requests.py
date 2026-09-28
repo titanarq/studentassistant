@@ -1324,3 +1324,40 @@ def test_a_selected_pdf_passes_the_set_aside_check_and_targets_drop_the_page() -
     # Not selected, a PDF still cannot be set aside.
     _, problem = _kind_problem(reported, CONTEXT)
     assert problem is not None and "only captured pages" in problem
+
+
+# -- app feedback goes to the editor (#472) --------------------------------------------------------
+
+
+def test_the_prompt_routes_app_feedback_to_the_editor() -> None:
+    text = load_prompt("observer_requests").content
+    for phrase in ("apunta una mejora", "esto es un bug", "la aplicación debería"):
+        assert phrase in text
+    rule = next(line for line in text.splitlines() if "apunta una mejora" in line)
+    follow = text[text.index(rule) :].split("\n- ")[0]
+    assert "-> `question`" in follow
+
+
+async def test_a_typed_app_feedback_message_is_a_question(
+    tmp_vault: Vault, topic: tuple[str, str], fake: FakeClaude
+) -> None:
+    async def lookup(subject: str, topic_slug: str) -> RequestContext:
+        return CONTEXT
+
+    settings = Settings(llm=LlmSettings(), observer=ObserverSettings())
+    classifier = MessageClassifier(default_client_factory(settings, fake), sources_lookup=lookup)
+    fake.reply_tool(
+        TOOL_NAME,
+        report(
+            {
+                "kind": "question",
+                "summary": "Mejora de la app: exportar a PDF",
+                "segment_ids": ["m1"],
+            }
+        ),
+    )
+    found = await asyncio.wait_for(
+        classifier.classify(tmp_vault, *topic, "apunta una mejora: poder exportar a PDF"), WAIT
+    )
+    assert [r.kind for r in found] == ["question"]
+    assert "apunta una mejora" in fake.requests[0].system[0]["text"]

@@ -1,5 +1,6 @@
 import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 import DiffView from "../../chat/DiffView";
+import FeedbackChip from "../../chat/FeedbackChip";
 import type { OpenSource } from "../../chat/EditorChat";
 import { useFollowLog } from "../../chat/useFollowLog";
 import { sourceItem } from "../resources";
@@ -393,6 +394,7 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
           </a>
         </p>
       )}
+      {entry.status === "done" && entry.feedback !== null && <FeedbackChip feedback={entry.feedback} />}
       {entry.kind === "incorporate" && entry.status === "done" && entry.doubts > 0 && (
         <p className="ws-chat-doubts">{doubtsLine(entry.doubts)}</p>
       )}

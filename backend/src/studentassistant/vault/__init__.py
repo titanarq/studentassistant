@@ -17,6 +17,22 @@ from studentassistant.vault.conversations import (
     conversations_directory,
     read_conversation,
 )
+from studentassistant.vault.feedback import (
+    FEEDBACK_KINDS,
+    FEEDBACK_STATUSES,
+    FeedbackContext,
+    FeedbackError,
+    FeedbackItem,
+    FeedbackKind,
+    FeedbackMode,
+    FeedbackNotFoundError,
+    FeedbackStatus,
+    add_feedback,
+    feedback_path,
+    get_feedback,
+    list_feedback,
+    set_feedback_status,
+)
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.jsonl import JsonlError, append_jsonl, last_seq, read_jsonl
 from studentassistant.vault.ledger import (
@@ -158,6 +174,20 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "FEEDBACK_KINDS",
+    "FEEDBACK_STATUSES",
+    "FeedbackContext",
+    "FeedbackError",
+    "FeedbackItem",
+    "FeedbackKind",
+    "FeedbackMode",
+    "FeedbackNotFoundError",
+    "FeedbackStatus",
+    "add_feedback",
+    "feedback_path",
+    "get_feedback",
+    "list_feedback",
+    "set_feedback_status",
     "Book",
     "ConversationError",
     "ConversationRecord",

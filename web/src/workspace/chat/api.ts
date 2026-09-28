@@ -12,6 +12,7 @@ import { type ReadResult, topicPath } from "../../desk/api";
 import { isOverCap } from "../../pending/doubts";
 import { errorCode } from "../../protocol";
 import { type ChatRef, chatPath, readRefs, readRevision, type RevisionResult } from "../../chat/api";
+import { type FeedbackRef, readFeedback } from "../../chat/feedback";
 
 type Json = Record<string, unknown>;
 
@@ -130,6 +131,8 @@ export interface HistoryTurn {
   doubt: DoubtView | null;
   /** `doubts_resolved`: the doubts the editor settled from the sources. */
   pendingIds: string[];
+  /** `revise`: the app feedback the turn recorded (#472), shown as a chip; else null. */
+  feedback: FeedbackRef | null;
 }
 
 export type TriageDecision = "set_aside" | "restore";
@@ -176,6 +179,7 @@ function readHistoryTurn(body: unknown): HistoryTurn | null {
     targets: body.kind === "triage" ? readTargets(body.targets) : [],
     doubt: body.kind === "doubt" ? readDoubt(body, body.doubt_refs) : null,
     pendingIds: strings(body.pending_ids),
+    feedback: readFeedback(body.feedback),
   };
 }
 
@@ -241,6 +245,8 @@ export interface TurnOutcome {
   pendingId: string | null;
   /** `study` ("quiero estudiar", #335): where the assistant's one button goes. */
   action: GoStudyAction | null;
+  /** `revise`: the app feedback the turn recorded (#472). */
+  feedback: FeedbackRef | null;
 }
 
 /** The action of a `study` turn: the "Ir a Estudiar" button to the study screen. */
@@ -256,6 +262,7 @@ const OUTCOME_EXTRAS = {
   targets: [],
   pendingId: null,
   action: null,
+  feedback: null,
 } satisfies Partial<TurnOutcome>;
 
 /** A `go_study` action with an in-app path, else null. */
@@ -366,6 +373,7 @@ export function readOutcome(body: unknown): TurnOutcome | null {
     targets: readTargets(body.targets),
     pendingId: null,
     action: null,
+    feedback: readFeedback(body.feedback),
   };
 }
 
