@@ -1490,8 +1490,10 @@ WebSocket gateway publish and subscribe here.
 - `studentassistant feedback mark <id> --status triado|descartado|nuevo [--issue N]`: appends a
   status change (`vault.set_feedback_status`, under the vault's `feedback` lock, so it is safe
   while `serve` runs) and prints the item's new line; `--issue` records the code repository's
-  issue it became (omitted: the item keeps its reference). An unknown id, a busy lock or a
-  refused write exits 1 with a Spanish message. Nothing is committed by the command: the next
+  issue it became (omitted: the item keeps its reference). The id is matched ignoring case and
+  surrounding spaces. An unknown id, a busy lock or a refused write exits 1 with a Spanish
+  message; so does an ambiguous legacy id two PCs both allocated (#476, «El identificador «fb-3»
+  es ambiguo: …»), which prints every item that has it and writes nothing. Nothing is committed by the command: the next
   batch commit of the vault carries it.
 - `studentassistant devices` / `devices list`: the paired devices (id, name, paired-at; never a
   token). `studentassistant devices revoke <id>` removes one, and its token stops being accepted.

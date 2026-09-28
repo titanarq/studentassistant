@@ -8,20 +8,31 @@ repository is public, the vault is the student's private content).
 The inbox is `feedback/inbox.jsonl` at the vault root, append-only JSONL like every other log
 (`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`). Two kinds of line:
 
-- `{"record": "item", ...}` -- a new item: `id` (`fb-N`, one past the highest in the file),
-  `created_at`, `kind` (`bug` | `mejora`), `title`, `body`, `context`;
+- `{"record": "item", ...}` -- a new item: `id` (below), `created_at`, `kind` (`bug` |
+  `mejora`), `title`, `body`, `context`;
 - `{"record": "status", "id", "time", "status", "issue"}` -- a later status change (`nuevo`,
   `triado`, `descartado`) with its triage reference (an issue number, or `None`).
 
+An id is `fb-` plus six random characters of a lower-case alphabet without look-alikes
+(`fb-k7m2qx`, #476): two PCs that both report something before their vaults sync give their items
+different ids without talking to each other, and it stays short enough to type in
+`studentassistant feedback mark`. Inboxes written before #476 hold `fb-N` ids (one past the
+highest in the file); they are still read, folded and marked, but two PCs may have allocated the
+same `fb-N` before a union merge. Such an id is ambiguous: every item line is kept and listed, a
+status change with that id applies to all of them (nothing tells which PC's item it meant), and
+`set_feedback_status` refuses it with `FeedbackAmbiguousError` naming every item.
+
 Reading folds the lines in file order: an item's status is its last change (`nuevo` without one).
 Every write -- allocating the id and appending, or checking the id and appending a change -- runs
-under the cross-process vault lock `feedback` (`locking.py`), so the server and the CLI never give
-two items one id. Nothing here runs git: the caller commits (the sync loop, or a checkpoint).
+under the cross-process vault lock `feedback` (`locking.py`), so the server and the CLI of one PC
+never give two items one id. Nothing here runs git: the caller commits (the sync loop, or a
+checkpoint).
 """
 
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,7 +53,13 @@ FEEDBACK_LOCK_TIMEOUT_SECONDS = 30.0
 MAX_TITLE_CHARS = 140
 MAX_BODY_CHARS = 4000
 MAX_EXCERPT_CHARS = 1200
-FEEDBACK_ID_PATTERN = r"^fb-[1-9][0-9]*$"
+FEEDBACK_ID_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
+"""The characters of a new id's random part: lower case, no `0`/`o`, `1`/`l`/`i` look-alikes."""
+FEEDBACK_ID_RANDOM_CHARS = 6
+FEEDBACK_ID_PATTERN = (
+    rf"^fb-(?:[1-9][0-9]*|[{FEEDBACK_ID_ALPHABET}]{{{FEEDBACK_ID_RANDOM_CHARS}}})$"
+)
+"""A new id (`fb-` + six random characters) or a legacy one (`fb-N`, before #476)."""
 _ID = re.compile(FEEDBACK_ID_PATTERN)
 
 FeedbackKind = Literal["bug", "mejora"]
@@ -58,6 +75,24 @@ class FeedbackError(VaultError):
 
 class FeedbackNotFoundError(FeedbackError):
     """No item of the inbox has that id."""
+
+
+class FeedbackAmbiguousError(FeedbackError):
+    """More than one item of the inbox has that id (a legacy `fb-N` two PCs both allocated)."""
+
+    def __init__(self, feedback_id: str, items: list[FeedbackItem]) -> None:
+        self.feedback_id = feedback_id
+        self.items = items
+        titles = ", ".join(repr(item.title) for item in items)
+        super().__init__(f"{len(items)} feedback items share the id {feedback_id!r}: {titles}")
+
+
+def collapse_title(title: str) -> str:
+    """`title` as the inbox stores it: runs of whitespace collapsed to one space, trimmed.
+
+    `MAX_TITLE_CHARS` counts the collapsed title.
+    """
+    return " ".join(title.split())
 
 
 def _aware(time: datetime) -> datetime:
@@ -90,6 +125,11 @@ class FeedbackEntry(VaultFileModel):
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     body: str = Field(min_length=1, max_length=MAX_BODY_CHARS)
     context: FeedbackContext = Field(default_factory=FeedbackContext)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        return collapse_title(value) if isinstance(value, str) else value
 
     @field_validator("created_at")
     @classmethod
@@ -145,45 +185,72 @@ def _lines(vault: Vault) -> list[FeedbackEntry | FeedbackStatusChange]:
     return [line.root for line in read_jsonl(path, FeedbackLine)]
 
 
-def _fold(lines: list[FeedbackEntry | FeedbackStatusChange]) -> dict[str, FeedbackItem]:
-    items: dict[str, FeedbackItem] = {}
+def _item(entry: FeedbackEntry) -> FeedbackItem:
+    return FeedbackItem(**entry.model_dump(exclude={"record", "context"}), context=entry.context)
+
+
+def _fold(lines: list[FeedbackEntry | FeedbackStatusChange]) -> dict[str, list[FeedbackItem]]:
+    """Every item line by id, in file order; a status change applies to every item of its id.
+
+    More than one item under an id is a legacy `fb-N` two PCs both allocated before a union merge:
+    all are kept, and a change with that id cannot say which it meant, so it applies to each.
+    A change for an id with no item (yet) is ignored.
+    """
+    items: dict[str, list[FeedbackItem]] = {}
     for line in lines:
         if isinstance(line, FeedbackEntry):
-            if line.id not in items:  # a repeated id (a merge from another PC) keeps the first
-                items[line.id] = FeedbackItem(
-                    **line.model_dump(exclude={"record", "context"}), context=line.context
-                )
+            items.setdefault(line.id, []).append(_item(line))
         elif line.id in items:
-            items[line.id] = items[line.id].model_copy(
-                update={"status": line.status, "issue": line.issue, "updated_at": line.time}
-            )
+            update = {"status": line.status, "issue": line.issue, "updated_at": line.time}
+            items[line.id] = [item.model_copy(update=update) for item in items[line.id]]
     return items
 
 
-def _number(feedback_id: str) -> int:
-    return int(feedback_id.removeprefix("fb-"))
+def _new_id(taken: set[str]) -> str:
+    while True:
+        suffix = "".join(
+            secrets.choice(FEEDBACK_ID_ALPHABET) for _ in range(FEEDBACK_ID_RANDOM_CHARS)
+        )
+        # an all-digit suffix would read as a legacy `fb-N`; such a one is simply drawn again
+        if not suffix.isdigit() and f"fb-{suffix}" not in taken:
+            return f"fb-{suffix}"
+
+
+def _normalized(feedback_id: str) -> str:
+    return feedback_id.strip().lower()
 
 
 def list_feedback(vault: Vault, status: FeedbackStatus | None = None) -> list[FeedbackItem]:
     """Every item of the inbox, oldest first, only those in `status` when it is given.
 
+    Oldest is by `created_at`, file order among equal times. Items sharing a legacy id are all
+    listed (with the same id).
+
     Raises:
         JsonlError: a complete line of the inbox is not a feedback line.
     """
-    items = sorted(_fold(_lines(vault)).values(), key=lambda item: _number(item.id))
+    folded = [item for group in _fold(_lines(vault)).values() for item in group]
+    items = sorted(folded, key=lambda item: item.created_at)
     return [item for item in items if status is None or item.status == status]
 
 
 def get_feedback(vault: Vault, feedback_id: str) -> FeedbackItem:
-    """The item `feedback_id`.
+    """The item `feedback_id` (case and surrounding spaces ignored).
 
     Raises:
         FeedbackNotFoundError: no item has that id.
+        FeedbackAmbiguousError: more than one item has it (a legacy duplicate).
     """
-    item = _fold(_lines(vault)).get(feedback_id)
-    if item is None:
+    return _single(_fold(_lines(vault)), _normalized(feedback_id))
+
+
+def _single(items: dict[str, list[FeedbackItem]], feedback_id: str) -> FeedbackItem:
+    group = items.get(feedback_id)
+    if not group:
         raise FeedbackNotFoundError(f"no feedback item {feedback_id!r}")
-    return item
+    if len(group) > 1:
+        raise FeedbackAmbiguousError(feedback_id, group)
+    return group[0]
 
 
 def add_feedback(
@@ -205,19 +272,17 @@ def add_feedback(
     now = (clock or (lambda: datetime.now(UTC)))()
     path = feedback_path(vault)
     with vault_lock(vault.path, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
-        existing = _fold(_lines(vault))
-        number = max((_number(key) for key in existing), default=0) + 1
         entry = FeedbackEntry(
-            id=f"fb-{number}",
+            id=_new_id(set(_fold(_lines(vault)))),
             created_at=now,
             kind=kind,
-            title=" ".join(title.split()),
+            title=title,
             body=body.strip(),
             context=context or FeedbackContext(),
         )
         path.parent.mkdir(exist_ok=True)
         append_jsonl(path, entry)
-    return FeedbackItem(**entry.model_dump(exclude={"record", "context"}), context=entry.context)
+    return _item(entry)
 
 
 def set_feedback_status(
@@ -230,20 +295,21 @@ def set_feedback_status(
 ) -> FeedbackItem:
     """Append a status change of item `feedback_id` and return the item as it reads now.
 
-    `issue` is the triage reference; `None` keeps the one the item already has.
+    `issue` is the triage reference; `None` keeps the one the item already has. The id's case and
+    surrounding spaces are ignored.
 
     Raises:
         FeedbackNotFoundError: no item has that id; nothing written.
+        FeedbackAmbiguousError: more than one item has it (a legacy `fb-N` two PCs both
+            allocated); nothing written -- a change could not say which item it meant.
         VaultBusyError, SecretRefused: as `add_feedback`.
     """
+    feedback_id = _normalized(feedback_id)
     if not _ID.fullmatch(feedback_id):
-        raise FeedbackNotFoundError(f"{feedback_id!r} is not a feedback id (fb-N)")
+        raise FeedbackNotFoundError(f"{feedback_id!r} is not a feedback id")
     now = (clock or (lambda: datetime.now(UTC)))()
     with vault_lock(vault.path, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
-        items = _fold(_lines(vault))
-        item = items.get(feedback_id)
-        if item is None:
-            raise FeedbackNotFoundError(f"no feedback item {feedback_id!r}")
+        item = _single(_fold(_lines(vault)), feedback_id)
         change = FeedbackStatusChange(
             id=feedback_id,
             time=now,
@@ -259,6 +325,8 @@ def set_feedback_status(
 __all__ = [
     "FEEDBACK_KINDS",
     "FEEDBACK_STATUSES",
+    "MAX_TITLE_CHARS",
+    "FeedbackAmbiguousError",
     "FeedbackContext",
     "FeedbackEntry",
     "FeedbackError",
@@ -269,6 +337,7 @@ __all__ = [
     "FeedbackStatus",
     "FeedbackStatusChange",
     "add_feedback",
+    "collapse_title",
     "feedback_path",
     "get_feedback",
     "list_feedback",

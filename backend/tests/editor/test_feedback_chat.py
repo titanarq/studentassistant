@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable
 from typing import Any
 
@@ -10,7 +11,7 @@ import pytest
 
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.editor.crop import CROP_TOOL
-from studentassistant.editor.feedback import FEEDBACK_TOOL, NOT_RECORDED_WARNING
+from studentassistant.editor.feedback import FEEDBACK_TOOL, NOT_RECORDED_WARNING, feedback_tool
 from studentassistant.editor.revise import (
     EDIT_TOOL,
     NO_CHANGE_WARNING,
@@ -21,6 +22,7 @@ from studentassistant.editor.revise import (
 from studentassistant.editor.tutor import TutorAnswer, ask_tutor, tutor_history
 from studentassistant.llm import FakeClaude, LLMRequest, LLMResponse
 from studentassistant.vault import GitSync, Vault, list_feedback, read_notes
+from studentassistant.vault.feedback import FEEDBACK_ID_PATTERN, MAX_TITLE_CHARS
 
 
 @pytest.fixture
@@ -102,7 +104,8 @@ def test_the_workspace_chat_records_a_mejora_and_leaves_the_notes(
     result = _revise(topic, sync, fake, "Apunta una mejora: poder exportar a PDF")
 
     assert result.feedback is not None
-    assert (result.feedback.id, result.feedback.kind) == ("fb-1", "mejora")
+    assert re.fullmatch(FEEDBACK_ID_PATTERN, result.feedback.id)
+    assert result.feedback.kind == "mejora"
     assert result.feedback.title == "Exportar los apuntes a PDF"
     assert result.reply == "He apuntado la mejora: Exportar los apuntes a PDF."
     assert not result.applied and result.warning is None and result.attempts == 1
@@ -110,7 +113,7 @@ def test_the_workspace_chat_records_a_mejora_and_leaves_the_notes(
 
     [item] = list_feedback(topic.vault)
     assert (item.id, item.kind, item.status, item.body) == (
-        "fb-1",
+        result.feedback.id,
         "mejora",
         "nuevo",
         MEJORA["body"],
@@ -188,6 +191,36 @@ def test_a_malformed_feedback_call_records_nothing_and_warns(
     assert list_feedback(topic.vault) == [] and len(fake.requests) == 1
 
 
+def test_a_title_over_the_limit_is_a_malformed_call_never_cut(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    long_title = "x" * (MAX_TITLE_CHARS + 1)
+    fake = FakeClaude().reply_tool(FEEDBACK_TOOL, {**MEJORA, "title": long_title})
+
+    result = _revise(topic, sync, fake, "Apunta una mejora: algo largo")
+
+    assert result.feedback is None and not result.applied
+    assert result.warning is not None and NOT_RECORDED_WARNING in result.warning
+    assert list_feedback(topic.vault) == []
+
+
+def test_a_title_at_the_limit_is_recorded_unchanged(topic: ReviseTopic, sync: GitSync) -> None:
+    title = "x" * MAX_TITLE_CHARS
+    fake = FakeClaude().reply_tool(FEEDBACK_TOOL, {**MEJORA, "title": title})
+
+    result = _revise(topic, sync, fake, "Apunta una mejora: algo largo")
+
+    assert result.feedback is not None and result.feedback.title == title
+    [item] = list_feedback(topic.vault)
+    assert item.title == title
+
+
+def test_the_tool_schema_states_the_title_limit() -> None:
+    title = feedback_tool()["input_schema"]["properties"]["title"]
+
+    assert str(MAX_TITLE_CHARS) in title["description"]
+
+
 def test_a_normal_turn_records_nothing(topic: ReviseTopic, sync: GitSync) -> None:
     fake = FakeClaude().reply_text("La derivada es un límite.")
 
@@ -216,12 +249,13 @@ def test_the_study_chat_records_a_bug_without_touching_the_notes(topic: ReviseTo
     answer = _ask(topic, fake, "Esto es un bug: la foto no se guarda")
 
     assert answer.feedback is not None
-    assert (answer.feedback.id, answer.feedback.kind) == ("fb-1", "bug")
+    assert answer.feedback.kind == "bug"
     assert answer.reply == "He apuntado el bug: La foto no se guarda."
     assert answer.warning is None
     assert read_notes(topic.vault, topic.subject, topic.topic) == before
 
     [item] = list_feedback(topic.vault)
+    assert item.id == answer.feedback.id
     assert (item.context.route, item.context.mode) == ("study", "estudiar")
     assert item.context.session_id is None
     assert item.context.excerpt == "Estudiante: Esto es un bug: la foto no se guarda"

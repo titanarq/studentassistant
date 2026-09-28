@@ -20,6 +20,7 @@ from studentassistant.vault.conversations import (
 from studentassistant.vault.feedback import (
     FEEDBACK_KINDS,
     FEEDBACK_STATUSES,
+    FeedbackAmbiguousError,
     FeedbackContext,
     FeedbackError,
     FeedbackItem,
@@ -176,6 +177,7 @@ from studentassistant.vault.vault import (
 __all__ = [
     "FEEDBACK_KINDS",
     "FEEDBACK_STATUSES",
+    "FeedbackAmbiguousError",
     "FeedbackContext",
     "FeedbackError",
     "FeedbackItem",

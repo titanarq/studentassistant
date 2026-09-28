@@ -904,7 +904,8 @@ never calls GitHub** (the code repository is public, the vault is private; no to
 backend): the maintainer reads the inbox with `studentassistant feedback list` and marks items
 with `studentassistant feedback mark` (`docs/modules/server.md`, CLI).
 - Tool `report_feedback` (`FEEDBACK_TOOL`, strict, `feedback_tool()`): `FeedbackReport` --
-  `kind` (`bug` | `mejora`), `title` (short, Spanish), `body` (the student's words quoted plus a
+  `kind` (`bug` | `mejora`), `title` (short, Spanish; at most the vault's `MAX_TITLE_CHARS` = 140
+  once whitespace is collapsed, #476 -- a longer one is a malformed call, not cut), `body` (the student's words quoted plus a
   one- or two-sentence summary). It is offered next to `apply_edits` in `revise_notes` and as the
   only tool (`tool_choice: auto`) of the written style of `ask_tutor`; the voice tutor does not get
   it. The rule of when to call it is the prompt `editor_feedback` (`feedback_instruction()`,
