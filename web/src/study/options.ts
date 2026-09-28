@@ -14,7 +14,6 @@ export type OptionState = StudyOptionState;
 export interface StudyOptionInfo {
   key: OptionKey;
   title: string;
-  description: string;
   /** The generator kind of the material the option shows. */
   kind: string;
 }
@@ -25,15 +24,15 @@ export interface StudyOption extends StudyOptionInfo {
 }
 
 export const STUDY_OPTIONS: readonly StudyOptionInfo[] = [
-  { key: "esquema", title: "Esquema", description: "El tema en un esquema jerárquico", kind: "esquema" },
-  { key: "ejercicios", title: "Ejercicios", description: "Uno a uno, con su solución", kind: "examen" },
-  { key: "examen", title: "Examen", description: "Simulacro con criterios de corrección", kind: "examen" },
-  { key: "quiz", title: "Quiz", description: "Preguntas para comprobar lo que sabes", kind: "quiz" },
-  { key: "tarjetas", title: "Tarjetas de memoria", description: "Repaso espaciado", kind: "flashcards" },
+  { key: "esquema", title: "Esquema", kind: "esquema" },
+  { key: "ejercicios", title: "Ejercicios", kind: "examen" },
+  { key: "examen", title: "Examen", kind: "examen" },
+  { key: "quiz", title: "Quiz", kind: "quiz" },
+  { key: "tarjetas", title: "Tarjetas de memoria", kind: "flashcards" },
   {
     key: "diapositivas",
     title: "Diapositivas",
-    description: "Presentación del tema para exponer o repasar",
+   
     kind: "diapositivas",
   },
 ];

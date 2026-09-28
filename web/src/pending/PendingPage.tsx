@@ -4,6 +4,7 @@ import { fetchNotes, type TopicNotes } from "../notes/api";
 import { parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
 import SourcePanel from "../notes/SourcePanel";
+import { useNotesImages } from "../notes/useNotesImages";
 import "../notes/notes.css";
 import { KIND_LABELS, kindLabel, type PendingFilter, type PendingItem } from "./api";
 import DoubtResolver from "./DoubtResolver";
@@ -95,6 +96,7 @@ export default function PendingPage({
   pollMs?: number;
 }) {
   const [topicName, setTopicName] = useState(topicId);
+  const resolveImage = useNotesImages(subjectId, topicId);
   const [filter, setFilter] = useState<PendingFilter>("open");
   const [queue, setQueue] = useState<ReadResult<DoubtsQueue> | null>(null);
   const [stale, setStale] = useState(false);
@@ -314,7 +316,7 @@ export default function PendingPage({
         {notes !== null && notes.kind !== "ok" && notes.kind !== "not-found" && (
           <p role="alert">No se pudieron cargar los apuntes: {describeFailure(notes)}</p>
         )}
-        {tree !== null && <NotesView tree={tree} onOpenSource={openFootnote} activeLabel={openSource} />}
+        {tree !== null && <NotesView tree={tree} onOpenSource={openFootnote} activeLabel={openSource} resolveImage={resolveImage} />}
       </section>
       {openSource !== null && (
         <SourcePanel

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
 import { fetchNotes, type TopicNotes } from "../notes/api";
+import { useNotesImages } from "../notes/useNotesImages";
 import { type Inline, type NotesTree, parseInline, parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
 import SourcePanel from "../notes/SourcePanel";
@@ -8,7 +9,6 @@ import { fetchStudyState, type StudyState } from "./api";
 import OptionContent from "./OptionContent";
 import OptionPanel, { OPTION_PANEL_ID } from "./OptionPanel";
 import { type OptionKey, STATE_LABELS, type StudyOption, studyOptions } from "./options";
-import ReviewsToday from "./ReviewsToday";
 import type { GenerationResult } from "./chat/api";
 import StudyChat from "./chat/StudyChat";
 import type { VoiceQuestionStarter } from "../tutor/voiceQuestion";
@@ -65,10 +65,7 @@ function OptionButton({
         aria-controls={open ? OPTION_PANEL_ID : undefined}
         onClick={() => onToggle(option.key)}
       >
-        <span className="study-option-text">
-          <span className="study-option-title">{option.title}</span>
-          <span className="study-option-description">{option.description}</span>
-        </span>
+        <span className="study-option-title">{option.title}</span>{" "}
         <span className={badge} title={option.staleReason ?? undefined}>
           {STATE_LABELS[option.state]}
         </span>
@@ -81,12 +78,14 @@ function OptionButton({
  * `/subjects/<subject>/topics/<topic>/study`, "Estudiar" (#333, #337, epic #332): the study screen
  * of a topic, in the same frame as **Construir** since #487 (`WorkspaceFrame`: the header band with
  * the switch Construir · Estudiar and the topic's name, the desk, the left card above the chat card,
- * the document card on the right, one viewport high from 900 px on). The left card holds "Repasos
- * para hoy" for the topic and the study options with their state, under "Material de estudio" and
+ * the document card on the right, one viewport high from 900 px on). The left card holds the study
+ * options as cards two per row, each with its title and its state only (#509; the flashcards'
+ * reviews are reached through «Tarjetas de memoria»), under "Material de estudio" and
  * the "versión de estudio" (`GET .../study`, #335: which notes version it is and whether the notes
  * changed after it); the chat card holds the question chat (`StudyChat`, #336), with the workspace
  * chat's input and microphone, whose citation chips scroll to and highlight a section or open a
- * source; the right card the document read-only with its pinned header (**Editar en Construir**).
+ * source; the right card the document read-only with its pinned header (**Editar en Construir**),
+ * its images drawn from the topic's sources (#509).
  * Opening an option slides `OptionPanel` over the right edge of the document's body, below the
  * header, with the existing page embedded and its own pinned header, and the sections the item
  * shown is about are highlighted in the document and scrolled to. A provenance footnote opens its
@@ -131,6 +130,7 @@ export default function StudyPage({
   const pendingFocus = useRef<HTMLElement | null>(null);
   const documentRef = useRef<HTMLDivElement>(null);
   const reads = useRef(0);
+  const resolveImage = useNotesImages(subjectId, topicId);
 
   useEffect(() => {
     let cancelled = false;
@@ -310,7 +310,6 @@ export default function StudyPage({
       leftClassName="study-card"
       left={
         <div className="study-card-body">
-          <ReviewsToday subjectId={subjectId} topicId={topicId} onReview={() => openOption("tarjetas")} />
           <section className="study-options" aria-labelledby="study-options-heading">
             <h2 id="study-options-heading">Material de estudio</h2>
             {studyLabel}
@@ -382,6 +381,7 @@ export default function StudyPage({
                   activeLabel={source?.label ?? null}
                   focusSections={focusSections}
                   focusLabel={chatLabel}
+                  resolveImage={resolveImage}
                 />
               )}
             </div>

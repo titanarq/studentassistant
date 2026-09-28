@@ -15,13 +15,15 @@ export interface ReplyViewProps {
   text: string;
   renderSection: (anchor: string, key: string) => ReactNode;
   renderSource: (label: string, key: string) => ReactNode;
+  /** Where an image of the answer is shown from (#509); `null` (or no resolver) keeps «[Imagen: …]». */
+  resolveImage?: (src: string) => string | null;
 }
 
 function safeHref(href: string): string | null {
   return /^(https?:|mailto:)/i.test(href) ? href : null;
 }
 
-export default function ReplyView({ text, renderSection, renderSource }: ReplyViewProps) {
+export default function ReplyView({ text, renderSection, renderSource, resolveImage }: ReplyViewProps) {
   const withSections = (value: string, key: string): ReactNode[] => {
     const out: ReactNode[] = [];
     let last = 0;
@@ -51,8 +53,14 @@ export default function ReplyView({ text, renderSection, renderSource }: ReplyVi
           return <code key={k}>{node.text}</code>;
         case "uncertain":
           return <span key={k}>{node.text}</span>;
-        case "image":
-          return <span key={k}>[Imagen: {node.alt}]</span>;
+        case "image": {
+          const src = resolveImage?.(node.src) ?? null;
+          return src === null ? (
+            <span key={k}>[Imagen: {node.alt}]</span>
+          ) : (
+            <img key={k} className="notes-image" src={src} alt={node.alt} />
+          );
+        }
         case "link": {
           const href = safeHref(node.href);
           const children = inline(node.children, `${k}.`);

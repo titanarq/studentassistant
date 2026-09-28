@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { describeFailure, fetchTopics, type ReadResult, topicPath } from "../desk/api";
 import { parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
+import { useNotesImages } from "../notes/useNotesImages";
 import { type Artifact, fetchGeneratedText, fetchMaterials, fileUrl } from "./api";
 import "../notes/notes.css";
 import "./materials.css";
@@ -33,6 +34,7 @@ export default function MaterialPreviewPage({
   embedded?: boolean;
 }) {
   const [topicName, setTopicName] = useState(topicId);
+  const resolveImage = useNotesImages(subjectId, topicId);
   const [text, setText] = useState<ReadResult<string> | null>(null);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
 
@@ -93,7 +95,7 @@ export default function MaterialPreviewPage({
       {text !== null && text.kind !== "ok" && (
         <p role="alert">No se pudo cargar el material: {describeFailure(text)}</p>
       )}
-      {tree !== null && <NotesView tree={tree} onOpenSource={noSource} />}
+      {tree !== null && <NotesView tree={tree} onOpenSource={noSource} resolveImage={resolveImage} />}
     </Root>
   );
 }

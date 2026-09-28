@@ -632,17 +632,20 @@
   apuntes después de la versión de estudio (vN)." (informative only); nothing when no version was
   marked yet. Two columns:
   - Left card ("Opciones de estudio", `.workspace-sources.study-card`; in two columns only its
-    body `.study-card-body` scrolls), top: "Repasos para hoy" (`ReviewsToday`) -- this topic's entry of `GET
-    /api/practice/summary` (`desk/practiceSummary.ts`): "N para repasar · M nuevas" with
-    "Repasar ahora" (opens **Tarjetas de memoria**), else "Nada que repasar hoy." with
-    "Próximo repaso: <fecha>." when there is one.
-  - Left card, below: the study options (`options.ts`, `studyOptions(studyState)`) in the order
+    body `.study-card-body` scrolls): no "Repasos para hoy" since #509 (the screen reads no
+    `GET /api/practice/summary`; the flashcards' reviews open through **Tarjetas de memoria**, and
+    the desk keeps its own "Repasos para hoy", `DeskPractice`). The study options (`options.ts`, `studyOptions(studyState)`) in the order
     **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`), **Examen**
     (its `questions`), **Quiz** (kind `quiz`), **Tarjetas de memoria** (the practice queue, kind
-    `flashcards`), **Diapositivas** (kind `diapositivas`, #382, backend #380); each a button with `aria-expanded` and a text badge of its `options[].state`
+    `flashcards`), **Diapositivas** (kind `diapositivas`, #382, backend #380), as cards two per
+    row (#509: `.study-option-list` is a two-column CSS grid at every width; the card is the whole
+    `<button>`, tokens only, `--surface-sunken` with a `--line` border, `--line-strong` on hover,
+    `--accent-soft`/`--accent-line` when open, `--focus-ring` on `:focus-visible`; no description
+    subtitle any more). Each card shows its title and, below it, only a text badge of its `options[].state`
     from `GET .../study` (#337; no longer computed from `GET .../generated`): `listo` "Listo",
     `desactualizado` "Desactualizado" (its `stale_reason` as `title`, else a generic reason) or
-    `sin_generar` "Sin generar" (also an option the answer does not list).
+    `sin_generar` "Sin generar" (also an option the answer does not list; `--ink-muted` for AA on
+    the card). The button's accessible name is "<title> <state>".
   - Chat card (bottom of the left column, as the workspace chat; its input always on screen): the
     question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
     documento" (its heading visually hidden since #487, as the workspace chat has none) that answers questions about the document and **never edits the notes** (the only
@@ -660,7 +663,8 @@
     exactly as a typed question; one arriving while an answer comes stays in the input. A question is `askTutor(...,
     {style: "written"})`: "Pensando…" until the first delta, then the reply streams; the answer is
     light Markdown rendered by `chat/ReplyView.tsx` through the notes' `parseNotes`/`parseInline`
-    (no raw HTML). **Citation chips**, inline where cited: every `[§anchor]` is a button "§
+    (no raw HTML); an image of the answer is drawn when `resolveImage` (the topic's
+    `useNotesImages`, #509) resolves its path, else "[Imagen: alt]". **Citation chips**, inline where cited: every `[§anchor]` is a button "§
     <section title>" (the title from the answer's `sections`, else the document's heading;
     accessible name "Ir a la sección <title>") that scrolls the document to that section and
     highlights it (`focusSections`); every `[^label]` a button with the label ("p3", "Ver la
@@ -1122,6 +1126,12 @@ token):
     part; the server's Spanish `detail`) and `notesImageUrl(s, t, src)` (a `../sources/<kind>/<file>`
     link through the read API, else `null`). `parseInline` reads `![alt](src)` as an `image` node;
     `NotesView` shows it through its optional `resolveImage` (without one, "[Imagen: alt]").
+    `useNotesImages(s, t)` (`notes/useNotesImages.ts`, #509) is that resolver as a hook, and every
+    view of a topic's notes passes it: Construir's `DocumentPanel`, Estudiar's document
+    (`StudyPage`) and its chat answers (`StudyChat` -> `ReplyView`), `NotesPage`, `PendingPage`
+    and `MaterialPreviewPage` (a generated file sits in `generated/`, one level below the topic as
+    `notes/` does, so the same `../sources/...` path resolves). Before #509 only `DocumentPanel`
+    passed it, so pasted and cropped images read "[Imagen: Imagen recortada N]" elsewhere.
   - Beside the notes (a sticky column from 80rem, below them otherwise) `NotesPage` shows the
     editor chat (`src/chat/`, #71). After a turn or an undo that changed the notes it reads them
     again (only the latest read is shown) and `NotesView` highlights (`notes-changed`) every

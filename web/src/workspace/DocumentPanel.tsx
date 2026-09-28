@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { notesImageUrl, saveNotes, uploadPastedImage } from "../notes/api";
+import { saveNotes, uploadPastedImage } from "../notes/api";
+import { useNotesImages } from "../notes/useNotesImages";
 import { type NotesTree, parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
 import NoteEditor, { type NoteEditorHandle, type UploadResult } from "../noteEditor/NoteEditor";
@@ -54,7 +55,7 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
   const editor = useRef<NoteEditorHandle | null>(null);
   const confirm = useConfirm();
 
-  const resolveImage = useCallback((src: string) => notesImageUrl(subjectId, topicId, src), [subjectId, topicId]);
+  const resolveImage = useNotesImages(subjectId, topicId);
   const noop = useCallback(() => undefined, []);
   const preview = useCallback(
     (text: string) => <NotesView tree={parseNotes(text)} onOpenSource={noop} resolveImage={resolveImage} />,

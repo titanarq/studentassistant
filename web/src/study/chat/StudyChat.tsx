@@ -5,6 +5,7 @@ import { type OptionKey, STUDY_OPTIONS } from "../options";
 import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
 import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
+import { useNotesImages } from "../../notes/useNotesImages";
 import ChatComposer from "../../workspace/chat/ChatComposer";
 import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import FeedbackChip from "../../chat/FeedbackChip";
@@ -118,6 +119,7 @@ export default function StudyChat({
   voiceSupported,
 }: StudyChatProps) {
   const [history, setHistory] = useState<History>({ state: "loading" });
+  const resolveImage = useNotesImages(subjectId, topicId);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [asking, setAsking] = useState<Asking | null>(null);
@@ -224,6 +226,7 @@ export default function StudyChat({
   }, [suggestion]);
 
   const chips = (cited: SectionRef[]) => ({
+    resolveImage,
     renderSection: (anchor: string, key: string): ReactNode => {
       const title = cited.find((s) => s.anchor === anchor)?.title ?? sections.get(anchor) ?? anchor;
       const stale = !sections.has(anchor);
