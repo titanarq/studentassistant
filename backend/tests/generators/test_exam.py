@@ -413,3 +413,8 @@ def test_a_fenced_block_becomes_preformatted_html() -> None:
         '<p class="diagram-note">Diagrama no disponible en la exportación</p><p>Después</p>'
     )
     assert text_html("```python\nx = 1\n\ny = 2\n```") == "<pre>x = 1\n\ny = 2</pre>"
+
+
+def test_an_unclosed_mermaid_fence_is_plain_code_like_in_the_slides() -> None:
+    # #505: only a closed mermaid fence gets the note, in the PDFs as in `note_mermaid_fences`.
+    assert text_html("Antes\n```mermaid\nflowchart TD") == "<p>Antes</p><pre>flowchart TD</pre>"

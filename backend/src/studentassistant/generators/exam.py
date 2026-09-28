@@ -338,14 +338,14 @@ def inline_html(text: str) -> str:
 def text_html(text: str) -> str:
     """A text of paragraphs (blank-line separated), `- `/`1. ` lists and fenced code blocks as
     HTML blocks. A ```` ```mermaid ```` fence cannot be drawn in the PDF: its code is kept, with
-    `DIAGRAM_UNAVAILABLE` after it (#481)."""
+    `DIAGRAM_UNAVAILABLE` after it if the fence is closed (#481, #505; see `diagrams`)."""
     lines = text.strip().split("\n")
     blocks: list[str] = []
     done = 0
     for fence in fences(lines):
         blocks.append(_paragraphs_html("\n".join(lines[done : fence.start])))
         blocks.append(f"<pre>{html.escape(fence.body, quote=False)}</pre>")
-        if fence.is_mermaid:
+        if fence.is_mermaid and fence.closed:
             blocks.append(f'<p class="diagram-note">{DIAGRAM_UNAVAILABLE}</p>')
         done = fence.end
     blocks.append(_paragraphs_html("\n".join(lines[done:])))

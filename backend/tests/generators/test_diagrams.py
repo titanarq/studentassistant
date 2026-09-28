@@ -37,3 +37,13 @@ def test_a_mermaid_bullet_keeps_the_indentation_of_its_diagram() -> None:
     deck = DraftDeck(title="T", slides=[DraftSlide(title="S", bullets=[bullet])])
     markdown = render_markdown(deck, {}, subject_name="X")
     assert "- Mapa:\n  ```mermaid\n  mindmap\n    root((A))\n      B\n  ```\n  Fin.\n" in markdown
+
+
+def test_crlf_input_leaves_no_carriage_return_on_code_lines() -> None:
+    lines = ["```mermaid\r", "flowchart TD\r", "  A --> B\r", "```\r", "Fin."]
+    [fence] = fences(lines)
+    assert (fence.lang, fence.body_lines, fence.closed) == (
+        "mermaid",
+        ("flowchart TD", "  A --> B"),
+        True,
+    )

@@ -5,6 +5,11 @@ The web draws a ```` ```mermaid ```` fence as a diagram (#480), but the exam PDF
 browser, neither of which the backend has at export time. So an export keeps the diagram's code as
 a code block and adds `DIAGRAM_UNAVAILABLE` after it; the Markdown files keep the fence as it is,
 so the web preview still draws it.
+
+Only a closed mermaid fence gets the note, in every export. An unclosed one (no closing fence
+before the end of the text) is malformed Markdown that every renderer shows as a plain code block
+running to the end, so the exports do the same and add nothing: the slides could not put the note
+after it without it landing inside the code block (#505).
 """
 
 from __future__ import annotations
@@ -45,7 +50,8 @@ def _closes(line: str, fence: str) -> bool:
 
 
 def fences(lines: list[str]) -> Iterator[Fence]:
-    """The fenced code blocks of `lines`, in order; an unclosed fence runs to the end."""
+    """The fenced code blocks of `lines`, in order; an unclosed fence runs to the end. A body
+    line keeps no trailing `\r` of CRLF input split on `\n`."""
     index = 0
     while index < len(lines):
         match = _OPEN.match(lines[index])
@@ -59,7 +65,9 @@ def fences(lines: list[str]) -> Iterator[Fence]:
         indent = match.group("indent")
         yield Fence(
             lang=(match.group("info").split() or [""])[0],
-            body_lines=tuple(_dedent(line, len(indent)) for line in lines[index + 1 : close]),
+            body_lines=tuple(
+                _dedent(line.removesuffix("\r"), len(indent)) for line in lines[index + 1 : close]
+            ),
             indent=indent,
             start=index,
             end=min(close + 1, len(lines)),
