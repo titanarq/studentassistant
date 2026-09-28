@@ -431,9 +431,16 @@ export interface CaptureScreenProps {
    * The screen is the study workspace's Captura tab: since #411 a session that ended elsewhere
    * points to Construir and Estudiar instead of the list of sessions, and since #413 the screen is
    * a section with an `h2` (the workspace has the page's `main` and `h1`) and has no doubts line
-   * of its own (the doubts are asked in the workspace chat).
+   * of its own (the doubts are asked in the workspace chat). Since #470 it is only the camera
+   * preview, fitted to the tab without scrolling, and a bottom toolbar with one camera icon
+   * («Capturar página»); a notice shows over the preview only while something is wrong.
    */
   embedded?: boolean;
+  /**
+   * Since #470: called with true while the capture is recording (connected, not paused, not
+   * ending) and false otherwise, so the host can show a recording icon.
+   */
+  onRecordingChange?: (recording: boolean) => void;
   /** How long an outage lasts before the blocking message; `LONG_OUTAGE_MS` by default. */
   longOutageMs?: number;
   /** The reconnect backoff of the session socket; its own default when left out. */
@@ -458,6 +465,7 @@ export default function CaptureScreen({
   longOutageMs = LONG_OUTAGE_MS,
   reconnectDelaysMs,
   suspended = false,
+  onRecordingChange,
 }: CaptureScreenProps) {
   const preview = useRef<HTMLVideoElement | null>(null);
   /** The three objects of a running session, so a press reaches the ones the effect built. */
@@ -1083,14 +1091,109 @@ export default function CaptureScreen({
         ? "Transcribe el servidor: esta página le envía el audio del micrófono."
         : null;
 
-  // Inside the workspace the page's `main` and `h1` are the workspace's own (#413).
-  const Root = embedded ? "section" : "main";
-  const Title = embedded ? "h2" : "h1";
+  // Since #470 the host shows whether the capture is recording (the Captura tab's icon).
+  const recording = live && !paused;
+  useEffect(() => {
+    onRecordingChange?.(recording);
+  }, [recording, onRecordingChange]);
+
+  if (embedded) {
+    // Since #470 the workspace's Captura tab is the preview and one camera icon, nothing else: the
+    // transcript, the photo strip, the headings, the status sentences and the other buttons go
+    // (the voice commands still say «importante», «ahora el libro»…; the session ends when the
+    // workspace is left). What is wrong still shows, compactly, over the preview; what is fine is
+    // only said to a screen reader.
+    const quietConnection = connection === "open" && !recovered;
+    const waiting = bursts.filter((entry) => entry.state === "pendiente").length;
+    const failed = bursts.filter((entry) => entry.state === "error").length;
+    return (
+      <section className="capture-page capture-screen capture-embedded" aria-label="Captura en curso">
+        <h2 className="capture-sr-only">Capturar una sesión de estudio</h2>
+        <div className="capture-stage">
+          <video className="capture-preview" ref={preview} autoPlay playsInline muted aria-label="Vista previa de la cámara" />
+          {flashing && <div className="capture-flash" data-testid="capture-flash" aria-hidden="true" />}
+          <p className="capture-sr-only" role="status" aria-label="Estado de la cámara">
+            {cameraOn ? "La cámara está en marcha." : "La cámara no está en marcha."}
+          </p>
+          <div className="capture-notices">
+            <p
+              className={`capture-notice capture-connection${quietConnection ? " capture-sr-only" : ""}`}
+              data-connection={connection}
+              role="status"
+              aria-label="Estado de la conexión"
+            >
+              {connection === "open" && recovered ? "Conexión recuperada" : CONNECTION_TEXT[connection]}
+              {connection === "open" && live && modeLine !== null ? `. ${modeLine}` : ""}
+            </p>
+            {blocking !== null && (
+              <p className="capture-notice capture-notice-bad" role="alert" title={blocking.detail ?? blocking.message}>
+                {blocking.message}
+              </p>
+            )}
+            {trouble !== null && (
+              <p className="capture-notice capture-notice-bad" role="alert" title={trouble}>
+                {trouble}
+              </p>
+            )}
+            {paused && !ending && connection !== "ended" && connection !== "lost" && (
+              <p className="capture-notice" role="status" aria-label="Captura en pausa">
+                {suspended ? SUSPENDED_NOTICE : PAUSED_NOTICE}
+              </p>
+            )}
+            {sttWarning !== null && (
+              <p className="capture-notice capture-notice-bad" role="alert" aria-label="Estado de la transcripción" title={sttWarning}>
+                {sttWarning}
+              </p>
+            )}
+            {cameraLost !== null && !ending && (
+              <div className="capture-notice capture-notice-bad capture-notice-action" role="alert" aria-label="Cámara desconectada">
+                <p title={cameraLost}>{cameraLost}</p>
+                <button type="button" disabled={reactivating} onClick={() => void reactivateCamera()}>
+                  {reactivating ? "Reactivando la cámara…" : "Reactivar cámara"}
+                </button>
+              </div>
+            )}
+            {health.length > 0 && (
+              <ul className="capture-notice capture-health" role="status" aria-label="Estado del servidor">
+                {health.map((line) => (
+                  <li key={line} title={line}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(waiting > 0 || failed > 0) && (
+              <p className="capture-notice" role="status" aria-label="Fotografías sin guardar">
+                {[
+                  waiting > 0 ? (waiting === 1 ? "1 foto pendiente de subir" : `${waiting} fotos pendientes de subir`) : null,
+                  failed > 0 ? (failed === 1 ? "1 foto no se ha podido subir" : `${failed} fotos no se han podido subir`) : null,
+                ]
+                  .filter((part) => part !== null)
+                  .join(" · ")}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="capture-toolbar" role="group" aria-label="Controles de la sesión">
+          <button
+            type="button"
+            className="capture-tool"
+            aria-label="Capturar página"
+            title="Capturar página"
+            disabled={!live || !cameraOn}
+            onClick={() => void captureBurst({ trigger: "button" })}
+          >
+            <CameraIcon />
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <Root className="capture-page capture-screen" aria-label={embedded ? "Captura en curso" : undefined}>
+    <main className="capture-page capture-screen">
       <header className="capture-header">
-        <Title>Capturar una sesión de estudio</Title>
+        <h1>Capturar una sesión de estudio</h1>
         <p className="page-context">
           {subjectName} · {topicName}
         </p>
@@ -1176,11 +1279,9 @@ export default function CaptureScreen({
         </ul>
       )}
 
-      {!embedded && (
-        <p className="capture-pending" role="status" aria-label="Dudas pendientes">
-          {pendingLine}
-        </p>
-      )}
+      <p className="capture-pending" role="status" aria-label="Dudas pendientes">
+        {pendingLine}
+      </p>
 
       <section className="capture-transcript" aria-label="Transcripción en directo">
         <h2>Transcripción</h2>
@@ -1210,6 +1311,16 @@ export default function CaptureScreen({
           </ul>
         )}
       </section>
-    </Root>
+    </main>
+  );
+}
+
+/** The camera icon of the embedded toolbar's one button (#470). */
+function CameraIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 8a2 2 0 0 1 2-2h2l1.5-2h5L16 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
+      <circle cx="12" cy="12.5" r="3.5" />
+    </svg>
   );
 }

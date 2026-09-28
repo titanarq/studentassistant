@@ -1094,16 +1094,90 @@ describe("the student's buttons", () => {
   });
 
   describe("no «Terminar y preparar apuntes» on the web (#413)", () => {
-    for (const embedded of [false, true]) {
-      it(`offers only Terminar ${embedded ? "inside the workspace" : "on /capture"}`, async () => {
-        renderScreen({ embedded });
-        await open();
-        for (const name of ["Capturar", "Importante", "Libro", "Apuntes", "Terminar"]) {
-          expect(screen.getByRole("button", { name })).toBeInTheDocument();
-        }
-        expect(screen.queryByRole("button", { name: /preparar apuntes/ })).not.toBeInTheDocument();
+    it("offers only Terminar on /capture", async () => {
+      renderScreen();
+      await open();
+      for (const name of ["Capturar", "Importante", "Libro", "Apuntes", "Terminar"]) {
+        expect(screen.getByRole("button", { name })).toBeInTheDocument();
+      }
+      expect(screen.queryByRole("button", { name: /preparar apuntes/ })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("inside the workspace: the preview and one camera icon (#470)", () => {
+    it("has only the «Capturar página» button, and no transcript, photos or visible status text", async () => {
+      renderScreen({ embedded: true });
+      await open();
+
+      expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
+        "Capturar página",
+      ]);
+      const shutterButton = screen.getByRole("button", { name: "Capturar página" });
+      expect(shutterButton).toHaveAttribute("title", "Capturar página");
+      expect(shutterButton.querySelector("svg")).not.toBeNull();
+      expect(shutterButton).toHaveTextContent("");
+      expect(screen.queryByRole("region", { name: "Transcripción en directo" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Fotografías de la sesión" })).toBeNull();
+      expect(screen.queryByText(/Biología · Fotosíntesis/)).toBeNull();
+      // What is fine is said to a screen reader only.
+      expect(screen.getByRole("status", { name: "Estado de la conexión" })).toHaveClass("capture-sr-only");
+      expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveClass("capture-sr-only");
+    });
+
+    it("captures a burst from the camera icon", async () => {
+      renderScreen({ embedded: true });
+      await open();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Capturar página" })).toBeEnabled());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Capturar página" }));
       });
-    }
+      await waitFor(() => expect(sent.some((call) => call.path.endsWith("/captures"))).toBe(true));
+    });
+
+    it("shows a lost connection over the preview", async () => {
+      backend({ [RESUME_PATH]: () => Promise.reject(new TypeError("Failed to fetch")) });
+      renderScreen({ embedded: true, reconnectDelaysMs: [30_000] });
+      await open();
+      await act(async () => {
+        socket().serverClose(1006);
+      });
+      const status = screen.getByRole("status", { name: "Estado de la conexión" });
+      expect(status).toHaveTextContent("Reconectando…");
+      expect(status).not.toHaveClass("capture-sr-only");
+    });
+
+    it("tells the host whether it is recording", async () => {
+      const recording: boolean[] = [];
+      const onRecordingChange = (value: boolean) => recording.push(value);
+      const view = render(
+        <CaptureScreen
+          session={SESSION}
+          subjectName="Biología"
+          topicName="Fotosíntesis"
+          now={() => NOW}
+          playShutter={shutter}
+          embedded
+          onRecordingChange={onRecordingChange}
+        />,
+      );
+      await open();
+      expect(recording.at(-1)).toBe(true);
+      await act(async () => {
+        view.rerender(
+          <CaptureScreen
+            session={SESSION}
+            subjectName="Biología"
+            topicName="Fotosíntesis"
+            now={() => NOW}
+            playShutter={shutter}
+            embedded
+            suspended
+            onRecordingChange={onRecordingChange}
+          />,
+        );
+      });
+      expect(recording.at(-1)).toBe(false);
+    });
   });
 
   describe("the backend closes the socket while the session ends (#319)", () => {

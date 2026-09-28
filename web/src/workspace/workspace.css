@@ -154,6 +154,28 @@
     overscroll-behavior: contain;
   }
 
+  /* #470: the Captura panel never scrolls; the running capture fills it (preview + toolbar). */
+  .workspace-sources .workspace-tabpanel-capture {
+    overflow: hidden;
+  }
+
+  .workspace-sources .workspace-tabpanel-capture:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace-tabpanel-capture > .capture-embedded {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .workspace-tabpanel-capture > .capture-embedded .capture-stage {
+    flex: 1 1 0;
+    min-height: 0;
+    aspect-ratio: auto;
+    max-height: none;
+  }
+
   /* The rest of the column (#458): its heading and form keep their height, so the input and
      **Enviar** are always on screen, and only the log shrinks and scrolls. (Before #458 a
      `min-height: min-content` here let a long log push the tabs down to their 8rem floor and the
@@ -209,15 +231,6 @@
     max-height: none;
     min-height: 0;
   }
-
-  /* The camera preview gets a smaller share than on /capture, where it has the page to itself. */
-  .workspace .capture-preview {
-    max-height: 32vh;
-  }
-
-  .workspace .capture-transcript ol {
-    max-height: 20vh;
-  }
 }
 
 /* ---- Tabs ---- */
@@ -252,17 +265,38 @@
   color: var(--ink);
 }
 
-.workspace-live {
-  color: var(--correction);
-  font-size: var(--step--1);
-  font-weight: 400;
+/* #470: the Captura tab's recording icon, in place of «en curso» / «en pausa»: a red dot that
+   pulses while the capture records, a grey one while it does not (paused on Recursos, reconnecting). */
+.workspace-rec {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-left: var(--space-1);
+  border-radius: 50%;
+  background: var(--ink-faint);
+  vertical-align: 0.05em;
 }
 
-/* #450: a capture paused while Recursos is shown. */
-.workspace-paused {
-  color: var(--ink-muted);
-  font-size: var(--step--1);
-  font-weight: 400;
+.workspace-rec-on {
+  background: var(--correction);
+  animation: workspace-rec-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes workspace-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-rec-on {
+    animation: none;
+  }
 }
 
 /* The capture flow is a whole page elsewhere; here it fills its tab. */
