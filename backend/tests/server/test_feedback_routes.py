@@ -35,8 +35,9 @@ def app(server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: 
     )
 
 
-def seed(vault: Vault) -> None:
-    add_feedback(
+def seed(vault: Vault) -> tuple[str, str]:
+    """Two items (a triaged bug, then a new mejora); their ids, in that order."""
+    bug = add_feedback(
         vault,
         "bug",
         "El micro se corta",
@@ -44,30 +45,33 @@ def seed(vault: Vault) -> None:
         FeedbackContext(subject="mates", topic="derivadas", route="workspace", mode="construir"),
         clock=lambda: T0,
     )
-    add_feedback(vault, "mejora", "Modo oscuro", "Quiero un modo oscuro.", clock=lambda: T0)
-    set_feedback_status(vault, "fb-1", "triado", 812, clock=lambda: T0)
+    mejora = add_feedback(
+        vault, "mejora", "Modo oscuro", "Quiero un modo oscuro.", clock=lambda: T0
+    )
+    set_feedback_status(vault, bug.id, "triado", 812, clock=lambda: T0)
+    return bug.id, mejora.id
 
 
 def test_lists_every_item_folded_oldest_first(local: TestClient, tmp_vault: Vault) -> None:
-    seed(tmp_vault)
+    ids = seed(tmp_vault)
 
     response = local.get("/api/feedback")
 
     assert response.status_code == 200
     items = response.json()["items"]
-    assert [item["id"] for item in items] == ["fb-1", "fb-2"]
+    assert [item["id"] for item in items] == list(ids)
     assert items[0]["status"] == "triado" and items[0]["issue"] == 812
     assert items[0]["kind"] == "bug" and items[0]["context"]["topic"] == "derivadas"
     assert items[1]["status"] == "nuevo" and items[1]["issue"] is None
 
 
 def test_status_filters_the_items(local: TestClient, tmp_vault: Vault) -> None:
-    seed(tmp_vault)
+    _, mejora = seed(tmp_vault)
 
     nuevo = local.get("/api/feedback", params={"status": "nuevo"})
     descartado = local.get("/api/feedback", params={"status": "descartado"})
 
-    assert [item["id"] for item in nuevo.json()["items"]] == ["fb-2"]
+    assert [item["id"] for item in nuevo.json()["items"]] == [mejora]
     assert descartado.json() == {"items": []}
 
 

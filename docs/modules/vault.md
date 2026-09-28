@@ -284,33 +284,49 @@ reads it (None when absent); `study_file_path`. The editor's study label is `stu
 `get_topic`. Nothing here runs git. Imported from
 `studentassistant.vault.study` (not re-exported by the package).
 
-### Feedback inbox -- `feedback.py` (#472)
+### Feedback inbox -- `feedback.py` (#472, #476)
 `feedback/inbox.jsonl` at the vault root (not under a topic): the bugs and improvements of the
 app itself the student reported in the workspace chat or the study chat (`editor.feedback`). The
 maintainer triages it by hand with the CLI (`studentassistant feedback list|mark`,
 `docs/modules/server.md`); nothing here or anywhere in the backend calls GitHub. Append-only JSONL
 (`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`), two kinds of line:
 - `{"record": "item", "id", "created_at", "kind", "title", "body", "context"}` -- a new item:
-  `id` `fb-N` (one past the highest in the file), `kind` `bug` | `mejora`, `title` (≤ 140
-  characters, spaces collapsed), `body` (≤ 4000), `context` (`FeedbackContext`: `subject`,
+  `id` (below), `kind` `bug` | `mejora`, `title` (≤ `MAX_TITLE_CHARS` = 140 characters, counted
+  after runs of whitespace are collapsed; `collapse_title`), `body` (≤ 4000), `context` (`FeedbackContext`: `subject`,
   `topic`, `route`, `session_id`, `mode` `construir` | `estudiar`, `excerpt` ≤ 1200 characters).
 - `{"record": "status", "id", "time", "status", "issue"}` -- a later change: `status` `nuevo` |
   `triado` | `descartado`, `issue` the triage reference (an issue number of the code repository,
   or `null`).
 
+Ids (#476): a new item gets `fb-` plus six random characters of `FEEDBACK_ID_ALPHABET`
+(lower case, no `0`/`o`/`1`/`l`/`i` look-alikes; e.g. `fb-k7m2qx`), drawn again if it is already in
+the inbox or all digits. Two PCs that both report something before their vaults sync therefore
+give their items different ids without any coordination (about 10⁹ values; the local lock only
+guards one PC), and the id stays short enough to type in `feedback mark`, which ignores case and
+surrounding spaces. Inboxes written before #476 hold `fb-N` ids (one past the highest in the
+file); `FEEDBACK_ID_PATTERN` accepts both forms, so those items are still read, folded and marked.
+
 Reading folds the lines in file order into `FeedbackItem`s (the entry's fields plus `status`,
-default `nuevo`, `issue` and `updated_at` from the last change); a repeated item id (a union merge
-of two PCs that both allocated it) keeps the first entry, a change for an unknown id is ignored.
+default `nuevo`, `issue` and `updated_at` from the last change); a change for an unknown id is
+ignored. A legacy `fb-N` two PCs both allocated before a union merge is **ambiguous**: every item
+line with it is kept and listed (same id, oldest first), a change with that id folds into every
+item line before it (nothing records which PC's item it meant), and `get_feedback` /
+`set_feedback_status` refuse it with `FeedbackAmbiguousError` (a `FeedbackError`; `.items` names
+every item) and write nothing -- the CLI prints them and exits 1; the maintainer renames one of
+the ids in the file by hand.
 - `add_feedback(vault, kind, title, body, context=None, *, clock=None) -> FeedbackItem` -- allocates
   the id and appends under the `feedback` lock (`VaultBusyError` after 30 s, nothing written),
   creating `feedback/` on first use; `SecretRefused` or a `ValidationError` write nothing.
 - `set_feedback_status(vault, id, status, issue=None, *, clock=None) -> FeedbackItem` -- appends a
   change under the same lock; `issue=None` keeps the item's current reference.
   `FeedbackNotFoundError` (a `FeedbackError`, a `VaultError`) for a malformed or unknown id.
-- `list_feedback(vault, status=None)` (oldest first, filtered by status), `get_feedback(vault,
-  id)`, `feedback_path(vault)`; a line that is not a feedback line raises `JsonlError`.
+- `list_feedback(vault, status=None)` (oldest first by `created_at`, file order among equal
+  times; filtered by status), `get_feedback(vault, id)`, `feedback_path(vault)`; a line that is not a feedback line raises `JsonlError`.
 - The models (`FeedbackContext`, `FeedbackItem`, `FeedbackKind`, `FeedbackStatus`, `FeedbackMode`,
-  `FEEDBACK_KINDS`, `FEEDBACK_STATUSES`), the functions and errors are re-exported by the package.
+  `FEEDBACK_KINDS`, `FEEDBACK_STATUSES`), the functions and errors (`FeedbackNotFoundError`,
+  `FeedbackAmbiguousError`) are re-exported by the package. `MAX_TITLE_CHARS` and
+  `collapse_title` (in `vault.feedback`) are also the limit of the editor's `report_feedback`
+  tool, so a title the vault would refuse is a malformed call there, never cut silently.
   Nothing here runs git: the caller notes the change for the sync loop (`editor.feedback`); a CLI
   change is committed by whichever later batch commit stages the vault (`git add --all`).
 

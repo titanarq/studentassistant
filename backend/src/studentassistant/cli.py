@@ -101,6 +101,7 @@ from studentassistant.sources import (
 )
 from studentassistant.sources.triage import format_retro, retro_triage
 from studentassistant.vault import (
+    FeedbackAmbiguousError,
     FeedbackItem,
     FeedbackNotFoundError,
     GitSync,
@@ -603,7 +604,7 @@ def feedback_list(
 
 @feedback_cli.command("mark")
 def feedback_mark(
-    feedback_id: Annotated[str, typer.Argument(help="El elemento, p. ej. fb-3.")],
+    feedback_id: Annotated[str, typer.Argument(help="El elemento, p. ej. fb-k7m2qx.")],
     new_status: Annotated[FeedbackStatusOption, typer.Option("--status", help="El nuevo estado.")],
     issue: Annotated[
         int | None,
@@ -616,6 +617,16 @@ def feedback_mark(
         item = set_feedback_status(vault, feedback_id, new_status.value, issue)
     except FeedbackNotFoundError as error:
         typer.echo(f"No existe el comentario «{feedback_id}» en el buzón.")
+        raise typer.Exit(code=1) from error
+    except FeedbackAmbiguousError as error:
+        typer.echo(
+            f"El identificador «{error.feedback_id}» es ambiguo: lo tienen {len(error.items)}"
+            " comentarios distintos (dos PCs lo asignaron antes de sincronizar la bóveda)."
+            " No se ha cambiado nada; corrige el identificador de uno de ellos en"
+            " feedback/inbox.jsonl a mano:"
+        )
+        for item in error.items:
+            typer.echo(_feedback_line(item))
         raise typer.Exit(code=1) from error
     except VaultBusyError as error:
         typer.echo("El buzón está ocupado por otro proceso; vuelve a intentarlo.")
