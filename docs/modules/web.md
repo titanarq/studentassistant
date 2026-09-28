@@ -969,6 +969,21 @@ token):
     snapshots are external sources (#59): their references get `notes-ref-web` (green, dotted)
     and the aria label "Fuente externa (web): <text>" (other sources "Fuente: <text>"), and their
     definition under "Fuentes" gets `notes-footnote-external` and "· fuente externa".
+  - Mermaid (#479): a fence whose info string is `mermaid` (any case) renders as `MermaidBlock`
+    everywhere `NotesView` is used (document panel, `NotesPage`, `StudyPage`, `PendingPage`,
+    `MaterialPreviewPage`, the editor's Markdown preview). `notes/mermaid.ts` imports the `mermaid`
+    package lazily (`loadMermaid()`, one dynamic `import()` on the first diagram, so pages without
+    one never fetch it and it is its own chunk outside the main bundle) and `renderMermaid(source,
+    theme)` renders one diagram at a time after `mermaid.initialize({startOnLoad: false,
+    securityLevel: 'strict', theme, suppressErrorRendering: true})`. The theme is `dark` or
+    `default` from `useDarkScheme()` (`notes/useColorScheme.ts`), which follows
+    `prefers-color-scheme` -- the app has no theme switch of its own -- and a change re-renders
+    the diagram. The SVG goes in a `figure.notes-mermaid`: the one piece of notes-derived markup
+    inserted as HTML, mermaid's own output sanitized by `strict`. Until it is drawn the source
+    shows as a `notes-code` block; a source mermaid cannot parse stays that way plus
+    «No se pudo dibujar el diagrama» (`notes-mermaid-error`), and the rest of the notes renders as
+    usual. The visual editor keeps a mermaid fence as a code block and saves it unchanged
+    (fixture `noteEditor/fixtures/mermaid.md`).
   - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
     flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
     Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's
@@ -1232,8 +1247,8 @@ token):
   <name>`, heading "<title> de <tema>" (the file's stem in brackets when it is not the kind's own,
   "Ejercicios y examen (examen-soluciones)"), "De los apuntes v<N> · Descargar <name>", a `note`
   "Desactualizado <reason>" when stale, then the file (`GET .../generated/files/<name>` as text)
-  rendered by `NotesView` over `parseNotes`, so no markup of it reaches the DOM (a mind map or a
-  Marp deck shows as its Markdown source). `api.ts`: `fetchGenerators`, `fetchMaterials`,
+  rendered by `NotesView` over `parseNotes`, so no markup of it reaches the DOM (a mermaid mind map
+  is drawn as a diagram, #479; a Marp deck shows as its Markdown source). `api.ts`: `fetchGenerators`, `fetchMaterials`,
   `fetchGeneratedText` (`ReadResult`), `generateMaterial(s, t, kind, confirmOverCap)`
   (`ActionResult<Generated>`: `kind`, `notesVersion`, `warnings`), `fileUrl`, `previewPath`,
   `generatedName`; lenient readers `readGenerators`, `readMaterials`, `readGenerated`.
@@ -1253,6 +1268,10 @@ token):
 vitest + Testing Library with a mocked API (`src/test/mockApi.ts`: `stubApi({path: response})`
 stubs `fetch` by method and path; `sseResponse(events)` is a complete event stream and
 `streamResponse()` one the test feeds event by event with `push`, `close` and `fail`).
+`src/test/setup.ts` mocks the `mermaid` package for every test with `src/test/fakeMermaid.ts`
+(#479): jsdom cannot lay out SVG, so `fakeMermaid.render` answers an SVG
+(`data-testid="mermaid-svg"`, `data-theme` of the last `initialize`) and rejects a source whose
+first line is `invalid`; `fakeMermaid.loads` counts the lazy imports.
 `src/capture/testing/` holds the fakes the capture
 tests run on, because jsdom has none of these APIs: `installCaptureFakes()` installs the media
 devices / stream / track, `ImageCapture`, `SpeechRecognition`, `WebSocket` and

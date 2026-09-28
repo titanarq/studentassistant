@@ -49,7 +49,8 @@ it("renders a generated Markdown file with the notes renderer, never as markup",
   expect(await screen.findByRole("heading", { level: 1, name: "Esquema de La Revolución Francesa" })).toBeInTheDocument();
   expect(screen.getByText(/Crisis fiscal y social\. <script>alert\(1\)<\/script>/)).toBeInTheDocument();
   expect(document.querySelector("script")).toBeNull();
-  expect(screen.getByText(/root\(\("La Revolución Francesa"\)\)/)).toBeInTheDocument();
+  // The mermaid fence is drawn as a diagram (#479; mermaid is faked in every test).
+  expect(await screen.findByTestId("mermaid-svg")).toBeInTheDocument();
   expect(await screen.findByText(/De los apuntes v3/)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Descargar esquema.md" })).toHaveAttribute(
     "href",
