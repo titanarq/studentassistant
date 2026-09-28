@@ -2,7 +2,8 @@
  * One spoken question (#82): a single Web Speech recognition in Spanish, not continuous, with its
  * interim text, which ends when the student stops talking (or `stop()` is called) and hands over
  * the final text. The capture page's continuous transcriber (`capture/webSpeechTranscriber.ts`) is
- * the other use of the API; this one never talks to a session.
+ * the other use of the API; this one never talks to a session. The browser writes Spanish without
+ * punctuation, so the final text gets a minimal one (`punctuate`).
  */
 
 import { speechRecognitionConstructor, WEB_SPEECH_LANGUAGE } from "../capture/webSpeechTranscriber";
@@ -54,6 +55,34 @@ const PROBLEMS: Record<string, VoiceProblemCode> = {
   network: "network",
 };
 
+/** First words that open a question (accented: the browser writes «como» for the conjunction). */
+const QUESTION_WORDS = new Set([
+  "qué", "cómo", "cuándo", "dónde", "adónde", "cuál", "cuáles", "quién", "quiénes", "cuánto",
+  "cuánta", "cuántos", "cuántas", "puedes", "podrías", "sabes",
+]);
+/** First words that open a question only when followed by one of these («por qué», «me explicas»). */
+const QUESTION_PAIRS: Record<string, ReadonlySet<string>> = {
+  por: new Set(["qué"]),
+  me: new Set(["explicas", "puedes", "podrías", "dices", "cuentas"]),
+};
+
+/**
+ * `text` with a minimal Spanish punctuation (the Web Speech API writes none): a capital first
+ * letter and a final full stop, or «¿…?» when it opens with a question word («qué», «cómo»,
+ * «por qué», «puedes»…); deliberately conservative, a statement never becomes a question. Text
+ * that already ends in punctuation only gets its capital.
+ */
+export function punctuate(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (trimmed === "") return trimmed;
+  const capital = (value: string) => value.charAt(0).toLocaleUpperCase("es") + value.slice(1);
+  if (/[.!?…:;]$/.test(trimmed)) return capital(trimmed);
+  const [first, second = ""] = trimmed.toLocaleLowerCase("es").split(" ");
+  const pair = QUESTION_PAIRS[first];
+  const question = pair !== undefined ? pair.has(second) : QUESTION_WORDS.has(first);
+  return question ? `¿${capital(trimmed)}?` : `${capital(trimmed)}.`;
+}
+
 export function voiceQuestionSupported(): boolean {
   return speechRecognitionConstructor() !== null;
 }
@@ -94,7 +123,7 @@ export const listenForQuestion: VoiceQuestionStarter = (callbacks) => {
   recognition.onend = () => {
     if (over) return;
     over = true;
-    if (settled !== "") callbacks.onFinal(settled);
+    if (settled !== "") callbacks.onFinal(punctuate(settled));
     else callbacks.onProblem(problem ?? "no-speech");
     callbacks.onEnd?.();
   };

@@ -34,7 +34,7 @@ from studentassistant.llm import (
     web_fetch_tool,
     web_search_tool,
 )
-from studentassistant.llm.claude_code import parse_tool_calls
+from studentassistant.llm.claude_code import _TextStream, parse_tool_calls
 from studentassistant.vault import Vault, read_ledger
 
 TEST_TIMEOUT_SECONDS = 30.0
@@ -278,6 +278,67 @@ def test_text_is_streamed_but_a_tool_call_is_not(fake: FakeClaudeCli, settings: 
     assert call.tool_calls[0].id.startswith("toolu_cc_")
     assert "".join(deltas[2]) == "Sin herramienta"
     assert plain.stop_reason == "end_turn" and prose.stop_reason == "end_turn"
+
+
+_REPLY_THEN_CALL = (
+    "Te he añadido el diagrama del ciclo.\n\n"
+    '```json\n{"tool_calls": [{"name": "apply_edits", "input": {"ops": ['
+    '"```mermaid\\ngraph TD\\nA-->B\\n```"]}}]}\n```'
+)
+_INLINE_CALL = 'Hecho. {"tool_calls": [{"name": "apply_edits", "input": {}}]}'
+_PLAIN_WITH_CODE = "Así se escribe:\n```\nx = 1\n```\nY ya está."
+_PLAIN_WITH_BRACE = "El conjunto {1, 2} tiene dos elementos."
+
+
+def _streamed(text: str, cut: int, *, is_tool_call: bool, expect_tools: bool = True) -> str:
+    """What `_TextStream` hands on for `text` fed as two deltas split at `cut`."""
+    seen: list[str] = []
+
+    async def sink(delta: str) -> None:
+        seen.append(delta)
+
+    async def go() -> None:
+        stream = _TextStream(sink, expect_tools)
+        for delta in (text[:cut], text[cut:]):
+            await stream.feed(delta)
+        await stream.finish(text, is_tool_call=is_tool_call)
+
+    run(go)
+    return "".join(seen)
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        (_REPLY_THEN_CALL, "Te he añadido el diagrama del ciclo."),
+        (_INLINE_CALL, "Hecho."),
+    ],
+)
+def test_the_reply_before_a_tool_call_streams_but_not_the_call(text: str, shown: str) -> None:
+    for cut in range(len(text) + 1):
+        streamed = _streamed(text, cut, is_tool_call=True)
+        assert shown.startswith(streamed.rstrip()), (cut, streamed)
+        assert "tool_calls" not in streamed and "`" not in streamed and "{" not in streamed
+
+
+@pytest.mark.parametrize("text", [_PLAIN_WITH_CODE, _PLAIN_WITH_BRACE, "Hola", "{a}"])
+def test_an_answer_that_is_no_tool_call_arrives_whole(text: str) -> None:
+    for cut in range(len(text) + 1):
+        assert _streamed(text, cut, is_tool_call=False) == text
+        assert _streamed(text, cut, is_tool_call=False, expect_tools=False) == text
+
+
+def test_an_answer_with_no_deltas_is_sent_at_the_end() -> None:
+    seen: list[str] = []
+
+    async def sink(delta: str) -> None:
+        seen.append(delta)
+
+    async def go() -> None:
+        await _TextStream(sink, True).finish("Todo de golpe", is_tool_call=False)
+
+    run(go)
+    assert seen == ["Todo de golpe"]
 
 
 @pytest.mark.parametrize(

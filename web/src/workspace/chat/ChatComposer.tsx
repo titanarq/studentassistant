@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, type Ref, useCallback, useEffect, useRef } from "react";
 import VoiceInputButton from "../../tutor/VoiceInputButton";
 import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import "./chat.css";
@@ -42,7 +42,8 @@ export interface ChatComposerProps {
  * The input of a chat card (#458, shared by the Construir and Estudiar chats since #487): a
  * textarea (Enter sends, Shift+Enter is a new line) with, in one row below it, the send button and
  * the square icon buttons -- the microphone (`VoiceInputButton` with its icon, the Web Speech path
- * of #428) and whatever `actions` the chat adds.
+ * of #428) and whatever `actions` the chat adds. The textarea grows with its text up to a limit
+ * (`chat.css`), and text written while it is not focused (dictation) keeps its end in view.
  */
 export default function ChatComposer({
   id,
@@ -60,6 +61,20 @@ export default function ChatComposer({
   before,
   actions,
 }: ChatComposerProps) {
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
+  const setTextarea = useCallback(
+    (element: HTMLTextAreaElement | null) => {
+      textarea.current = element;
+      if (typeof inputRef === "function") inputRef(element);
+      else if (inputRef) inputRef.current = element;
+    },
+    [inputRef],
+  );
+  // Dictated text arrives while the microphone button has the focus: follow it to its end.
+  useEffect(() => {
+    const element = textarea.current;
+    if (element !== null && element.ownerDocument.activeElement !== element) element.scrollTop = element.scrollHeight;
+  }, [value]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     onSubmit();
@@ -75,7 +90,7 @@ export default function ChatComposer({
       {before}
       <textarea
         id={id}
-        ref={inputRef}
+        ref={setTextarea}
         rows={2}
         maxLength={maxLength}
         placeholder={placeholder}

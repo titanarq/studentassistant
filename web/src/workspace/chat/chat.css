@@ -303,6 +303,11 @@
   box-sizing: border-box;
   resize: vertical;
   font: inherit;
+  /* Grows with the (dictated) text up to a limit, then scrolls. */
+  field-sizing: content;
+  min-height: 3.5em;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .ws-chat-actions {

@@ -127,8 +127,10 @@ subscription, with no polling and no re-sent conversation:
   anything starts. Known limit: the CLI's WebFetch returns the page as its helper model renders it
   for the prompt (Markdown, possibly cut on a very long page), not the raw document the API's web
   fetch returns.
-- `on_text` gets the text deltas (`stream_event` `text_delta`); a reply that looks like a tool
-  call (first visible character `{` or a fence) is held back and, if it is not one, sent whole.
+- `on_text` gets the text deltas (`stream_event` `text_delta`). With tools offered, the text is
+  held back from where a tool call may start (a line opening with `{` or a fence, or
+  `{"tool_calls"`): the reply written before a call streams, the call itself (which carries the
+  whole change, e.g. a Mermaid diagram) never does; held text that is not a call is sent at the end.
 - Usage is the `result` event's `usage`; the turn's cost is the increase of the process's running
   `total_cost_usd`, returned as `LLMResponse.reported_usd`, with `LLMResponse.billing` =
   `subscription` (`api` when the CLI's `init` event names an API key source). The ledger records

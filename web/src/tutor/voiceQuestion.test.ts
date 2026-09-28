@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { installSpeechRecognitionFake, type SpeechFakes } from "../capture/testing";
-import { listenForQuestion, type VoiceQuestionCallbacks, voiceQuestionSupported } from "./voiceQuestion";
+import { listenForQuestion, punctuate, type VoiceQuestionCallbacks, voiceQuestionSupported } from "./voiceQuestion";
 
 let fakes: SpeechFakes | null = null;
 
@@ -35,7 +35,7 @@ it("listens for one Spanish utterance and hands over its final text", () => {
   handle.stop();
   expect(recognition.stopCount).toBe(1);
   recognition.emitEnd();
-  expect(seen.onFinal).toHaveBeenCalledWith("qué era la derivada");
+  expect(seen.onFinal).toHaveBeenCalledWith("¿Qué era la derivada?");
   expect(seen.onProblem).not.toHaveBeenCalled();
   expect(seen.onEnd).toHaveBeenCalledTimes(1);
   handle.stop();
@@ -70,4 +70,15 @@ it("reports silence, a denied microphone and a missing API", () => {
   listenForQuestion(none);
   expect(none.onProblem).toHaveBeenCalledWith("unsupported");
   expect(none.onEnd).toHaveBeenCalled();
+});
+
+it("punctuates dictated Spanish conservatively", () => {
+  expect(punctuate("  la derivada es  la pendiente ")).toBe("La derivada es la pendiente.");
+  expect(punctuate("qué era la derivada")).toBe("¿Qué era la derivada?");
+  expect(punctuate("por qué se anula")).toBe("¿Por qué se anula?");
+  expect(punctuate("me explicas el teorema")).toBe("¿Me explicas el teorema?");
+  expect(punctuate("como te decía pon un ejemplo")).toBe("Como te decía pon un ejemplo.");
+  expect(punctuate("por ejemplo la tangente")).toBe("Por ejemplo la tangente.");
+  expect(punctuate("ya lo tengo!")).toBe("Ya lo tengo!");
+  expect(punctuate("")).toBe("");
 });

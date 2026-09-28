@@ -165,6 +165,6 @@ describe("VoiceInputButton", () => {
     expect(recognition.lang).toBe("es-ES");
     act(() => recognition.emitResult([{ transcript: "hola", final: true }]));
     act(() => recognition.emitEnd());
-    expect(onFinal).toHaveBeenCalledWith("hola");
+    expect(onFinal).toHaveBeenCalledWith("Hola.");
   });
 });
