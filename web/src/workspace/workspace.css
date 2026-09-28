@@ -949,3 +949,126 @@
 .resources-popover-book form p {
   margin: 0 0 var(--space-1);
 }
+
+/* ---- A source's detail over the document column (#473) ---- */
+
+/* Its own cell of the columns' grid, on top of the document's: the document underneath keeps its
+   mount and its scroll. */
+.workspace-detail {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (min-width: 56.3125rem) and (min-height: 30rem) {
+  .workspace-detail {
+    position: static;
+    max-height: none;
+  }
+}
+
+.workspace .workspace-detail > .source-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+}
+
+.workspace .workspace-detail .source-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* The capture large: most of the detail's height, the transcription below it. */
+.workspace-detail .source-image-frame {
+  max-height: 75vh;
+}
+
+.source-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.source-transcription-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.source-transcription-form label {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
+}
+
+.source-transcription-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 16rem;
+  resize: vertical;
+  font-family: var(--font-read);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.source-transcription-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.source-transcription-actions button {
+  margin: 0;
+}
+
+.source-transcription-save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.source-transcription-notice {
+  margin: 0;
+  color: var(--ok);
+  font-size: var(--step--1);
+}
+
+.source-transcription-error {
+  margin: 0;
+  color: var(--correction);
+}
+
+/* One column: the detail takes the document view's place (the document stays mounted, hidden). */
+@media (max-width: 56.25rem) {
+  .workspace-detail {
+    position: static;
+    max-height: none;
+  }
+
+  .workspace[data-detail="open"] .workspace-document,
+  .workspace:not([data-view="document"]) .workspace-detail {
+    display: none;
+  }
+
+  .workspace-detail .source-image-frame {
+    max-height: 60vh;
+  }
+}

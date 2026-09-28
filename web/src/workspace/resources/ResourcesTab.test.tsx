@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseNotes } from "../../notes/markdown";
 import { jsonResponse, stubApi } from "../../test/mockApi";
 import { useState } from "react";
+import SourcePanel from "../../notes/SourcePanel";
 import ResourcesTab, { INCORPORATED_LABEL, type OpenResource } from "../ResourcesTab";
 import { type SourceSelection, SourceSelectionContext, useSourceSelection } from "./selection";
 import { META_CONCURRENCY } from "./useSourceMetas";
@@ -86,9 +87,7 @@ function renderTab(notes = NOTES, refreshKey = 0, onOpen = vi.fn()) {
   const props = {
     subjectId: "historia",
     topicId: "revolucion-industrial",
-    open: null,
     onOpen,
-    onClose: () => undefined,
   };
   const view = render(<ResourcesTab {...props} tree={tree(notes)} refreshKey={refreshKey} />);
   return {
@@ -180,10 +179,16 @@ it("opens a source in the viewer, a set-aside one too", async () => {
   await loadedAll();
 
   fireEvent.click(card(/Página 2 · apuntes/));
-  expect(onOpen).toHaveBeenLastCalledWith({ label: "recurso-notes-2", definition: "[Apuntes, página 2](../sources/notes/page-002.jpg)" });
+  expect(onOpen).toHaveBeenLastCalledWith(
+    { label: "recurso-notes-2", definition: "[Apuntes, página 2](../sources/notes/page-002.jpg)" },
+    expect.any(HTMLButtonElement),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Apartadas (4)" }));
   fireEvent.click(card(/Página 5 · apuntes/));
-  expect(onOpen).toHaveBeenLastCalledWith({ label: "recurso-notes-5", definition: "[Apuntes, página 5](../sources/notes/page-005.jpg)" });
+  expect(onOpen).toHaveBeenLastCalledWith(
+    { label: "recurso-notes-5", definition: "[Apuntes, página 5](../sources/notes/page-005.jpg)" },
+    expect.any(HTMLButtonElement),
+  );
 });
 
 it("shows page thumbnails, the flattened image first", async () => {
@@ -282,20 +287,22 @@ it("lists and opens an image pasted into the notes", async () => {
   expect(incorporated(image)).toBe(true);
   expect(image.querySelector("img")).toHaveAttribute("src", `/api/sources/${TOPIC}/sources/images/img-001.png`);
   fireEvent.click(image);
-  expect(onOpen).toHaveBeenCalledWith({ label: "img001", definition: "[Imagen pegada 1](../sources/images/img-001.png)" });
+  expect(onOpen).toHaveBeenCalledWith(
+    { label: "img001", definition: "[Imagen pegada 1](../sources/images/img-001.png)" },
+    expect.any(HTMLButtonElement),
+  );
 });
 
 it("shows a pasted image in the viewer", () => {
   stubApi({ [SUMMARY]: summary(0) });
   render(
-    <ResourcesTab
+    <SourcePanel
       subjectId="historia"
       topicId="revolucion-industrial"
-      tree={null}
-      refreshKey={0}
-      open={{ label: "img001", definition: "[Imagen pegada 1](../sources/images/img-001.png)" }}
-      onOpen={() => undefined}
+      label="img001"
+      definition="[Imagen pegada 1](../sources/images/img-001.png)"
       onClose={() => undefined}
+      variant="overlay"
     />,
   );
   const dialog = screen.getByRole("dialog", { name: "Imagen pegada 1" });
@@ -308,7 +315,7 @@ it("shows a pasted image in the viewer", () => {
 describe("the selection (#432)", () => {
   const held: { current: SourceSelection | null } = { current: null };
 
-  /** The tab inside a workspace-like selection, opening and closing the viewer itself. */
+  /** The tab inside a workspace-like selection, opening and closing the detail beside it. */
   function Selecting({ refreshKey }: { refreshKey: number }) {
     const selection = useSourceSelection();
     held.current = selection;
@@ -320,10 +327,18 @@ describe("the selection (#432)", () => {
           topicId="revolucion-industrial"
           tree={tree(NOTES)}
           refreshKey={refreshKey}
-          open={open}
           onOpen={setOpen}
-          onClose={() => setOpen(null)}
         />
+        {open !== null && (
+          <SourcePanel
+            subjectId="historia"
+            topicId="revolucion-industrial"
+            label={open.label}
+            definition={open.definition}
+            onClose={() => setOpen(null)}
+            variant="overlay"
+          />
+        )}
       </SourceSelectionContext.Provider>
     );
   }
