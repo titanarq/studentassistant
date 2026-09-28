@@ -1033,6 +1033,8 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   page shown upright to Sonnet (`tests/editor/test_crop_*.py`); the chat turn -- success with its
   link, footnote, commit and undo, a cited PDF page, each failure, a source not allowed, crop and
   `apply_edits` together, the crop outside the notes lock with a student save redone on, a retired
-  crop, the classifier prompt -- in `tests/editor/test_revise_crop.py`; through the server (the typed
+  crop, an undo retiring a crop a batch commit took before the turn's commit (#498), the classifier
+  prompt -- in `tests/editor/test_revise_crop.py`; a spoken request's crop located with the app's
+  own transport (the queued path's `crop_client`, #498) in `tests/server/test_assistant_requests.py`; through the server (the typed
   chat route, the app's transport serving both the turn and the box, the new image listed in the
   topic's sources and the history's `crop`) in `tests/server/test_revise_crop_routes.py`.
