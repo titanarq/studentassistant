@@ -57,8 +57,10 @@ so the ledger and conversation lines it also carried stay -- and committed (`Des
 first; a regeneration cannot be undone this way), and when the revert would change no file (a
 commit that does not carry the turn's files): nothing is recorded then. A turn's write and its
 commit are one locked step (`notes_lock.checkpointing`, #410), so a turn applied now always has a
-commit to revert, unless the git lock stayed busy (`commit` None, said in its `warning`). Undoing
-again goes one more turn back.
+commit to revert, unless the git lock stayed busy (`commit` None, said in its `warning`). A
+`crop_image` turn's crop is stored before that step, so a sync-loop batch commit in between can
+carry it instead of the turn's commit: the undo then retires it (`vault.remove_source`, #498), so
+no uncited «Imagen recortada N» is left in Recursos. Undoing again goes one more turn back.
 
 **Spoken requests**: a turn may come from a request the student said aloud (an `assistant.request`
 of the session, run by the server's `assistant_requests.py`): `request` (`ChatRequestRef`) is then
@@ -585,6 +587,8 @@ class _UndoTarget(BaseModel):
     commit: str
     paths: list[str]
     summary: str | None = None
+    # The vault path of the crop the turn stored (`crop_image`, #493), when it made one.
+    crop: str | None = None
 
 
 class ChatHistory(_Strict):
@@ -787,8 +791,14 @@ def _undo_target(vault: Vault, subject_slug: str, topic_slug: str) -> _UndoTarge
             except ValidationError:
                 continue
             if result.applied and result.commit and result.paths:
+                crop = result.crop if isinstance(result, RevisionResult) else None
                 candidates.append(
-                    _UndoTarget(commit=result.commit, paths=result.paths, summary=result.summary)
+                    _UndoTarget(
+                        commit=result.commit,
+                        paths=result.paths,
+                        summary=result.summary,
+                        crop=crop.path if crop is not None and crop.error is None else None,
+                    )
                 )
     remaining = [result for result in candidates if result.commit not in undone]
     return remaining[-1] if remaining else None
@@ -1775,6 +1785,8 @@ async def undo_last_revision(
             "No se puede deshacer ese cambio: no quedó guardado como un paso propio en el"
             " historial, así que deshacerlo no cambiaría nada. Los apuntes siguen igual."
         )
+    if target.crop is not None:
+        await asyncio.to_thread(_retire_undone_crop, vault, sync, target.crop, message)
     after = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
     changed = after != before
     result = UndoResult(
@@ -1796,6 +1808,26 @@ async def undo_last_revision(
     sync.note_change()
     await _emit(on_event, NOTES_UNDONE_KIND, _event_payload(payload), subject_slug, topic_slug)
     return result
+
+
+def _retire_undone_crop(vault: Vault, sync: GitSync, path: str, message: str) -> None:
+    """Retire an undone turn's crop the revert left in place; blocking, never raises (#498).
+
+    The crop is stored before the turn's locked apply, so a sync-loop batch commit landing in
+    between (a stale re-ask) carries its files and the turn's commit does not: reverting that
+    commit then leaves the image, cited by nothing, in Recursos. It is soft-deleted
+    (`vault.remove_source`) and committed like the revert. A crop the revert removed (the
+    turn's commit carried it) is no longer a source, and nothing happens.
+    """
+    try:
+        with checkpointing(sync) as commit_now:
+            try:
+                remove_source(vault, path)
+            except SourceNotFoundError:
+                return
+            commit_now(f"{message} (recorte retirado)")
+    except Exception:
+        logger.exception("could not retire the undone crop %s", path)
 
 
 def _file_contents(vault: Vault, paths: Sequence[str]) -> list[bytes | None]:

@@ -401,3 +401,64 @@ def test_the_request_classifier_routes_a_crop_to_the_editor_as_an_edit() -> None
     assert "recorta la tabla de esta foto" in edit_line
     revise = load_prompt("editor_revise").content
     assert f"`{CROP_TOOL}`" in revise and "Imagen recortada N" in revise
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def test_undoing_a_crop_a_batch_commit_took_first_retires_it(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stale re-ask: the student saves while the page is cropped, and the sync loop's batch
+    # commit lands before the turn's own, taking the crop's files with it (#498).
+    clock = _Clock()
+    sync = GitSync(tmp_vault, clock=clock)
+    _book_page(topic, _diagram())
+    before = _notes(topic)
+    student = before.replace("Se escribe $f'(x)$.", "Se escribe $f'(x)$ o $y'$.")
+    original = revise_module.crop_source_image
+
+    async def cropping_then_a_batch_commit(*args: Any, **kwargs: Any) -> CroppedImage:
+        image = await original(*args, **kwargs)
+        write_notes(topic.vault, topic.subject, topic.topic, student)
+        sync.note_change()
+        clock.now += 3600
+        sync.run_due()
+        return image
+
+    monkeypatch.setattr(revise_module, "crop_source_image", cropping_then_a_batch_commit)
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX)
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+    )
+
+    result = _revise(topic, sync, fake)
+
+    assert result.applied and result.attempts == 2 and result.crop is not None
+    crop = result.crop.path
+    assert crop is not None and _images(topic) == [crop]
+    # The batch commit carried the crop; the turn's commit, the one an undo reverts, does not.
+    batch = _git(topic.vault, "log", "--format=%H", "-n", "1", "--", crop).strip()
+    assert batch != result.commit
+    committed = _git(topic.vault, "show", "--name-only", "--format=", result.commit or "").split()
+    assert crop not in committed
+
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert undone.undone_commit == result.commit and undone.notes_changed
+    # The notes are the student's again and the crop is gone from Recursos, retired and
+    # committed: nothing cites it and nothing is left pending.
+    assert _notes(topic) == student and LINK not in _notes(topic)
+    assert _images(topic) == []
+    meta = read_source(topic.vault, crop).meta
+    assert meta is not None and meta["removed"]["by"] == "student"
+    images = crop.rsplit("/", 1)[0]
+    assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
+    assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
