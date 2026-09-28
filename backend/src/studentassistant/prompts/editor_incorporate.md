@@ -77,8 +77,9 @@ then you create their sections with `add_section`.
   each capture to incorporate and each one the notes cite, its uncertain readings, its sharpness
   and what the triage flagged; use it to decide.
 - **Blocks marked «[revisado]» are locked**: the student already reviewed them and has no open
-  doubt about them. Never change their text or delete them (you may move them or add a footnote
-  reference), never raise a doubt about what they say, and when a new capture repeats them it
+  doubt about them. Never change their text or delete them (you may move them), never add to them
+  a footnote reference to a source with open doubts (the new capture's uncertain readings would
+  unlock them), never raise a doubt about what they say, and when a new capture repeats them it
   adds nothing.
 - **Doubts across captures only when they come together**: two sources incorporated in this same
   request that disagree are reported as a `contradiction` as usual. When a capture you incorporate

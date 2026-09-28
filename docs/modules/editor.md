@@ -849,11 +849,21 @@ records in `conversations/editor.jsonl` (the existing conversation API, no vault
 ### Overlapping captures: lock, contradictions, capture facts -- `overlap.py` (#474)
 Deterministic checks behind building the notes from successive, overlapping captures; an editor
 answer that breaks one is re-asked with the Spanish errors like any other validation error.
-- `settled_block_errors(before, after, settled) -> list[str]`: every settled block of `before`
-  must still be in `after` with the same `block_key` (text modulo footnote refs; it may move or
-  change its footnotes). Checked on every incorporation (`incorporate._check`) and on the doubts
-  review's auto-resolution edits (`doubts._check_review`). Not on a revision turn or a doubt
-  answer: there the student asks for the change.
+- `settled_block_errors(before, after, settled, doubted=()) -> list[str]`: every settled block of
+  `before` must still be in `after` with the same `block_key` (text modulo footnote refs; it may
+  move or change its footnotes), and must not come to cite a source it did not cite that is in
+  `doubted` (source keys an open doubt names): citing it would make the block unsettled, so a turn
+  could unlock the block it was told not to touch -- e.g. a re-capture of a settled line whose
+  transcriber doubts are open, added as corroboration, would bring those doubts back to the
+  doubts review. A new citation of a source without open doubts stays allowed and the block stays
+  settled. Checked on every incorporation (`incorporate._check`, with `doubted` =
+  `open_doubt_sources` plus the sources of the doubts the incorporation raises) and on the doubts
+  review's auto-resolution edits (`doubts._check_review`, text and deletion only). `settled` and
+  `doubted` are computed from the notes and doubts before the turn's own edits, so what a turn
+  writes never changes which blocks it may touch. Not on a doubt answer, and **not on a revision
+  turn, even one with a Recursos selection**: there the student may ask to change a settled block,
+  so the lock is only the `editor_revise` prompt's rule (do not rewrite a «[revisado]» block from
+  a capture unless the student asks for that block), not a validator check.
 - `same_kind_contradiction_errors(doubts, requested) -> list[str]`: a `contradiction` doubt
   between a requested capture and a capture of the same kind (notes/notes, book/book) not
   requested now is refused: the editor keeps the notes' reading or replaces it when the new one is
@@ -867,8 +877,9 @@ answer that breaks one is re-asked with the Spanish errors like any other valida
   transcript segments) and after a revision turn's selection.
 - The doubts review (`review_doubts`), when the block map marks a settled block, gets
   `SETTLED_REVIEW_RULE`: a doubt about what a settled block already says is auto-resolved without
-  edits, its evidence the source that block cites, never asked. This rule is the model's to follow;
-  only the lock above is checked.
+  edits, its evidence the source that block cites, never asked. "Never ask a doubt a settled block
+  already holds" is **prompt-enforced only**: telling whether a doubt concerns what a settled block
+  says is semantic, so no deterministic check backs it; only the lock above is checked.
 - Coverage: the synthetic overlapping captures of `backend/tests/fixtures/overlap/` (four pages of
   one notebook page, two of them re-captures, plus the reference notes the editor should end with)
   drive the FakeClaude tests of the lock, the contradiction refusal, the block map marks, the

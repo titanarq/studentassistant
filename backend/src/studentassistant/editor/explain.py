@@ -41,8 +41,8 @@ from studentassistant.editor.inputs import (
     _render_pending,
     _Segment,
     _topic_block,
-    _transcription,
     fidelity_mode_of,
+    source_transcription,
 )
 from studentassistant.editor.notes_format import (
     Block,
@@ -233,7 +233,7 @@ def _seconds(clock: str) -> int:
 
 
 def _add_page(vault: Vault, builder: _Builder, ref: ChatRef, source: StoredSource) -> None:
-    transcription = _transcription(vault, source)
+    transcription = source_transcription(vault, source)
     header = f"### [^{ref.label}] {ref.text} ({ref.source_id})"
     if transcription is not None and transcription.strip():
         builder.text(f"{header}\nTranscripción de la página:\n\n{transcription.strip()}\n")

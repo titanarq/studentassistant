@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from doubts_topic import DoubtsTopic, make_doubts_topic, review_reply
+from doubts_topic import DoubtsTopic, make_doubts_topic, review_reply, transcript_id
 from studentassistant.editor.doubts import (
     REVIEW_TOOL,
     SETTLED_REVIEW_RULE,
@@ -31,7 +31,16 @@ from studentassistant.editor.overlap import (
 from studentassistant.editor.reviewed import block_key, settled_blocks
 from studentassistant.editor.revise import EDIT_TOOL
 from studentassistant.llm import FakeClaude, LLMRequest
-from studentassistant.vault import GitSync, Vault, put_source, read_notes, sources_directory
+from studentassistant.observer import STATE_OP_EVENT_KIND
+from studentassistant.vault import (
+    GitSync,
+    Vault,
+    end_session,
+    put_source,
+    read_notes,
+    sources_directory,
+    start_session,
+)
 
 NOTATION = "Se escribe $f'(x)$.[^t2]"
 P1 = "sources/notes/page-001.jpg"
@@ -162,6 +171,23 @@ def test_a_settled_block_may_move_or_change_its_footnotes_but_not_its_text() -> 
     [deleted] = settled_block_errors(before, before.replace("Uno.[^p1]\n\n", ""), settled)
     assert "no se cambia ni se borra" in deleted
     assert settled_block_errors(before, before.replace("Uno.", "Una."), set()) == []
+
+
+def test_a_settled_block_may_not_come_to_cite_a_source_with_open_doubts() -> None:
+    before = (
+        "# T\n\n## A {#a}\n\nUno.[^p1]\n\n"
+        "[^p1]: [Apuntes, página 1](../sources/notes/page-001.jpg)\n"
+    )
+    cited = before.replace("Uno.[^p1]", "Uno.[^p1][^p3]") + f"[^p3]: {P3_FOOTNOTE}\n"
+    settled = {block_key("Uno.")}
+
+    [error] = settled_block_errors(before, cited, settled, {P3})
+    assert error.startswith("El bloque 1 de #a («Uno.[^p1]») está [revisado]")
+    assert f"no le añadas una nota al pie de {P3}, que tiene dudas abiertas" in error
+    assert settled_block_errors(before, cited, settled, {P4}) == []
+    assert settled_block_errors(before, cited, settled) == []
+    # A source it already cited may have doubts: only a new citation unlocks the block.
+    assert settled_block_errors(before, cited, settled, {P1}) == []
 
 
 def test_only_a_same_kind_contradiction_against_a_capture_not_requested_is_refused() -> None:
@@ -319,6 +345,124 @@ def test_contradictions_between_pages_incorporated_together_or_notes_and_book_ar
 
     assert result.applied and result.attempts == 1 and not result.errors
     assert len(result.doubts) == 2
+
+
+def _doubt_on_page_3(topic: DoubtsTopic) -> None:
+    """An open transcriber doubt, `p-6`, on page 3 -- the re-capture of the settled line."""
+    session = start_session(
+        topic.vault, topic.subject, topic.topic, host="pc", protocol_version="1.1"
+    )
+    session.append_event("session.started", "user", {})
+    session.append_event(
+        STATE_OP_EVENT_KIND,
+        "observer",
+        {
+            "op": "add_pending",
+            "pending_id": "p-6",
+            "kind": "illegible",
+            "text": "Lectura dudosa «revista» en la página 3.",
+            "source_refs": [P3],
+        },
+    )
+    session.append_event("session.ended", "user", {})
+    end_session(session)
+    GitSync(topic.vault).checkpoint("doubt on page 3")
+
+
+def _cite_on_notation(label: str, definition: str) -> dict[str, Any]:
+    """An incorporation that only adds a footnote ref to the settled block, as corroboration."""
+    return {
+        "summary": "La página repite la notación",
+        "ops": [
+            {
+                "op": "replace_block",
+                "section": "definicion",
+                "block": 2,
+                "text": f"Se escribe $f'(x)$.[^t2][^{label}]",
+            }
+        ],
+        "footnotes": [{"label": label, "definition": definition}],
+    }
+
+
+def test_citing_a_doubted_capture_on_a_settled_block_is_re_asked(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    _doubt_on_page_3(topic)
+    fake = FakeClaude().reply_tool(
+        EDIT_TOOL, _cite_on_notation("p3", P3_FOOTNOTE), text="La página 3 repite la notación."
+    )
+    _add_x2(fake)
+
+    result = _incorporate(topic, sync, fake, [P3])
+
+    assert result.applied and result.attempts == 2 and not result.errors
+    reask = _texts(fake.requests[1])
+    assert "El bloque 2 de #definicion («Se escribe $f'(x)$.[^t2]») está [revisado]" in reask
+    assert f"no le añadas una nota al pie de {P3}, que tiene dudas abiertas" in reask
+    notes = _notes(topic)
+    assert NOTATION in notes and "La derivada de $x^2$ es $2x$.[^p3]" in notes
+    assert block_key(NOTATION) in settled_blocks(topic.vault, topic.subject, topic.topic, notes)
+
+
+def test_citing_a_clean_capture_on_a_settled_block_keeps_it_settled(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    _doubt_on_page_3(topic)
+    fake = FakeClaude().reply_tool(
+        EDIT_TOOL, _cite_on_notation("p4", P4_FOOTNOTE), text="La página 4 repite la notación."
+    )
+
+    result = _incorporate(topic, sync, fake, [P4])
+
+    assert result.applied and result.attempts == 1 and not result.errors
+    notes = _notes(topic)
+    assert "Se escribe $f'(x)$.[^t2][^p4]" in notes
+    assert block_key(NOTATION) in settled_blocks(topic.vault, topic.subject, topic.topic, notes)
+
+
+def test_the_review_of_the_repeated_capture_still_sees_the_block_settled(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    _doubt_on_page_3(topic)
+    fake = FakeClaude().reply_tool(
+        EDIT_TOOL, _cite_on_notation("p3", P3_FOOTNOTE), text="La página 3 repite la notación."
+    )
+    _add_x2(fake)
+    _incorporate(topic, sync, fake, [P3])
+    notes = _notes(topic)
+    # Had the ref been accepted, the block would have lost «[revisado]» (design case (c)).
+    unlocked = notes.replace(NOTATION, "Se escribe $f'(x)$.[^t2][^p3]")
+    assert block_key(NOTATION) not in settled_blocks(
+        topic.vault, topic.subject, topic.topic, unlocked
+    )
+    resolve = {
+        "pending_id": "p-6",
+        "action": "auto_resolve",
+        "resolution": "Los apuntes ya dicen la notación; la página 3 solo la repite.",
+        "evidence": [
+            {"source_id": transcript_id(topic, "00:00:10-00:00:15"), "quote": "Se escribe f'(x)"}
+        ],
+        "edits": [],
+    }
+    review = FakeClaude().reply_tool(REVIEW_TOOL, {"decisions": [resolve]})
+
+    result = _run(
+        review_doubts(
+            topic.vault,
+            topic.subject,
+            topic.topic,
+            client=review.client("editor"),
+            sync=sync,
+            pending_ids=["p-6"],
+        )
+    )
+
+    text = _texts(review.requests[0])
+    assert "bloque 2 (paragraph) [revisado]: Se escribe" in text
+    assert SETTLED_REVIEW_RULE in text
+    assert result.attempts == 1 and result.auto_resolved == ["p-6"] and result.asked == []
+    assert _notes(topic) == notes
 
 
 # -- the doubts review ---------------------------------------------------------------------------

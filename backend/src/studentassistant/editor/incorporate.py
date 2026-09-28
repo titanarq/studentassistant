@@ -97,7 +97,7 @@ from studentassistant.editor.overlap import (
     same_kind_contradiction_errors,
     settled_block_errors,
 )
-from studentassistant.editor.reviewed import settled_blocks
+from studentassistant.editor.reviewed import open_doubt_sources, settled_blocks
 from studentassistant.editor.revise import (
     EDIT_TOOL,
     INCORPORATION_RECORD,
@@ -592,9 +592,11 @@ def _check(
     assembled: EditorInput,
     vault: Vault,
     settled: Collection[str] = (),
+    doubted: Collection[str] = (),
 ) -> tuple[list[str], str | None]:
     """`(errors, edited notes)` of an incorporation; `settled` are the keys of the settled
-    blocks of `notes`, which it must not change or delete (#474)."""
+    blocks of `notes`, which it must not change, delete or make cite a new source that an open
+    doubt names (`doubted`, or one of the doubts this incorporation raises) (#474)."""
     errors: list[str] = []
     if not value.summary.strip():
         errors.append("Falta el resumen (`summary`) del cambio.")
@@ -621,7 +623,10 @@ def _check(
     errors.extend(
         validate(edited, assembled.fidelity_mode, resolver, editor_written=True, previous=notes)
     )
-    errors.extend(settled_block_errors(notes, edited, settled))
+    raised = {option.source_id for doubt in value.doubts for option in doubt.options} | {
+        ref for doubt in value.doubts for ref in doubt.refs
+    }
+    errors.extend(settled_block_errors(notes, edited, settled, {*doubted, *raised}))
     cited = cited_source_paths(edited)
     for source_id in ids:
         if source_id not in cited and source_id not in value.nothing_new:
@@ -822,11 +827,13 @@ async def incorporate_sources(
         stale = False
         edited = None
         if value is not None:
+            # Both from the notes before this turn's edits: the turn cannot unlock what it edits.
             settled = await asyncio.to_thread(
                 settled_blocks, vault, subject_slug, topic_slug, notes
             )
+            doubted = await asyncio.to_thread(open_doubt_sources, vault, subject_slug, topic_slug)
             errors, edited = await asyncio.to_thread(
-                _check, value, notes, ids, assembled, vault, settled
+                _check, value, notes, ids, assembled, vault, settled, doubted
             )
         if value is not None and edited is not None and not errors:
             applied, current = await asyncio.to_thread(

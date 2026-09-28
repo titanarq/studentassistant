@@ -7,7 +7,9 @@ it answers is checked here, and an answer that breaks it is re-asked with the Sp
 - **Settled blocks are locked** (`settled_block_errors`): a block the student reviewed, with no
   `[[?` mark and no open doubt about its sources (`reviewed.settled_blocks`), must still be in the
   edited notes with the same key (`reviewed.block_key`: its text modulo footnote refs). Moving it
-  or changing only its footnotes is allowed; changing its text or deleting it is not.
+  or changing only its footnotes is allowed; changing its text or deleting it is not, and neither
+  is making it cite a source it did not cite that an open doubt names (`doubted`): the block
+  would no longer be settled, so a turn could unlock the very block it was told not to touch.
 - **Doubts across captures only when they come together** (`same_kind_contradiction_errors`): a
   contradiction between a capture incorporated now and a capture of the same kind (notes/notes,
   book/book) that is not being incorporated now -- one already in the notes -- is not raised: the
@@ -27,9 +29,9 @@ from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from studentassistant.editor.inputs import _UNCERTAIN, PAGE_KIND_TEXT, _transcription
+from studentassistant.editor.inputs import PAGE_KIND_TEXT, UNCERTAIN, source_transcription
 from studentassistant.editor.notes_format import ProvenanceError, parse, parse_provenance
-from studentassistant.editor.reviewed import block_key, content_blocks, source_key
+from studentassistant.editor.reviewed import block_key, block_sources, content_blocks, source_key
 from studentassistant.sources.triage import REASON_TEXT, triage_of
 from studentassistant.vault import Vault, list_sources, topic_directory
 
@@ -65,11 +67,15 @@ def _where(document: Any, key: str) -> str:
     return "un bloque del principio"
 
 
-def settled_block_errors(before: str, after: str, settled: Collection[str]) -> list[str]:
-    """Spanish errors for every settled block of `before` whose text `after` changed or deleted.
+def settled_block_errors(
+    before: str, after: str, settled: Collection[str], doubted: Collection[str] = ()
+) -> list[str]:
+    """Spanish errors for every settled block of `before` whose text `after` changed or deleted,
+    or that `after` makes cite a source it did not cite that an open doubt names.
 
-    A settled key must occur in `after` at least as many times as in `before`; its footnote refs
-    and its place may change.
+    A settled key must occur in `after` at least as many times as in `before`; its place may
+    change, and so may its footnote refs as long as no new one points to a source of `doubted`
+    (`reviewed.source_key` values: the sources the open doubts name, `reviewed.open_doubt_sources`).
     """
     if not settled:
         return []
@@ -79,19 +85,35 @@ def settled_block_errors(before: str, after: str, settled: Collection[str]) -> l
     )
     if not wanted:
         return []
-    have = Counter(block_key(b.text) for b in content_blocks(parse(after)))
+    new = parse(after)
+    have = Counter(block_key(b.text) for b in content_blocks(new))
+    doubted_keys = {source_key(ref) for ref in doubted}
+    cited_before: dict[str, set[str]] = {}
+    for block in content_blocks(old):
+        cited_before.setdefault(block_key(block.text), set()).update(block_sources(old, block))
+    cited_after: dict[str, set[str]] = {}
+    for block in content_blocks(new):
+        cited_after.setdefault(block_key(block.text), set()).update(block_sources(new, block))
     errors: list[str] = []
     for block in content_blocks(old):
         key = block_key(block.text)
         if key not in wanted:
             continue
+        where = f"{_where(old, key).capitalize()} («{_opening(block.text)}») está [revisado]"
         if have[key] < wanted[key]:
             errors.append(
-                f"{_where(old, key).capitalize()} («{_opening(block.text)}») está [revisado]: el"
-                " estudiante ya lo revisó y no tiene dudas abiertas, así que no se cambia ni se"
-                " borra. Déjalo con el mismo texto (puedes moverlo o cambiar sus notas al pie);"
-                " si la fuente nueva lo repite, no añade nada."
+                f"{where}: el estudiante ya lo revisó y no tiene dudas abiertas, así que no se"
+                " cambia ni se borra. Déjalo con el mismo texto (puedes moverlo); si la fuente"
+                " nueva lo repite, no añade nada."
             )
+        else:
+            added = (cited_after.get(key, set()) - cited_before.get(key, set())) & doubted_keys
+            if added:
+                errors.append(
+                    f"{where}: no le añadas una nota al pie de {', '.join(sorted(added))}, que"
+                    " tiene dudas abiertas; el bloque dejaría de estar revisado. Déjalo con sus"
+                    " notas al pie; si esa fuente lo repite, no añade nada."
+                )
         del wanted[key]
     return errors
 
@@ -176,8 +198,8 @@ def capture_facts(
         source = stored[key]
         meta = source.meta or {}
         triage = triage_of(meta)
-        transcription = _transcription(vault, source)
-        marks = _UNCERTAIN.findall(transcription or "")
+        transcription = source_transcription(vault, source)
+        marks = UNCERTAIN.findall(transcription or "")
         role = "se incorpora ahora" if key in asked else "ya citada en los apuntes"
         if transcription is None or not transcription.strip():
             reading = "sin transcripción"
