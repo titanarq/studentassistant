@@ -12,7 +12,8 @@ when the vault is browsed on GitHub; the source it points to is named by its top
 (`sources/notes/page-004.jpg`, `sessions/<id>#t=00:02:34-00:03:10`). `[^ia]` marks content that is
 in none of the student's sources and is only allowed in the `ampliado` fidelity mode; `[^est]`
 (`Escrito por el estudiante`) marks a block the student wrote in the document themselves and is
-allowed in both modes. A pasted image is a source of its own (`sources/images/img-NNN.png`).
+allowed in both modes. A pasted image is a source of its own (`sources/images/img-NNN.png`), and
+so is a region cropped from a stored page (`editor.crop`), cited as «Imagen recortada N».
 
 `notes_revision(text)` is the content revision token of the notes (SHA-256 hex of the text),
 which every read and write of the notes carries so concurrent writers never lose an update.
@@ -48,6 +49,7 @@ IA_TEXT = "Ampliado por la IA: no está en tus fuentes"
 EST_LABEL = "est"
 EST_TEXT = "Escrito por el estudiante"
 IMAGE_TEXT = "Imagen pegada"
+IMAGE_CROP_TEXT = "Imagen recortada"
 TRANSCRIPT_FILE_NAME = "transcript.jsonl"
 # `apuntes.md` lives in `notes/`, one level below the topic directory the source ids start at.
 LINK_PREFIX = "../"
@@ -169,6 +171,13 @@ def image_provenance(number: int, extension: str = "png") -> Provenance:
     """A pasted image `sources/images/img-NNN.<ext>`, shown as «Imagen pegada N»."""
     path = f"sources/images/img-{number:03d}.{extension.lstrip('.').lower()}"
     return Provenance(kind="images", text=f"{IMAGE_TEXT} {number}", source_id=path, path=path)
+
+
+def cropped_image_provenance(number: int, extension: str = "jpg") -> Provenance:
+    """A region cropped from a stored page (`editor.crop`), `sources/images/img-NNN.<ext>`, shown
+    as «Imagen recortada N»: the same `images` source id as a pasted image, a distinct text."""
+    path = f"sources/images/img-{number:03d}.{extension.lstrip('.').lower()}"
+    return Provenance(kind="images", text=f"{IMAGE_CROP_TEXT} {number}", source_id=path, path=path)
 
 
 IA_PROVENANCE = Provenance(kind="ia", text=IA_TEXT)

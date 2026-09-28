@@ -32,8 +32,9 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
 `studentassistant.editor.versions`,
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
 `studentassistant.editor.style_guide` and the voice tutor and the study screen's question chat in
-`studentassistant.editor.tutor` (#82, #334), and the app feedback both chats record in
-`studentassistant.editor.feedback` (#472).
+`studentassistant.editor.tutor` (#82, #334), the app feedback both chats record in
+`studentassistant.editor.feedback` (#472), and cropping a region of a stored page image in
+`studentassistant.editor.crop` (#484).
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -58,13 +59,18 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
   | web snapshot | `[Web: Máquina de vapor](../sources/web/001-maquina-de-vapor.md)` | `sources/web/001-maquina-de-vapor.md` | same |
   | transcript span | `[Transcripción, 00:02:34–00:03:10](../sessions/20260924-183000/transcript.jsonl#t=00:02:34-00:03:10)` | `sessions/20260924-183000#t=00:02:34-00:03:10` | `sessions/20260924-183000/transcript.jsonl` |
   | pasted image | `[Imagen pegada 1](../sources/images/img-001.png)` | `sources/images/img-001.png` | same |
+  | cropped image | `[Imagen recortada 2](../sources/images/img-002.jpg)` | `sources/images/img-002.jpg` | same |
   | AI | `[^ia]: Ampliado por la IA: no está en tus fuentes` | -- | -- |
   | student | `[^est]: Escrito por el estudiante` | -- | -- |
 
   `[^est]` marks a block the student wrote in the document themselves (#313); it is allowed in
   both fidelity modes, and the server adds it on a student save to a block citing nothing (the
   editor may later replace it with a source footnote). A pasted image is a source of kind
-  `images` (`vault.put_pasted_image`); these two follow the ADR-0005 proposal of epic #311.
+  `images` (`vault.put_pasted_image`); these two follow the ADR-0005 proposal of epic #311. A
+  region cropped from a stored page (`editor.crop`, #484) is an `images` source too, with the same
+  source-id shape and the distinct text «Imagen recortada N» (`IMAGE_CROP_TEXT`,
+  `cropped_image_provenance(number, extension="jpg")`, next to `IMAGE_TEXT` /
+  `image_provenance`).
 
 - **Fidelity mode** (`FidelityMode`): `estricto` (default) allows no `[^ia]`; `ampliado` allows it,
   always defined and marked. Where a topic's mode is kept is not this module's business: the
@@ -925,3 +931,63 @@ with `studentassistant feedback mark` (`docs/modules/server.md`, CLI).
   turn: nothing is recorded, `feedback` stays `None` and the turn's `warning` gets
   `NOT_RECORDED_WARNING` («No he podido apuntar tu comentario sobre la aplicación; vuelve a
   decírmelo.»).
+
+### Cropping a region of a page image -- `crop.py` (#484)
+The student asks for only part of a stored page («solo el diagrama de la página 3»); Sonnet
+locates the region and deterministic code cuts it out, cleans it up and stores it as a new,
+separately cited source. The original page is never modified. Wiring this into the workspace
+chat (the editor deciding to crop and citing the result in the same turn) is not done yet: a crop
+reads and writes the vault and calls Claude, so it cannot be an `EditOp` of the pure `apply_edits`
+pipeline.
+- `await crop_source_image(vault, subject_slug, topic_slug, vault_relative_path, description, *,
+  settings=None, client=None, added_at=None) -> CroppedImage`: reads the page with
+  `vault.read_source` (a `notes` or `book` page, a PDF page thumbnail, any stored image of a
+  media type in `inputs.IMAGE_MEDIA_TYPES`), locates the region, cleans the cut up and stores it.
+  Nothing is committed (the caller commits). Errors, each with nothing written: `SourcePathError`
+  / `SourceNotFoundError` bubble from `read_source`; `CropError` (a `ValueError`, Spanish
+  message) when the source is not an image Claude reads (`UNSUPPORTED_IMAGE_MESSAGE`) or the
+  description is empty (`EMPTY_REGION_MESSAGE`); `RegionNotFoundError` (a `CropError`) when
+  Claude refuses or gives no valid box after the re-ask; `BlurryCropError` (a `CropError`,
+  `BLURRY_CROP_MESSAGE` «El recorte solicitado sale borroso; prueba con otra foto de la página.»);
+  any other `LLMError` of the call.
+- **Locating the region** (`locate_region(client, image, media_type, description) ->
+  BoundingBox`): one call through `studentassistant.llm` with role `observer` (Sonnet by default,
+  `crop_client(settings=..., transport=..., ledger=...)`; no model id here), the page as an image
+  content block (the `inputs` shape, `region_request`) plus the description, answered through the
+  strict tool `crop_region` (`llm.structured`, `max_tokens` 300). `BoundingBox` is `x0`, `y0`,
+  `x1`, `y1`, fractions of the image's width/height from its top-left corner, each in `[0, 1]`,
+  `x0 < x1`, `y0 < y1`, no extra keys; a box breaking these fails validation and is re-asked by
+  `structured` itself, never used raw. The prompt `editor_crop` asks for a **tight** box around only
+  the requested content, excluding blank margins, the desk/background and fingers holding the
+  page: that is the whole reframing step, there is no separate pass.
+- **Cleanup** (`clean_crop(image, media_type, box, *, min_sharpness, jpeg_quality) -> CleanCrop`,
+  and `clean_crop_async`, the same in a worker thread): pure, deterministic `numpy`/`cv2` code
+  with no LLM call -- the same bytes and box always give byte-identical output -- built from
+  `studentassistant.sources.captures`' functions, none reimplemented. (1) *Crop*: the box is
+  mapped to pixels (`box_pixels`: outward-rounded, clamped to the image, at least one pixel each
+  way) and the image cut to it. (2) *Sharpness filter*: the cut's `captures.sharpness` (variance
+  of the Laplacian) below `[editor] crop_min_sharpness` (default
+  `DEFAULT_TRIAGE_MIN_SHARPNESS`, the capture triage's scale: a crop too blurry to keep as a
+  capture is too blurry to cite; `ge=0`) is refused. (3) *Deskew*: `captures.find_page` searches
+  the cut for a quadrilateral (a sheet, a card, a framed figure photographed slightly askew); when
+  it finds one, `captures.crop_page` warps it flat (perspective transform), otherwise the plain
+  axis-aligned cut is kept. A PNG source gives a PNG crop, anything else a JPEG
+  (`captures.encode_jpeg`, `[sources] capture_jpeg_quality`). `CleanCrop`: `data`,
+  `content_type`, `extension`, `width`, `height`, `sharpness` (of the cut, before any warp),
+  `deskewed`.
+- **Stored** as a new `images` source through `vault.put_source(..., "images", ..., meta)`
+  (`sources/images/img-NNN.<ext>` + `img-NNN.yaml`), in a worker thread. The sidecar:
+  `origin: cropped` (`CROPPED_ORIGIN`), `cropped_from` (the page's vault-relative path),
+  `bbox` (`[x0, y0, x1, y1]`, the fractions used), `requested_region` (the description, stripped),
+  `content_type`, `sha256` (of the stored crop) and `added_at` (now, UTC, by default) -- readable
+  back as `vault.read_source(...).meta` of the new file, so the crop traces back to its page.
+- `CroppedImage` (what it returns): `path` (vault-relative), `source_id`
+  (`sources/images/img-NNN.<ext>`), `number`, `box`, `crop`, `meta`, `provenance`
+  (`cropped_image_provenance`), and the properties `footnote_label` (`imgNNN`), `footnote`
+  (`[^imgNNN]: [Imagen recortada N](../sources/images/img-NNN.<ext>)`) and `markdown`
+  (`![Imagen recortada N](../sources/images/img-NNN.<ext>)`): what a caller needs to write an
+  `insert_after`/`replace_block` edit showing and citing the crop.
+- Tests: `FakeClaude` scripts the box (valid, out of bounds and re-asked, refusal); fixture images
+  built in the tests cover the sharp/blurred filter, a rotated rectangle deskewed and an
+  axis-aligned one left as the plain crop, byte-identical output, and with `tmp_vault` the stored
+  file, its sidecar and the footnote (`tests/editor/test_crop_*.py`).
