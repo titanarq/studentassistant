@@ -79,20 +79,44 @@ function lockScroll(): () => void {
 const TABBABLE =
   'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
 
+/**
+ * Whether `element` is rendered, so focusing it can work: not under `display: none`, not
+ * `visibility: hidden`, not in the body of a closed `<details>`. A browser answers with
+ * `checkVisibility()` or its layout boxes; without either (jsdom has no layout) the computed
+ * styles of the element and its ancestors decide, so an unknown case counts as rendered.
+ */
+function isRendered(element: HTMLElement): boolean {
+  if (typeof element.checkVisibility === "function") {
+    return element.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
+  }
+  const style = getComputedStyle(element);
+  if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+  if (element.getClientRects().length > 0) return true;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    if (getComputedStyle(node).display === "none") return false;
+    const parent: HTMLElement | null = node.parentElement;
+    const closedDetails = parent instanceof HTMLDetailsElement && !parent.open;
+    if (closedDetails && parent.querySelector(":scope > summary") !== node) return false;
+  }
+  return true;
+}
+
 function tabbableIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
     (element) =>
       element.tabIndex >= 0 &&
-      !(element as HTMLButtonElement).disabled &&
-      element.closest("[inert], [hidden]") === null,
+      !element.matches(":disabled") &&
+      element.closest("[inert], [hidden]") === null &&
+      isRendered(element),
   );
 }
 
 /**
  * The modal itself: a native `<dialog>` opened with `showModal()`, so the browser dims and makes
  * inert everything behind it; Tab and Shift+Tab cycle between its own controls. Escape (the
- * dialog's `cancel`) and a click on the backdrop cancel; the focus starts on «Cancelar» for a destructive action (on the confirm
- * button otherwise) and goes back to the element that had it when the dialog closes.
+ * dialog's `cancel`) and a click on the backdrop cancel; the focus starts on «Cancelar» for a
+ * destructive action (on the confirm button otherwise) and goes back to the element that had it
+ * when the dialog closes.
  */
 export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   const { title, message, destructive = false, onConfirm } = options;
@@ -204,13 +228,16 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
           return;
         }
         const at = controls.indexOf(document.activeElement as HTMLElement);
-        const next =
-          at === -1
-            ? event.shiftKey
-              ? controls.length - 1
-              : 0
-            : (at + (event.shiftKey ? controls.length - 1 : 1)) % controls.length;
-        controls[next].focus();
+        const step = event.shiftKey ? controls.length - 1 : 1;
+        let next = at === -1 ? (event.shiftKey ? controls.length - 1 : 0) : (at + step) % controls.length;
+        // A candidate that does not take the focus (hidden in a way the filter missed) is passed
+        // over, so the cycle never sticks on it; after one lap with none, the card keeps it.
+        for (let tries = 0; tries < controls.length; tries += 1) {
+          controls[next].focus();
+          if (document.activeElement === controls[next]) return;
+          next = (next + step) % controls.length;
+        }
+        card.current?.focus();
         return;
       }
       if (event.key !== "Escape") return;

@@ -191,6 +191,84 @@ describe("the confirmation modal (#486)", () => {
     }
   });
 
+  /** Tabs five times each way from «Cancelar» and checks the focus only ever lands on `cancel`/`remove`. */
+  function expectTwoButtonCycle(dialog: HTMLElement) {
+    const cancel = within(dialog).getByRole("button", { name: "Cancelar" });
+    const remove = within(dialog).getByRole("button", { name: "Borrar" });
+    expect(cancel).toHaveFocus();
+    for (const expected of [remove, cancel, remove, cancel, remove]) {
+      expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab" })).toBe(false);
+      expect(expected).toHaveFocus();
+    }
+    for (const expected of [cancel, remove, cancel, remove, cancel]) {
+      expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab", shiftKey: true })).toBe(false);
+      expect(expected).toHaveFocus();
+    }
+  }
+
+  it("leaves hidden controls of the message out of the Tab cycle (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <div>
+          <p>
+            Saldrá de las fuentes del tema. <a href="#oculto" style={{ display: "none" }}>oculto</a>
+          </p>
+          <p style={{ visibility: "hidden" }}>
+            <a href="#invisible">invisible</a>
+          </p>
+          <div style={{ display: "none" }}>
+            <button type="button">Dentro de un bloque oculto</button>
+          </div>
+          <details>
+            <summary>Detalles</summary>
+            <a href="#plegado">plegado</a>
+          </details>
+        </div>
+      ),
+    });
+    const dialog = open();
+    const summary = dialog.querySelector("summary") as HTMLElement;
+    const cancel = within(dialog).getByRole("button", { name: "Cancelar" });
+    const remove = within(dialog).getByRole("button", { name: "Borrar" });
+    // The closed <details> keeps its summary in the cycle, never its body.
+    for (const expected of [remove, summary, cancel, remove, summary]) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab" });
+      expect(expected).toHaveFocus();
+    }
+    summary.remove();
+    cancel.focus();
+    expectTwoButtonCycle(dialog);
+  });
+
+  it("skips the controls of a disabled fieldset (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <fieldset disabled>
+          <input aria-label="Nombre" />
+          <button type="button">Dentro</button>
+        </fieldset>
+      ),
+    });
+    expectTwoButtonCycle(open());
+  });
+
+  it("passes over a control that does not take the focus, so the cycle never sticks (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <p>
+          Saldrá de las fuentes del tema. <a href="#terco">terco</a>
+        </p>
+      ),
+    });
+    const dialog = open();
+    // As a browser does with a control it cannot focus: `focus()` does nothing.
+    vi.spyOn(within(dialog).getByRole("link", { name: "terco" }), "focus").mockImplementation(() => {});
+    expectTwoButtonCycle(dialog);
+  });
+
   it("cancels on the browser's own cancel request", async () => {
     const { answers, open } = renderAsker();
     const dialog = open();
