@@ -312,6 +312,45 @@ def test_marp_exporter_reports_a_failure_a_timeout_and_a_missing_command(tmp_pat
     assert len(exported.warnings) == 1 and "no se encuentra Marp CLI" in exported.warnings[0]
 
 
+MERMAID = (
+    Path(__file__).parents[1] / "fixtures" / "generators" / "mermaid-flowchart.md"
+).read_text(encoding="utf-8")
+MERMAID_DECK: dict[str, Any] = {
+    "title": "Derivadas",
+    "slides": [{"title": "Esquema", "bullets": [MERMAID], "anchors": ["definicion"]}],
+}
+
+
+def test_a_mermaid_diagram_stays_a_fence_in_the_stored_deck(
+    topic: ReviseTopic, fake: FakeClaude, exporter: FakeExporter
+) -> None:
+    _generate(topic, fake, MERMAID_DECK)
+    markdown = _file(topic, MARKDOWN_NAME).decode("utf-8")
+    assert "- Sigue el esquema de la clase:\n  ```mermaid\n  flowchart TD\n    A[" in markdown
+    assert "  ```\n  Explica cada paso.\n" in markdown
+    assert "no disponible" not in markdown  # the web preview draws it (#480)
+    assert exporter.calls[0][0] == markdown
+
+
+def test_marp_exports_a_mermaid_diagram_as_its_code_and_a_note(tmp_path: Path) -> None:
+    # #481: Marp draws no mermaid, so the deck it exports says so under the code block.
+    script = tmp_path / "marp"
+    copy = tmp_path / "exported.md"
+    script.write_text(
+        f'#!/bin/sh\ncp diapositivas.md "{copy}"\n'
+        'while [ "$#" -gt 0 ]; do [ "$1" = "--output" ] && echo x > "$2"; shift; done\n',
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    deck = DraftDeck.model_validate(MERMAID_DECK)
+    markdown = render_markdown(deck, {}, subject_name="Matemáticas")
+    exported = _run(MarpExporter([str(script)], timeout_seconds=10).export(markdown, {}))
+    assert exported.warnings == []
+    assert copy.read_text(encoding="utf-8") == markdown.replace(
+        "  ```\n  Explica", "  ```\n  *Diagrama no disponible en la exportación*\n\n  Explica"
+    )
+
+
 @pytest.mark.integration
 def test_real_marp_exports_pdf_and_pptx() -> None:
     command = os.environ.get("SA_TEST_MARP") or shutil.which("marp")
