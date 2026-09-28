@@ -1,6 +1,5 @@
 import {
   createContext,
-  type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -87,6 +86,7 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   const dialog = useRef<HTMLDialogElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const confirmButton = useRef<HTMLButtonElement | null>(null);
+  const card = useRef<HTMLDivElement | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "asking" });
   const titleId = useId();
   const messageId = useId();
@@ -105,6 +105,8 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   );
 
   // Open as a modal on mount; on unmount close it, unlock the scroll and give the focus back.
+  // Under StrictMode this runs, cleans up and runs again: the cleanup's `close()` queues a `close`
+  // event that lands after the second `showModal()`, which `onNativeClose` below ignores.
   useLayoutEffect(() => {
     const node = dialog.current;
     if (node === null) return;
@@ -122,6 +124,14 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
 
   const running = phase.kind === "running";
   const failed = phase.kind === "failed";
+  const runningRef = useRef(false);
+  runningRef.current = running;
+
+  // While `onConfirm` runs both buttons are disabled, and a browser blurs a focused disabled
+  // button to <body>: the card takes the focus instead, so Escape still reaches the dialog.
+  useEffect(() => {
+    if (running) card.current?.focus();
+  }, [running]);
 
   // Once a failure is shown only «Cerrar» is left: it takes the focus.
   useEffect(() => {
@@ -157,22 +167,46 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   };
 
   const cancel = () => {
-    if (!running) finish(false);
+    if (!runningRef.current) finish(false);
   };
+  const cancelRef = useRef(cancel);
+  cancelRef.current = cancel;
 
-  // Escape is the dialog's own: taken here, so nothing behind it (a panel that closes on Escape)
-  // sees it and the browser does not close the dialog itself; the host unmounts it.
-  const onKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    cancel();
-  };
+  // Escape is the dialog's own, taken in the capture phase on the dialog: nothing behind it (a
+  // panel that closes on Escape from a window listener) sees it, and the browser does not turn it
+  // into a close request; it cancels unless `onConfirm` is running.
+  useEffect(() => {
+    const node = dialog.current;
+    if (node === null) return;
+    const onEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelRef.current();
+    };
+    node.addEventListener("keydown", onEscape, true);
+    return () => node.removeEventListener("keydown", onEscape, true);
+  }, []);
 
-  // Any other close request the browser turns into `cancel` (a back gesture): the same answer.
+  // Any other close request the browser turns into `cancel` (a back gesture): the same answer,
+  // refused while `onConfirm` runs.
   const onCancel = (event: SyntheticEvent<HTMLDialogElement>) => {
     event.preventDefault();
     cancel();
+  };
+
+  // The dialog closed without us asking. A `close` event while it is open again is a stale one
+  // (StrictMode's cleanup) and is ignored; a real forced close by the browser cancels, except
+  // while `onConfirm` runs: then the dialog opens again so its outcome is still shown.
+  const onNativeClose = () => {
+    const node = dialog.current;
+    if (closed.current || node === null || node.open || !mounted.current) return;
+    if (runningRef.current) {
+      node.showModal();
+      card.current?.focus();
+      return;
+    }
+    finish(false);
   };
 
   const onPointerDown = (event: PointerEvent<HTMLDialogElement>) => {
@@ -197,14 +231,12 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
       aria-labelledby={titleId}
       aria-describedby={described === "" ? undefined : described}
       aria-busy={running || undefined}
-      onKeyDown={onKeyDown}
       onCancel={onCancel}
-      // Closed by the browser itself (a forced close request): the same as cancelling.
-      onClose={() => finish(false)}
+      onClose={onNativeClose}
       onPointerDown={onPointerDown}
       onClick={onClick}
     >
-      <div className="confirm-dialog-card">
+      <div ref={card} className="confirm-dialog-card" tabIndex={-1}>
         <div className="confirm-dialog-head">
           <span className="confirm-dialog-icon" aria-hidden="true">
             {icon}

@@ -77,6 +77,12 @@
 
 .confirm-dialog-failure {
   margin: 0;
+  color: var(--correction);
+}
+
+/* The card only takes the focus while `onConfirm` runs, to keep Escape inside: no ring. */
+.confirm-dialog-card:focus {
+  outline: none;
 }
 
 .confirm-dialog-actions {

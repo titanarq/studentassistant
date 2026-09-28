@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ConfirmOptions, ConfirmProvider, useConfirm } from "./ConfirmDialog";
 import { TrashIcon } from "./icons";
@@ -62,6 +62,28 @@ describe("the confirmation modal (#486)", () => {
     // Mounted at the provider, outside the page that asked.
     expect(screen.getByRole("main")).not.toContainElement(dialog);
     expect(document.documentElement.style.overflow).toBe("hidden");
+  });
+
+  it("opens and confirms under StrictMode, whose double effect closes and reopens the dialog", async () => {
+    const answers: boolean[] = [];
+    render(
+      <StrictMode>
+        <ConfirmProvider>
+          <Asker options={DELETE} answers={answers} />
+        </ConfirmProvider>
+      </StrictMode>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Abrir" }));
+    const dialog = screen.getByRole("dialog", { name: "¿Borrar esta fuente?" });
+    // The first cleanup's `close` event lands in a later task: it must not answer.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(dialog).toHaveAttribute("open");
+    expect(answers).toEqual([]);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Borrar" }));
+    await waitFor(() => expect(answers).toEqual([true]));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("shows the given labels and icons, and puts the focus on «Cancelar» for a destructive action", () => {
@@ -190,7 +212,6 @@ describe("the confirmation modal (#486)", () => {
       expect(within(dialog).getByRole("button", { name: "Borrando…" })).toBeDisabled();
       expect(within(dialog).getByRole("button", { name: "Cancelar" })).toBeDisabled();
       expect(dialog).toHaveAttribute("aria-busy", "true");
-      fireEvent.keyDown(dialog, { key: "Escape" });
       fireEvent.pointerDown(dialog);
       fireEvent.click(dialog);
       expect(screen.getByRole("dialog")).toBe(dialog);
@@ -199,6 +220,41 @@ describe("the confirmation modal (#486)", () => {
       act(() => finish(null));
       await waitFor(() => expect(answers).toEqual([true]));
       expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("keeps the focus inside while it runs, and Escape neither closes it nor reaches the page", async () => {
+      const behind = vi.fn();
+      window.addEventListener("keydown", behind);
+      try {
+        const { answers, open } = renderAsker({ ...DELETE, onConfirm: () => new Promise(() => undefined) });
+        const dialog = open();
+        fireEvent.click(within(dialog).getByRole("button", { name: "Borrar" }));
+        await waitFor(() => expect(within(dialog).getByRole("button", { name: "Cancelar" })).toBeDisabled());
+
+        // A browser blurs a disabled button to <body>; the card holds the focus instead.
+        const focused = document.activeElement;
+        expect(focused).toBe(dialog.querySelector(".confirm-dialog-card"));
+        expect(dialog).toContainElement(focused as HTMLElement);
+        fireEvent.keyDown(focused as HTMLElement, { key: "Escape" });
+        fireEvent.keyDown(focused as HTMLElement, { key: "Escape" });
+        expect(behind).not.toHaveBeenCalled();
+        expect(dialog).toHaveAttribute("open");
+        expect(screen.getByRole("dialog")).toBe(dialog);
+
+        // A close request is refused, and a close forced by the browser opens it again.
+        const request = new Event("cancel", { cancelable: true });
+        act(() => {
+          dialog.dispatchEvent(request);
+        });
+        expect(request.defaultPrevented).toBe(true);
+        act(() => (dialog as HTMLDialogElement).close());
+        await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+        expect(dialog).toHaveAttribute("open");
+        expect(screen.getByRole("dialog")).toBe(dialog);
+        expect(answers).toEqual([]);
+      } finally {
+        window.removeEventListener("keydown", behind);
+      }
     });
 
     it("shows a failure with only «Cerrar», which answers false", async () => {

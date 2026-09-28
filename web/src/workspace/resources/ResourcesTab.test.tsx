@@ -483,11 +483,39 @@ describe("deleting a source (#450, #486)", () => {
     expect(deletes(fetchMock)).toBe(0);
     fireEvent.click(within(ask).getByRole("button", { name: "Borrar" }));
 
-    // Running: the modal stays, says so, and neither button nor Escape closes it.
+    // Running: the modal stays, says so, keeps the focus inside (a browser blurs a disabled
+    // button to <body>) and Escape on the focused element neither closes it nor reaches the page
+    // (the source panel closes on a window Escape, #473).
     expect(await within(ask).findByRole("button", { name: "Borrando…" })).toBeDisabled();
     expect(within(ask).getByRole("button", { name: "Cancelar" })).toBeDisabled();
-    fireEvent.keyDown(ask, { key: "Escape" });
-    expect(screen.getByRole("dialog", { name: "¿Borrar esta fuente?" })).toBeInTheDocument();
+    const focused = document.activeElement as HTMLElement;
+    expect(focused).not.toBe(document.body);
+    // jsdom keeps the focus on a disabled button, a browser does not: it must be elsewhere.
+    expect(focused).not.toBeDisabled();
+    expect(ask).toContainElement(focused);
+    const behind = vi.fn();
+    const panelClosed = vi.fn();
+    const panel = render(
+      <SourcePanel
+        subjectId="historia"
+        topicId="revolucion-industrial"
+        label="img001"
+        definition="[Imagen pegada 1](../sources/images/img-001.png)"
+        onClose={panelClosed}
+        variant="overlay"
+      />,
+    );
+    window.addEventListener("keydown", behind);
+    try {
+      fireEvent.keyDown(focused, { key: "Escape" });
+      fireEvent.keyDown(focused, { key: "Escape" });
+    } finally {
+      window.removeEventListener("keydown", behind);
+    }
+    expect(behind).not.toHaveBeenCalled();
+    expect(panelClosed).not.toHaveBeenCalled();
+    panel.unmount();
+    expect(screen.getByRole("dialog", { name: "¿Borrar esta fuente?" })).toBe(ask);
     await waitFor(() => expect(fetchMock.mock.calls.some(([path, init]) => `${init?.method} ${path}` === PAGE_1)).toBe(true));
 
     answer(new Response(null, { status: 204 }));
