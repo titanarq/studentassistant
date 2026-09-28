@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION } from "../protocol";
 import { jsonResponse, sseEvent, streamResponse, stubApi } from "../test/mockApi";
 import { resourceList } from "./resources";
 import WorkspacePage, { EMPTY_NOTES } from "./WorkspacePage";
+import { ConfirmProvider } from "../ui/ConfirmDialog";
 import { parseNotes } from "../notes/markdown";
 import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
@@ -83,7 +84,7 @@ afterEach(() => {
 
 function renderPage(routes: Record<string, Response | (() => Response)> = ROUTES) {
   const fetchMock = stubApi(routes);
-  render(<WorkspacePage subjectId="historia" topicId="revolucion-industrial" />);
+  render(<WorkspacePage subjectId="historia" topicId="revolucion-industrial" />, { wrapper: ConfirmProvider });
   return fetchMock;
 }
 

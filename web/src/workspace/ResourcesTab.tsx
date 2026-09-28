@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary } from "../desk/api";
 import type { NotesTree } from "../notes/markdown";
 import { sourceUrl } from "../notes/api";
@@ -8,6 +8,8 @@ import { resourceStates, type SourceEntry, sourceRefOf, thumbnailOf } from "./re
 import { sourceVaultId } from "../notes/provenance";
 import { chipTitle, type SelectedSource, type SourceSelection, topicSourceId, useSelection } from "./resources/selection";
 import { useSourceMetas } from "./resources/useSourceMetas";
+import { useConfirm } from "../ui/ConfirmDialog";
+import { TrashIcon } from "../ui/icons";
 
 /** The source whose detail is open (over the document, #473): a footnote label and its definition. */
 export interface OpenResource {
@@ -75,107 +77,50 @@ interface CardSelection {
   onToggle: (shift: boolean) => void;
 }
 
-/** The trash button's glyph (an outline bin), hidden from assistive technology. */
-function TrashIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="M6 6l1 14h10l1-14" />
-      <path d="M10 11v6M14 11v6" />
-    </svg>
-  );
-}
-
-/** Where a card's delete is: idle, asking (the inline confirmation), running, or refused. */
-type Deletion = { kind: "idle" } | { kind: "asking" } | { kind: "deleting" } | { kind: "failed"; message: string };
-
 /**
- * The card's trash button and its inline confirmation (#450): «¿Borrar esta fuente?» with
- * **Borrar** and **Cancelar** over the thumbnail, never a browser dialog. Escape cancels; the
- * focus goes to **Cancelar** when asking and back to the trash button after cancelling.
+ * The card's trash button (#450): it asks in the app's confirmation modal (#486, `useConfirm`),
+ * «¿Borrar esta fuente?» with **Borrar** and **Cancelar**, never a browser dialog nor an inline
+ * question inside the card. Confirming retires the source while the modal shows «Borrando…»; a
+ * refusal stays in the modal («No se pudo borrar: …», with **Cerrar**). Escape, **Cancelar** or a
+ * click outside cancel; the focus goes back to the trash button.
  */
 function DeleteControl({ entry, onDeleted }: { entry: SourceEntry; onDeleted: (vaultId: string) => void }) {
-  const [deletion, setDeletion] = useState<Deletion>({ kind: "idle" });
-  const trash = useRef<HTMLButtonElement | null>(null);
-  const cancel = useRef<HTMLButtonElement | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const asking = deletion.kind !== "idle";
-  // The trash button is back only after the render that closes the confirmation.
-  const refocus = useRef(false);
-  useEffect(() => {
-    if (deletion.kind === "asking" || deletion.kind === "failed") cancel.current?.focus();
-    if (deletion.kind === "idle" && refocus.current) {
-      refocus.current = false;
-      trash.current?.focus();
-    }
-  }, [deletion.kind]);
-
-  const close = () => {
-    refocus.current = true;
-    setDeletion({ kind: "idle" });
-  };
-  const confirm = () => {
-    setDeletion({ kind: "deleting" });
-    void deleteSource(entry.vaultId).then((outcome) => {
-      if (!mounted.current) return;
-      if (outcome.kind === "ok") {
-        setDeletion({ kind: "idle" });
-        onDeleted(entry.vaultId);
-        return;
-      }
-      setDeletion({ kind: "failed", message: outcome.kind === "unsupported" ? DELETE_UNSUPPORTED : outcome.message });
+  const confirm = useConfirm();
+  const ask = () => {
+    void confirm({
+      title: "¿Borrar esta fuente?",
+      message: (
+        <p>
+          «{entry.title}» dejará de aparecer entre las fuentes del tema. Lo que los apuntes ya citan de ella se sigue
+          pudiendo consultar.
+        </p>
+      ),
+      confirmLabel: "Borrar",
+      confirmIcon: <TrashIcon />,
+      busyLabel: "Borrando…",
+      destructive: true,
+      onConfirm: async () => {
+        const outcome = await deleteSource(entry.vaultId);
+        if (outcome.kind === "ok") {
+          onDeleted(entry.vaultId);
+          return null;
+        }
+        return `No se pudo borrar: ${outcome.kind === "unsupported" ? DELETE_UNSUPPORTED : outcome.message}`;
+      },
     });
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape" && deletion.kind !== "deleting") {
-      event.preventDefault();
-      close();
-    }
   };
 
   return (
-    <>
-      {!asking && (
-        <button
-          ref={trash}
-          type="button"
-          className="resource-delete"
-          aria-label={`Borrar ${entry.title}`}
-          title="Borrar esta fuente"
-          onClick={() => setDeletion({ kind: "asking" })}
-        >
-          <TrashIcon />
-        </button>
-      )}
-      {asking && (
-        <div className="resource-confirm" role="group" aria-label={`Borrar ${entry.title}`} onKeyDown={onKeyDown}>
-          {deletion.kind === "failed" ? (
-            <p className="resource-delete-failed" role="alert">
-              No se pudo borrar: {deletion.message}
-            </p>
-          ) : (
-            <p>{deletion.kind === "deleting" ? "Borrando…" : "¿Borrar esta fuente?"}</p>
-          )}
-          <div className="resource-confirm-actions">
-            {deletion.kind !== "failed" && (
-              <button type="button" className="resource-confirm-yes" onClick={confirm} disabled={deletion.kind === "deleting"}>
-                Borrar
-              </button>
-            )}
-            <button ref={cancel} type="button" onClick={close} disabled={deletion.kind === "deleting"}>
-              {deletion.kind === "failed" ? "Cerrar" : "Cancelar"}
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+    <button
+      type="button"
+      className="resource-delete"
+      aria-label={`Borrar ${entry.title}`}
+      aria-haspopup="dialog"
+      title="Borrar esta fuente"
+      onClick={ask}
+    >
+      <TrashIcon />
+    </button>
   );
 }
 
@@ -270,8 +215,8 @@ function cardSelection(selection: SourceSelection | null, entry: SourceEntry, vi
  * icon toolbar (`AddSourceToolbar`, #461) adds a web page, PDFs or the textbook's title and then
  * the list is read again. A retired source (#451) is not listed, even when the notes cite it
  * (#456). The only per-source action is the
- * trash button over each thumbnail (#450, `DELETE /api/sources/{id}` after an inline
- * confirmation); incorporating, setting aside and restoring are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
+ * trash button over each thumbnail (#450, `DELETE /api/sources/{id}` after the confirmation
+ * modal, #486); incorporating, setting aside and restoring are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
  * workspace's selection (`resources/selection.ts`), shown as chips above the chat input and sent
  * with the next message; Shift-click ticks a range, «Quitar selección» clears it. Choosing a source hands it to the page (`onOpen`), which since #473
  * shows its detail over the document column; the list stays as it was. The

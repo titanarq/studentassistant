@@ -4,6 +4,8 @@ import { type NotesTree, parseNotes } from "../notes/markdown";
 import NotesView from "../notes/NotesView";
 import NoteEditor, { type NoteEditorHandle, type UploadResult } from "../noteEditor/NoteEditor";
 import { useWorkspace } from "./state";
+import { useConfirm } from "../ui/ConfirmDialog";
+import { TrashIcon } from "../ui/icons";
 
 /**
  * The document column of the workspace (#312, #316): the topic's `apuntes.md` read-only with an
@@ -12,6 +14,7 @@ import { useWorkspace } from "./state";
  * discard their changes or keep them on the current version (nothing is overwritten silently);
  * busy notes and format errors are explained in Spanish. While editing, a newer revision of the
  * notes (the assistant changed them) is announced without touching the student's text.
+ * **Cancelar** with unsaved changes asks first, in the app's confirmation modal (#486).
  * Read-only, the header (version, **Editar**) sits above `.workspace-document-body`, the part that
  * scrolls, so it stays on screen at the bottom of a long document (#485).
  */
@@ -20,6 +23,7 @@ export const CHANGED_WHILE_EDITING = "Los apuntes han cambiado mientras editabas
 export const BUSY = "Se están preparando los apuntes; espera a que terminen.";
 export const ASSISTANT_CHANGED = "El asistente ha cambiado los apuntes";
 export const EMPTY_NOTES = "Todavía no hay apuntes: pídeselos al asistente en el chat.";
+export const DISCARD_CHANGES = "¿Descartar los cambios que no has guardado?";
 
 interface Base {
   text: string;
@@ -48,6 +52,7 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
   const [retried, setRetried] = useState(false);
   const dirty = useRef(false);
   const editor = useRef<NoteEditorHandle | null>(null);
+  const confirm = useConfirm();
 
   const resolveImage = useCallback((src: string) => notesImageUrl(subjectId, topicId, src), [subjectId, topicId]);
   const noop = useCallback(() => undefined, []);
@@ -78,8 +83,19 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
     setRetried(false);
   };
 
-  const cancel = () => {
-    if (dirty.current && !window.confirm("¿Descartar los cambios que no has guardado?")) return;
+  // Unsaved changes are discarded only after the confirmation modal (#486).
+  const cancel = async () => {
+    if (dirty.current) {
+      const discard = await confirm({
+        title: DISCARD_CHANGES,
+        message: <p>Lo que has cambiado desde que empezaste a editar se perderá.</p>,
+        confirmLabel: "Descartar",
+        confirmIcon: <TrashIcon />,
+        cancelLabel: "Seguir editando",
+        destructive: true,
+      });
+      if (!discard) return;
+    }
     stopEditing();
   };
 
@@ -156,7 +172,7 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
           }
           actions={
             <>
-              <button type="button" className="workspace-cancel" onClick={cancel} disabled={saving}>
+              <button type="button" className="workspace-cancel" onClick={() => void cancel()} disabled={saving}>
                 Cancelar
               </button>
               <button type="button" className="primary" onClick={() => void save()} disabled={saving}>

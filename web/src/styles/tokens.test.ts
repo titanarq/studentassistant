@@ -141,3 +141,48 @@ describe("the workspace zones' tokens (#485)", () => {
     }
   });
 });
+
+/**
+ * #486: the confirmation modal -- a red-pen confirm button (resting and hover), the failure line
+ * and the icon chip on the card -- reaches WCAG AA in both themes, and its scrim dims the page
+ * without hiding it.
+ */
+describe("the confirmation modal's tokens (#486)", () => {
+  const all = themes();
+
+  for (const theme of ["light", "dark"] as const) {
+    const tokens = all[theme];
+
+    it(`gives the modal's text at least 4.5:1 in the ${theme} theme`, () => {
+      for (const [ink, ground] of [
+        ["--on-correction", "--correction"],
+        ["--on-correction", "--correction-hover"],
+        ["--on-accent", "--accent"],
+        ["--correction", "--surface"],
+        ["--ink-muted", "--surface"],
+      ] as const) {
+        const ratio = contrast(hex(tokens, ink), hex(tokens, ground));
+        expect(ratio, `${ink} on ${ground}: ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it(`gives the icons and the destructive button's edge at least 3:1 in the ${theme} theme`, () => {
+      for (const [line, ground] of [
+        ["--correction", "--correction-soft"],
+        ["--accent", "--accent-soft"],
+        ["--correction", "--surface"],
+      ] as const) {
+        const ratio = contrast(hex(tokens, line), hex(tokens, ground));
+        expect(ratio, `${line} on ${ground}: ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(3);
+      }
+    });
+
+    it(`dims the page behind a modal with a translucent scrim in the ${theme} theme`, () => {
+      const match = /^rgb\(\s*\d+\s+\d+\s+\d+\s*\/\s*([\d.]+)%\s*\)$/.exec(tokens["--scrim"] ?? "");
+      expect(match, `--scrim is ${tokens["--scrim"]}`).not.toBeNull();
+      const alpha = Number(match![1]);
+      expect(alpha).toBeGreaterThanOrEqual(40);
+      expect(alpha).toBeLessThanOrEqual(80);
+    });
+  }
+});

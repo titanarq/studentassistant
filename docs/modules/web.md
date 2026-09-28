@@ -247,16 +247,20 @@
     group (a disclosure button with `aria-expanded`), a set-aside card's reason as a muted line
     under its name. No counts line and no hint paragraph since #461 (both read as a log). The
     only per-card action is **delete** (#450): a trash
-    button over the thumbnail's top-right corner («Borrar <title>») opens an inline confirmation
-    over the card («¿Borrar esta fuente?» with **Borrar** / **Cancelar**, focus on Cancelar,
-    Escape cancels and gives the focus back; never `window.confirm`); **Borrar** calls
-    `deleteSource(vaultId)` (`resources.ts`, `DELETE /api/sources/{vault_id}`, the same
+    button over the thumbnail's top-right corner («Borrar <title>», `aria-haspopup="dialog"`) asks in
+    the app's confirmation modal (#486, `useConfirm`, below; not inside the card since #486, never
+    `window.confirm`): «¿Borrar esta fuente?» (message: "«<title>» dejará de aparecer entre las fuentes del
+    tema. Lo que los apuntes ya citan de ella se sigue pudiendo consultar."), **Borrar** (trash icon,
+    destructive) / **Cancelar** (focused); Escape, **Cancelar** or a click on the backdrop cancel and
+    the focus goes back to the trash button. **Borrar** calls
+    `deleteSource(vaultId)` while the modal stays open, its button «Borrando…» and nothing able to
+    close it (`resources.ts`, `DELETE /api/sources/{vault_id}`, the same
     `sourceUrl` path the reads use); on a 204 the card leaves at once (the tab keeps the retired
     `vault_id`s for its lifetime, so neither a stale cached meta nor a footnote brings it back)
     and the list and metadata are read again. The backend retires the source (#451, a soft delete: its files stay and a
     citation of it keeps resolving, but it leaves the topic's source list) and answers 204. A
     405/501 (an older backend) says «No se pudo borrar: Este servidor todavía no permite borrar
-    fuentes.», any other refusal its `detail`, with **Cerrar**. `decodeSourceMeta` accepts the
+    fuentes.», any other refusal its `detail`, in the modal with only **Cerrar** (focused). `decodeSourceMeta` accepts the
     meta's optional `removed` boolean (#451; before #461 the strict decoder refused the whole
     meta once the backend sent it). Cited transcript spans follow, as plain buttons under
     "Fragmentos de la transcripción" (no count badge since #461). The metadata is read by `useSourceMetas`
@@ -518,7 +522,10 @@
     chat." and **Editar** starts a document from `# <topic name>` (saved with `base_revision:
     null`).
   - **Editar** replaces the document with the notes editor (`NoteEditor`, below), headed
-    "Editando sobre vN" with **Cancelar** (asks before discarding unsaved changes) and **Guardar**:
+    "Editando sobre vN" with **Cancelar** and **Guardar**. **Cancelar** leaves at once when nothing
+    changed; with unsaved changes it asks in the confirmation modal (#486; `window.confirm` before):
+    «¿Descartar los cambios que no has guardado?» (`DISCARD_CHANGES`), **Descartar** (destructive) /
+    **Seguir editando** (focused, keeps the text). **Guardar**:
     `PUT .../notes {text, base_revision}` with the revision the edit started from; on success the
     workspace re-reads the notes (the saved sections highlighted) and the panel leaves edit mode.
     `409 notes_changed`: "Los apuntes han cambiado mientras editabas" with "Tu versión" and
@@ -740,6 +747,33 @@ token):
   `.sheet` (the notes body: a sheet with a red margin line). Each page sets its column width with
   `--page-width` and its own CSS (`src/<page>/*.css`) uses only the tokens. The phone breakpoint
   stays 48rem (44 px touch targets below it).
+- **Confirmations (#486): `src/ui/ConfirmDialog.tsx` is the one to reuse for every "¿seguro?"** --
+  no `window.confirm`, no inline question inside a card. `ConfirmProvider` is mounted once at the
+  app root (`main.tsx`, around `Router`); a component asks with `const confirm = useConfirm()` and
+  `await confirm(options)` -> `Promise<boolean>` (true confirmed; false cancelled, closed, or
+  replaced by a newer question). `ConfirmOptions`: `title` (the question, the dialog's accessible
+  name), `message?` (its description), `confirmLabel?` («Aceptar»), `cancelLabel?` («Cancelar»),
+  `confirmIcon?` (a tick), `icon?` (the card's icon; a warning when destructive, a question mark
+  otherwise), `destructive?` (red-pen confirm button, focus on the cancel button; otherwise the
+  focus is on the confirm button), and `onConfirm?: () => Promise<string | null>` with
+  `busyLabel?` («Un momento…»): work run while the modal stays open and busy (buttons disabled,
+  the focus on the card, Tab and Shift+Tab kept on it (#491: with nothing tabbable inside, the
+  browser would move it out, where a later Escape reaches window handlers), Escape and the backdrop
+  ignored), null closing it confirmed, a Spanish sentence (or a thrown
+  error) shown as its `role="alert"` with only **Cerrar** (answers false). `useConfirm()` outside
+  the provider throws; tests render under it (`render(ui, {wrapper: ConfirmProvider})`). The modal
+  is a native `<dialog>` opened with `showModal()` (top layer: the page behind is inert, Tab stays
+  inside), labelled by its `h2` and described by the message; Escape (handled on the dialog, so a
+  panel behind that closes on Escape never sees it) and a click on the backdrop (a press that
+  started there) cancel; the focus returns to the element that had it; the page's scroll is locked
+  (`overflow: hidden` on `<html>`) while it is open. `confirmDialog.css` uses tokens only:
+  `--scrim` dims the whole viewport (`::backdrop`), the card is `--surface` with `--card-shadow` +
+  `--shadow-float` (#485), the destructive button `--correction` / `--correction-hover` with
+  `--on-correction` text (AA checked in `tokens.test.ts`); at phone width the buttons stack full
+  width. The icons are `src/ui/icons.tsx` (`TrashIcon`, `CloseIcon`, `CheckIcon`, `WarningIcon`,
+  `QuestionIcon`, `RestoreIcon`: inline `currentColor` SVG, `aria-hidden`). Every confirmation of
+  the app is on it since #491 (the last inline one, `VersionsPage`'s restore, moved); none uses
+  `window.confirm` or `window.alert`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
@@ -1171,10 +1205,15 @@ token):
   "Apuntes actuales", `to` `null`), starting at `defaultComparison` (the latest version against
   the current notes when they changed after it, else the latest two; none with a single unchanged
   version); only the latest comparison read is shown. "Ver los cambios": "En línea" or "Lado a
-  lado". "Restaurar la versión <N>" (every version but the current one) asks for a confirmation
-  (a group with "Sí, restaurar" / "Cancelar"), then says "Se ha restaurado la versión <K> como
-  versión <N>." and the backend's warning, and reads the history (and so the comparison) again;
-  a refusal (409 another notes operation, already that version) shows its Spanish `detail`.
+  lado". "Restaurar la versión <N>" (every version but the current one) asks in the confirmation
+  modal (#491, `useConfirm`): «¿Restaurar la versión <N>?», the message "Los apuntes actuales
+  pasarán a ser los de la versión <N>, guardados como una versión nueva. No se pierde ninguna
+  versión." (plus "Los cambios hechos después de la versión <latest> no tienen versión propia."
+  when the notes changed after it), **Restaurar** (`RestoreIcon`) / **Cancelar**. Confirming
+  restores while the modal shows «Restaurando…»; on success it closes, the page says "Se ha
+  restaurado la versión <K> como versión <N>." and the backend's warning, and reads the history
+  (and so the comparison) again; a refusal (409 another notes operation, already that version)
+  stays in the modal as "No se pudo restaurar la versión: <Spanish `detail`>" with **Cerrar**.
   - `VersionDiffView`: one `article` "<title>: <Nueva|Quitada|Modificada>" per section that
     changed or moved (`sectionTitle`: the newer title, "Inicio de los apuntes" for the preamble),
     with "Sección renombrada, antes «<old>», cambiada de sitio.", the line counts and the section's
@@ -1296,7 +1335,10 @@ stubs `fetch` by method and path; `sseResponse(events)` is a complete event stre
 `src/test/setup.ts` mocks the `mermaid` package for every test with `src/test/fakeMermaid.ts`
 (#479): jsdom cannot lay out SVG, so `fakeMermaid.render` answers an SVG
 (`data-testid="mermaid-svg"`, `data-theme` of the last `initialize`) and rejects a source whose
-first line is `invalid`; `fakeMermaid.loads` counts the lazy imports.
+first line is `invalid`; `fakeMermaid.loads` counts the lazy imports. It also installs
+`src/test/dialog.ts` (#486): jsdom's `HTMLDialogElement` has no behaviour, so `show()`,
+`showModal()`, `close()` (the `close` event in a task) and Escape's cancelable `cancel` on the
+topmost modal follow the HTML spec there (the page behind is not inert in jsdom).
 `src/capture/testing/` holds the fakes the capture
 tests run on, because jsdom has none of these APIs: `installCaptureFakes()` installs the media
 devices / stream / track, `ImageCapture`, `SpeechRecognition`, `WebSocket` and
