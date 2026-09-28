@@ -652,6 +652,11 @@ class EditorSettings(BaseModel):
     # "Prepárame el tema": `batched` runs the pending sources in sequential small incorporations
     # (`incorporate_pending`); `single` keeps the one-call whole-topic `generate_notes`.
     prepare_mode: PrepareMode = "batched"
+    # Cropping a region of a stored page (#484, `editor/crop.py`): a crop whose sharpness (the
+    # variance of the Laplacian, `sources.captures.sharpness`) is below this is refused as blurry.
+    # The same scale and default as capture triage's `triage_min_sharpness`: a crop too blurry to
+    # keep as a capture is too blurry to cite.
+    crop_min_sharpness: float = Field(default=DEFAULT_TRIAGE_MIN_SHARPNESS, ge=0)
 
 
 class ObserverSettings(BaseModel):

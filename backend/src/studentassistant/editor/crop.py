@@ -8,17 +8,29 @@ out of these bounds fails validation and is re-asked by `structured` itself, nev
 prompt (`prompts/editor_crop.md`) asks for a tight box that leaves out blank margins, the desk and
 fingers holding the page: that is the whole reframing step.
 
+The cleanup (`clean_crop`) is deterministic `numpy`/`cv2` code with no LLM call, built from
+`studentassistant.sources.captures`' building blocks: the image is cut to the box, the cut's
+sharpness (`captures.sharpness`) is measured and a blurry one refused (`BlurryCropError`,
+`[editor] crop_min_sharpness`), then `captures.find_page` searches the cut for a quadrilateral
+(a sheet, a card, a framed figure photographed slightly askew); when it finds one,
+`captures.crop_page` warps it flat, and otherwise the plain axis-aligned cut is kept. A PNG source
+gives a PNG crop, anything else a JPEG. `clean_crop_async` runs it in a worker thread.
+
 Claude is reached only through `studentassistant.llm` (ADR-0004).
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import math
+from dataclasses import dataclass
 from typing import Any, Self
 
+import cv2
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from studentassistant.config import Settings
+from studentassistant.config import DEFAULT_CAPTURE_JPEG_QUALITY, Settings
 from studentassistant.editor.inputs import IMAGE_MEDIA_TYPES
 from studentassistant.llm import (
     LedgerBinding,
@@ -28,6 +40,13 @@ from studentassistant.llm import (
     get_client,
     load_prompt,
     structured,
+)
+from studentassistant.sources.captures import (
+    crop_page,
+    decode_image,
+    encode_jpeg,
+    find_page,
+    sharpness,
 )
 
 PROMPT_NAME = "editor_crop"
@@ -44,6 +63,8 @@ EMPTY_REGION_MESSAGE = "Indica qué parte de la página quieres recortar."
 REGION_NOT_FOUND_MESSAGE = (
     "No he podido localizar la parte de la página que pides; prueba a describirla de otra forma."
 )
+_PIXEL_DECIMALS = 6
+BLURRY_CROP_MESSAGE = "El recorte solicitado sale borroso; prueba con otra foto de la página."
 
 
 class CropError(ValueError):
@@ -52,6 +73,10 @@ class CropError(ValueError):
 
 class RegionNotFoundError(CropError):
     """Claude declined, or gave no valid box even after the re-ask."""
+
+
+class BlurryCropError(CropError):
+    """The cut region is below `[editor] crop_min_sharpness`."""
 
 
 class BoundingBox(BaseModel):
@@ -142,13 +167,116 @@ async def locate_region(
     return result.value
 
 
+@dataclass(frozen=True)
+class CleanCrop:
+    """A cleaned-up crop, encoded: `data` in `content_type` (`extension` without the dot)."""
+
+    data: bytes
+    content_type: str
+    extension: str
+    width: int
+    height: int
+    # The cut's sharpness (before any warp), as `captures.sharpness` measures it.
+    sharpness: float
+    # Whether a quadrilateral was found in the cut and warped flat.
+    deskewed: bool
+
+
+def box_pixels(box: BoundingBox, width: int, height: int) -> tuple[int, int, int, int]:
+    """`box` in pixels of a `width` x `height` image: `(left, top, right, bottom)`, right and
+    bottom exclusive, outward-rounded, clamped to the image and at least one pixel each way."""
+    left = min(max(math.floor(_pixel(box.x0, width)), 0), width - 1)
+    top = min(max(math.floor(_pixel(box.y0, height)), 0), height - 1)
+    right = max(min(math.ceil(_pixel(box.x1, width)), width), left + 1)
+    bottom = max(min(math.ceil(_pixel(box.y1, height)), height), top + 1)
+    return left, top, right, bottom
+
+
+def _pixel(fraction: float, size: int) -> float:
+    """`fraction` of `size`, with float noise (`0.55 * 800 == 440.00000000000006`) rounded off so
+    an edge that falls on a pixel boundary is not pushed a pixel out."""
+    return round(fraction * size, _PIXEL_DECIMALS)
+
+
+def clean_crop(
+    image: bytes,
+    media_type: str,
+    box: BoundingBox,
+    *,
+    min_sharpness: float,
+    jpeg_quality: int = DEFAULT_CAPTURE_JPEG_QUALITY,
+) -> CleanCrop:
+    """`image` cut to `box`, refused when blurry, deskewed when a quadrilateral is found in it.
+
+    Pure and deterministic: the same bytes and box always give byte-identical output.
+
+    Raises:
+        CropError: `image` does not decode as an image.
+        BlurryCropError: the cut's sharpness is below `min_sharpness`.
+    """
+    decoded = decode_image(image)
+    if decoded is None:
+        raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
+    height, width = decoded.shape[:2]
+    left, top, right, bottom = box_pixels(box, width, height)
+    region = decoded[top:bottom, left:right]
+    score = sharpness(region)
+    if score < min_sharpness:
+        raise BlurryCropError(BLURRY_CROP_MESSAGE)
+    corners = find_page(region)
+    deskewed = corners is not None
+    if corners is not None:
+        region = crop_page(region, corners)
+    if media_type == "image/png":
+        ok, encoded = cv2.imencode(".png", region)
+        if not ok:  # pragma: no cover - OpenCV encodes any 8-bit BGR image
+            raise RuntimeError("OpenCV could not encode the image as PNG")
+        data, content_type, extension = encoded.tobytes(), "image/png", "png"
+    else:
+        data, content_type, extension = encode_jpeg(region, jpeg_quality), "image/jpeg", "jpg"
+    return CleanCrop(
+        data=data,
+        content_type=content_type,
+        extension=extension,
+        width=int(region.shape[1]),
+        height=int(region.shape[0]),
+        sharpness=score,
+        deskewed=deskewed,
+    )
+
+
+async def clean_crop_async(
+    image: bytes,
+    media_type: str,
+    box: BoundingBox,
+    *,
+    min_sharpness: float,
+    jpeg_quality: int = DEFAULT_CAPTURE_JPEG_QUALITY,
+) -> CleanCrop:
+    """`clean_crop` in a worker thread, off the event loop."""
+    return await asyncio.to_thread(
+        clean_crop,
+        image,
+        media_type,
+        box,
+        min_sharpness=min_sharpness,
+        jpeg_quality=jpeg_quality,
+    )
+
+
 __all__ = [
+    "BLURRY_CROP_MESSAGE",
     "PROMPT_NAME",
     "ROLE",
     "TOOL_NAME",
+    "BlurryCropError",
     "BoundingBox",
+    "CleanCrop",
     "CropError",
     "RegionNotFoundError",
+    "box_pixels",
+    "clean_crop",
+    "clean_crop_async",
     "crop_client",
     "locate_region",
     "region_request",
