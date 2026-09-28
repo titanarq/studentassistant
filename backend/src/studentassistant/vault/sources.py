@@ -657,6 +657,43 @@ def remove_source(
     return sidecar
 
 
+def retire_orphan_sidecar(
+    vault: Vault, vault_relative_path: str, *, removed_at: datetime | None = None
+) -> Path | None:
+    """Retire the sidecar a source's content left behind (#502) and return its path.
+
+    `vault_relative_path` names a source's content file (same path rules as `read_source`). When
+    that file is gone but its `.yaml` sidecar is still there -- a sync-loop batch commit took the
+    sidecar of a source whose content a later revert removed -- the sidecar gains the same
+    `removed: {at, by: student}` mapping `remove_source` writes, atomically under the directory's
+    lock. Nothing is deleted and the caller commits. `None`, with nothing written, when the
+    content is there, there is no sidecar (or it is a symlink) or it is marked removed already.
+
+    Raises:
+        SourcePathError: when the path is not a source path (see `read_source`).
+        SourceFileError: when the sidecar is not a readable YAML mapping.
+    """
+    parts = _checked_parts(vault_relative_path)
+    directory = vault.path.joinpath(*parts[:-1])
+    if not directory.is_dir() or directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        return None
+    content = directory / parts[-1]
+    sidecar = _sidecar_of(content)
+    if sidecar == content:
+        return None
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        if content.exists() or content.is_symlink() or sidecar.is_symlink():
+            return None
+        meta = _read_sidecar(sidecar)
+        if meta is None or is_removed(meta):
+            return None
+        meta[REMOVED_KEY] = {"at": removed_at or datetime.now(UTC), "by": "student"}
+        text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
+        guard(text)
+        write_text_atomic(sidecar, text)
+    return sidecar
+
+
 def read_source(vault: Vault, vault_relative_path: str) -> SourceContent:
     """The bytes of one file under a topic's `sources/<kind>/`, its sidecar and its media type.
 

@@ -24,6 +24,7 @@ from studentassistant.vault import (
     read_source,
     remove_source,
     removed_source_paths,
+    retire_orphan_sidecar,
 )
 from studentassistant.vault.index import VaultIndex
 
@@ -163,3 +164,26 @@ def test_the_index_forgets_a_removed_source_and_its_texts(
             stored["web"][0],
             stored["images"][0],
         ]
+
+
+def test_an_orphan_sidecar_is_retired_and_nothing_else(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    # A source whose content is gone but whose sidecar stayed (#502): the sidecar is retired.
+    s, t = topic
+    image = put_pasted_image(tmp_vault, s, t, JPEG, "image/jpeg")
+    path = _rel(tmp_vault, image)
+    sidecar = image.with_suffix(".yaml")
+    assert retire_orphan_sidecar(tmp_vault, path) is None  # the content is still there
+    image.unlink()
+    assert retire_orphan_sidecar(tmp_vault, path, removed_at=WHEN) == sidecar
+    meta = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert is_removed(meta) and meta[REMOVED_KEY]["by"] == "student"
+    assert meta["origin"] == "pasted"
+    before = sidecar.read_bytes()
+    assert retire_orphan_sidecar(tmp_vault, path) is None  # retired already: idempotent
+    assert sidecar.read_bytes() == before
+    sidecar.unlink()
+    assert retire_orphan_sidecar(tmp_vault, path) is None  # no sidecar at all
+    with pytest.raises(SourcePathError):
+        retire_orphan_sidecar(tmp_vault, "subjects/../x")

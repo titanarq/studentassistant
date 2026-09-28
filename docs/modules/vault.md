@@ -268,7 +268,12 @@ path; the caller commits. From then on `list_sources` leaves the source out (pas
 (the web's source lists, the editor's catalogue, the Recursos selection check, triage, the index),
 while `read_source` still serves its content, its derived files and its sidecar, so a footnote of
 the notes that cites it keeps resolving. `is_removed(meta)` tells a removed sidecar;
-`removed_source_paths(vault, s, t)` gives a topic's removed sources' vault-relative paths. The
+`removed_source_paths(vault, s, t)` gives a topic's removed sources' vault-relative paths. `retire_orphan_sidecar(vault, vault_relative_path, *, removed_at=None) -> Path | None` (#502)
+retires the sidecar a source's content left behind (the content file gone, its sidecar still
+there, e.g. a batch commit took the sidecar of a crop whose image a revert then removed): the
+same `removed` mapping, under the directory's lock, returning the sidecar's path; `None` with
+nothing written when the content is there, there is no sidecar or it is removed already. The
+caller commits. The
 number of a removed source is never reused (its files are still in the directory).
 
 ### Study history -- `study.py`

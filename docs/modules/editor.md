@@ -520,7 +520,10 @@ mode, and the student's message.
   not carry them) is refused too, an `UndoConflictError` ("... deshacerlo no cambiaría nada"), with
   nothing committed and **no** `notes.undone` recorded: the chat shows the error, never a success.
   A `crop_image` turn's crop the revert left in place (a batch commit took it first) is retired
-  after the revert (#498, see the crop section).
+  after the revert (#498, see the crop section), and only once `notes.undone` is recorded (#502):
+  a crash in between leaves a recorded undo, and every later `undo_last_revision` call -- even one
+  that ends in `NothingToUndoError` -- first re-runs the idempotent retirement for the latest
+  recorded undo's crop.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
   (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `turn_id`,
   `origin` (`typed` | `voice`), `request_summary` (the spoken request's short line, `None` when
@@ -1014,7 +1017,13 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   stale re-ask in a live session -- carries its files instead, and reverting the turn's commit
   would leave them: `undo_last_revision` therefore retires the undone turn's `crop.path`
   (`vault.remove_source`, committed as `Deshecho en <s>/<t>: … (recorte retirado)`) whenever the
-  revert left it listed, so no uncited «Imagen recortada N» stays in Recursos (#498). A student save meanwhile is re-asked with the
+  revert left it listed, so no uncited «Imagen recortada N» stays in Recursos (#498). Since
+  `put_source` writes the image and then its sidecar, a batch commit can also take the sidecar
+  alone, the image then going with the turn's commit: the revert removes the image and the
+  sidecar left behind is retired too (`vault.retire_orphan_sidecar`, #502). The retirement is
+  idempotent -- a crop the revert removed whole or one retired already is left alone, and so is a
+  path the current notes cite (a later crop that reused the number) -- and runs after the
+  `notes.undone` record, re-run by the next undo if the process died in between (#502). A student save meanwhile is re-asked with the
   new block map, and the crop already made for the same source and region is reused, never cut
   twice. A crop stored in an attempt whose change is never applied is retired
   (`vault.remove_source`). A crop that fails (`CropError`: not an image, undecodable, blurry, box
@@ -1034,7 +1043,9 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   page shown upright to Sonnet (`tests/editor/test_crop_*.py`); the chat turn -- success with its
   link, footnote, commit and undo, a cited PDF page, each failure, a source not allowed, crop and
   `apply_edits` together, the crop outside the notes lock with a student save redone on, a retired
-  crop, an undo retiring a crop a batch commit took before the turn's commit (#498), the classifier
+  crop, an undo retiring a crop a batch commit took before the turn's commit (#498), a crash between the
+  undo record and that retirement repaired by the next undo, and a split batch commit that took
+  only the crop's sidecar (#502), the classifier
   prompt -- in `tests/editor/test_revise_crop.py`; a spoken request's crop located with the app's
   own transport (the queued path's `crop_client`, #498) in `tests/server/test_assistant_requests.py`; through the server (the typed
   chat route, the app's transport serving both the turn and the box, the new image listed in the

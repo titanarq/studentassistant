@@ -10,6 +10,7 @@ from typing import Any
 import cv2
 import numpy as np
 import pytest
+import yaml
 
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.editor import revise as revise_module
@@ -28,7 +29,9 @@ from studentassistant.editor.revise import (
     EDIT_TOOL,
     REPLY_DELTA,
     REPLY_RESTART,
+    NothingToUndoError,
     RevisionResult,
+    chat_history,
     revise_notes,
     undo_last_revision,
 )
@@ -459,6 +462,102 @@ def test_undoing_a_crop_a_batch_commit_took_first_retires_it(
     assert _images(topic) == []
     meta = read_source(topic.vault, crop).meta
     assert meta is not None and meta["removed"]["by"] == "student"
+    images = crop.rsplit("/", 1)[0]
+    assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
+    assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def _crop_a_batch_commit_takes_first(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch, *, split: bool = False
+) -> tuple[GitSync, RevisionResult, str]:
+    """A stale re-ask whose crop a sync-loop batch commit takes before the turn's commit: both
+    its files, or (`split`) only its sidecar, the image being written after the batch commit."""
+    clock = _Clock()
+    sync = GitSync(tmp_vault, clock=clock)
+    _book_page(topic, _diagram())
+    student = _notes(topic).replace("Se escribe $f'(x)$.", "Se escribe $f'(x)$ o $y'$.")
+    original = revise_module.crop_source_image
+
+    async def cropping_then_a_batch_commit(*args: Any, **kwargs: Any) -> CroppedImage:
+        image = await original(*args, **kwargs)
+        content = tmp_vault.path / image.path
+        data = content.read_bytes()
+        if split:
+            content.unlink()
+        write_notes(topic.vault, topic.subject, topic.topic, student)
+        sync.note_change()
+        clock.now += 3600
+        sync.run_due()
+        if split:
+            content.write_bytes(data)
+        return image
+
+    monkeypatch.setattr(revise_module, "crop_source_image", cropping_then_a_batch_commit)
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX)
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+    )
+    result = _revise(topic, sync, fake)
+    assert result.applied and result.crop is not None and result.crop.path is not None
+    return sync, result, result.crop.path
+
+
+def test_a_crash_between_the_undo_record_and_the_crop_retirement_is_repaired(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The undo is recorded before the crop is retired (#502): a crash in between leaves the undo
+    # recorded, and the next undo re-runs the (idempotent) retirement first.
+    sync, result, crop = _crop_a_batch_commit_takes_first(topic, tmp_vault, monkeypatch)
+    retire = revise_module._retire_undone_crop
+
+    def crashing(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the process dies here")
+
+    monkeypatch.setattr(revise_module, "_retire_undone_crop", crashing)
+    with pytest.raises(RuntimeError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    # The undo is on record (the turn reads as undone), the crop is still in Recursos.
+    history = chat_history(topic.vault, topic.subject, topic.topic)
+    assert [turn.undone for turn in history.turns if turn.commit == result.commit] == [True]
+    assert _images(topic) == [crop]
+
+    monkeypatch.setattr(revise_module, "_retire_undone_crop", retire)
+    with pytest.raises(NothingToUndoError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == []
+    meta = read_source(topic.vault, crop).meta
+    assert meta is not None and meta["removed"]["by"] == "student"
+    images = crop.rsplit("/", 1)[0]
+    assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
+    assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+    # Idempotent: repairing again changes nothing.
+    head = _git(topic.vault, "rev-parse", "HEAD")
+    with pytest.raises(NothingToUndoError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+
+
+def test_undoing_a_crop_whose_sidecar_alone_a_batch_commit_took_retires_the_sidecar(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The batch commit took only the crop's sidecar, the turn's commit its image (#502): the
+    # revert removes the image and would leave the sidecar behind; it is retired too.
+    sync, result, crop = _crop_a_batch_commit_takes_first(topic, tmp_vault, monkeypatch, split=True)
+    sidecar = crop.rsplit(".", 1)[0] + ".yaml"
+    committed = _git(topic.vault, "show", "--name-only", "--format=", result.commit or "").split()
+    assert crop in committed and sidecar not in committed
+
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert undone.undone_commit == result.commit and undone.notes_changed
+    assert LINK not in _notes(topic) and _images(topic) == []
+    assert not (tmp_vault.path / crop).exists()
+    meta = yaml.safe_load((tmp_vault.path / sidecar).read_text(encoding="utf-8"))
+    assert meta["origin"] == "cropped" and meta["removed"]["by"] == "student"
     images = crop.rsplit("/", 1)[0]
     assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
     assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
