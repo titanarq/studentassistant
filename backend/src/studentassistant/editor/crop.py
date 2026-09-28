@@ -16,6 +16,13 @@ sharpness (`captures.sharpness`) is measured and a blurry one refused (`BlurryCr
 `captures.crop_page` warps it flat, and otherwise the plain axis-aligned cut is kept. A PNG source
 gives a PNG crop, anything else a JPEG. `clean_crop_async` runs it in a worker thread.
 
+`crop_source_image` puts the three together: it reads a stored page with `vault.read_source`
+(never modifying it), locates the region, cleans the cut up and stores it as a new `images` source
+through `vault.put_source`, whose sidecar records `origin: cropped`, `cropped_from` (the page's
+vault-relative path), `bbox`, `requested_region`, `content_type`, `sha256` and `added_at`. What it
+returns (`CroppedImage`) carries the footnote (`notes_format.cropped_image_provenance`,
+«Imagen recortada N») and the image link a caller writes into the notes; nothing is committed.
+
 Claude is reached only through `studentassistant.llm` (ADR-0004).
 """
 
@@ -23,8 +30,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Self
 
 import cv2
@@ -32,6 +41,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from studentassistant.config import DEFAULT_CAPTURE_JPEG_QUALITY, Settings
 from studentassistant.editor.inputs import IMAGE_MEDIA_TYPES
+from studentassistant.editor.notes_format import (
+    LINK_PREFIX,
+    Provenance,
+    cropped_image_provenance,
+)
 from studentassistant.llm import (
     LedgerBinding,
     LLMClient,
@@ -48,6 +62,7 @@ from studentassistant.sources.captures import (
     find_page,
     sharpness,
 )
+from studentassistant.vault import Vault, put_source, read_source, topic_directory
 
 PROMPT_NAME = "editor_crop"
 ROLE = "observer"
@@ -64,6 +79,8 @@ REGION_NOT_FOUND_MESSAGE = (
     "No he podido localizar la parte de la página que pides; prueba a describirla de otra forma."
 )
 _PIXEL_DECIMALS = 6
+CROPPED_ORIGIN = "cropped"
+IMAGES_KIND = "images"
 BLURRY_CROP_MESSAGE = "El recorte solicitado sale borroso; prueba con otra foto de la página."
 
 
@@ -264,8 +281,114 @@ async def clean_crop_async(
     )
 
 
+@dataclass(frozen=True)
+class CroppedImage:
+    """A crop stored by `crop_source_image`, with what the notes need to cite and show it."""
+
+    # Vault-relative path of the new file (`subjects/.../sources/images/img-NNN.<ext>`).
+    path: str
+    # Topic-relative source id (`sources/images/img-NNN.<ext>`), as the notes cite it.
+    source_id: str
+    number: int
+    box: BoundingBox
+    crop: CleanCrop
+    # The sidecar written next to the file.
+    meta: dict[str, Any]
+    # `«Imagen recortada N»`, pointing at the new file.
+    provenance: Provenance
+
+    @property
+    def footnote_label(self) -> str:
+        """`imgNNN`, the label a pasted image's footnote uses too."""
+        return f"img{self.number:03d}"
+
+    @property
+    def footnote(self) -> str:
+        """`[^imgNNN]: [Imagen recortada N](../sources/images/img-NNN.<ext>)`."""
+        return self.provenance.definition(self.footnote_label)
+
+    @property
+    def markdown(self) -> str:
+        """The image link: `![Imagen recortada N](../sources/images/img-NNN.<ext>)`."""
+        return f"![{self.provenance.text}]({LINK_PREFIX}{self.source_id})"
+
+
+async def crop_source_image(
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    vault_relative_path: str,
+    description: str,
+    *,
+    settings: Settings | None = None,
+    client: LLMClient | None = None,
+    added_at: datetime | None = None,
+) -> CroppedImage:
+    """Crop `description` out of the stored page image at `vault_relative_path` and store it.
+
+    The page is read with `vault.read_source` and never modified; the region is located by
+    Claude (`locate_region`, `client` or `crop_client(settings=settings)`), cleaned up
+    (`clean_crop_async`, `[editor] crop_min_sharpness`, `[sources] capture_jpeg_quality`) and
+    stored as a new `images` source of the topic with a `cropped` sidecar. Nothing is committed.
+
+    Raises:
+        SourcePathError, SourceNotFoundError: from `vault.read_source`; nothing is written.
+        CropError: the source is not an image Claude reads, or `description` is empty.
+        RegionNotFoundError: Claude found no region.
+        BlurryCropError: the cut is too blurry to keep; nothing is written.
+        LLMError: any other failure of the Claude call; nothing is written.
+        Whatever `vault.put_source` raises for the new file.
+    """
+    settings = settings or Settings()
+    source = read_source(vault, vault_relative_path)
+    if source.media_type not in IMAGE_MEDIA_TYPES:
+        raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
+    if not description.strip():
+        raise CropError(EMPTY_REGION_MESSAGE)
+    client = client or crop_client(settings=settings)
+    box = await locate_region(client, source.content, source.media_type, description)
+    crop = await clean_crop_async(
+        source.content,
+        source.media_type,
+        box,
+        min_sharpness=settings.editor.crop_min_sharpness,
+        jpeg_quality=settings.sources.capture_jpeg_quality,
+    )
+    meta: dict[str, Any] = {
+        "origin": CROPPED_ORIGIN,
+        "cropped_from": vault_relative_path,
+        "bbox": box.as_list(),
+        "requested_region": description.strip(),
+        "content_type": crop.content_type,
+        "sha256": hashlib.sha256(crop.data).hexdigest(),
+        "added_at": added_at or datetime.now(UTC),
+    }
+    stored = await asyncio.to_thread(
+        put_source,
+        vault,
+        subject_slug,
+        topic_slug,
+        IMAGES_KIND,
+        f"cropped.{crop.extension}",
+        crop.data,
+        meta,
+    )
+    number = int(stored.name.split(".", 1)[0].removeprefix("img-"))
+    source_id = stored.relative_to(topic_directory(vault, subject_slug, topic_slug)).as_posix()
+    return CroppedImage(
+        path=stored.relative_to(vault.path).as_posix(),
+        source_id=source_id,
+        number=number,
+        box=box,
+        crop=crop,
+        meta=meta,
+        provenance=cropped_image_provenance(number, crop.extension),
+    )
+
+
 __all__ = [
     "BLURRY_CROP_MESSAGE",
+    "CROPPED_ORIGIN",
     "PROMPT_NAME",
     "ROLE",
     "TOOL_NAME",
@@ -273,11 +396,13 @@ __all__ = [
     "BoundingBox",
     "CleanCrop",
     "CropError",
+    "CroppedImage",
     "RegionNotFoundError",
     "box_pixels",
     "clean_crop",
     "clean_crop_async",
     "crop_client",
+    "crop_source_image",
     "locate_region",
     "region_request",
 ]
