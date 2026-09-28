@@ -649,3 +649,37 @@ it("stops a running recognition on unmount", async () => {
   unmount();
   expect(stop).toHaveBeenCalledTimes(1);
 });
+
+it("has the workspace chat's input: a textarea with Preguntar and the microphone icon button in one row (#487)", async () => {
+  const { listen } = fakeListen();
+  renderChat({}, true, null, { listen, voiceSupported: true });
+  const input = screen.getByRole("textbox", { name: "Tu pregunta" });
+  expect(input.tagName).toBe("TEXTAREA");
+  const form = input.closest("form") as HTMLFormElement;
+  expect(form).toHaveClass("ws-chat-form");
+  const row = form.querySelector(".ws-chat-actions") as HTMLElement;
+  expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Preguntar", SPEAK]);
+  const mic = within(row).getByRole("button", { name: SPEAK });
+  // The icon, not the word «Hablar», with the tooltip the workspace chat's microphone has.
+  expect(mic).toHaveClass("voice-input-icon");
+  expect(mic).not.toHaveTextContent("Hablar");
+  expect(mic.querySelector("svg")).not.toBeNull();
+  expect(mic).toHaveAttribute("title", "Hablar: dictar el mensaje por voz");
+  expect(screen.getByRole("region", { name: "Preguntas sobre el documento" })).toHaveClass("ws-chat");
+});
+
+it("asks with Enter and keeps Shift+Enter for a new line", async () => {
+  const { fetchMock } = renderChat({ [`POST ${TUTOR}`]: sseResponse([["result", answer()]]) });
+  const input = screen.getByRole("textbox", { name: "Tu pregunta" });
+  await waitFor(() => expect(input).toBeEnabled());
+  fireEvent.change(input, { target: { value: "¿Qué causas tuvo?" } });
+  fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+
+  fireEvent.keyDown(input, { key: "Enter" });
+
+  await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+  const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+  expect(JSON.parse(String(post?.[1]?.body)).question).toBe("¿Qué causas tuvo?");
+  expect(await within(log()).findByRole("button", { name: "Ir a la sección 2. Causas" })).toBeEnabled();
+});

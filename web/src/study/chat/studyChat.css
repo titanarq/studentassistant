@@ -1,14 +1,19 @@
 /* The question chat of the study screen (#336). */
 
+/* #487: the chat card of the shared frame (`.ws-chat`, the workspace chat's layout and input);
+   its heading names the region for screen readers only, as the workspace chat has none (#458). */
 .study-chat {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
   margin: 0;
 }
 
-.study-chat > h2 {
+.study-chat-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .study-chat-empty,
@@ -18,8 +23,10 @@
   font-size: var(--step--1);
 }
 
-.study-chat-log {
+/* Its turns keep their own padding and rule between them (`.chat-entry`). */
+.study-chat .study-chat-log {
   margin: 0;
+  gap: 0;
 }
 
 .study-chat .chat-reply {
@@ -70,31 +77,6 @@
   margin: 0 0 var(--space-2);
 }
 
-.study-chat-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.study-chat-form input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-}
-
-.study-chat-form button {
-  min-height: 44px;
-}
-
-.study-chat-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
 /* A generation in course (#367): its line with a busy indicator. */
 .study-chat-progress {
   display: flex;
@@ -130,21 +112,8 @@
   margin: var(--space-1) 0 0;
 }
 
-/* The log is its own scroll area (#412) and follows the newest turn; the input stays below it. */
-.study-chat-scroll {
-  position: relative;
-}
-
-.study-chat-log {
-  max-height: 55vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.study-chat-log:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+/* The log is its own scroll area (#412; `.ws-chat-scroll`, `.ws-chat-log` since #487) and follows
+   the newest turn; the input stays below it. */
 
 .study-chat-follow {
   position: absolute;

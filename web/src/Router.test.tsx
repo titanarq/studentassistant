@@ -164,7 +164,9 @@ it("renders the study screen at <topic>/study", () => {
 
   render(<Router pathname="/subjects/historia/topics/revolucion-industrial/study" />, { wrapper: ConfirmProvider });
 
-  expect(screen.getByRole("heading", { name: "Estudiar" })).toBeInTheDocument();
+  // #487: in the workspace's frame, the screen is the main region «Estudiar», headed by the topic.
+  expect(screen.getByRole("main", { name: "Estudiar" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1, name: "revolucion-industrial" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Estudiar" })).toHaveAttribute("aria-current", "page");
 });
 

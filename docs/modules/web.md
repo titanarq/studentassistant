@@ -178,6 +178,23 @@
   estudio** (`/`). There is no doubts counter and no spend line since #450 (the doubts are asked
   in the chat; `WorkspaceCost` is gone). The page's root is its `main` (#413), so the embedded
   capture has none of its own. The split follows with a minimal gap. Two columns (a CSS grid):
+  - **Shared frame (#487).** The header band, the desk, the columns and the cards are
+    `WorkspaceFrame({mode, subjectId, topicId, topicName, label, className?, barEnd?, views, view,
+    onView, leftLabel, leftClassName?, left, chat, documentClassName?, documentPanel?, document,
+    detail?})` (`src/workspace/WorkspaceFrame.tsx`), used by Construir and by the study screen
+    (Estudiar) alike: a `main.workspace` (`data-mode`, `data-view`, `data-detail`) with the band
+    (`ModeSwitch` marking `mode`, the topic's `h1` linking to the topic page, `barEnd` and **Mesa de
+    estudio**), the one-column switch (`views`, always in the order document | left | chat; its
+    type `NarrowView`), the left column with the left card (`.workspace-sources`, named
+    `leftLabel`) above the chat card (`.workspace-chat`, "Chat"), the document card
+    (`.workspace-document`, "Documento") and `detail` in the document's cell (#473). Its styles are
+    `workspace.css`, so every rule of the frame below (the fluid split, the one-viewport layout,
+    the cards and tokens of #485, the one-column views) applies to both modes; neither mode copies
+    them. The chat input is `workspace/chat/ChatComposer.tsx` (#487), shared by the workspace chat
+    and the study chat: the textarea (Enter sends, Shift+Enter is a new line), then one row with
+    the send button (`submitLabel`, **Enviar** by default), the microphone (`VoiceInputButton` with
+    `icon`, the Web Speech path of #428; `voice: null` hides it) and the chat's own icon buttons
+    (`actions`); `before` is what goes above the textarea (the Recursos chips).
   - **Visual zones (#485).** The page is a desk (`--desk`: a shade darker than `--paper` in the
     light theme, darker than the slate in the dark one) under the header bar, which is a solid band
     edge to edge (`--header-bg`, ballpoint blue in light, a deep ink blue in dark; its text
@@ -597,29 +614,41 @@
   notes_busy` says "Se están preparando los apuntes; espera a que terminen." and anything else
   (no notes, unreachable backend) the backend's Spanish `detail` or a Spanish fallback, below
   the switch (`role="alert"`); nothing navigates then and there is no confirmation dialog. From
-  the study screen Estudiar posts nothing. The header also names the study version from `GET
-  .../study` (`fetchStudyState`): "Apuntes vN · versión de estudio" and, when `study_current` is
-  false, "Has cambiado los apuntes después de la versión de estudio (vN)." (informative only);
-  nothing when no version was marked yet. Two columns:
-  - Left, top: "Repasos para hoy" (`ReviewsToday`) -- this topic's entry of `GET
+  the study screen Estudiar posts nothing. Since #487 the screen is the workspace's frame
+  (`WorkspaceFrame` with `mode="study"`, root `main.workspace.study` named "Estudiar", above): the
+  same header band (the switch, the topic's name as the `h1`, **Mesa de estudio**), desk, cards,
+  fluid split, one-viewport layout from 900 px on (the page never scrolls; the options' body, the
+  chat's log, the document's body and the material's body scroll inside their cards) and single
+  column below 900 px; `study.css` only styles what is inside the cards. The study version from
+  `GET .../study` (`fetchStudyState`) is named under the heading "Material de estudio" of the left
+  card: "Apuntes vN · versión de estudio" and, when `study_current` is false, "Has cambiado los
+  apuntes después de la versión de estudio (vN)." (informative only); nothing when no version was
+  marked yet. Two columns:
+  - Left card ("Opciones de estudio", `.workspace-sources.study-card`; in two columns only its
+    body `.study-card-body` scrolls), top: "Repasos para hoy" (`ReviewsToday`) -- this topic's entry of `GET
     /api/practice/summary` (`desk/practiceSummary.ts`): "N para repasar · M nuevas" with
     "Repasar ahora" (opens **Tarjetas de memoria**), else "Nada que repasar hoy." with
     "Próximo repaso: <fecha>." when there is one.
-  - Left, middle: the study options (`options.ts`, `studyOptions(studyState)`) in the order
+  - Left card, below: the study options (`options.ts`, `studyOptions(studyState)`) in the order
     **Esquema** (kind `esquema`), **Ejercicios** (the `exercises` of kind `examen`), **Examen**
     (its `questions`), **Quiz** (kind `quiz`), **Tarjetas de memoria** (the practice queue, kind
     `flashcards`), **Diapositivas** (kind `diapositivas`, #382, backend #380); each a button with `aria-expanded` and a text badge of its `options[].state`
     from `GET .../study` (#337; no longer computed from `GET .../generated`): `listo` "Listo",
     `desactualizado` "Desactualizado" (its `stale_reason` as `title`, else a generic reason) or
     `sin_generar` "Sin generar" (also an option the answer does not list).
-  - Left, bottom: the question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
-    documento" that answers questions about the document and **never edits the notes** (the only
+  - Chat card (bottom of the left column, as the workspace chat; its input always on screen): the
+    question chat (`chat/StudyChat.tsx`, #336), a region "Preguntas sobre el
+    documento" (its heading visually hidden since #487, as the workspace chat has none) that answers questions about the document and **never edits the notes** (the only
     requests it sends are `GET` and `POST .../tutor`). Its `log` (a scroll area, `aria-live="off"`, #412) shows the
     topic's earlier **written** turns of `GET .../tutor` (the voice tutor's spoken ones are left
     out), then the fixed line "Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve
-    a Construir." (a link to `.../workspace`) and a text input ("Pregunta sobre el documento…",
-    label "Tu pregunta", up to 1000 characters, Enter or "Preguntar") with **Hablar** next to it
-    (`VoiceInputButton`, #428; disabled while an answer comes, which stops a running recognition):
+    a Construir." (a link to `.../workspace`) and, since #487, the workspace chat's input
+    (`ChatComposer`): a textarea ("Pregunta sobre el documento…", label "Tu pregunta", up to 1000
+    characters, disabled while an answer comes; Enter or **Preguntar** asks, Shift+Enter is a new
+    line) with, in the row below it, **Preguntar** and the microphone icon button («Dictar el
+    mensaje por voz», tooltip «Hablar: dictar el mensaje por voz»; `VoiceInputButton` with `icon`,
+    #428; `StudyPage` passes its `listen`/`voiceSupported` seams; disabled while an answer comes,
+    which stops a running recognition):
     the interim text shows in the input and the final text, trimmed to 1000 characters, is asked
     exactly as a typed question; one arriving while an answer comes stays in the input. A question is `askTutor(...,
     {style: "written"})`: "Pensando…" until the first delta, then the reply streams; the answer is
@@ -635,7 +664,8 @@
     "Continuar igualmente" (the same question with `confirm_over_cap`); another question of the
     topic running (409) "Espera a que termine la respuesta anterior."; no notes (409) "Todavía
     no hay apuntes: constrúyelos en Construir."; anything else the backend's Spanish `detail`.
-    Since #412 the log is its own scroll area (55vh at most) and follows the newest turn as the
+    Since #412 the log is its own scroll area (`.ws-chat-log` since #487: it takes what the chat
+    card leaves in two columns, 60vh at most elsewhere) and follows the newest turn as the
     answer streams (`useFollowLog`, as the workspace chat; asking a question follows again),
     unless the student scrolled up, then **Nuevos mensajes ↓**. A visually hidden
     `aria-live="polite"` region (`data-testid="study-chat-latest"`) says "Asistente: Pensando…"
@@ -664,11 +694,17 @@
     option shows that `material_kind`, remounts its content so it reads the new material.
     **Abrir** opens that option's panel as a click in the list does, reloading its content when
     it was already open.
-  - Right: the document, `NotesView` read-only (no "¿Por qué?"), with its version and one link
-    "Editar en Construir" (`.../workspace`); without notes "Todavía no hay apuntes: constrúyelos
-    en Construir.". A provenance footnote opens `SourcePanel` in the slide-over place.
+  - Right: the document card (`.workspace-document.study-right`), `NotesView` read-only (no "¿Por
+    qué?"): its header (`.workspace-document-header`, pinned like Construir's, #485) with
+    "Apuntes", its version and one link "Editar en Construir" (`.../workspace`), and below it the
+    body (`.workspace-document-body.study-document`, the part that scrolls) inside
+    `.study-document-area`; without notes "Todavía no hay apuntes: constrúyelos en Construir.". A
+    provenance footnote opens `SourcePanel` in the slide-over place.
   - `OptionPanel`: opening an option slides a labelled `region` (not a modal) over the right edge
-    of the document, which reflows to its left and stays scrollable; its heading takes the focus,
+    of the document's body, below the document's header and inside the document card
+    (`data-panel="open"`), which reflows to its left and stays scrollable; the panel's header
+    (title and "Cerrar") is pinned (`position: sticky`, out of its scrolling body) like the
+    document's header; its heading takes the focus,
     "Cerrar" and Escape close it and give the focus back to the option button. Content
     (`OptionContent`) is the existing page with `embedded` (no crumbs, heading, stale note or quiz
     generate form): Esquema -> `MaterialPreviewPage` of `esquema.md`, Ejercicios ->
@@ -684,16 +720,18 @@
     student asks goes through the chat): an option "Sin generar" says "Todavía no está
     generado." and what to ask the chat (e.g. «Pídelo en el chat: «hazme un quiz».»); a
     "Desactualizado" one shows its reason and the same hint above the material. The hint's
-    phrase is a button that puts it in the chat's input (no send) and shows the Estudiar column.
+    phrase is a button that puts it in the chat's input (no send) and, in one column, shows the
+    chat.
   - Highlight: `PracticePage`, `QuizPage`, `ExamPage` and `ExercisesView` take an optional
     `onFocusAnchors(anchors)`: the item shown (the current card or exercise; the quiz or exam
     question the focus is in; a chip's one anchor) reports its `anchors`, and the page passes the
     ones the notes have to `NotesView`'s `focusSections`, which marks every block of those
     sections (`notes-focus`, blue, apart from the green "changed") and scrolls the document (not
     the page) to the first. An anchor the notes lack is ignored.
-  - Below 900 px the columns become one with the switch **Estudiar** | **Documento** (the root's
-    `data-view`); opening an option shows the document with the panel over it full-width, closing
-    it goes back to Estudiar.
+  - Below 900 px the columns become one with the frame's switch **Documento** | **Estudiar** |
+    **Chat** (the root's `data-view`: `document`, `left` -- the default -- or `chat`); opening an
+    option shows the document with the panel over it full-width, closing it goes back to
+    Estudiar.
 - **Pairing page** (`/pair`, `src/pairing/`): asks `POST /api/pair/codes` (#89) for a one-time
   code and shows a QR of exactly `{url, code}` (`qrPayload()`), the URL and the code as text,
   and a countdown to `expires_at`; on expiry the QR gives way to a "Generar un código nuevo"
@@ -1357,3 +1395,13 @@ own (a separate fetch from the one the test first awaited) is awaited with `find
 with a synchronous `getBy*` right after the first wait. A test that drives a page through several
 reads passes `PAGE_TEST_TIMEOUT` (15 s) as the third argument of `it`; the global `testTimeout`
 stays vitest's default. Waits are condition waits only: no fixed sleeps.
+
+The shared frame (#487): `src/workspace/WorkspaceFrame.test.tsx` pins the frame's structure (the
+band with the mode switch, the title and the right-hand links; the left card above the chat card;
+the document card; the switch's order; the detail and `data-panel`); `src/study/StudyPage.test.tsx`
+that Estudiar renders in it (options card, chat card with the textarea and the microphone icon,
+document card with its pinned header, the material panel under it with its own header);
+`src/study/chat/StudyChat.test.tsx` the study chat's composer (textarea, **Preguntar** and the
+microphone icon in one row; Enter asks, Shift+Enter does not); and `src/study/layout.test.ts`
+reads `study.css` from disk to pin that it redefines none of the frame's rules and that only the
+options' body, the document's body and the material's body scroll.

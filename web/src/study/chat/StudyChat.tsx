@@ -1,11 +1,11 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { describeFailure, topicPath } from "../../desk/api";
 import { describeTutorFailure, fetchTutorHistory, type SectionRef, type TutorTurn } from "../../tutor/api";
 import { type OptionKey, STUDY_OPTIONS } from "../options";
 import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
 import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
-import VoiceInputButton from "../../tutor/VoiceInputButton";
+import ChatComposer from "../../workspace/chat/ChatComposer";
 import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import FeedbackChip from "../../chat/FeedbackChip";
 import "../../chat/chat.css";
@@ -30,6 +30,10 @@ import "./studyChat.css";
  * **Hablar** (#428) dictates one question: the interim text shows in the input, the final text
  * (trimmed to `MAX_QUESTION_CHARS`) is asked like a typed one; while an answer comes it stays in
  * the input, unsent.
+ *
+ * Since #487 it is the chat card of the shared frame (`WorkspaceFrame`), with the workspace chat's
+ * input (`ChatComposer`): a textarea (Enter asks, Shift+Enter is a new line), **Preguntar** and the
+ * microphone as an icon button in one row below it; its heading is for screen readers only.
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -121,7 +125,7 @@ export default function StudyChat({
   const mounted = useRef(true);
   // What the live region says once an answer ended: never the history, only a turn asked here.
   const [answered, setAnswered] = useState("");
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   // Changes whenever a turn is added or the answer on its way grows.
   const content = `${turns.length}:${asking === null ? "" : `${asking.question}:${asking.generating ?? ""}:${asking.reply.length}`}`;
   const log = useFollowLog<HTMLOListElement>(content);
@@ -219,11 +223,6 @@ export default function StudyChat({
     input.current?.focus({ preventScroll: true });
   }, [suggestion]);
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    void ask(draft);
-  }
-
   const chips = (cited: SectionRef[]) => ({
     renderSection: (anchor: string, key: string): ReactNode => {
       const title = cited.find((s) => s.anchor === anchor)?.title ?? sections.get(anchor) ?? anchor;
@@ -261,18 +260,20 @@ export default function StudyChat({
   const workspace = `${topicPath(subjectId, topicId)}/workspace`;
 
   return (
-    <section className="study-chat panel" aria-labelledby="study-chat-heading">
-      <h2 id="study-chat-heading">Preguntas sobre el documento</h2>
+    <section className="ws-chat study-chat" aria-labelledby="study-chat-heading">
+      <h2 id="study-chat-heading" className="study-chat-heading">
+        Preguntas sobre el documento
+      </h2>
       {history.state === "loading" && <p role="status">Cargando las preguntas anteriores…</p>}
       {history.state === "failed" && <p role="alert">{history.message}</p>}
       {history.state === "ready" && turns.length === 0 && !busy && (
-        <p className="study-chat-empty">Pregunta lo que no entiendas: contesto con tus apuntes y cito dónde está.</p>
+        <p className="ws-chat-hint study-chat-empty">Pregunta lo que no entiendas: contesto con tus apuntes y cito dónde está.</p>
       )}
-      <div className="study-chat-scroll">
+      <div className="ws-chat-scroll study-chat-scroll">
         <ol
           ref={log.ref}
           onScroll={log.onScroll}
-          className="chat-log study-chat-log"
+          className="ws-chat-log chat-log study-chat-log"
           role="log"
           aria-live="off"
           aria-label="Preguntas y respuestas"
@@ -353,36 +354,29 @@ export default function StudyChat({
       <p className="study-chat-note">
         {READ_ONLY_LINE} <a href={workspace}>Construir</a>.
       </p>
-      <form className="study-chat-form" onSubmit={submit}>
-        <label className="study-chat-label" htmlFor="study-chat-question">
-          Tu pregunta
-        </label>
-        <input
-          id="study-chat-question"
-          ref={input}
-          type="text"
-          value={draft}
-          maxLength={MAX_QUESTION_CHARS}
-          placeholder="Pregunta sobre el documento…"
-          onChange={(event) => setDraft(event.target.value)}
-          disabled={busy}
-        />
-        <button type="submit" disabled={busy || draft.trim() === ""}>
-          Preguntar
-        </button>
-        <VoiceInputButton
-          value={draft}
-          onChange={setDraft}
-          onFinal={(spokenQuestion) => {
+      <ChatComposer
+        id="study-chat-question"
+        label="Tu pregunta"
+        placeholder="Pregunta sobre el documento…"
+        value={draft}
+        onChange={setDraft}
+        onSubmit={() => void ask(draft)}
+        canSubmit={!busy && draft.trim() !== ""}
+        submitLabel="Preguntar"
+        maxLength={MAX_QUESTION_CHARS}
+        disabled={busy}
+        inputRef={input}
+        voice={{
+          onFinal: (spokenQuestion) => {
             const question = spokenQuestion.slice(0, MAX_QUESTION_CHARS);
             setDraft(question);
             void ask(question);
-          }}
-          disabled={busy}
-          listen={listen}
-          voiceSupported={voiceSupported}
-        />
-      </form>
+          },
+          disabled: busy,
+          listen,
+          voiceSupported,
+        }}
+      />
     </section>
   );
 }
