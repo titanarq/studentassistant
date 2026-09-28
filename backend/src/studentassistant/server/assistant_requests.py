@@ -115,6 +115,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from studentassistant.editor.crop import crop_client
 from studentassistant.editor.doubts import (
     DoubtAnswer,
     DoubtClosedError,
@@ -813,6 +814,13 @@ class AssistantRequestConsumer:
             expects_change=queued.request.kind == "edit",
             # The session app feedback the turn may record is attributed to (#472).
             session_id=queued.session_id,
+            # A `crop_image` turn locates the region with the app's own transport (#493).
+            crop_client=crop_client(
+                settings=self.generator.settings,
+                transport=self.generator.transport,
+                ledger=LedgerBinding(vault, queued.subject_id, queued.topic_id),
+            ),
+            settings=self.generator.settings,
         )
 
     async def _prepare(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:

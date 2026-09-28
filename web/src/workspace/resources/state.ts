@@ -146,7 +146,10 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
-/** "Página 3 · apuntes", "Libro, página 83", "PDF «tema2.pdf»", "Web: …", "Imagen pegada 1". */
+/**
+ * "Página 3 · apuntes", "Libro, página 83", "PDF «tema2.pdf»", "Web: …", "Imagen pegada 1", and
+ * "Imagen recortada 2" for a region the editor cropped from a page (sidecar `origin: cropped`, #493).
+ */
 export function sourceTitle(ref: SourceRef, fallback: string, sidecar: Record<string, unknown> | null): string {
   const n = sourceNumber(ref.file);
   switch (ref.kind) {
@@ -162,8 +165,10 @@ export function sourceTitle(ref: SourceRef, fallback: string, sidecar: Record<st
       const title = text(sidecar?.title) ?? fallback.replace(/^Web:\s*/, "");
       return `Web: ${title}`;
     }
-    case "images":
-      return n === null ? "Imagen pegada" : `Imagen pegada ${n}`;
+    case "images": {
+      const name = sidecar?.origin === "cropped" ? "Imagen recortada" : "Imagen pegada";
+      return n === null ? name : `${name} ${n}`;
+    }
   }
 }
 

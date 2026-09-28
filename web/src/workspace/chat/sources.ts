@@ -21,5 +21,11 @@ export function sourceName(sourceId: string): string {
   return sourceItem(sourceId)?.title ?? file;
 }
 
+/** «imagen recortada 2»: an image the editor cropped from a page (#493). */
+export function croppedImageName(sourceId: string): string {
+  const match = NUMBER.exec(sourceId.split("/").at(-1) ?? "");
+  return match === null ? "imagen recortada" : `imagen recortada ${Number(match[1])}`;
+}
+
 /** Capitalized, for the start of a line. */
 export const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);

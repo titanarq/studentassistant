@@ -209,7 +209,7 @@
     the auto-end applies to it as before. While paused the chat is told no capture runs, so it offers
     its own microphone button. **Captura** is `CapturePage` with `preset` = the URL's subject and topic.
     **Recursos** (`ResourcesTab`) lists the topic's sources grouped by kind ("Páginas de apuntes",
-    "Páginas del libro", "PDF", "Webs", "Fragmentos de la transcripción"), built by
+    "Páginas del libro", "PDF", "Webs", "Imágenes", "Fragmentos de la transcripción"), built by
     `resourceList(sources, tree)` (`resources.ts`) from the topic's source list
     (`fetchTopicSources`, `GET .../sources`, #323, read again each time the tab is shown) and the
     notes' provenance footnotes: every stored `notes`/`book`/`pdf`/`web`/`images` source by its
@@ -225,7 +225,9 @@
     into the notes (`sources/images/img-NNN.<ext>`, #316) are listed when the notes cite them. Each stored
     source is one card (thumbnail -- the flattened `page-NNN.page.jpg`, else the capture; a PDF's
     first page image; the pasted image -- and below it one muted, ellipsized line with its name,
-    "Página 3 · apuntes", "Libro, página 83", "PDF «nombre»", "Web: …", "Imagen pegada 1"; no
+    "Página 3 · apuntes", "Libro, página 83", "PDF «nombre»", "Web: …", "Imagen pegada 1", or
+    "Imagen recortada 2" for a region the editor cropped from a page (sidecar `origin: cropped`,
+    #493; pasted and cropped images share the group «Imágenes»); no
     state chip since #461), its state derived by `resourceStates` (`resources/state.ts`, #328):
     - pending: kept and not cited by the current notes -- no mark at all;
     - incorporated ("added", #461): kept and linked by a provenance footnote definition of the
@@ -440,6 +442,11 @@
       tooltip and as visually hidden text). `workspace/chat/api.ts` and `turns.ts` read it
       (`readFeedback`) from the live `turn.result` and from `GET .../notes/chat`, the history's
       value winning, so the chip survives a reload. Triage is not in the web: the CLI does it.
+    - **Crop line** (#493): a finished turn whose `crop` names a new `source_id` (the editor cropped
+      a page region into `sources/images/`, `docs/modules/editor.md`) shows «Recorte añadido:
+      Imagen recortada N», a button that opens it in **Recursos** («Ver la fuente: imagen
+      recortada N»; `readCropId`, `croppedImageName`), live and from the history, hidden once the
+      turn is undone. A failed crop (`crop.error`) shows only its reply.
     - **Input on screen, log following the newest turn (#412, #450).** On a wide screen at least
       30rem tall (`workspace.css`, `min-width: 56.3125rem and min-height: 30rem`) the page is
       exactly one viewport high and never scrolls: the header on top, each column scrolling inside

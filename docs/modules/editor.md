@@ -1014,7 +1014,8 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   (`reply.restart`) and replaced by `CROP_FAILED_PREFIX` + the Spanish reason («No he podido añadir
   el recorte: …»), and the result's `crop` carries the error. `RevisionResult.crop` (`CropRef`:
   `source`, `region`, `source_id` and `path` of the new image, or `error`) is in the `revision`
-  record and the `notes.edited` event. The reply of a successful crop is the editor's own
+  record and the `notes.edited` event, and `ChatTurn.crop` carries it into `chat_history`, so the
+  workspace chat names the new image after a reload. The reply of a successful crop is the editor's own
   confirmation («He añadido el recorte del diagrama de la página 3.»). The request classifier's
   prompt (`observer_requests`) lists these requests as `edit`, so a spoken or typed one reaches the
   editor with `expects_change`.
@@ -1025,4 +1026,6 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   page shown upright to Sonnet (`tests/editor/test_crop_*.py`); the chat turn -- success with its
   link, footnote, commit and undo, a cited PDF page, each failure, a source not allowed, crop and
   `apply_edits` together, the crop outside the notes lock with a student save redone on, a retired
-  crop, the classifier prompt -- in `tests/editor/test_revise_crop.py`.
+  crop, the classifier prompt -- in `tests/editor/test_revise_crop.py`; through the server (the typed
+  chat route, the app's transport serving both the turn and the box, the new image listed in the
+  topic's sources and the history's `crop`) in `tests/server/test_revise_crop_routes.py`.

@@ -509,6 +509,10 @@ class ChatTurn(_Strict):
     feedback: FeedbackRef | None = Field(
         default=None, description="`revise`: the app feedback item the turn recorded (#472)."
     )
+    crop: CropRef | None = Field(
+        default=None,
+        description="`revise`: the page region the turn cropped (#493), or why it failed.",
+    )
 
 
 class _ExplanationView(BaseModel):
@@ -758,6 +762,7 @@ def _read_turns(
                 warning=result.warning,
                 proposed_style_rules=new_rules(guide, result.proposed_style_rules),
                 feedback=result.feedback,
+                crop=result.crop,
             )
         )
     return [

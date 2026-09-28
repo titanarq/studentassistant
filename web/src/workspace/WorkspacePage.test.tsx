@@ -483,7 +483,7 @@ it("builds the resource list from the counts and the notes' citations", () => {
   expect(resourceList(null, parseNotes("# T\n\nUna imagen.[^img001]\n\n[^img001]: [Imagen pegada 1](../sources/images/img-001.png)\n")).groups).toEqual([
     {
       kind: "images",
-      title: "Imágenes pegadas",
+      title: "Imágenes",
       items: [{ key: "images/img-001.png", label: "img001", definition: "[Imagen pegada 1](../sources/images/img-001.png)", title: "Imagen pegada 1" }],
     },
   ]);
