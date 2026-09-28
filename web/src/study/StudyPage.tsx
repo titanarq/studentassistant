@@ -5,23 +5,21 @@ import { type Inline, type NotesTree, parseInline, parseNotes } from "../notes/m
 import NotesView from "../notes/NotesView";
 import SourcePanel from "../notes/SourcePanel";
 import { fetchStudyState, type StudyState } from "./api";
-import ModeSwitch from "./ModeSwitch";
 import OptionContent from "./OptionContent";
 import OptionPanel, { OPTION_PANEL_ID } from "./OptionPanel";
 import { type OptionKey, STATE_LABELS, type StudyOption, studyOptions } from "./options";
 import ReviewsToday from "./ReviewsToday";
 import type { GenerationResult } from "./chat/api";
 import StudyChat from "./chat/StudyChat";
+import type { VoiceQuestionStarter } from "../tutor/voiceQuestion";
+import WorkspaceFrame, { type NarrowView } from "../workspace/WorkspaceFrame";
 import "../notes/notes.css";
 import "./study.css";
 
-/** What the single column shows below 900 px. */
-export type StudyView = "study" | "document";
+/** What the single column shows below 900 px (the frame's views, #487). */
+export type StudyView = NarrowView;
 
-const VIEWS: Array<[StudyView, string]> = [
-  ["study", "Estudiar"],
-  ["document", "Documento"],
-];
+const VIEWS: Record<StudyView, string> = { document: "Documento", left: "Estudiar", chat: "Chat" };
 
 function plain(nodes: Inline[]): string {
   return nodes
@@ -81,22 +79,38 @@ function OptionButton({
 
 /**
  * `/subjects/<subject>/topics/<topic>/study`, "Estudiar" (#333, #337, epic #332): the study screen
- * of a topic. The header names the "versión de estudio" (`GET .../study`, #335) and says when the
- * notes changed after it; the options' states come from the same read. Left, "Repasos para hoy"
- * for the topic, the study options with their state and the question chat (`StudyChat`, #336),
- * whose citation chips scroll to and highlight a section or open a source; right, the document
- * read-only with "Editar en Construir". Opening an option
- * slides `OptionPanel` over the right edge of the document with the existing page embedded, and
- * the sections the item shown is about are highlighted in the document and scrolled to. A
- * provenance footnote opens its source in the same place. Below 900 px the columns become one,
- * with the switch Estudiar | Documento.
+ * of a topic, in the same frame as **Construir** since #487 (`WorkspaceFrame`: the header band with
+ * the switch Construir · Estudiar and the topic's name, the desk, the left card above the chat card,
+ * the document card on the right, one viewport high from 900 px on). The left card holds "Repasos
+ * para hoy" for the topic and the study options with their state, under "Material de estudio" and
+ * the "versión de estudio" (`GET .../study`, #335: which notes version it is and whether the notes
+ * changed after it); the chat card holds the question chat (`StudyChat`, #336), with the workspace
+ * chat's input and microphone, whose citation chips scroll to and highlight a section or open a
+ * source; the right card the document read-only with its pinned header (**Editar en Construir**).
+ * Opening an option slides `OptionPanel` over the right edge of the document's body, below the
+ * header, with the existing page embedded and its own pinned header, and the sections the item
+ * shown is about are highlighted in the document and scrolled to. A provenance footnote opens its
+ * source in the same place. Below 900 px the columns become one, with the switch Documento |
+ * Estudiar | Chat.
  *
  * A material generated from the chat («hazme un quiz», #366, #367) replaces the study state with
  * the one its `result` carries (the badges change without a reload), and its **Abrir «…»** opens
  * that option's panel, reloading its content when it was already open. The phrase of an option's
- * hint («Pídelo en el chat: …») fills the chat's input.
+ * hint («Pídelo en el chat: …») fills the chat's input (and shows the chat in one column).
  */
-export default function StudyPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
+export default function StudyPage({
+  subjectId,
+  topicId,
+  listen,
+  voiceSupported,
+}: {
+  subjectId: string;
+  topicId: string;
+  /** The study chat's microphone: listens for one question (the Web Speech API by default). */
+  listen?: VoiceQuestionStarter;
+  /** Whether `listen` can work here; asked of the browser by default. */
+  voiceSupported?: boolean;
+}) {
   const [topicName, setTopicName] = useState(topicId);
   const [notes, setNotes] = useState<ReadResult<TopicNotes> | null>(null);
   const [study, setStudy] = useState<ReadResult<StudyState> | null>(null);
@@ -108,7 +122,7 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
     fromChat?: boolean;
   } | null>(null);
   const [focus, setFocus] = useState<string[]>([]);
-  const [view, setView] = useState<StudyView>("study");
+  const [view, setView] = useState<StudyView>("left");
   /** Bumped to remount the open option's content, so it reads the material again. */
   const [reload, setReload] = useState(0);
   const [suggestion, setSuggestion] = useState<{ text: string; id: number } | null>(null);
@@ -196,7 +210,7 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
     pendingFocus.current = openKey === null ? null : (buttons.current.get(openKey) ?? null);
     setOpenKey(null);
     setFocus([]);
-    setView("study");
+    setView("left");
   }, [openKey]);
 
   // A material generated from the chat: its state comes with the result (any read in course is
@@ -224,7 +238,7 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
 
   const askInChat = useCallback((phrase: string) => {
     setSuggestion((now) => ({ text: phrase, id: (now?.id ?? 0) + 1 }));
-    setView("study");
+    setView("chat");
   }, []);
 
   const toggle = useCallback(
@@ -270,49 +284,36 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
   const workspace = `${base}/workspace`;
   const overlay = open !== null || source !== null;
 
+  const studyLabel = label !== null && (
+    <div className="study-label">
+      <p>
+        Apuntes v{label.version} · <span className="study-label-badge">versión de estudio</span>
+      </p>
+      {!studyState?.studyCurrent && (
+        <p className="study-label-note">Has cambiado los apuntes después de la versión de estudio (v{label.version}).</p>
+      )}
+    </div>
+  );
+
   return (
-    <div className="study" data-view={view}>
-      <header className="study-header">
-        <p className="crumbs">
-          <a href={base}>← Tema {topicName}</a>
-          <a className="crumbs-home" href="/">
-            Mesa de estudio
-          </a>
-        </p>
-        <div className="study-title">
-          <h1>Estudiar</h1>
-          <ModeSwitch subjectId={subjectId} topicId={topicId} current="study" />
-        </div>
-        <p className="page-context">Tema {topicName}</p>
-        {label !== null && (
-          <div className="study-label">
-            <p>
-              Apuntes v{label.version} · <span className="study-label-badge">versión de estudio</span>
-            </p>
-            {!studyState?.studyCurrent && (
-              <p className="study-label-note">
-                Has cambiado los apuntes después de la versión de estudio (v{label.version}).
-              </p>
-            )}
-          </div>
-        )}
-        <div className="study-switch" role="group" aria-label="Qué mostrar">
-          {VIEWS.map(([key, label]) => (
-            <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </header>
-      <div className="study-columns">
-        <div className="study-left">
-          <ReviewsToday
-            subjectId={subjectId}
-            topicId={topicId}
-            onReview={() => openOption("tarjetas")}
-          />
+    <WorkspaceFrame
+      mode="study"
+      subjectId={subjectId}
+      topicId={topicId}
+      topicName={topicName}
+      label="Estudiar"
+      className="study"
+      views={VIEWS}
+      view={view}
+      onView={setView}
+      leftLabel="Opciones de estudio"
+      leftClassName="study-card"
+      left={
+        <div className="study-card-body">
+          <ReviewsToday subjectId={subjectId} topicId={topicId} onReview={() => openOption("tarjetas")} />
           <section className="study-options" aria-labelledby="study-options-heading">
             <h2 id="study-options-heading">Material de estudio</h2>
+            {studyLabel}
             {study === null && <p>Cargando el material…</p>}
             {study !== null && study.kind !== "ok" && (
               <p role="alert">No se pudo leer el estado del material: {describeFailure(study)}</p>
@@ -331,72 +332,84 @@ export default function StudyPage({ subjectId, topicId }: { subjectId: string; t
               </ul>
             )}
           </section>
-          <StudyChat
-            subjectId={subjectId}
-            topicId={topicId}
-            sections={titles}
-            hasNotes={notes === null ? null : notes.kind !== "not-found"}
-            onOpenSection={openChatSection}
-            onOpenSource={openChatSource}
-            onGenerated={onGenerated}
-            onOpenOption={openGenerated}
-            suggestion={suggestion}
-          />
         </div>
-        <section className="study-right" aria-label="Documento" data-panel={overlay ? "open" : undefined}>
-          <div className="study-document" ref={documentRef}>
-            <div className="study-document-bar">
-              <h2>Apuntes</h2>
-              {notes?.kind === "ok" && notes.value.version !== null && (
-                <span className="study-version">v{notes.value.version}</span>
+      }
+      chat={
+        <StudyChat
+          subjectId={subjectId}
+          topicId={topicId}
+          sections={titles}
+          hasNotes={notes === null ? null : notes.kind !== "not-found"}
+          onOpenSection={openChatSection}
+          onOpenSource={openChatSource}
+          onGenerated={onGenerated}
+          onOpenOption={openGenerated}
+          suggestion={suggestion}
+          listen={listen}
+          voiceSupported={voiceSupported}
+        />
+      }
+      documentClassName="study-right"
+      documentPanel={overlay}
+      document={
+        <>
+          <div className="workspace-document-header">
+            <h2 className="workspace-document-title">Apuntes</h2>
+            {notes?.kind === "ok" && notes.value.version !== null && (
+              <span className="workspace-document-version study-version">v{notes.value.version}</span>
+            )}
+            <a className="study-edit" href={workspace}>
+              Editar en Construir
+            </a>
+          </div>
+          {/* The document's body scrolls under its header; a material or a source slides in over
+              its right edge, below the header, with its own pinned header (#487). */}
+          <div className="study-document-area">
+            <div className="workspace-document-body study-document" ref={documentRef}>
+              {notes === null && <p>Cargando los apuntes…</p>}
+              {notes?.kind === "not-found" && (
+                <p className="study-empty">
+                  Todavía no hay apuntes: constrúyelos en <a href={workspace}>Construir</a>.
+                </p>
               )}
-              <a className="study-edit" href={workspace}>
-                Editar en Construir
-              </a>
+              {notes !== null && notes.kind !== "ok" && notes.kind !== "not-found" && (
+                <p role="alert">No se pudieron cargar los apuntes: {describeFailure(notes)}</p>
+              )}
+              {tree !== null && (
+                <NotesView
+                  tree={tree}
+                  onOpenSource={openSource}
+                  activeLabel={source?.label ?? null}
+                  focusSections={focusSections}
+                  focusLabel={chatLabel}
+                />
+              )}
             </div>
-            {notes === null && <p>Cargando los apuntes…</p>}
-            {notes?.kind === "not-found" && (
-              <p className="study-empty">
-                Todavía no hay apuntes: constrúyelos en <a href={workspace}>Construir</a>.
-              </p>
+            {open !== null && (
+              <OptionPanel title={open.title} onClose={closeOption} hidden={source !== null}>
+                <OptionContent
+                  key={`${open.key}-${reload}`}
+                  subjectId={subjectId}
+                  topicId={topicId}
+                  option={open}
+                  onFocusAnchors={setFocus}
+                  anchorLabel={anchorLabel}
+                  onAskInChat={askInChat}
+                />
+              </OptionPanel>
             )}
-            {notes !== null && notes.kind !== "ok" && notes.kind !== "not-found" && (
-              <p role="alert">No se pudieron cargar los apuntes: {describeFailure(notes)}</p>
-            )}
-            {tree !== null && (
-              <NotesView
-                tree={tree}
-                onOpenSource={openSource}
-                activeLabel={source?.label ?? null}
-                focusSections={focusSections}
-                focusLabel={chatLabel}
+            {source !== null && (
+              <SourcePanel
+                subjectId={subjectId}
+                topicId={topicId}
+                label={source.label}
+                definition={source.definition}
+                onClose={closeSource}
               />
             )}
           </div>
-          {open !== null && (
-            <OptionPanel title={open.title} onClose={closeOption} hidden={source !== null}>
-              <OptionContent
-                key={`${open.key}-${reload}`}
-                subjectId={subjectId}
-                topicId={topicId}
-                option={open}
-                onFocusAnchors={setFocus}
-                anchorLabel={anchorLabel}
-                onAskInChat={askInChat}
-              />
-            </OptionPanel>
-          )}
-          {source !== null && (
-            <SourcePanel
-              subjectId={subjectId}
-              topicId={topicId}
-              label={source.label}
-              definition={source.definition}
-              onClose={closeSource}
-            />
-          )}
-        </section>
-      </div>
-    </div>
+        </>
+      }
+    />
   );
 }

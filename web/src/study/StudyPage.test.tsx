@@ -191,7 +191,12 @@ function block(name: RegExp) {
 it("shows the options, today's reviews, the question chat and the document in read mode", async () => {
   renderPage();
 
-  expect(screen.getByRole("heading", { level: 1, name: "Estudiar" })).toBeInTheDocument();
+  // #487: the workspace's frame -- the screen is «Estudiar», its header band names the topic.
+  expect(screen.getByRole("main", { name: "Estudiar" })).toBeInTheDocument();
+  const band = document.querySelector<HTMLElement>(".workspace-header") as HTMLElement;
+  const title = await within(band).findByRole("heading", { level: 1, name: "La Revolución Industrial" });
+  expect(within(title).getByRole("link")).toHaveAttribute("href", PAGE);
+  expect(within(band).getByRole("link", { name: "Mesa de estudio" })).toHaveAttribute("href", "/");
   const modes = screen.getByRole("navigation", { name: "Modo del tema" });
   expect(within(modes).getByRole("link", { name: "Estudiar" })).toHaveAttribute("aria-current", "page");
   expect(within(modes).getByRole("link", { name: "Construir" })).toHaveAttribute("href", `${PAGE}/workspace`);
@@ -209,16 +214,15 @@ it("shows the options, today's reviews, the question chat and the document in re
   expect(await within(reviews).findByText(/3 para repasar · 2 nuevas/)).toBeInTheDocument();
   const chat = screen.getByRole("region", { name: "Preguntas sobre el documento" });
   expect(within(chat).getByRole("textbox", { name: "Tu pregunta" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "La Revolución Industrial" })).toBeInTheDocument();
 
   const names = (await options()).map((button) => within(button).getByText(/^[A-Z]/, { selector: ".study-option-title" }).textContent);
   expect(names).toEqual(["Esquema", "Ejercicios", "Examen", "Quiz", "Tarjetas de memoria", "Diapositivas"]);
 }, PAGE_TEST_TIMEOUT);
 
-it("names the versión de estudio in the header", async () => {
+it("names the versión de estudio above the study material", async () => {
   renderPage();
 
-  const header = screen.getByRole("banner");
+  const header = screen.getByRole("region", { name: "Material de estudio" });
   expect(await within(header).findByText(/^Apuntes v5 ·/)).toHaveTextContent("Apuntes v5 · versión de estudio");
   expect(within(header).queryByText(/Has cambiado los apuntes/)).toBeNull();
 });
@@ -226,7 +230,7 @@ it("names the versión de estudio in the header", async () => {
 it("says the notes changed after the versión de estudio, with nothing to do about it", async () => {
   renderPage({ [`${BASE}/study`]: jsonResponse(studyBody({}, { version: 4, current: false })) });
 
-  const header = screen.getByRole("banner");
+  const header = screen.getByRole("region", { name: "Material de estudio" });
   expect(await within(header).findByText("Has cambiado los apuntes después de la versión de estudio (v4).")).toBeInTheDocument();
   expect(within(header).getByText(/^Apuntes v4 ·/)).toBeInTheDocument();
   expect(within(header).queryByRole("button", { name: /versión/ })).toBeNull();
@@ -454,17 +458,24 @@ it("says there are no notes yet, linking to Construir", async () => {
   expect(screen.getByRole("link", { name: "Editar en Construir" })).toBeInTheDocument();
 });
 
-it("switches between Estudiar and Documento in one column, and an option shows the document", async () => {
+it("switches between Documento, Estudiar and Chat in one column, and an option shows the document", async () => {
   const { root } = renderPage();
   const switcher = screen.getByRole("group", { name: "Qué mostrar" });
+  // #487: the frame's switch, in the same order as Construir's.
+  expect(within(switcher).getAllByRole("button").map((b) => b.textContent)).toEqual(["Documento", "Estudiar", "Chat"]);
   const studyView = within(switcher).getByRole("button", { name: "Estudiar" });
   const documentView = within(switcher).getByRole("button", { name: "Documento" });
-  expect(root).toHaveAttribute("data-view", "study");
+  const chatView = within(switcher).getByRole("button", { name: "Chat" });
+  expect(root).toHaveAttribute("data-view", "left");
   expect(studyView).toHaveAttribute("aria-pressed", "true");
 
   fireEvent.click(documentView);
   expect(root).toHaveAttribute("data-view", "document");
   expect(documentView).toHaveAttribute("aria-pressed", "true");
+
+  fireEvent.click(chatView);
+  expect(root).toHaveAttribute("data-view", "chat");
+  expect(chatView).toHaveAttribute("aria-pressed", "true");
 
   fireEvent.click(studyView);
   await options();
@@ -474,7 +485,57 @@ it("switches between Estudiar and Documento in one column, and an option shows t
   await act(async () => {
     fireEvent.click(within(screen.getByRole("region", { name: "Quiz" })).getByRole("button", { name: "Cerrar" }));
   });
-  expect(root).toHaveAttribute("data-view", "study");
+  expect(root).toHaveAttribute("data-view", "left");
+}, PAGE_TEST_TIMEOUT);
+
+it("lays the screen out in the frame of Construir: the options card above the chat card, the document card on the right (#487)", async () => {
+  stubApi(routes());
+  const { container } = render(<StudyPage subjectId="historia" topicId="revolucion-industrial" voiceSupported />);
+  const root = container.firstElementChild as HTMLElement;
+
+  expect(root).toHaveClass("workspace", "study");
+  expect(root.querySelector(":scope > .workspace-header > .workspace-bar")).not.toBeNull();
+  const left = root.querySelector(".workspace-columns > .workspace-left") as HTMLElement;
+  const [card, chatCard] = [...left.children] as HTMLElement[];
+  expect(card).toBe(screen.getByRole("region", { name: "Opciones de estudio" }));
+  expect(card).toHaveClass("workspace-sources");
+  expect(card).toContainElement(screen.getByRole("region", { name: "Repasos para hoy" }));
+  expect(card).toContainElement(screen.getByRole("region", { name: "Material de estudio" }));
+  expect(chatCard).toBe(screen.getByRole("region", { name: "Chat" }));
+  expect(chatCard).toHaveClass("workspace-chat");
+  // The study chat, with its input and the microphone, at the bottom of the left column.
+  const chat = within(chatCard).getByRole("region", { name: "Preguntas sobre el documento" });
+  expect(within(chat).getByRole("textbox", { name: "Tu pregunta" })).toBeInTheDocument();
+  expect(within(chat).getByRole("button", { name: "Dictar el mensaje por voz" })).toHaveClass("voice-input-icon");
+
+  const doc = screen.getByRole("region", { name: "Documento" });
+  expect(doc).toHaveClass("workspace-document");
+  const header = doc.querySelector(":scope > .workspace-document-header") as HTMLElement;
+  expect(within(header).getByRole("heading", { name: "Apuntes" })).toBeInTheDocument();
+  expect(within(header).getByRole("link", { name: "Editar en Construir" })).toBeInTheDocument();
+  expect(await within(doc).findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
+  expect(header).not.toContainElement(screen.getByRole("heading", { name: /Contexto/ }));
+
+  // The material opens in the document card, under its header, with a pinned header of its own.
+  await options();
+  fireEvent.click(optionButton(/^Quiz/));
+  const panel = screen.getByRole("region", { name: "Quiz" });
+  expect(doc).toHaveAttribute("data-panel", "open");
+  expect(panel.parentElement).toHaveClass("study-document-area");
+  expect(panel.querySelector(":scope > .study-panel-header")).toContainElement(within(panel).getByRole("heading", { name: "Quiz" }));
+  expect(panel.querySelector(":scope > .study-panel-body")).not.toBeNull();
+}, PAGE_TEST_TIMEOUT);
+
+it("shows the chat in one column when an option's hint fills its input", async () => {
+  const { root } = renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
+  await options();
+  fireEvent.click(optionButton(/^Ejercicios/));
+  expect(root).toHaveAttribute("data-view", "document");
+
+  fireEvent.click(within(screen.getByRole("region", { name: "Ejercicios" })).getByRole("button", { name: "hazme ejercicios" }));
+
+  expect(root).toHaveAttribute("data-view", "chat");
+  expect(within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" })).toHaveValue("hazme ejercicios");
 }, PAGE_TEST_TIMEOUT);
 
 it("names each section by its heading text", () => {

@@ -1,16 +1,16 @@
-import { type FormEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import DiffView from "../../chat/DiffView";
 import FeedbackChip from "../../chat/FeedbackChip";
 import type { OpenSource } from "../../chat/EditorChat";
 import { useFollowLog } from "../../chat/useFollowLog";
 import { sourceItem } from "../resources";
-import VoiceInputButton from "../../tutor/VoiceInputButton";
 import type { SourceSelection } from "../resources/selection";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
 import { capitalized, croppedImageName, sourceName } from "./sources";
 import { canRetry, type ChatEntry } from "./turns";
 import type { WorkspaceChat } from "./useWorkspaceChat";
+import ChatComposer from "./ChatComposer";
 import "./chat.css";
 
 /** `00:02:34`, from milliseconds since the start of the session. */
@@ -448,7 +448,8 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
  * highlighted, and answered by typing or saying it. "Ya está, quiero estudiar" (#335, #337) is
  * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
  * is a new line) with, in one row, **Enviar** and the icon buttons for the microphone and "Deshacer
- * el último cambio" (#458); no heading above the log (#458), the input's placeholder says what it is.
+ * el último cambio" (#458; `ChatComposer`, shared with the study chat since #487); no heading above
+ * the log (#458), the input's placeholder says what it is.
  *
  * The log is its own scroll area and follows the newest turn (#412) unless the student scrolled up
  * (then «Nuevos mensajes ↓» brings them back); only the latest turn is announced, through a polite
@@ -552,17 +553,9 @@ export default function ChatPanel({
     setDraft("");
     log.follow();
   };
-  const submit = (event?: FormEvent) => {
-    event?.preventDefault();
-    send(draft);
-  };
   const dictated = (text: string) => {
     setDraft(text);
     send(text);
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) submit(event);
   };
 
   const placeholder = chat.doubtAsked
@@ -648,25 +641,18 @@ export default function ChatPanel({
         {chat.busy === "undo" && <p>Deshaciendo el último cambio…</p>}
         {chat.notice !== null && <p>{chat.notice}</p>}
       </div>
-      <form className="ws-chat-form" onSubmit={submit}>
-        <label htmlFor="ws-chat-input" className="ws-chat-label">
-          Mensaje para el asistente
-        </label>
-        {selection !== null && <SelectionChips selection={selection} />}
-        <textarea
-          id="ws-chat-input"
-          rows={2}
-          maxLength={4000}
-          placeholder={placeholder}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onKeyDown}
-        />
-        <div className="ws-chat-actions">
-          <button type="submit" disabled={!idle || draft.trim() === ""}>
-            Enviar
-          </button>
-          {!capturing && <VoiceInputButton icon value={draft} onChange={setDraft} onFinal={dictated} />}
+      <ChatComposer
+        id="ws-chat-input"
+        label="Mensaje para el asistente"
+        placeholder={placeholder}
+        value={draft}
+        onChange={setDraft}
+        onSubmit={() => send(draft)}
+        canSubmit={idle && draft.trim() !== ""}
+        maxLength={4000}
+        voice={capturing ? null : { onFinal: dictated }}
+        before={selection !== null && <SelectionChips selection={selection} />}
+        actions={
           <button
             type="button"
             className="ws-chat-icon-button"
@@ -677,8 +663,8 @@ export default function ChatPanel({
           >
             <UndoIcon />
           </button>
-        </div>
-      </form>
+        }
+      />
     </section>
   );
 }
