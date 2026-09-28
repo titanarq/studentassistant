@@ -266,6 +266,8 @@ def create_app(
         )
         # Server start: the requests of ended sessions a restart left unanswered (#423).
         app.state.sessions.add_on_open(app.state.assistant_requests.catch_up_vault)
+        # A session's end commits the review session of its outstanding requests (#423, #468).
+        app.state.sessions.add_before_close(app.state.assistant_requests.outstanding_recorded)
         # The topic's sources and the doubt asked now, for the request classifiers (#327).
         request_context = sources_lookup(app.state.sessions)
         # Typed workspace messages -> requests, whatever `request_detection` says (#327).

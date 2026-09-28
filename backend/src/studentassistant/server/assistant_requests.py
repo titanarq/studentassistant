@@ -83,7 +83,11 @@ are recorded as outstanding in a `requests.outstanding` event (`REQUESTS_OUTSTAN
 origin `editor`, `{session_id?, request_ids}`; `session_id` omitted: the event's own session)
 of a review session: `post_message` writes it next to the typed requests of its review session,
 and a `session.ended` on the bus writes it (in a new review session) for the ended session's
-requests still queued or running. A `turn.finished` whose session is no longer attached is
+requests still queued or running. That write is part of the session's end: `outstanding_recorded`,
+a `SessionService.add_before_close` hook, waits for the reader to have handled the session's
+`session.ended`, so the review session is on disk before `end_session` and the end's checkpoint
+("sesión ... terminada") commits it, never halfway through whatever the ending turn commits next
+(#468). A `turn.finished` whose session is no longer attached is
 written in a review session too, with the request's `session_id` in it. Once the vault is open
 (`catch_up_vault`, a `SessionService.add_on_open` hook), every topic's outstanding requests with
 no `turn.finished` (`outstanding_requests`) are submitted again, oldest first, so each is
@@ -346,6 +350,9 @@ class AssistantRequestConsumer:
         self._catch_up: asyncio.Task[None] | None = None
         """The start-up submission of the vault's outstanding requests (#423)."""
         self._stopping = False
+        self._ended_handled: dict[str, asyncio.Event] = {}
+        """Per ended session, set once the reader handled its `session.ended` (#468); the entry is
+        dropped by `outstanding_recorded`."""
 
     # -- lifecycle -------------------------------------------------------------------------------
 
@@ -447,7 +454,10 @@ class AssistantRequestConsumer:
             await self.replay(event.session_id)
             return
         if event.kind == SESSION_ENDED:
-            await self._ended(event.subject_id, event.topic_id, event.session_id)
+            try:
+                await self._ended(event.subject_id, event.topic_id, event.session_id)
+            finally:
+                self._ended_event(event.session_id).set()
             return
         try:
             request = AssistantRequest.model_validate(dict(event.payload))
@@ -482,6 +492,28 @@ class AssistantRequestConsumer:
                 ", ".join(replayed),
             )
         return replayed
+
+    def _ended_event(self, session_id: str) -> asyncio.Event:
+        return self._ended_handled.setdefault(session_id, asyncio.Event())
+
+    async def outstanding_recorded(self, session_id: str) -> None:
+        """Wait until the ended session's outstanding requests are recorded (#468).
+
+        A `SessionService.add_before_close` hook: `session.ended` is published, then this waits
+        for the reader to handle it (`_ended`), so its review session is written before the
+        session's end is committed. Returns at once when the reader is not running, or as soon as
+        it stops (shutdown); the service bounds the wait (`end_hook_timeout`).
+        """
+        reader = self._reader
+        if reader is None or reader.done() or self._stopping:
+            self._ended_handled.pop(session_id, None)
+            return
+        handled = asyncio.ensure_future(self._ended_event(session_id).wait())
+        try:
+            await asyncio.wait({handled, reader}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            handled.cancel()
+            self._ended_handled.pop(session_id, None)
 
     async def _ended(self, subject_id: str, topic_id: str, session_id: str) -> None:
         """Record the ended session's requests still queued or running as outstanding (#423)."""

@@ -8,6 +8,7 @@ and the turn is read back from `GET .../notes/chat` and from a workspace hub sub
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -551,6 +552,12 @@ def _shut_down(client: TestClient) -> None:
     client.portal.call(consumer.stop, 0.1)  # type: ignore[union-attr]
 
 
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, timeout=30
+    ).stdout.strip()
+
+
 def _review_events(topic: ReviseTopic, kind: str) -> list[dict[str, Any]]:
     """The payloads of `kind` in the topic's review sessions, read back from the vault."""
     reviews = {
@@ -617,8 +624,15 @@ def test_a_typed_request_of_a_review_session_is_answered_after_a_restart(
 
 
 def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restart(
-    make_app: AppFactory, topic: ReviseTopic
+    make_app: AppFactory, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    write_review = assistant_requests._review_session
+
+    def slow_review(*args: Any) -> str:
+        time.sleep(0.3)  # a slow disk: the session's end still waits for the record (#468)
+        return write_review(*args)
+
+    monkeypatch.setattr(assistant_requests, "_review_session", slow_review)
     first = FakeClaude()
     with _client(make_app(first)) as client:
         session_id = _start(client, topic)
@@ -630,10 +644,14 @@ def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restar
             f"/api/sessions/{session_id}/end", json={"client_time_ms": 2_000, "reason": "button"}
         )
         assert ended.status_code == 200, ended.text
-        deadline = time.monotonic() + WAIT_SECONDS
-        while not _review_events(topic, REQUESTS_OUTSTANDING_KIND):
-            assert time.monotonic() < deadline, "the ended session's requests were not recorded"
-            time.sleep(0.01)
+        # Recorded as part of the end (#468): written, and committed with "sesión ... terminada".
+        assert _review_events(topic, REQUESTS_OUTSTANDING_KIND)
+        review = next(
+            m.id for m in list_sessions(topic.vault, topic.subject, topic.topic) if not m.is_study
+        )
+        last_commit = _git(topic.vault.path, "log", "-1", "--format=%s")
+        assert last_commit == f"sesión {session_id} terminada"
+        assert _git(topic.vault.path, "status", "--porcelain", "--", f"*{review}*") == ""
         _shut_down(client)
         generator.release(topic.subject, topic.topic)
     assert first.requests == []
