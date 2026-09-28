@@ -665,7 +665,7 @@ it("a question asked on the study screen streams its answer with chips into the 
   await waitFor(() => expect(input).toBeEnabled());
 
   fireEvent.change(input, { target: { value: "¿Dónde empezó?" } });
-  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Enviar" }));
 
   fireEvent.click(await within(chatRegion()).findByRole("button", { name: "Ir a la sección 1. Contexto" }));
   await waitFor(() => expect(block(/Contexto/)).toHaveClass("notes-focus"));
@@ -686,7 +686,7 @@ async function askInChat(text: string) {
   const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.change(input, { target: { value: text } });
-  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Enviar" }));
 }
 
 it("a quiz generated from the chat turns its badge to Listo and «Abrir «Quiz»» opens it beside the document", async () => {

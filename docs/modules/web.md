@@ -653,9 +653,10 @@
     topic's earlier **written** turns of `GET .../tutor` (the voice tutor's spoken ones are left
     out), then the fixed line "Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve
     a Construir." (a link to `.../workspace`) and, since #487, the workspace chat's input
-    (`ChatComposer`): a textarea ("Pregunta sobre el documento…", label "Tu pregunta", up to 1000
-    characters, disabled while an answer comes; Enter or **Preguntar** asks, Shift+Enter is a new
-    line) with, in the row below it, **Preguntar** and the microphone icon button («Dictar el
+    (`ChatComposer`): a textarea ("Chat sobre el tema…" since #509, label "Tu pregunta", up to 1000
+    characters, disabled while an answer comes; Enter or **Enviar** asks, Shift+Enter is a new
+    line) with, in the row below it, **Enviar** (as in the Construir chat, since #509; it was
+    **Preguntar**) and the microphone icon button («Dictar el
     mensaje por voz», tooltip «Hablar: dictar el mensaje por voz»; `VoiceInputButton` with `icon`,
     #428; `StudyPage` passes its `listen`/`voiceSupported` seams; disabled while an answer comes,
     which stops a running recognition):
@@ -1426,7 +1427,7 @@ band with the mode switch, the title and the right-hand links; the left card abo
 the document card; the switch's order; the detail and `data-panel`); `src/study/StudyPage.test.tsx`
 that Estudiar renders in it (options card, chat card with the textarea and the microphone icon,
 document card with its pinned header, the material panel under it with its own header);
-`src/study/chat/StudyChat.test.tsx` the study chat's composer (textarea, **Preguntar** and the
+`src/study/chat/StudyChat.test.tsx` the study chat's composer (textarea, **Enviar** and the
 microphone icon in one row; Enter asks, Shift+Enter does not); and `src/study/layout.test.ts`
 reads `study.css` from disk to pin that it redefines none of the frame's rules and that only the
 options' body, the document's body and the material's body scroll.

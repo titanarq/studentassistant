@@ -33,8 +33,9 @@ import "./studyChat.css";
  * the input, unsent.
  *
  * Since #487 it is the chat card of the shared frame (`WorkspaceFrame`), with the workspace chat's
- * input (`ChatComposer`): a textarea (Enter asks, Shift+Enter is a new line), **Preguntar** and the
- * microphone as an icon button in one row below it; its heading is for screen readers only.
+ * input (`ChatComposer`): a textarea («Chat sobre el tema…»; Enter asks, Shift+Enter is a new line),
+ * **Enviar** (the composer's own label, as in the Construir chat) and the microphone as an icon
+ * button in one row below it; its heading is for screen readers only.
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -360,12 +361,11 @@ export default function StudyChat({
       <ChatComposer
         id="study-chat-question"
         label="Tu pregunta"
-        placeholder="Pregunta sobre el documento…"
+        placeholder="Chat sobre el tema…"
         value={draft}
         onChange={setDraft}
         onSubmit={() => void ask(draft)}
         canSubmit={!busy && draft.trim() !== ""}
-        submitLabel="Preguntar"
         maxLength={MAX_QUESTION_CHARS}
         disabled={busy}
         inputRef={input}
