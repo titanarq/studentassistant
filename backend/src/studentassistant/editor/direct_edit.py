@@ -413,6 +413,7 @@ async def save_student_edit(
         topic_slug,
         "student_edit",
         changed_block_keys(before, result.notes),
+        notes=result.notes,
         clock=clock,
     )
     payload = result.model_dump(mode="json", exclude={"notes"})

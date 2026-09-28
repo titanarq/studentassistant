@@ -9,10 +9,15 @@ SHA-256 of the block's text without footnote references, whitespace collapsed). 
 changes its key, so it is no longer reviewed until it is reviewed again; moving a block or
 changing only its footnotes keeps it.
 
+Each record also stores what the review saw (#483): per block, the `sources` it cited then, and
+the ids of the `open_doubts` then.
+
 A block is **settled** (`settled_blocks`) when it is reviewed, has no `[[?` mark and no open doubt
-names a source it cites (a doubt's captures' pages, its source refs, and the sessions of its
-transcript segments; a doubt whose pages are all set aside by triage is never asked, so it does
-not count). The editor's block map marks settled blocks «[revisado]».
+that `unsettles` it names a source it cites (a doubt's captures' pages, its source refs, and the
+sessions of its transcript segments; a doubt whose pages are all set aside by triage is never
+asked, so it does not count). A doubt opened after the block's latest review on a source the
+block already cited then does not unsettle it; a contradiction always does. The editor's block
+map marks settled blocks «[revisado]».
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -135,9 +141,16 @@ def record_reviewed(
     reason: ReviewReason,
     blocks: Iterable[str],
     *,
+    notes: str | None = None,
     clock: Clock = _utc_now,
 ) -> bool:
     """Append one `notes.reviewed` record; blocking. Nothing is written without blocks.
+
+    With `notes` (the notes the student reviewed), the record also stores what the review saw
+    (#483): `sources`, per reviewed block, the source files it cited then, and `open_doubts`, the
+    ids of the doubts open then. `settled_blocks` counts against a block only the doubts the
+    review already saw (and every contradiction); a record without them (written before #483)
+    counts every open doubt.
 
     Returns whether a record was written. A failure to write is only logged: losing a review
     record never fails what the student did.
@@ -145,10 +158,18 @@ def record_reviewed(
     keys = list(dict.fromkeys(blocks))
     if not keys:
         return False
-    entry = ConversationRecord(
-        time=clock(), kind=NOTES_REVIEWED_RECORD, detail={"reason": reason, "blocks": keys}
-    )
+    detail: dict[str, object] = {"reason": reason, "blocks": keys}
+    if notes is not None:
+        try:
+            open_doubts = sorted(
+                item.id for item, _ in _open_doubts(vault, subject_slug, topic_slug)
+            )
+            detail |= {"sources": _reviewed_sources(notes, keys), "open_doubts": open_doubts}
+        except Exception:
+            # Recorded without what the review saw: every open doubt then counts against it.
+            logger.exception("could not read the open doubts of %s/%s", subject_slug, topic_slug)
     try:
+        entry = ConversationRecord(time=clock(), kind=NOTES_REVIEWED_RECORD, detail=detail)
         append_conversation_record(vault, subject_slug, topic_slug, CONVERSATION_NAME, entry)
     except Exception:
         logger.exception("could not record the reviewed blocks of %s/%s", subject_slug, topic_slug)
@@ -156,50 +177,119 @@ def record_reviewed(
     return True
 
 
-def reviewed_keys(vault: Vault, subject_slug: str, topic_slug: str) -> set[str]:
-    """Every block key a `notes.reviewed` record of the topic covers; blocking."""
-    keys: set[str] = set()
+def _reviewed_sources(notes: str, keys: list[str]) -> dict[str, list[str]]:
+    """Per key of `keys`, the source files the block of `notes` with that key cites."""
+    wanted = set(keys)
+    document = parse(notes)
+    sources: dict[str, set[str]] = {}
+    for block in content_blocks(document):
+        key = block_key(block.text)
+        if key in wanted:
+            sources.setdefault(key, set()).update(block_sources(document, block))
+    return {key: sorted(sources.get(key, ())) for key in keys}
+
+
+@dataclass(frozen=True)
+class Review:
+    """What the latest review of a block saw: the sources it cited and the doubts open then;
+    both `None` for a record written before #483."""
+
+    sources: frozenset[str] | None
+    open_doubts: frozenset[str] | None
+
+
+def reviews(vault: Vault, subject_slug: str, topic_slug: str) -> dict[str, Review]:
+    """Per block key a `notes.reviewed` record of the topic covers, its latest review; blocking."""
+    found: dict[str, Review] = {}
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
         if record.kind != NOTES_REVIEWED_RECORD or not record.detail:
             continue
         blocks = record.detail.get("blocks")
-        if isinstance(blocks, list):
-            keys.update(key for key in blocks if isinstance(key, str))
-    return keys
+        if not isinstance(blocks, list):
+            continue
+        sources = record.detail.get("sources")
+        open_doubts = record.detail.get("open_doubts")
+        known = isinstance(sources, dict) and isinstance(open_doubts, list)
+        doubts = frozenset(i for i in open_doubts if isinstance(i, str)) if known else None
+        for key in blocks:
+            if not isinstance(key, str):
+                continue
+            cited = sources.get(key) if known else None
+            found[key] = (
+                Review(frozenset(s for s in cited if isinstance(s, str)), doubts)
+                if isinstance(cited, list) and doubts is not None
+                else Review(None, None)
+            )
+    return found
 
 
-def open_doubt_sources(vault: Vault, subject_slug: str, topic_slug: str) -> set[str]:
-    """The source files the topic's open doubts name (those set aside by triage excepted)."""
+def reviewed_keys(vault: Vault, subject_slug: str, topic_slug: str) -> set[str]:
+    """Every block key a `notes.reviewed` record of the topic covers; blocking."""
+    return set(reviews(vault, subject_slug, topic_slug))
+
+
+def _open_doubts(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> list[tuple[PendingItem, set[str]]]:
+    """The topic's open doubts (those set aside by triage excepted), each with the source files
+    it names."""
     state = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False).state
     pages = capture_pages(vault, subject_slug, topic_slug)
     set_aside = set_aside_ids(vault, subject_slug, topic_slug)
-    keys: set[str] = set()
+    found: list[tuple[PendingItem, set[str]]] = []
     for item in state.open_pending():
         page_keys = {
             source_key(pages[capture]) for capture in item.refs.pages if capture in pages
         } | {source_key(ref) for ref in item.refs.sources if not ref.startswith("sessions/")}
         if page_keys and all(key in set_aside for key in page_keys):
             continue
-        keys |= item_sources(item, pages, state)
+        found.append((item, item_sources(item, pages, state)))
+    return found
+
+
+def open_doubt_sources(vault: Vault, subject_slug: str, topic_slug: str) -> set[str]:
+    """The source files the topic's open doubts name (those set aside by triage excepted)."""
+    keys: set[str] = set()
+    for _, sources in _open_doubts(vault, subject_slug, topic_slug):
+        keys |= sources
     return keys
+
+
+def unsettles(item: PendingItem, named: set[str], review: Review) -> bool:
+    """Whether the open doubt `item`, naming `named` of the sources a reviewed block cites (not
+    empty), unsettles that block (#483).
+
+    It does when the review did not see it: a contradiction always does (a disagreement between
+    sources is never settled silently, `DISAGREEMENT_RULE`, even notes vs book); any other doubt
+    only when it was already open at the review, or names a source the block did not cite then.
+    A doubt opened later on a source the block already cited -- a transcriber doubt on a repeated
+    capture, a doubt an incorporation raises -- does not: the student already reviewed what the
+    block says from that source. A review record written before #483 counts every doubt."""
+    if item.kind == "contradiction" or review.sources is None or review.open_doubts is None:
+        return True
+    return item.id in review.open_doubts or not named <= review.sources
 
 
 def settled_blocks(vault: Vault, subject_slug: str, topic_slug: str, notes: str | None) -> set[str]:
     """The keys of the settled blocks of `notes`: reviewed, with no `[[?` mark and citing no
-    source an open doubt names; blocking."""
+    source of an open doubt that unsettles them (`unsettles`); blocking."""
     if not notes or not notes.strip():
         return set()
-    reviewed = reviewed_keys(vault, subject_slug, topic_slug)
+    reviewed = reviews(vault, subject_slug, topic_slug)
     if not reviewed:
         return set()
-    doubted = open_doubt_sources(vault, subject_slug, topic_slug)
+    doubts = _open_doubts(vault, subject_slug, topic_slug)
     document = parse(notes)
     settled: set[str] = set()
     for block in content_blocks(document):
         key = block_key(block.text)
-        if key not in reviewed or has_doubt_mark(block.text):
+        review = reviewed.get(key)
+        if review is None or has_doubt_mark(block.text):
             continue
-        if block_sources(document, block) & doubted:
+        cited = block_sources(document, block)
+        if any(
+            unsettles(item, sources & cited, review) for item, sources in doubts if sources & cited
+        ):
             continue
         settled.add(key)
     return settled
@@ -207,6 +297,7 @@ def settled_blocks(vault: Vault, subject_slug: str, topic_slug: str, notes: str 
 
 __all__ = [
     "NOTES_REVIEWED_RECORD",
+    "Review",
     "ReviewReason",
     "block_key",
     "block_sources",
@@ -217,6 +308,8 @@ __all__ = [
     "open_doubt_sources",
     "record_reviewed",
     "reviewed_keys",
+    "reviews",
     "settled_blocks",
     "source_key",
+    "unsettles",
 ]
