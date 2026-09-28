@@ -7,6 +7,7 @@ import NoteEditor, { type NoteEditorHandle, type UploadResult } from "../noteEdi
 import { useWorkspace } from "./state";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { TrashIcon } from "../ui/icons";
+import { badgesOf, pickDoubt } from "./doubtMarks";
 
 /**
  * The document column of the workspace (#312, #316): the topic's `apuntes.md` read-only with an
@@ -18,6 +19,8 @@ import { TrashIcon } from "../ui/icons";
  * **Cancelar** with unsaved changes asks first, in the app's confirmation modal (#486).
  * Read-only, the header (version, **Editar**) sits above `.workspace-document-body`, the part that
  * scrolls, so it stays on screen at the bottom of a long document (#485).
+ * Read-only, the open doubts are marked in the notes (#516): a «?» badge per block, section heading
+ * or at the top; activating one shows its first doubt not asked yet in the chat.
  */
 
 export const CHANGED_WHILE_EDITING = "Los apuntes han cambiado mientras editabas";
@@ -46,7 +49,15 @@ export interface DocumentPanelProps {
 }
 
 export default function DocumentPanel({ topicName, tree, onOpenSource, activeLabel }: DocumentPanelProps) {
-  const { subjectId, topicId, notes, changedSections, reloadNotes } = useWorkspace();
+  const { subjectId, topicId, notes, changedSections, reloadNotes, doubtMarks, showDoubt, showingDoubt } = useWorkspace();
+  const doubts = useMemo(() => badgesOf(doubtMarks), [doubtMarks]);
+  const openDoubts = useCallback(
+    (ids: string[]) => {
+      const id = pickDoubt(doubtMarks, ids);
+      if (id !== null) void showDoubt(id);
+    },
+    [doubtMarks, showDoubt],
+  );
   const [base, setBase] = useState<Base | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [saving, setSaving] = useState(false);
@@ -216,6 +227,9 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
             activeLabel={activeLabel}
             changedSections={changedSections}
             resolveImage={resolveImage}
+            doubts={doubts}
+            onOpenDoubts={openDoubts}
+            doubtsDisabled={showingDoubt}
           />
         )}
       </div>

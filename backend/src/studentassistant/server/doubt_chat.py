@@ -1,26 +1,31 @@
-"""Doubts asked in the workspace chat, one at a time (#325): the `DoubtChat` of the app.
+"""Doubts marked in the notes and shown in the workspace chat on demand (#325, #516): `DoubtChat`.
 
 Doubts never go into the notes: the editor writes what the sources support and reports every
 unresolved point as a pending doubt (`editor.doubts.raise_doubts`), and the observer queues its
-own. This is what brings them to the student, in the study workspace's chat, **one at a time**:
+own. Since #516 they are **not asked one after another** in the chat: the web marks each open
+doubt in the notes viewer (`editor.doubt_marks`) and the student opens the one they want.
 
 - After every applied editor write -- a chat turn (typed or spoken), "prepárame el tema", a doubt
-  answered or dismissed -- the caller `schedule`s the topic. The asker then runs as its own task
-  (one per topic; a schedule while it runs makes it run once more). It does not take the topic's
-  notes lock (`NotesGenerator.claim`), so the student's next turn is never refused because of it:
-  a review applies its edits under the short write lock on the latest notes and re-asks the
+  answered or dismissed -- the caller `schedule`s the topic. The preparer then runs as its own
+  task (one per topic; a schedule while it runs makes it run once more). It does not take the
+  topic's notes lock (`NotesGenerator.claim`), so the student's next turn is never refused because
+  of it: a review applies its edits under the short write lock on the latest notes and re-asks the
   editor when they changed, like a chat turn. It does nothing while "prepárame el tema" rewrites
   the notes (the generation schedules the topic again when it ends).
-- It asks nothing while a doubt asked in the chat is still open (`editor.doubts.ask_plan`), nor
-  when the topic has no notes. Otherwise, the open doubts relevant to the notes (their refs
-  overlap the sources the notes cite) that have no question yet are first reviewed by the editor
-  (`review_doubts` scoped to at most `REVIEW_BATCH` of them): those the sources settle are
-  auto-resolved and reported as one short line (`doubts.auto_resolved` `{pending_ids, summary}`,
-  plus `notes.changed` origin `editor` when the notes changed), the others get their question
-  recorded. Then the first relevant open doubt with a question is asked (`ask_in_chat`) and
-  announced as `doubt.asked` `{pending_id, question, suggestions, options, refs}`. Items whose
-  pages are all set aside by capture triage are never asked. Without Claude (no `NotesGenerator`)
-  nothing is reviewed: a doubt without a question is asked with a generic one.
+- Without notes it does nothing. Otherwise the open doubts relevant to the notes (their refs
+  overlap the sources the notes cite, `editor.doubts.ask_plan`) that have no question yet are
+  reviewed by the editor (`review_doubts` scoped to at most `REVIEW_BATCH` of them): those the
+  sources settle are auto-resolved and reported as one short line (`doubts.auto_resolved`
+  `{pending_ids, summary}`, plus `notes.changed` origin `editor` when the notes changed), the
+  others get their question recorded, ready for when the student opens them. Then
+  `doubts.marked` `{count}` announces how many doubts are marked in the notes, so the web reads
+  the marks again. Items whose pages are all set aside by capture triage are never marked.
+- `show(...)` brings one doubt to the chat (a badge of the notes clicked, or «Ver la siguiente»):
+  reviewed first when it has no question yet and Claude is available (it may be auto-resolved
+  then, and is not asked), then asked (`ask_in_chat`) and announced as `doubt.asked`
+  `{pending_id, kind, text, question, suggestions, options, refs}`. The doubt last asked and still
+  open is announced again without a new event. Without Claude a doubt without a question is
+  asked with a generic one.
 - `resolved(...)` announces an answered or dismissed doubt: `doubt.resolved` `{pending_id,
   status, resolution, notes_changed}` and, when the notes changed, `notes.changed` (origin
   `editor`).
@@ -35,16 +40,20 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from studentassistant.editor.doubt_marks import doubt_marks
 from studentassistant.editor.doubts import (
+    AskedDoubt,
     LiveSink,
     ResolutionResult,
     ReviewResult,
     ask_in_chat,
     ask_plan,
+    doubt_chat_turns,
+    open_doubt,
     review_doubts,
 )
 from studentassistant.llm import LedgerBinding, get_client
@@ -55,6 +64,7 @@ from studentassistant.server.workspace import (
     DOUBT_ASKED,
     DOUBT_RESOLVED,
     DOUBTS_AUTO_RESOLVED,
+    DOUBTS_MARKED,
     WorkspaceHub,
 )
 from studentassistant.vault import Origin
@@ -66,8 +76,17 @@ REVIEW_BATCH = 5
 SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
+class ShownDoubt(BaseModel):
+    """What `DoubtChat.show` did: the doubt asked in the chat, or auto-resolved by its review."""
+
+    pending_id: str
+    asked: bool
+    status: Literal["open", "auto_resolved"] = "open"
+    summary: str | None = Field(default=None, description="The review's line when auto-resolved.")
+
+
 class DoubtChat:
-    """Asks the topic's open doubts in the workspace chat, one at a time (module docstring)."""
+    """Prepares the topic's open doubts and shows one in the chat on demand (module docstring)."""
 
     def __init__(
         self,
@@ -81,7 +100,7 @@ class DoubtChat:
         self.sessions, self.hub, self.generator = sessions, hub, generator
         self.review_batch = review_batch
         self.enabled = enabled
-        """`[editor] doubts_in_chat`: off, `schedule` asks nothing (the announcements still go)."""
+        """`[editor] doubts_in_chat`: off, `schedule` reviews nothing (announcements still go)."""
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._again: set[tuple[str, str]] = set()
 
@@ -190,7 +209,7 @@ class DoubtChat:
             while True:
                 self._again.discard(key)
                 try:
-                    await self.ask_next(*key)
+                    await self.prepare(*key)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -200,69 +219,130 @@ class DoubtChat:
         finally:
             self._tasks.pop(key, None)
 
-    # -- asking ----------------------------------------------------------------------------
+    # -- preparing -------------------------------------------------------------------------
 
-    async def ask_next(self, subject_id: str, topic_id: str) -> str | None:
-        """Review what needs it and ask the next doubt, unless one is asked; the id asked."""
-        vault = await self.sessions.open_vault()
+    def _client(self, generator: NotesGenerator, vault: Any, subject_id: str, topic_id: str) -> Any:
+        return get_client(
+            "editor",
+            settings=generator.settings,
+            transport=generator.transport,
+            ledger=LedgerBinding(vault, subject_id, topic_id),
+        )
+
+    async def _review(
+        self, vault: Any, subject_id: str, topic_id: str, pending_ids: list[str]
+    ) -> ReviewResult | None:
+        """Review those doubts with the editor and announce it; `None` when it failed."""
+        generator = self.generator
         sync = self.sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
+        if generator is None or sync is None or not pending_ids:
             return None
+        try:
+            reviewed = await review_doubts(
+                vault,
+                subject_id,
+                topic_id,
+                client=self._client(generator, vault, subject_id, topic_id),
+                sync=sync,
+                host=self.sessions.host,
+                pending_ids=pending_ids,
+                live=self.live(subject_id, topic_id),
+            )
+        except Exception as error:
+            # A reached cost cap, a Claude failure: the doubt keeps no question (a generic one).
+            logger.warning("the doubts of %s/%s were not reviewed: %s", subject_id, topic_id, error)
+            return None
+        self.reviewed(subject_id, topic_id, reviewed)
+        return reviewed
+
+    async def marked(self, subject_id: str, topic_id: str) -> int:
+        """Announce `doubts.marked` `{count}`: how many doubts the notes mark now."""
+        vault = await self.sessions.open_vault()
+        marks = await asyncio.to_thread(doubt_marks, vault, subject_id, topic_id)
+        self.hub.publish(subject_id, topic_id, DOUBTS_MARKED, {"count": marks.count})
+        return marks.count
+
+    async def prepare(self, subject_id: str, topic_id: str) -> int | None:
+        """Review the relevant doubts without a question and announce the marks; their count."""
+        vault = await self.sessions.open_vault()
         generator = self.generator
         if generator is not None and generator.holder(subject_id, topic_id) == "editor":
             return None  # "prepárame el tema" is rewriting the notes; it schedules us again
-        live = self.live(subject_id, topic_id)
         plan = await asyncio.to_thread(ask_plan, vault, subject_id, topic_id)
-        if plan.asked is not None or not (plan.to_ask or plan.to_review):
-            return None
-        if plan.to_review and generator is not None:
-            client = get_client(
-                "editor",
-                settings=generator.settings,
-                transport=generator.transport,
-                ledger=LedgerBinding(vault, subject_id, topic_id),
+        if plan.to_review:
+            await self._review(vault, subject_id, topic_id, plan.to_review[: self.review_batch])
+        return await self.marked(subject_id, topic_id)
+
+    # -- showing one -----------------------------------------------------------------------
+
+    async def show(self, subject_id: str, topic_id: str, pending_id: str) -> ShownDoubt:
+        """Bring the open doubt `pending_id` to the chat (module docstring).
+
+        Raises:
+            UnknownDoubtError, DoubtClosedError, OpenSessionError: nothing asked.
+        """
+        vault = await self.sessions.open_vault()
+        sync = self.sessions.sync
+        if sync is None:  # pragma: no cover - the vault opens with its sync
+            raise RuntimeError("the vault has no sync")
+        doubt = await asyncio.to_thread(open_doubt, vault, subject_id, topic_id, pending_id)
+        item_id = doubt.item.id
+        generator = self.generator
+        if (
+            doubt.question is None
+            and generator is not None
+            and generator.holder(subject_id, topic_id) != "editor"
+        ):
+            reviewed = await self._review(vault, subject_id, topic_id, [item_id])
+            if reviewed is not None and item_id in reviewed.auto_resolved:
+                await self.marked(subject_id, topic_id)
+                return ShownDoubt(
+                    pending_id=item_id,
+                    asked=False,
+                    status="auto_resolved",
+                    summary=reviewed.summary,
+                )
+        turns = await asyncio.to_thread(doubt_chat_turns, vault, subject_id, topic_id)
+        open_turns = [turn for turn in turns if turn.status == "open"]
+        if open_turns and open_turns[-1].pending_id == item_id:
+            last = open_turns[-1]
+            asked = AskedDoubt(
+                pending_id=item_id,
+                kind=last.kind,
+                text=last.text,
+                question=last.question,
+                suggestions=last.suggestions,
+                options=last.options,
+                refs=last.refs,
             )
-            try:
-                reviewed = await review_doubts(
-                    vault,
-                    subject_id,
-                    topic_id,
-                    client=client,
-                    sync=sync,
-                    host=self.sessions.host,
-                    pending_ids=plan.to_review[: self.review_batch],
-                    live=live,
-                )
-            except Exception as error:
-                # A reached cost cap, a Claude failure: ask without reviewing.
-                logger.warning(
-                    "the doubts of %s/%s were not reviewed: %s", subject_id, topic_id, error
-                )
-            else:
-                self.reviewed(subject_id, topic_id, reviewed)
-                plan = await asyncio.to_thread(ask_plan, vault, subject_id, topic_id)
-        candidates = plan.to_ask or plan.to_review
-        if plan.asked is not None or not candidates:
-            return None
-        asked = await ask_in_chat(
-            vault,
-            subject_id,
-            topic_id,
-            candidates[0],
-            sync=sync,
-            host=self.sessions.host,
-            live=live,
-        )
+        else:
+            asked = await ask_in_chat(
+                vault,
+                subject_id,
+                topic_id,
+                item_id,
+                sync=sync,
+                host=self.sessions.host,
+                live=self.live(subject_id, topic_id),
+            )
         self.hub.publish(
             subject_id,
             topic_id,
             DOUBT_ASKED,
             asked.model_dump(
                 mode="json",
-                include={"pending_id", "question", "suggestions", "options", "refs"},
+                include={
+                    "pending_id",
+                    "kind",
+                    "text",
+                    "question",
+                    "suggestions",
+                    "options",
+                    "refs",
+                },
             ),
         )
-        return asked.pending_id
+        return ShownDoubt(pending_id=item_id, asked=True)
 
 
-__all__ = ["REVIEW_BATCH", "DoubtChat"]
+__all__ = ["REVIEW_BATCH", "DoubtChat", "ShownDoubt"]

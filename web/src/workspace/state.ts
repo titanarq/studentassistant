@@ -2,13 +2,20 @@
  * The study workspace's shared state (#312, epic #311): the topic's document as last read
  * (`GET /api/subjects/{s}/topics/{t}/notes`) with its `revision`, and `reloadNotes()`, which the
  * chat calls after a turn changed the notes, and `doubtsChanged()`, which it calls when a doubt
- * is asked or resolved (the header's counter is read again, #329). Direct editing (#316) and the live chat panel (#317)
+ * is asked or resolved. Direct editing (#316) and the live chat panel (#317)
  * read and refresh the document through this module only.
+ *
+ * Since #516 it also holds the open doubts marked in the notes (`GET .../doubts/marks`), read again
+ * on every doubt event (`doubtsChanged`) and every new revision of the notes, and `showDoubt` /
+ * `showNextDoubt`, which bring one doubt to the chat (`POST .../doubts/{id}/ask`, a badge clicked
+ * or «Ver la siguiente»).
  */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { describeFailure } from "../desk/api";
 import { fetchNotes } from "../notes/api";
+import { describeActionFailure } from "../pending/doubts";
+import { askDoubt, type DoubtMarks, fetchDoubtMarks, nextDoubt } from "./doubtMarks";
 
 export type WorkspaceNotes =
   | { kind: "loading" }
@@ -26,9 +33,19 @@ export interface WorkspaceState {
   changedSections: ReadonlySet<string>;
   /** Reads the notes again; `changedSections` replaces the highlighted sections when given. */
   reloadNotes: (changedSections?: string[]) => Promise<void>;
-  /** Bumped when the chat hears a doubt asked or resolved: the pending-doubts counter is read again. */
+  /** Bumped when the chat hears a doubt asked, resolved or marked: the marks are read again. */
   doubtsKey: number;
   doubtsChanged: () => void;
+  /** The open doubts marked in the notes (#516); `null` until read (or when it failed). */
+  doubtMarks: DoubtMarks | null;
+  /** Shows that doubt in the chat; a refusal is kept in `doubtProblem`. */
+  showDoubt: (pendingId: string) => Promise<void>;
+  /** «Ver la siguiente»: the first marked doubt not asked yet. */
+  showNextDoubt: () => Promise<void>;
+  /** A doubt is being brought to the chat. */
+  showingDoubt: boolean;
+  /** Why the last doubt could not be shown (Spanish), until the next try. */
+  doubtProblem: string | null;
 }
 
 /**
@@ -67,7 +84,52 @@ export function useWorkspaceState(subjectId: string, topicId: string): Workspace
     };
   }, [reloadNotes]);
 
-  return { subjectId, topicId, notes, changedSections, reloadNotes, doubtsKey, doubtsChanged };
+  const [doubtMarks, setDoubtMarks] = useState<DoubtMarks | null>(null);
+  const marksRef = useRef<DoubtMarks | null>(null);
+  marksRef.current = doubtMarks;
+  const markReads = useRef(0);
+  const revision = notes.kind === "ready" ? (notes.revision ?? notes.text) : notes.kind;
+  useEffect(() => {
+    const read = ++markReads.current;
+    void fetchDoubtMarks(subjectId, topicId).then((result) => {
+      if (read !== markReads.current) return;
+      setDoubtMarks(result.kind === "ok" ? result.value : null);
+    });
+  }, [subjectId, topicId, doubtsKey, revision]);
+
+  const [showingDoubt, setShowing] = useState(false);
+  const [doubtProblem, setDoubtProblem] = useState<string | null>(null);
+  const showDoubt = useCallback(
+    async (pendingId: string) => {
+      setShowing(true);
+      setDoubtProblem(null);
+      const result = await askDoubt(subjectId, topicId, pendingId);
+      setShowing(false);
+      if (result.kind !== "ok") setDoubtProblem(`No se pudo mostrar la duda: ${describeActionFailure(result)}`);
+      // Asked now (or closed, unknown): the marks are read again.
+      setDoubtsKey((n) => n + 1);
+    },
+    [subjectId, topicId],
+  );
+  const showNextDoubt = useCallback(async () => {
+    const next = nextDoubt(marksRef.current);
+    if (next !== null) await showDoubt(next);
+  }, [showDoubt]);
+
+  return {
+    subjectId,
+    topicId,
+    notes,
+    changedSections,
+    reloadNotes,
+    doubtsKey,
+    doubtsChanged,
+    doubtMarks,
+    showDoubt,
+    showNextDoubt,
+    showingDoubt,
+    doubtProblem,
+  };
 }
 
 export const WorkspaceContext = createContext<WorkspaceState | null>(null);

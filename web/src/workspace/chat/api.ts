@@ -34,6 +34,8 @@ export interface DoubtOption {
 /** A doubt asked in the chat (#325): `doubt.asked`, or a history turn of kind `doubt`. */
 export interface DoubtView {
   pendingId: string;
+  /** What the doubt is about, its explanation (#516); empty when unknown. */
+  text: string;
   question: string;
   suggestions: string[];
   options: DoubtOption[];
@@ -59,6 +61,7 @@ function readDoubt(body: Json, refs: unknown): DoubtView | null {
   if (pendingId === null || question === null) return null;
   return {
     pendingId,
+    text: text(body.text) || text(body.doubt_text),
     question,
     suggestions: strings(body.suggestions),
     options: readOptions(body.options),
@@ -412,6 +415,8 @@ export type WorkspaceEvent =
   | { type: "doubt.asked"; doubt: DoubtView }
   | { type: "doubt.resolved"; pendingId: string; status: string; resolution: string | null; notesChanged: boolean }
   | { type: "doubts.auto_resolved"; pendingIds: string[]; summary: string }
+  /** #516: how many open doubts the notes mark now (the marks are read again). */
+  | { type: "doubts.marked"; count: number }
   | { type: "incorporation.progress"; done: number; total: number; sourceIds: string[] };
 
 function parseData(data: string): unknown {
@@ -499,6 +504,8 @@ export function readWorkspaceEvent(event: string, data: string): WorkspaceEvent 
       const pendingIds = strings(body.pending_ids);
       return pendingIds.length === 0 ? null : { type: event, pendingIds, summary: text(body.summary) };
     }
+    case "doubts.marked":
+      return { type: event, count: count(body.count) };
     case "incorporation.progress":
       return { type: event, done: count(body.done), total: count(body.total), sourceIds: strings(body.source_ids) };
     default:

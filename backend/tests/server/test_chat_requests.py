@@ -567,7 +567,7 @@ QUESTION = "¿Qué pone después de «cociente»?"
 
 
 def _ask_a_doubt(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> str:
-    """A typed turn that raises a doubt, the review of p-1, then the doubt asked in the chat."""
+    """A typed turn that raises a doubt, the review of p-1, then the doubt shown in the chat."""
     fake.reply_tool(
         EDIT_TOOL,
         {
@@ -614,6 +614,12 @@ def _ask_a_doubt(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> st
     response = client.post(f"{_base(topic)}/notes/chat", json={"message": "Aclara la definición"})
     assert response.status_code == 200, response.text
     _settle(client)
+    events = subscription.drain()
+    # Marked in the notes, not asked (#516): the student opens it from its badge.
+    assert "doubt.asked" not in [e.event for e in events]
+    [raised] = next(e.data for e in events if e.event == "turn.result")["doubts"]
+    shown = client.post(f"{_base(topic)}/doubts/{raised}/ask")
+    assert shown.status_code == 200, shown.text
     asked = [e.data for e in subscription.drain() if e.event == "doubt.asked"]
     subscription.close()
     assert [a["question"] for a in asked] == [QUESTION]
@@ -662,6 +668,9 @@ def test_a_typed_answer_to_the_asked_doubt_resolves_it(
         assert f"Doubt asked in the chat now: {pending_id} «{QUESTION}»" in text
         assert "suggestion 1: incremental" in text
         events = subscription.drain()
+        # The marks are announced again after it (#516).
+        assert "doubts.marked" in _names(events)
+        events = [e for e in events if e.event != "doubts.marked"]
         assert _names(events) == [
             "request.detected",
             "turn.started",

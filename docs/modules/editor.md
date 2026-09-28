@@ -10,8 +10,9 @@
   subject style guide.
 - Edit loop: chat reply + section-level edit ops, validated, applied, committed with a summary;
   conversation persisted.
-- Doubts resolution: auto-resolve pending items with cited evidence, ask the rest one by one
-  (in the workspace chat, #325), record decisions. Doubts never go into the notes.
+- Doubts resolution: auto-resolve pending items with cited evidence, mark the rest in the notes
+  viewer (#516; shown in the workspace chat when the student opens one, #325), record decisions.
+  Doubts never go into the notes.
 - "¿Por qué pusiste esto?": explain a paragraph from its cited sources.
 - Style guide learning per subject; notes versions (git tags) and diffs.
 - Voice tutor (study mode): answer the student's questions about a topic from its notes and
@@ -24,7 +25,8 @@ of ADR-0005, in
 itself), "prepárame el tema", the first version of the notes, in
 `studentassistant.editor.inputs` and `studentassistant.editor.generate`, the section-level edit
 ops in `studentassistant.editor.edits`, the doubts resolution in
-`studentassistant.editor.doubts`, the contradictions between sources in
+`studentassistant.editor.doubts` (where they are marked in the notes viewer in
+`studentassistant.editor.doubt_marks`, #516), the contradictions between sources in
 `studentassistant.editor.contradictions`, the conversational revision of the notes in
 `studentassistant.editor.revise`, the incremental incorporation of a few sources per request
 and the source states in `studentassistant.editor.incorporate`, the student's own edits in `studentassistant.editor.direct_edit`
@@ -325,6 +327,9 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   for the review. `ResolutionResult` carries the notes' `revision`.
 - `await dismiss_doubt(vault, subject, topic, pending_id, *, sync, host=None, live=None) ->
   ResolutionResult`: closed as `dismissed`, no call.
+- `open_doubt(vault, subject, topic, pending_id) -> Doubt` (blocking, reads only, #516): one open
+  doubt with its latest question (`None` when it has none yet); `UnknownDoubtError` /
+  `DoubtClosedError` otherwise.
 - `list_doubts(vault, subject, topic) -> DoubtsQueue` (blocking, reads only): `open_count`,
   `current` (the first open doubt: the one to ask next, one at a time) and `items`, each a `Doubt`
   -- `item` (the observer's `PendingItem`), `question` (the latest `DoubtQuestion` of its id or
@@ -365,20 +370,24 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   `pending_id` `duda-<hex>` or `contradiccion-<hex>`, `source_refs` its refs and options; the fold
   merges one that duplicates an open item into it, `observer.pending`) plus a `pending.question`
   not asked yet, in the live session or a review session, with one commit.
-- **One at a time in the chat** (#325): `ask_plan(vault, subject, topic) -> AskPlan` (blocking,
-  reads only): `asked` (an open doubt asked in the chat, `in_chat`, not answered yet: nothing else
-  is asked meanwhile), `to_review` (relevant open doubts with no question yet) and `to_ask`
+- **In the chat on demand** (#325, #516): the doubts are no longer asked one after another; the
+  web marks them in the notes (`doubt_marks`, below) and the student opens one. `ask_plan(vault,
+  subject, topic) -> AskPlan` (blocking, reads only) is what the server's preparer reviews:
+  `asked` (the first open doubt asked in the chat, `in_chat`, not answered yet), `to_review`
+  (relevant open doubts with no question yet) and `to_ask`
   (relevant open doubts with a question, not asked), in the queue's order. Relevant: the item's
   refs (its captures' pages -- `inputs.capture_pages` --, its sources, its segments' sessions)
   overlap the sources the current notes cite, or it has none; an item whose pages and sources are
   all set aside by capture triage (#324) is never asked; without notes nothing is asked. `await
   ask_in_chat(vault, subject, topic, pending_id, *, sync, host=None, live=None) -> AskedDoubt`
   writes the item's latest question again with `in_chat: true` (a generic one when it has none);
-  `AskedDoubt` (`pending_id`, `question`, `suggestions`, `options`, `refs`, `session_id`,
-  `commit`) is the `doubt.asked` payload. The server's `doubt_chat.py` drives it.
+  `AskedDoubt` (`pending_id`, `kind`, `text` -- the item's explanation, #516 --, `question`,
+  `suggestions`, `options`, `refs`, `session_id`, `commit`) is the `doubt.asked` payload. The
+  server's `doubt_chat.py` drives it (`DoubtChat.show`).
 - `doubt_chat_turns(vault, subject, topic) -> [DoubtChatTurn]` (blocking, reads only): every
-  doubt asked in the chat, oldest first (`time` from its session's start plus the event's `t`),
-  with `pending_id`, `kind`, `question`, `suggestions`, `options`, `refs`, `status`, `resolution`,
+  doubt asked in the chat, oldest first (`time` from its session's start plus the event's `t`); a
+  doubt asked again (a badge clicked, #516) is one turn, at its latest asking; with `pending_id`,
+  `kind`, `text` (#516), `question`, `suggestions`, `options`, `refs`, `status`, `resolution`,
   `answer` (the suggestion, source or words the student gave), `notes_changed`, `resolved_time`;
   `chat_history` shows them as turns of kind `doubt`.
 - Limitation: a student's answer is not a source of the catalogue, so the edits it leads to cite
@@ -386,6 +395,33 @@ read from the cache). Every call goes through `llm.structured` (strict tool) and
   source needs `[^ia]` in `ampliado` or stays out of the notes in `estricto`.
 - Entry points: the server's `GET/POST /api/subjects/{s}/topics/{t}/doubts...`
   (`docs/modules/server.md`).
+
+### Doubts marked in the notes viewer -- `doubt_marks.py` (#516)
+Where each open doubt is marked in the web's notes viewer instead of being asked one after
+another in the chat; deterministic, reads only, no Claude call, and **nothing is written into the
+notes** (the mark is only visual).
+- `doubt_marks(vault, subject, topic) -> DoubtMarks` (blocking): `count` and `marks`, one
+  `DoubtMark` per marked open doubt -- `pending_id`, `kind`, `text`, `level` (`block`, `section`
+  or `top`), `blocks` (`MarkedBlock` `{section, number}`), `section`, `asked` (asked in the chat
+  and not answered yet) -- in the order of the notes (the top ones first, then by the position of
+  the first block or heading; ties in queue order). Without notes nothing is marked.
+- Which doubts: `ask_plan`'s rules -- open, refs overlapping the sources the notes cite (a segment
+  counts as its session) or no refs, never one whose pages are all set aside by capture triage --
+  plus any open doubt asked in the chat.
+- **Blocks**: the blocks citing the doubt's sources -- its captures' pages and source refs compared
+  by file (`reviewed.source_key`, as `blocks_citing`) --; for a transcript segment (its time from
+  the `transcript.final` events, `inputs.segment_times`) or a transcript span among its refs,
+  only the blocks whose transcript citation shares a stretch of time with it in the same session
+  (spans that only touch do not count); a segment whose time is unknown matches any citation of
+  its session. Titles, rules and footnote definitions are never marked.
+- **Section**: no block matches -- the observer's section of its segments (or that section's
+  parent) matched by title to exactly one notes heading (numbering, case, accents and
+  punctuation aside) --: the doubt goes on that heading. **Top**: otherwise.
+- Blocks are numbered as the web viewer numbers them (the "¿Por qué?" numbering): per section
+  (its anchor; `None` before the first one), from 1 after the heading -- before the first section
+  from the start, the `# title` included --, footnote definitions left out.
+- Entry point: the server's `GET .../doubts/marks`; the `DoubtChat` announces the count as
+  `doubts.marked`.
 
 ### Contradictions between sources -- `contradictions.py`
 The editor never chooses silently between two sources that disagree (1769 in the notes, 1765 in

@@ -454,7 +454,19 @@ Routes registered today:
   (`DoubtChat.live`), so review, answer and dismiss work during a session (#325). An answer or a
   dismissal is broadcast on the workspace stream (`doubt.resolved`, plus `notes.changed` origin
   `editor` when the notes changed), a review's auto-resolutions as `doubts.auto_resolved`; then
-  the chat asks the next doubt (`DoubtChat.schedule`).
+  the `DoubtChat` prepares the doubts and announces the marks (`DoubtChat.schedule`,
+  `doubts.marked`).
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/doubts/marks` (#516) -> `DoubtMarks`
+    (`editor.doubt_marks`): `subject`, `topic`, `count` and `marks`, each `{pending_id, kind,
+    text, level: block|section|top, blocks: [{section, number}], section, asked}`, in the order of
+    the notes: where the web's notes viewer draws each open doubt's «?» badge. Reads only.
+  - `POST .../doubts/{pending_id}/ask` (#516), no body -> `{pending_id, asked, status:
+    open|auto_resolved, summary}`: shows that doubt in the workspace chat (a badge clicked, or
+    «Ver la siguiente»; `DoubtChat.show`): reviewed first when it has no question yet and Claude
+    is available (auto-resolved then: `asked: false`, the review's `summary`, and
+    `doubts.auto_resolved` + `doubts.marked` on the stream), else asked (`ask_in_chat`) and
+    announced as `doubt.asked`; the doubt last asked and still open is announced again without a
+    new event. Never takes the notes lock; 404 unknown, 409 `doubt_closed`.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/doubts` -> `DoubtsQueue`: `subject`,
     `topic`, `open_count`, `current` (the id of the open doubt to ask next, `null` when none) and
     `items`, open first, each `{item, question, outcome}`: `item` is the observer's `PendingItem`
@@ -737,12 +749,15 @@ Routes registered today:
     notes changed (a chat turn or an undo: `editor`; a student save: `user`; a generation that
     wrote the notes, whichever way it started: `generation`; a restore: `restore`; a doubt's
     answer or a review's auto-resolution: `editor`);
-  - `doubt.asked` `{pending_id, question, suggestions, options: [{source_id, says}], refs}`: the
-    chat asks one open doubt (#325; `refs` are the source ids it is about);
+  - `doubt.asked` `{pending_id, kind, text, question, suggestions, options: [{source_id, says}],
+    refs}`: the chat shows one open doubt (#325, #516: when the student opens it; `text` is its
+    explanation, `refs` the source ids it is about);
   - `doubt.resolved` `{pending_id, status: resolved|dismissed, resolution, notes_changed}`: a doubt
     was answered or dismissed (`POST .../doubts/{id}/answer|dismiss`);
   - `doubts.auto_resolved` `{pending_ids, summary}`: the editor settled those doubts from the
     sources itself; `summary` is the one short chat line;
+  - `doubts.marked` `{count}` (#516): how many open doubts the notes mark now (after the
+    `DoubtChat` prepared them); the web reads `GET .../doubts/marks` again;
   - `incorporation.progress` `{done, total, source_ids}`: a batched "prepárame el tema" finished
     the batch `source_ids`; `done` of the `total` pending sources are incorporated (#326);
   - `study.marked` `{version, tag}`: the topic switched to Estudiar and notes version `version`
@@ -751,26 +766,30 @@ Routes registered today:
   (else the oldest event) is dropped. Errors before the stream: an unknown topic 404, a vault
   that cannot be opened 503. Needs the bearer check like every non-exempt route.
 - **Doubts in the workspace chat** (`server/doubt_chat.py`, `DoubtChat`, `app.state.doubt_chat`,
-  #325): the doubts are asked in the chat **one at a time**, never written into the notes. After
-  every editor write that changed the notes or raised doubts -- a typed turn (`revise_routes.py`),
-  a spoken one (`assistant_requests.py`), "prepárame el tema" (`NotesGenerator`), a doubt answered,
-  dismissed or reviewed (`doubts_routes.py`) -- the topic is `schedule`d and an asker task runs
-  (one per topic; a schedule meanwhile runs it once more). It does not take the notes lock, so the
-  student's next turn is never refused because of it, and it waits for nothing while "prepárame el
-  tema" rewrites the notes (the generation schedules it again). It asks nothing while a doubt asked
-  in the chat is open or without notes (`editor.doubts.ask_plan`); otherwise the relevant open
-  doubts without a question (at most `REVIEW_BATCH`, 5) are first reviewed by the editor
-  (`review_doubts(pending_ids=...)`: those the sources settle are auto-resolved, one
-  `doubts.auto_resolved` line), then the first relevant open doubt with a question is asked
-  (`ask_in_chat`, `doubt.asked`). Items whose pages are all set aside are never asked. A failed
-  review (a reached cap, a Claude failure) is logged and the doubt asked with a generic question.
-  Its events go to the topic's live session when it is active (`DoubtChat.live`, a `LiveSink`
-  publishing on the bus with the given origin), else to a review session. The chat's history
-  (`GET .../notes/chat`) shows the asked doubts as turns of kind `doubt` and the auto-resolutions
-  as `doubts_resolved`, and incorporations as turns of kind `incorporate` (`source_ids`, `diff`).
-  `[editor] doubts_in_chat = false` turns the asking off (the doubts API and
-  the announcements of its routes stay). Routing a chat message ("la segunda", "pone «escrita»")
-  to the asked doubt is #327; the web renders the turns in #329.
+  #325, #516): the doubts are never written into the notes and, since #516, **not asked one after
+  another**: the web marks them in the notes viewer (`GET .../doubts/marks`) and the student opens
+  one (`POST .../doubts/{id}/ask`, `DoubtChat.show`). After every editor write that changed the
+  notes or raised doubts -- a typed turn (`revise_routes.py`), a spoken one
+  (`assistant_requests.py`), "prepárame el tema" (`NotesGenerator`), a doubt answered, dismissed
+  or reviewed (`doubts_routes.py`) -- the topic is `schedule`d and a preparer task runs (one per
+  topic; a schedule meanwhile runs it once more). It does not take the notes lock, so the
+  student's next turn is never refused because of it, and it waits for nothing while "prepárame
+  el tema" rewrites the notes (the generation schedules it again). Without notes it does nothing
+  more; otherwise the relevant open doubts without a question (`editor.doubts.ask_plan`, at most
+  `REVIEW_BATCH`, 5) are reviewed by the editor (`review_doubts(pending_ids=...)`: those the
+  sources settle are auto-resolved, one `doubts.auto_resolved` line; the others get their
+  question, ready for when the student opens them), then `doubts.marked` `{count}` is announced.
+  Items whose pages are all set aside are never marked. A failed review (a reached cap, a Claude
+  failure) is logged; such a doubt is shown with a generic question. `show` reviews a doubt
+  without a question first (it may be auto-resolved instead of asked), then writes its question
+  with `in_chat: true` (`ask_in_chat`) and announces `doubt.asked`. Its events go to the topic's
+  live session when it is active (`DoubtChat.live`, a `LiveSink` publishing on the bus with the
+  given origin), else to a review session. The chat's history (`GET .../notes/chat`) shows the
+  asked doubts as turns of kind `doubt` (with `doubt_text`, their explanation; one turn per doubt,
+  at its latest asking) and the auto-resolutions as `doubts_resolved`, and incorporations as
+  turns of kind `incorporate` (`source_ids`, `diff`). `[editor] doubts_in_chat = false` turns the
+  preparer off (the doubts API, the marks and the announcements of its routes stay). A chat
+  message ("la segunda", "pone «escrita»") is routed to the doubt last asked and still open (#327).
 - **The voice tutor API** (`server/tutor_routes.py`, `tutor_router()`, #82): thin over
   `editor.tutor` (`docs/modules/editor.md`), over the vault and `GitSync` of the
   `SessionService`; the `editor` role through `llm_transport`, bound to the topic's ledger. It only

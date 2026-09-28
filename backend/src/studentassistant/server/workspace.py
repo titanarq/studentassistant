@@ -68,6 +68,7 @@ NOTES_CHANGED = "notes.changed"
 DOUBT_ASKED = "doubt.asked"
 DOUBT_RESOLVED = "doubt.resolved"
 DOUBTS_AUTO_RESOLVED = "doubts.auto_resolved"
+DOUBTS_MARKED = "doubts.marked"
 INCORPORATION_PROGRESS = "incorporation.progress"
 STUDY_MARKED = "study.marked"
 WORKSPACE_EVENTS: tuple[str, ...] = (
@@ -81,6 +82,7 @@ WORKSPACE_EVENTS: tuple[str, ...] = (
     DOUBT_ASKED,
     DOUBT_RESOLVED,
     DOUBTS_AUTO_RESOLVED,
+    DOUBTS_MARKED,
     INCORPORATION_PROGRESS,
     STUDY_MARKED,
 )
@@ -303,6 +305,7 @@ class TurnBroadcast:
 
 __all__ = [
     "DOUBTS_AUTO_RESOLVED",
+    "DOUBTS_MARKED",
     "DOUBT_ASKED",
     "DOUBT_RESOLVED",
     "INCORPORATION_PROGRESS",

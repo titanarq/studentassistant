@@ -11,6 +11,7 @@ import { capitalized, croppedImageName, isDiagram, sourceName } from "./sources"
 import { canRetry, type ChatEntry } from "./turns";
 import type { WorkspaceChat } from "./useWorkspaceChat";
 import ChatComposer from "./ChatComposer";
+import { doubtsLine as marksLine } from "../doubtMarks";
 import "./chat.css";
 
 /** `00:02:34`, from milliseconds since the start of the session. */
@@ -225,7 +226,26 @@ function TriageLines({ targets, onOpenSource }: { targets: TriageTarget[]; onOpe
 }
 
 function doubtsLine(count: number): string {
-  return count === 1 ? "Ha surgido 1 duda: te la pregunto aquí." : `Han surgido ${count} dudas: te las pregunto aquí, de una en una.`;
+  return count === 1
+    ? "Ha surgido 1 duda: la tienes marcada en los apuntes."
+    : `Han surgido ${count} dudas: las tienes marcadas en los apuntes.`;
+}
+
+/** The student's answer to a doubt by a button (#516): a suggestion (1-based) or the right source. */
+export interface DoubtChoice {
+  suggestion?: number;
+  source_id?: string;
+}
+
+/** Sends a doubt's answer (`POST .../doubts/{id}/answer`); resolves to a Spanish refusal, or `null`. */
+export type AnswerDoubt = (pendingId: string, choice: DoubtChoice) => Promise<string | null>;
+
+/** The doubts marked in the notes (#516), for the line above the input. */
+export interface MarksLine {
+  count: number;
+  onNext: () => void;
+  busy: boolean;
+  problem: string | null;
 }
 
 const DOUBT_BADGE: Record<string, string> = {
@@ -236,24 +256,64 @@ const DOUBT_BADGE: Record<string, string> = {
 };
 
 /**
- * A doubt asked in the chat (#325): highlighted, with the question, the suggestions as a
- * numbered list and, for a contradiction, each option with its source (which opens in
- * Recursos). The student answers by typing or saying it; `doubt.resolved` marks it answered.
+ * A doubt asked in the chat (#325, #516): highlighted, with what it is about, the question, the
+ * suggestions as numbered buttons and, for a contradiction, what each source says as a button
+ * (the source itself opens in Recursos). The student answers by pressing one (`onAnswer`, the
+ * doubts route), or by typing or saying it (a `doubt_answer` turn); `doubt.resolved` marks it
+ * answered.
  */
-function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOpenSource?: OpenSource; capturing: boolean }) {
+function DoubtEntry({
+  doubt,
+  onOpenSource,
+  onAnswer,
+  capturing,
+}: {
+  doubt: DoubtView;
+  onOpenSource?: OpenSource;
+  onAnswer?: AnswerDoubt;
+  capturing: boolean;
+}) {
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const open = doubt.status === "open";
   const withOptions = new Set(doubt.options.map((option) => option.sourceId));
   const others = doubt.refs.filter((ref) => !withOptions.has(ref));
+  const canChoose = open && onAnswer !== undefined && !sending;
+  const choose = async (label: string, choice: DoubtChoice) => {
+    if (!canChoose) return;
+    setSending(true);
+    setProblem(null);
+    setChosen(label);
+    const refusal = await onAnswer(doubt.pendingId, choice);
+    setSending(false);
+    if (refusal !== null) {
+      setChosen(null);
+      setProblem(refusal);
+    }
+  };
+  const answer = doubt.answer ?? (open ? null : chosen);
   return (
     <div className={open ? "ws-chat-doubt" : "ws-chat-doubt ws-chat-doubt-closed"}>
       <p className="ws-chat-who">
         Asistente <span className="ws-chat-badge">{DOUBT_BADGE[doubt.status] ?? "Duda"}</span>
       </p>
+      {doubt.text !== "" && doubt.text !== doubt.question && <p className="ws-chat-explanation">{doubt.text}</p>}
       <p className="ws-chat-text">{doubt.question}</p>
       {doubt.suggestions.length > 0 && (
         <ol className="ws-chat-suggestions" aria-label="Sugerencias">
           {doubt.suggestions.map((suggestion, index) => (
-            <li key={index}>{suggestion}</li>
+            <li key={index}>
+              <button
+                type="button"
+                className="ws-chat-choice"
+                disabled={!canChoose}
+                aria-pressed={chosen === suggestion ? "true" : undefined}
+                onClick={() => void choose(suggestion, { suggestion: index + 1 })}
+              >
+                {suggestion}
+              </button>
+            </li>
           ))}
         </ol>
       )}
@@ -261,8 +321,17 @@ function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOp
         <ul className="ws-chat-options" aria-label="Qué dice cada fuente">
           {doubt.options.map((option) => (
             <li key={option.sourceId}>
+              <button
+                type="button"
+                className="ws-chat-choice"
+                disabled={!canChoose}
+                aria-label={`Es correcto: «${option.says}» (${sourceName(option.sourceId)})`}
+                aria-pressed={chosen === option.says ? "true" : undefined}
+                onClick={() => void choose(option.says, { source_id: option.sourceId })}
+              >
+                «{option.says}»
+              </button>{" "}
               <SourceButton sourceId={option.sourceId} onOpenSource={onOpenSource} text={capitalized(sourceName(option.sourceId))} />
-              : «{option.says}»
             </li>
           ))}
         </ul>
@@ -272,12 +341,19 @@ function DoubtEntry({ doubt, onOpenSource, capturing }: { doubt: DoubtView; onOp
           Sobre: <Sources sourceIds={others} onOpenSource={onOpenSource} />
         </p>
       )}
-      {open && (
+      {open && sending && <p className="ws-chat-hint">Aplicando tu respuesta…</p>}
+      {open && !sending && (
         <p className="ws-chat-hint">
-          {capturing ? "Contesta escribiendo o de viva voz" : "Contesta escribiendo o con el micrófono"}: «la 2», «pone “escrita”»…
+          {onAnswer !== undefined && (doubt.suggestions.length > 0 || doubt.options.length > 0) ? "Pulsa una respuesta o contesta" : "Contesta"}{" "}
+          {capturing ? "escribiendo o de viva voz" : "escribiendo o con el micrófono"}: «la 2», «pone “escrita”»…
         </p>
       )}
-      {!open && doubt.answer !== null && <p className="ws-chat-answer">Respondiste: «{doubt.answer}»</p>}
+      {problem !== null && (
+        <p className="ws-chat-warning" role="alert">
+          No se pudo aplicar tu respuesta: {problem}
+        </p>
+      )}
+      {!open && answer !== null && <p className="ws-chat-answer">Respondiste: «{answer}»</p>}
       {doubt.status === "dismissed" && <p className="ws-chat-resolved">Descartada.</p>}
       {doubt.status !== "open" && doubt.status !== "dismissed" && (
         <p className="ws-chat-resolved">
@@ -297,16 +373,19 @@ interface ReplyProps {
   idle: boolean;
   /** A capture is running: the student can also answer by voice. */
   capturing: boolean;
+  /** Answers a doubt by a button (#516). */
+  onAnswer?: AnswerDoubt;
   /** A whole-topic run: its batches, shown below its progress. */
   batches?: ReactNode;
 }
 
-function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, batches }: ReplyProps) {
+function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, onAnswer, batches }: ReplyProps) {
   const [showDiff, setShowDiff] = useState(false);
   const diffId = useId();
   const placeholder = replyPlaceholder(entry);
   const text = entry.reply !== "" ? entry.reply : placeholder;
-  if (entry.kind === "doubt" && entry.doubt !== null) return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} capturing={capturing} />;
+  if (entry.kind === "doubt" && entry.doubt !== null)
+    return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} onAnswer={onAnswer} capturing={capturing} />;
   if (entry.kind === "doubts_resolved") return <p className="ws-chat-line">{entry.reply}</p>;
   if (entry.kind === "triage" && entry.status === "done" && entry.decision === "set_aside" && entry.targets.some((t) => t.reasons.length > 0)) {
     return <TriageLines targets={entry.targets} onOpenSource={onOpenSource} />;
@@ -445,7 +524,9 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
  * igualmente"). Requests waiting for their turn say "En cola…". Incorporations say what they
  * incorporated and how many doubts they raised; a whole-topic run shows its progress and its
  * batches; setting pages aside or restoring them is one short line; a doubt asked in the chat is
- * highlighted, and answered by typing or saying it. "Ya está, quiero estudiar" (#335, #337) is
+ * highlighted, and answered by pressing a suggestion or a source, typing or saying it; the doubts
+ * marked in the notes are one line above the input, «Tienes N dudas marcadas en los apuntes», with
+ * «Ver la siguiente» (#516; they are never asked one after another). "Ya está, quiero estudiar" (#335, #337) is
  * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
  * is a new line) with, in one row, **Enviar** and the icon buttons for the microphone and "Deshacer
  * el último cambio" (#458; `ChatComposer`, shared with the study chat since #487); no heading above
@@ -517,6 +598,8 @@ export default function ChatPanel({
   onOpenSource,
   capturing = false,
   selection = null,
+  onAnswerDoubt,
+  marks = null,
 }: {
   chat: WorkspaceChat;
   /** The topic's versions page, where a change read from the history is compared. */
@@ -526,6 +609,10 @@ export default function ChatPanel({
   capturing?: boolean;
   /** The Recursos selection (#432): chips above the input, sent with each message. */
   selection?: SourceSelection | null;
+  /** Answers a doubt asked in the chat by a button (#516). */
+  onAnswerDoubt?: AnswerDoubt;
+  /** The doubts marked in the notes (#516): «Tienes N dudas marcadas en los apuntes». */
+  marks?: MarksLine | null;
 }) {
   const [draft, setDraft] = useState("");
   const idle = chat.busy === null;
@@ -605,6 +692,7 @@ export default function ChatPanel({
                   onRetry={chat.retry}
                   idle={idle}
                   capturing={capturing}
+                  onAnswer={onAnswerDoubt}
                   batches={
                     own.length > 0 && (
                       <ol className="ws-chat-batches" aria-label="Tandas de la preparación">
@@ -641,6 +729,19 @@ export default function ChatPanel({
         {chat.busy === "undo" && <p>Deshaciendo el último cambio…</p>}
         {chat.notice !== null && <p>{chat.notice}</p>}
       </div>
+      {marks !== null && marks.count > 0 && (
+        <div className="ws-chat-marks" role="status">
+          <span>{marksLine(marks.count)}</span>
+          <button type="button" className="ws-chat-marks-next" onClick={marks.onNext} disabled={marks.busy}>
+            Ver la siguiente
+          </button>
+        </div>
+      )}
+      {marks !== null && marks.problem !== null && (
+        <p className="ws-chat-warning" role="alert">
+          {marks.problem}
+        </p>
+      )}
       <ChatComposer
         id="ws-chat-input"
         label="Mensaje para el asistente"

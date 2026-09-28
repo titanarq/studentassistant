@@ -386,7 +386,8 @@
     - **Incorporations** (`kind: incorporate`): "Incorporadas: página 3, página 4" (each source
       a button that opens it in **Recursos**, like provenance clicks), the reply, "Cambio
       aplicado" with its diff (the history's incorporation turns carry their diff), and "Ha
-      surgido 1 duda…" / "Han surgido N dudas…" when the result raised doubts.
+      surgido 1 duda: la tienes marcada en los apuntes." / "Han surgido N dudas: las tienes
+      marcadas en los apuntes." when the result raised doubts (#516).
     - **A whole-topic run** ("prepárame el tema", batched, #326) is one entry: its
       `incorporation.progress` as "3 de 8 páginas" (with a `<progress>`), and each batch (an
       `incorporate` turn without request) listed below it ("Tandas de la preparación"). A run
@@ -398,16 +399,27 @@
       apartada: en blanco», «Página 4 apartada», «Página 1 ya estaba apartada: repetida de la
       página 2» (the page a button that opens it in Recursos); otherwise (a restore, no reasons,
       an older turn) the backend's reply («He apartado la página 9.»).
-    - **Doubts** (`doubt.asked` / `doubt.resolved`, #325; `doubt` turns of the history): a
-      highlighted entry "Asistente · Duda" with the question, the suggestions as a numbered list
-      (`<ol>` "Sugerencias"), for a contradiction each option with its source ("Página 3:
-      «1760»", the source opening in Recursos) and the other sources it is about ("Sobre: …").
-      No answer buttons and no "Descartar" link: the student types or says the answer ("la 2",
-      "pone «escrita»", "descártala"), which becomes a `doubt_answer` turn (its reply is the
-      resolution); `doubt.resolved` marks the doubt "Duda resuelta" / "Duda descartada" with
-      "Respondida: <resolution>" (and "Respondiste: «…»" when the history knows the answer).
-      While one is asked, the input's placeholder asks to answer it (see below).
-      `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
+    - **Doubts** (`doubt.asked` / `doubt.resolved`, #325, #516; `doubt` turns of the history):
+      the chat never asks them one after another (#516): they are marked in the notes (see the
+      document below) and one is shown when the student clicks its badge or «Ver la siguiente».
+      A shown doubt is a highlighted entry "Asistente · Duda" with its explanation
+      (`ws-chat-explanation`, the item's `text` / the history's `doubt_text`), the question, the
+      suggestions as a numbered list of buttons (`<ol>` "Sugerencias"), for a contradiction each
+      option as a button «1760» (aria «Es correcto: «1760» (página 3)») next to its source (which
+      opens in Recursos) and the other sources it is about ("Sobre: …"). Pressing one answers
+      through `POST .../doubts/{id}/answer` (`{suggestion: n}` or `{source_id}`; "Aplicando tu
+      respuesta…", a refusal as «No se pudo aplicar tu respuesta: …»); the student can also type
+      or say the answer ("la 2", "pone «escrita»", "descártala"), which becomes a `doubt_answer`
+      turn (its reply is the resolution). No "Descartar" link. `doubt.resolved` marks the doubt
+      "Duda resuelta" / "Duda descartada" with "Respondida: <resolution>" (and "Respondiste:
+      «…»" when the history or the pressed button knows the answer). A doubt shown again moves to
+      the end of the chat. While one is asked, the input's placeholder asks to answer it (see
+      below). `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
+    - **Marked doubts line** (#516): above the input, while the notes mark any open doubt, one
+      line «Tienes N dudas marcadas en los apuntes» («Tienes 1 duda marcada…», `role="status"`)
+      with a button «Ver la siguiente», which shows the first marked doubt, in the order of the
+      notes, not asked yet (`WorkspaceState.showNextDoubt`); a refusal shows «No se pudo mostrar
+      la duda: …» (`role="alert"`).
     - **"Ya está, quiero estudiar"** (a `study` request, #335, #337): "Pasando a Estudiar…"
       while it runs, then the backend's one line («He cerrado la captura y marcado los apuntes v5
       como versión de estudio.») and one link styled as a button, **Ir a Estudiar**, to the
@@ -415,8 +427,8 @@
       `action` is `{kind: "go_study", path}` with an in-app path (`/...`) gets it; no other turn
       shows any button of its own. These turns are not in the history, so the button does not
       survive a reload (human decision). `study.marked` needs nothing in the chat.
-    - The header's pending-doubts counter is read again on every `doubt.asked`,
-      `doubt.resolved` and `doubts.auto_resolved` (`WorkspaceState.doubtsChanged`).
+    - The doubts marked in the notes are read again on every `doubt.asked`, `doubt.resolved`,
+      `doubts.auto_resolved` and `doubts.marked` (`WorkspaceState.doubtsChanged`).
     - `chat/api.ts`: `fetchWorkspaceHistory` (`GET .../notes/chat` read with `turn_id`,
       `origin`, `request_summary`, `transcript` and, since #329, the `incorporate`, `triage`,
       `doubt` and `doubts_resolved` fields), `readWorkspaceEvent(event, data)` (the stream's
@@ -526,7 +538,14 @@
     a screen at least 30rem tall the document view is one viewport high in the same way; on a
     shorter one the card is no scroll container and the header sticks to the top of the page. The
     body: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
-    changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
+    changed highlighted and pasted images shown from the topic's sources. **Open doubts are
+    marked** (#516; never written into the notes): a discreet «?» badge (`notes-doubt`, amber, in
+    the right margin of the block, which makes room for it; with the count when there are
+    several, aria «2 dudas abiertas en este párrafo: ver una en el chat») on every block citing a
+    doubt's sources, on a section heading for a doubt about the section, and a header «Hay N
+    dudas sobre todo el tema» at the top for the rest, from `GET .../doubts/marks`
+    (`workspace/doubtMarks.ts`). Clicking a badge shows its first doubt not asked yet in the chat
+    (`POST .../doubts/{id}/ask`); the badges are disabled meanwhile. A provenance footnote (in
     the document or in a chat answer), a chat source link or a Recursos card opens that source's
     **detail over the document column** (#473): `SourcePanel`'s `overlay` variant in its own grid
     cell over the document, so `DocumentPanel` is neither remounted nor scrolled and the left
@@ -569,9 +588,15 @@
     notes, changedSections, reloadNotes(changedSections?)}`, where `notes` is `{kind: "loading"} |
     {kind: "ready", text, revision, version} | {kind: "empty"} | {kind: "failed", message}` from
     `GET .../notes` (only the latest read is kept; `revision` is null while the backend does not
-    send it, before #313), plus `doubtsKey` / `doubtsChanged()` (#329: the chat bumps it on a
-    doubt event and the header's counter is read again); `WorkspaceContext` / `useWorkspace()`
-    give it to the page's children.
+    send it, before #313), plus `doubtsKey` / `doubtsChanged()` (the chat bumps it on a doubt
+    event), and since #516 `doubtMarks` (`GET .../doubts/marks`, read again on every bump, every
+    new revision of the notes and after each doubt shown), `showDoubt(id)` / `showNextDoubt()`
+    (`POST .../doubts/{id}/ask`), `showingDoubt` and `doubtProblem`; `WorkspaceContext` /
+    `useWorkspace()` give it to the page's children.
+  - `doubtMarks.ts` (#516): `fetchDoubtMarks`, `askDoubt`, `readDoubtMarks` (lenient),
+    `badgesOf(marks) -> {blocks, sections, top}` (block keys `blockKey(section, number)` in
+    `NotesView`'s numbering), `pickDoubt(marks, ids)` / `nextDoubt(marks)` (the first not asked
+    yet) and `doubtsLine(count)`.
     The chat panel calls `reloadNotes(sections)` on every `notes.changed` of the workspace stream,
     after an applied typed turn or an undo, and after the stream reconnects. #316 and #317 build
     on this module. `notes/api.ts`'s `TopicNotes` accepts the optional `revision` field.
@@ -1078,7 +1103,9 @@ token):
   - `NotesView`: headings keep their anchor as `id` plus a `#` link; each reference is a link to
     its definition (`#fn-<label>`, numbered by first citation, `[IA]` for `[^ia]`) that opens the
     sources panel; blocks citing `[^ia]` get the `notes-ia` highlight; the definitions are listed
-    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word. Web
+    under "Fuentes" and open the panel too. `[[?word]]` is underlined as a doubtful word. With
+    `doubts` (`DoubtBadges`, #516) it draws the «?» badges of the open doubts (per block, section
+    heading, top header) and hands a clicked badge's ids to `onOpenDoubts`. Web
     snapshots are external sources (#59): their references get `notes-ref-web` (green, dotted)
     and the aria label "Fuente externa (web): <text>" (other sources "Fuente: <text>"), and their
     definition under "Fuentes" gets `notes-footnote-external` and "· fuente externa".

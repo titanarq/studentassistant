@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { type Block, footnoteRefs, IA_LABEL, type Inline, type NotesTree, parseInline } from "./markdown";
 import MermaidBlock from "./MermaidBlock";
 import { parseProvenance } from "./provenance";
+import { blockKey, type DoubtBadges } from "../workspace/doubtMarks";
 
 /**
  * The master notes rendered from `parseNotes`: headings carry their stable anchor as `id` (with a
@@ -14,6 +15,11 @@ import { parseProvenance } from "./provenance";
  * those sections is highlighted as what the current study item is about; with `onAskWhy`, every top-level block
  * with text gets a "¿Por qué pusiste esto?" button that hands the block and its section's anchor
  * to the caller.
+ *
+ * With `doubts` (#516), every top-level block with open doubts gets a discreet «?» badge in its
+ * margin (with the count when there are several), a section heading the doubts about the section,
+ * and the doubts about the whole topic a header above the notes; activating one hands its doubts
+ * to `onOpenDoubts`. The doubts are never part of the notes' text.
  */
 
 export interface NotesViewProps {
@@ -44,6 +50,39 @@ export interface NotesViewProps {
   askDisabled?: boolean;
   /** The URL an image's `src` is shown from; `null` (or no resolver) shows its text instead. */
   resolveImage?: (src: string) => string | null;
+  /** The open doubts marked in the notes (#516): badges per block, per section heading, at the top. */
+  doubts?: DoubtBadges;
+  /** A doubt badge was activated: its doubts' ids, in the order of the notes. */
+  onOpenDoubts?: (pendingIds: string[], trigger: HTMLElement) => void;
+  /** The doubt badges are disabled (a doubt is on its way to the chat). */
+  doubtsDisabled?: boolean;
+}
+
+function DoubtBadge({
+  ids,
+  where,
+  onOpen,
+  disabled,
+}: {
+  ids: string[];
+  where: string;
+  onOpen?: (pendingIds: string[], trigger: HTMLElement) => void;
+  disabled: boolean;
+}) {
+  const label =
+    ids.length === 1 ? `1 duda abierta ${where}: verla en el chat` : `${ids.length} dudas abiertas ${where}: ver una en el chat`;
+  return (
+    <button
+      type="button"
+      className="notes-doubt"
+      aria-label={label}
+      title={label}
+      disabled={disabled || onOpen === undefined}
+      onClick={(event) => onOpen?.(ids, event.currentTarget)}
+    >
+      ?{ids.length > 1 && <span className="notes-doubt-count">{ids.length}</span>}
+    </button>
+  );
 }
 
 const refId = (label: string, n: number) => `fnref-${label}-${n}`;
@@ -109,6 +148,9 @@ export default function NotesView({
   onAskWhy,
   askDisabled = false,
   resolveImage,
+  doubts,
+  onOpenDoubts,
+  doubtsDisabled = false,
 }: NotesViewProps) {
   const numbers = numbering(tree);
   const definitions = new Map(tree.footnotes.map((f) => [f.label, f.text]));
@@ -280,7 +322,11 @@ export default function NotesView({
   };
 
   const wrap =
-    changedSections !== undefined || focusSections !== undefined || focusLabel !== undefined || onAskWhy !== undefined;
+    changedSections !== undefined ||
+    focusSections !== undefined ||
+    focusLabel !== undefined ||
+    onAskWhy !== undefined ||
+    doubts !== undefined;
   const headings: { level: number; anchor: string | null }[] = [];
   let number = 0;
   const body = tree.blocks.map((b, index) => {
@@ -299,7 +345,17 @@ export default function NotesView({
       headings.some((h) => h.anchor !== null && focusSections?.has(h.anchor)) ||
       (typeof focusLabel === "string" && blockCites(b, focusLabel));
     const askable = onAskWhy !== undefined && b.type !== "heading" && b.type !== "rule";
-    const classes = ["notes-block", changed && "notes-changed", focused && "notes-focus"].filter(Boolean).join(" ");
+    const doubtIds =
+      doubts === undefined
+        ? []
+        : b.type === "heading"
+          ? b.level >= 2 && b.anchor !== null
+            ? (doubts.sections.get(b.anchor) ?? [])
+            : []
+          : (doubts.blocks.get(blockKey(section, blockNumber)) ?? []);
+    const classes = ["notes-block", changed && "notes-changed", focused && "notes-focus", doubtIds.length > 0 && "notes-doubted"]
+      .filter(Boolean)
+      .join(" ");
     return (
       <div
         key={key}
@@ -315,6 +371,14 @@ export default function NotesView({
         }
       >
         {block(b, key)}
+        {doubtIds.length > 0 && (
+          <DoubtBadge
+            ids={doubtIds}
+            where={b.type === "heading" ? "sobre esta sección" : "en este párrafo"}
+            onOpen={onOpenDoubts}
+            disabled={doubtsDisabled}
+          />
+        )}
         {askable && (
           <button
             type="button"
@@ -334,6 +398,12 @@ export default function NotesView({
 
   return (
     <article className="notes-body sheet" aria-label="Apuntes">
+      {doubts !== undefined && doubts.top.length > 0 && (
+        <div className="notes-doubts-top" role="note">
+          <span>{doubts.top.length === 1 ? "Hay 1 duda sobre todo el tema" : `Hay ${doubts.top.length} dudas sobre todo el tema`}</span>
+          <DoubtBadge ids={doubts.top} where="sobre todo el tema" onOpen={onOpenDoubts} disabled={doubtsDisabled} />
+        </div>
+      )}
       {body}
       {cited.length > 0 && (
         <section className="notes-footnotes" aria-labelledby="notes-footnotes-heading">

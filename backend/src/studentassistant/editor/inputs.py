@@ -226,6 +226,23 @@ def capture_pages(vault: Vault, subject_slug: str, topic_slug: str) -> dict[str,
     return dict(_read_log(vault, subject_slug, topic_slug).capture_pages)
 
 
+def segment_times(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> dict[str, tuple[str, int, int]]:
+    """Each stored transcript segment's session and span in whole seconds (`segment_id` ->
+    `(session_id, start, end)`, as the editor's input cites it), from the topic's events;
+    blocking."""
+    times: dict[str, tuple[str, int, int]] = {}
+    for segment in _read_log(vault, subject_slug, topic_slug).segments:
+        start = math.floor(segment.start_ms / 1000)
+        times[segment.segment_id] = (
+            segment.session_id,
+            start,
+            max(start, math.ceil(segment.end_ms / 1000)),
+        )
+    return times
+
+
 def _render_transcript(state: TopicState, log: _Log) -> str:
     """The transcript grouped by the observer's outline, unassigned segments last."""
     by_section: dict[str | None, list[_Segment]] = {}

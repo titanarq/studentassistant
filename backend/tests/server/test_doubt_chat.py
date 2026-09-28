@@ -1,8 +1,9 @@
-"""Doubts asked in the workspace chat one at a time (#325, `server/doubt_chat.py`).
+"""Doubts marked in the notes and shown in the workspace chat on demand (#325, #516).
 
 The real app (`FakeClaude`, `tmp_vault`, the FastAPI test client): an editor turn reports doubts,
-the chat asks one (after the editor reviews the unreviewed ones), an answer through the doubts
-route is broadcast and the next doubt follows; during a session the events go to its live log.
+the editor reviews the unreviewed ones and `doubts.marked` announces the marks -- nothing is asked
+one after another --; `POST .../doubts/{id}/ask` shows one in the chat, an answer through the
+doubts route is broadcast; during a session the events go to its live log.
 """
 
 from __future__ import annotations
@@ -153,7 +154,15 @@ def _review_p1(fake: FakeClaude, topic: ReviseTopic) -> None:
     )
 
 
-def test_a_turn_with_doubts_asks_one_and_the_next_follows_its_answer(
+def _in_chat(topic: ReviseTopic) -> list[dict[str, Any]]:
+    return [
+        event.payload
+        for _sid, event in read_topic_events(topic.vault, topic.subject, topic.topic)
+        if event.kind == PENDING_QUESTION_KIND and event.payload.get("in_chat")
+    ]
+
+
+def test_a_turn_with_doubts_marks_them_and_one_is_shown_when_asked_for(
     client: TestClient, fake: FakeClaude, topic: ReviseTopic
 ) -> None:
     subscription = _subscribe(client, topic)
@@ -170,29 +179,51 @@ def test_a_turn_with_doubts_asks_one_and_the_next_follows_its_answer(
         "turn.result",
         "notes.changed",
         "doubts.auto_resolved",
-        "doubt.asked",
+        "doubts.marked",
     ]
     result = events[1].data
     first_id, second_id = result["doubts"]
     auto = events[3].data
     assert auto["pending_ids"] == ["p-1"] and auto["summary"].startswith("He resuelto")
-    asked = events[-1].data
-    assert asked == {
+    assert events[4].data == {"count": 2}
+    # Nothing is asked one after another.
+    assert _in_chat(topic) == []
+
+    marks = client.get(f"{_base(topic)}/doubts/marks")
+    assert marks.status_code == 200, marks.text
+    body = marks.json()
+    assert body["count"] == 2
+    by_id = {mark["pending_id"]: mark for mark in body["marks"]}
+    assert by_id[first_id]["level"] == "block"
+    assert by_id[first_id]["blocks"] == [{"section": "definicion", "number": 1}]
+    assert by_id[second_id]["blocks"] == [{"section": "proximo-dia", "number": 1}]
+    assert [mark["pending_id"] for mark in body["marks"]] == [first_id, second_id]
+
+    shown = client.post(f"{_base(topic)}/doubts/{first_id}/ask")
+    assert shown.status_code == 200, shown.text
+    assert shown.json() == {
         "pending_id": first_id,
+        "asked": True,
+        "status": "open",
+        "summary": None,
+    }
+    events = subscription.drain()
+    assert _names(events) == ["doubt.asked"]
+    assert events[0].data == {
+        "pending_id": first_id,
+        "kind": "illegible",
+        "text": FIRST["text"],
         "question": FIRST["question"],
         "suggestions": FIRST["suggestions"],
         "options": [],
         "refs": [PAGE_1],
     }
-    # One at a time: another write asks nothing new while the first is unanswered.
-    chat: DoubtChat = client.app.state.doubt_chat  # type: ignore[attr-defined]
-
-    async def schedule() -> None:
-        chat.schedule(topic.subject, topic.topic)
-
-    client.portal.call(schedule)  # type: ignore[union-attr]
-    _settle(client)
-    assert subscription.drain() == []
+    # Clicked again while it is the doubt asked: announced again, nothing new written.
+    again = client.post(f"{_base(topic)}/doubts/{first_id}/ask")
+    assert again.status_code == 200, again.text
+    assert _names(subscription.drain()) == ["doubt.asked"]
+    assert len(_in_chat(topic)) == 1
+    assert client.get(f"{_base(topic)}/doubts/marks").json()["marks"][0]["asked"] is True
 
     fake.reply_tool(
         DECISION_TOOL,
@@ -213,7 +244,7 @@ def test_a_turn_with_doubts_asks_one_and_the_next_follows_its_answer(
     _settle(client)
 
     events = subscription.drain()
-    assert _names(events) == ["doubt.resolved", "notes.changed", "doubt.asked"]
+    assert _names(events) == ["doubt.resolved", "notes.changed", "doubts.marked"]
     assert events[0].data == {
         "pending_id": first_id,
         "status": "resolved",
@@ -224,16 +255,21 @@ def test_a_turn_with_doubts_asks_one_and_the_next_follows_its_answer(
     assert notes is not None
     assert events[1].data["origin"] == "editor"
     assert events[1].data["revision"] == notes_revision(notes)
-    assert events[2].data["pending_id"] == second_id
+    assert events[2].data == {"count": 1}
 
     turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
     kinds = [turn["kind"] for turn in turns]
-    assert kinds == ["revise", "doubts_resolved", "doubt", "doubt"]
-    first, second = turns[2], turns[3]
+    assert kinds == ["revise", "doubts_resolved", "doubt"]
+    first = turns[2]
     assert first["pending_id"] == first_id and first["status"] == "resolved"
     assert first["answer"] == "incremental" and first["resolution"] == "Pone «incremental»."
-    assert second["pending_id"] == second_id and second["status"] == "open"
-    assert second["question"] == SECOND["question"] and second["doubt_refs"] == [PAGE_2]
+    assert first["doubt_text"] == FIRST["text"]
+
+    closed = client.post(f"{_base(topic)}/doubts/{first_id}/ask")
+    assert closed.status_code == 409 and closed.json()["code"] == "doubt_closed"
+    unknown = client.post(f"{_base(topic)}/doubts/duda-nope/ask")
+    assert unknown.status_code == 404
+    assert subscription.drain() == []
 
 
 def test_during_a_session_the_doubts_go_to_its_live_log(
@@ -272,7 +308,11 @@ def test_during_a_session_the_doubts_go_to_its_live_log(
     _settle(client)
 
     names = _names(subscription.drain())
-    assert names[-2:] == ["doubts.auto_resolved", "doubt.asked"]
+    assert names[-2:] == ["doubts.auto_resolved", "doubts.marked"]
+    queue = list_doubts(topic.vault, topic.subject, topic.topic)
+    shown = client.post(f"{_base(topic)}/doubts/{queue.current}/ask")
+    assert shown.status_code == 200, shown.text
+    assert _names(subscription.drain()) == ["doubt.asked"]
     live = [
         (event.kind, event.origin, event.payload)
         for sid, event in read_topic_events(topic.vault, topic.subject, topic.topic)
@@ -283,7 +323,7 @@ def test_during_a_session_the_doubts_go_to_its_live_log(
         for kind, origin, _p in live
         if kind in (STATE_OP_EVENT_KIND, PENDING_QUESTION_KIND)
     ]
-    # Two add_pending + their questions, the review's close of p-1, then the one asked in chat.
+    # Two add_pending + their questions, the review's close of p-1, then the one shown in chat.
     assert doubts.count((STATE_OP_EVENT_KIND, "editor")) == 3
     asked = [p for kind, _o, p in live if kind == PENDING_QUESTION_KIND and p["in_chat"]]
     assert len(asked) == 1
@@ -295,15 +335,15 @@ def test_during_a_session_the_doubts_go_to_its_live_log(
     queue = list_doubts(topic.vault, topic.subject, topic.topic)
     assert queue.open_count == 2
 
-    # Dismissing during the session works too (no `session_open`), and asks the next one.
+    # Dismissing during the session works too (no `session_open`); the marks are announced.
     dismissed = client.post(f"{_base(topic)}/doubts/{asked[0]['pending_id']}/dismiss")
     assert dismissed.status_code == 200, dismissed.text
     assert dismissed.json()["session_id"] == session_id
     _settle(client)
-    assert _names(subscription.drain()) == ["doubt.resolved", "doubt.asked"]
+    assert _names(subscription.drain()) == ["doubt.resolved", "doubts.marked"]
 
 
-def test_a_doubt_whose_pages_are_all_set_aside_is_not_asked(
+def test_a_doubt_whose_pages_are_all_set_aside_is_not_marked(
     client: TestClient, fake: FakeClaude, topic: ReviseTopic
 ) -> None:
     from studentassistant.vault import put_source
@@ -338,12 +378,14 @@ def test_a_doubt_whose_pages_are_all_set_aside_is_not_asked(
     response = client.post(f"{_base(topic)}/notes/chat", json={"message": "Añade una línea"})
     assert response.status_code == 200, response.text
     _settle(client)
-    # Only p-1 was open and relevant; it was settled from the sources, so nothing is asked.
-    names = _names(subscription.drain())
+    # Only p-1 was open and relevant; it was settled from the sources, so nothing is marked.
+    events = subscription.drain()
+    names = _names(events)
     assert "doubts.auto_resolved" in names and "doubt.asked" not in names
+    assert events[-1].event == "doubts.marked" and events[-1].data == {"count": 0}
 
 
-def test_off_nothing_is_asked(
+def test_off_nothing_is_reviewed_and_showing_one_reviews_it_first(
     devices_path: Path, codes: PairingCodes, tmp_path: Path, topic: ReviseTopic
 ) -> None:
     from studentassistant.config import EditorSettings
@@ -372,3 +414,14 @@ def test_off_nothing_is_asked(
         _settle(client)
         assert "doubt.asked" not in _names(subscription.drain())
         assert len(fake.requests) == 1
+
+        # p-1 has no question yet: showing it reviews it first, and the sources settle it.
+        _review_p1(fake, topic)
+        shown = client.post(f"{_base(topic)}/doubts/p-1/ask")
+        assert shown.status_code == 200, shown.text
+        body = shown.json()
+        assert body["asked"] is False and body["status"] == "auto_resolved"
+        assert body["summary"].startswith("He resuelto")
+        names = _names(subscription.drain())
+        assert names == ["doubts.auto_resolved", "doubts.marked"]
+        assert len(fake.requests) == 2
