@@ -18,6 +18,11 @@ def _url(path: str) -> str:
 def test_the_correction_is_stored_served_and_committed(
     read_vault: ReadVault, reader: TestClient
 ) -> None:
+    # The machine's transcription, written after the vault opened (and committed what it held):
+    # still uncommitted when the student corrects it.
+    assert reader.get(f"/api/sources/{read_vault.notes_page}/meta").status_code == 200
+    put_page_transcription(read_vault.vault, read_vault.notes_page, "v = dx/dt (máquina)\n")
+
     response = reader.put(_url(read_vault.notes_page), json={"text": "v = Δx/Δt"})
 
     assert response.status_code == 200
@@ -28,22 +33,32 @@ def test_the_correction_is_stored_served_and_committed(
         "text": "v = Δx/Δt\n",
     }
     assert reader.get(f"/api/sources/{md}").content.decode() == "v = Δx/Δt\n"
-    meta = reader.get(f"/api/sources/{read_vault.notes_page}/meta").json()["meta"]
-    assert meta["transcription_edited"]["by"] == "student"
-    log = subprocess.run(
-        ["git", "log", "-1", "--format=%s"],
-        cwd=read_vault.vault.path,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    assert log == "Transcripción de sources/notes/page-001.jpg de fisica/cinematica corregida"
+    served = reader.get(f"/api/sources/{read_vault.notes_page}/meta").json()
+    assert served["meta"]["transcription_edited"]["by"] == "student"
+    # The sidecar's copy is the correction too: the viewer never serves the replaced text.
+    assert served["transcription"] == "v = Δx/Δt\n"
+    log = _git(read_vault, "log", "-2", "--format=%s").splitlines()
+    assert log == [
+        "Transcripción de sources/notes/page-001.jpg de fisica/cinematica corregida",
+        "Cambios pendientes antes de corregir una transcripción",
+    ]
+    # The machine's transcription, never committed before, is kept in git history.
+    assert _git(read_vault, "show", f"HEAD~1:{md}") == "v = dx/dt (máquina)\n"
+
+
+def _git(read_vault: ReadVault, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=read_vault.vault.path, capture_output=True, text=True, check=True
+    ).stdout
 
 
 def test_refusals(read_vault: ReadVault, reader: TestClient) -> None:
     blank = reader.put(_url(read_vault.notes_page), json={"text": "   "})
     assert blank.status_code == 422
     assert blank.json()["detail"] == "La transcripción no puede quedar vacía."
+    secret = reader.put(_url(read_vault.notes_page), json={"text": "sk-ant-api03-" + "a" * 90})
+    assert secret.status_code == 422
+    assert "clave o un secreto" in secret.json()["detail"]
     for path in (read_vault.web_page, read_vault.notes_page.replace("page-001", "page-009")):
         response = reader.put(_url(path), json={"text": "x"})
         assert response.status_code == 404

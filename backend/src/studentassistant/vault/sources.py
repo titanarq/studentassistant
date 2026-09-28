@@ -401,7 +401,11 @@ def update_page_meta(vault: Vault, vault_relative_path: str, updates: Mapping[st
 
 
 TRANSCRIPTION_EDITED_KEY = "transcription_edited"
-"""The sidecar key `edit_page_transcription` writes (#473): `{at, by: student, previous_sha256}`."""
+"""The sidecar key `edit_page_transcription` writes (#473).
+
+`{at, by: student, previous_sha256, original_sha256}`: when, who, and the hashes of the text the
+last correction replaced and of the one before the first correction (the machine's).
+"""
 EDITABLE_TRANSCRIPTION_KINDS: tuple[str, ...] = ("notes", "book")
 """The kinds whose page transcription the student may correct by hand (a photographed page)."""
 
@@ -426,8 +430,11 @@ def edit_page_transcription(
     everything that reads the page's transcription (the editor, the index, the Recursos viewer)
     reads the correction. Provenance is kept: the sidecar gains `transcription_edited: {at:
     <edited_at, now UTC by default>, by: student, previous_sha256: <sha256 of the replaced
-    text>}` and the replaced text stays in git history (the caller commits). Both files are
-    written atomically under the directory's lock and pass the secret guard.
+    text>, original_sha256: <sha256 of the text before the first correction>}`, and the replaced
+    text stays in git history (the caller commits what was pending first, then the correction).
+    A sidecar `transcription` string is replaced by the correction too, so no reader keeps
+    serving the old text. Both files are written atomically under the directory's lock and pass
+    the secret guard.
 
     Raises:
         SourcePathError: when the path is not a page of `notes` or `book`.
@@ -468,11 +475,18 @@ def edit_page_transcription(
             previous = stored if isinstance(stored, str) and stored.strip() else None
         if previous is None:
             raise NoTranscriptionError(f"the page at {vault_relative_path!r} is not transcribed")
+        previous_sha256 = hashlib.sha256(previous.encode("utf-8")).hexdigest()
+        earlier = meta.get(TRANSCRIPTION_EDITED_KEY)
+        original = earlier.get("original_sha256") if isinstance(earlier, dict) else None
         meta[TRANSCRIPTION_EDITED_KEY] = {
             "at": edited_at or datetime.now(UTC),
             "by": "student",
-            "previous_sha256": hashlib.sha256(previous.encode("utf-8")).hexdigest(),
+            "previous_sha256": previous_sha256,
+            "original_sha256": original if isinstance(original, str) else previous_sha256,
         }
+        if isinstance(meta.get("transcription"), str):
+            # A sidecar copy would go on serving the replaced text (`/meta`, Recursos).
+            meta["transcription"] = body
         meta_text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
         guard(meta_text)
         write_text_atomic(target, body)

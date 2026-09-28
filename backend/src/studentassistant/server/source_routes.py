@@ -19,8 +19,9 @@ route sits behind the LAN guard, the Host allowlist and the bearer check like ev
 `PUT /api/sources/{vault_id:path}/transcription` (#473): the student's hand correction of a
 photographed page's transcription (Recursos' detail view). Body `{"text": "..."}`; the vault's
 `edit_page_transcription` writes it as the page's `page-NNN.md` and records
-`transcription_edited: {at, by: student, previous_sha256}` in the sidecar (the replaced text stays
-in git history). Committed at once (`Transcripción de <id> de <s>/<t> corregida`); when the topic's
+`transcription_edited: {at, by: student, previous_sha256, original_sha256}` in the sidecar. What
+was pending is committed first, so the replaced text stays in git history; the correction is then
+committed at once (`Transcripción de <id> de <s>/<t> corregida`); when the topic's
 session is live a `page.transcription_edited` event (origin `user`, payload `source_id`,
 `source_path`, `transcription_path`) is published on it. 200 with `{source_path,
 transcription_path, text}` (the text as stored). 404 like `DELETE` for anything that is not a
@@ -148,6 +149,15 @@ def source_router() -> APIRouter:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
             ) from error
+        sync = service.sync
+        parts = vault_id.split("/")
+        if sync is not None:
+            # Commit what is pending first (the machine's transcription, possibly written moments
+            # ago), so the text the correction replaces is kept in git history. The path is not
+            # validated yet, so it stays out of the message.
+            await asyncio.to_thread(
+                sync.checkpoint, "Cambios pendientes antes de corregir una transcripción"
+            )
         try:
             written = await asyncio.to_thread(edit_page_transcription, vault, vault_id, body.text)
         except (SourcePathError, SourceNotFoundError) as error:
@@ -164,11 +174,10 @@ def source_router() -> APIRouter:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, BLANK_TRANSCRIPTION_DETAIL
             ) from error
-        parts = vault_id.split("/")
+        # `edit_page_transcription` accepted it: `subjects/<s>/topics/<t>/sources/<kind>/<file>`.
         subject_id, topic_id = parts[1], parts[3]
         source_id = "/".join(parts[4:])
         transcription_path = written.relative_to(vault.path).as_posix()
-        sync = service.sync
         if sync is not None:
             sync.note_change()
             await asyncio.to_thread(

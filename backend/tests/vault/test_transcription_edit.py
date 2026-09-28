@@ -61,6 +61,7 @@ def test_the_correction_replaces_the_md_and_records_the_student(
     assert record["by"] == "student"
     assert record["at"].startswith("2026-09-28T12:00:00")
     assert record["previous_sha256"] == hashlib.sha256(b"# La velozidad\n").hexdigest()
+    assert record["original_sha256"] == record["previous_sha256"]
     # The page is still one listed source; the capture id is kept.
     listed = list_sources(tmp_vault, *topic)
     assert [s.path for s in listed] == [page]
@@ -74,8 +75,26 @@ def test_a_sidecar_transcription_counts_as_one_to_correct(
     edit_page_transcription(tmp_vault, page, "v = Δx/Δt")
     md = page.replace(".jpg", ".md")
     assert read_source(tmp_vault, md).content.decode() == "v = Δx/Δt\n"
+    sidecar = _sidecar(tmp_vault, page)
+    assert sidecar[TRANSCRIPTION_EDITED_KEY]["previous_sha256"] == _sha(b"v = dx/dt")
+    # The sidecar's own copy follows the correction, so no reader serves the replaced text.
+    assert sidecar["transcription"] == "v = Δx/Δt\n"
+
+
+def test_a_second_correction_keeps_the_machine_texts_hash(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    page = _page(tmp_vault, topic)
+    put_page_transcription(tmp_vault, page, "máquina\n")
+    edit_page_transcription(tmp_vault, page, "primera")
+    edit_page_transcription(tmp_vault, page, "segunda")
     record = _sidecar(tmp_vault, page)[TRANSCRIPTION_EDITED_KEY]
-    assert record["previous_sha256"] == hashlib.sha256(b"v = dx/dt").hexdigest()
+    assert record["previous_sha256"] == _sha(b"primera\n")
+    assert record["original_sha256"] == _sha("máquina\n".encode())
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def test_an_untranscribed_page_is_refused(tmp_vault: Vault, topic: tuple[str, str]) -> None:
