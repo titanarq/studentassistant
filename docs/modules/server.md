@@ -504,12 +504,16 @@ Routes registered today:
     title/rule, is 422 before the stream.
   - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, turn_id, origin,
     request_summary, transcript, message, reply, applied, summary, changed_sections, commit,
-    undone, warning, refs, proposed_style_rules}`, oldest first -- `kind` `explain` for a "¿Por
+    undone, warning, refs, proposed_style_rules, feedback}`, oldest first -- `kind` `explain` for a "¿Por
     qué?" answer, with its `refs`; `origin` `voice` for a turn that answered a spoken request,
     with `request_summary` (what was asked, one short line) and `transcript` (`{request_id,
     summary, session_id, segment_ids, t_start_ms, t_end_ms, text}`, the raw span), both `null`
-    for a typed turn; `summary` stays the applied change's; `can_undo`). Reads only; works
-    without `llm_transport`.
+    for a typed turn; `summary` stays the applied change's; `feedback` `{id, kind, title}` when
+    the turn recorded app feedback instead of editing, #472, else `null`; `can_undo`). Reads
+    only; works without `llm_transport`. The live turn's result (the `RevisionResult`) carries
+    the same `feedback`: a turn of the workspace chat, typed or spoken, may record a bug or an
+    improvement of the app in the vault's feedback inbox (`editor.feedback`,
+    `docs/modules/editor.md`) and never changes the notes then.
   - `POST .../notes/chat/undo`, no body -> `UndoResult` (`undone_commit`, `summary`, `commit`,
     `notes_changed`, `diff`, `notes`, `paths`, `revision`): reverts the latest applied turn not yet undone
     (again for the one before). No Claude call. An undo that changed the notes is a
@@ -557,7 +561,8 @@ Routes registered today:
   it (at most `CLAIM_TIMEOUT_SECONDS`, 600 s, then `turn.error` 409), then dispatches on the kind
   through `HANDLERS`; the turn's `origin` is `voice`, or `typed` for a typed request (then no
   `ChatRequestRef`: a typed chat turn):
-  - `edit`, `question`: `editor.revise_notes` on the latest notes with the request's raw `text` as
+  - `edit`, `question` (app feedback, «apunta una mejora: …», classifies as `question`, #472; the
+    turn is attributed to the request's `session_id`): `editor.revise_notes` on the latest notes with the request's raw `text` as
     the message and a `ChatRequestRef` as `request` (a voice chat turn in `GET .../notes/chat`);
     `editor` role bound to the topic's ledger; `notes.edited` on the bus when the session is
     still active.
@@ -822,7 +827,8 @@ Routes registered today:
     the clarification (a later "10" is then a question too). The Construir chat, `spoken`
     questions and `POST .../generated/{kind}` never ask back.
   - `GET .../tutor` -> `TutorHistory` (`turns`: `{time, kind, style, question, reply, refs,
-    sections, warning, option, items}`, oldest first, both styles; `kind` `answer` (the default:
+    sections, warning, option, items, feedback}`, oldest first, both styles; `feedback` the app
+    feedback a written `answer` turn recorded, #472, as in the result; `kind` `answer` (the default:
     turns recorded before #366 read so), `generation` (with `option` and `items`, `reply` the
     result sentence, `warning` its warnings joined) or `clarification` (#383, with `option`,
     `reply` the question back); turns recorded before #334 are `spoken`
@@ -957,6 +963,13 @@ Routes registered today:
     `totals` sums `due`/`new` and counts `topics`. Topics with neither flashcards nor a quiz are
     omitted; a subject or topic that cannot be read is skipped and named in `warnings` (Spanish),
     never failing the call. 503 when the vault cannot be opened. Bearer auth like every `/api`.
+- `GET /api/feedback[?status=nuevo|triado|descartado]` (`server/feedback_routes.py`,
+  `feedback_router()`, #472), web-only, not phone protocol -> `FeedbackList` (`items`: the vault's
+  feedback inbox folded, `vault.list_feedback`, oldest first, each `{id, created_at, kind, title,
+  body, context, status, issue, updated_at}`; only those in `status` when given, another value
+  422). Read only: triage is the CLI's (`studentassistant feedback mark`); the backend never
+  calls GitHub. A vault that cannot be opened 503, an unreadable inbox 500 (Spanish `detail`).
+  Bearer auth like every `/api` route.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
   (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
@@ -1447,6 +1460,17 @@ WebSocket gateway publish and subscribe here.
   `127.0.0.1:<server.port>`, or on `server.host` when that names one address) and prints a QR of
   the JSON `{"url", "code"}` in the terminal (segno, compact), plus the URL, the code and its expiry.
   Since minting is loopback-only, `pair` needs the default wildcard bind (or `127.0.0.1`).
+- `studentassistant feedback list [--status nuevo|triado|descartado] [--json]` (#472): the vault's
+  app feedback inbox (`vault.list_feedback`), oldest first, one tab-separated line per item (`id`,
+  status, kind, `YYYY-MM-DD HH:MM`, title, `#issue` when triaged; «No hay comentarios en el
+  buzón.» when empty), or with `--json` the `FeedbackItem`s as a JSON list. An unreadable inbox or
+  vault exits 1.
+- `studentassistant feedback mark <id> --status triado|descartado|nuevo [--issue N]`: appends a
+  status change (`vault.set_feedback_status`, under the vault's `feedback` lock, so it is safe
+  while `serve` runs) and prints the item's new line; `--issue` records the code repository's
+  issue it became (omitted: the item keeps its reference). An unknown id, a busy lock or a
+  refused write exits 1 with a Spanish message. Nothing is committed by the command: the next
+  batch commit of the vault carries it.
 - `studentassistant devices` / `devices list`: the paired devices (id, name, paired-at; never a
   token). `studentassistant devices revoke <id>` removes one, and its token stops being accepted.
 
