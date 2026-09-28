@@ -520,12 +520,15 @@ Routes registered today:
     title/rule, is 422 before the stream.
   - `GET .../notes/chat` -> `ChatHistory` (`turns`: `{time, kind, turn_id, origin,
     request_summary, transcript, message, reply, applied, summary, changed_sections, commit,
-    undone, warning, refs, proposed_style_rules, feedback}`, oldest first -- `kind` `explain` for a "¿Por
+    undone, warning, refs, proposed_style_rules, feedback, crop}`, oldest first -- `kind` `explain` for a "¿Por
     qué?" answer, with its `refs`; `origin` `voice` for a turn that answered a spoken request,
     with `request_summary` (what was asked, one short line) and `transcript` (`{request_id,
     summary, session_id, segment_ids, t_start_ms, t_end_ms, text}`, the raw span), both `null`
     for a typed turn; `summary` stays the applied change's; `feedback` `{id, kind, title}` when
-    the turn recorded app feedback instead of editing, #472, else `null`; `can_undo`). Reads
+    the turn recorded app feedback instead of editing, #472, else `null`; `crop` the page region
+    the turn cropped (`CropRef` `{source, region, source_id, path, error}`, #493: the new
+    `sources/images/img-NNN.<ext>`, listed by `.../sources` like any image, or the Spanish reason
+    it failed), else `null`; `can_undo`). Reads
     only; works without `llm_transport`. The live turn's result (the `RevisionResult`) carries
     the same `feedback`: a turn of the workspace chat, typed or spoken, may record a bug or an
     improvement of the app in the vault's feedback inbox (`editor.feedback`,
@@ -581,7 +584,10 @@ Routes registered today:
     turn is attributed to the request's `session_id`): `editor.revise_notes` on the latest notes with the request's raw `text` as
     the message and a `ChatRequestRef` as `request` (a voice chat turn in `GET .../notes/chat`);
     `editor` role bound to the topic's ledger; `notes.edited` on the bus when the session is
-    still active.
+    still active. Both this and the typed `POST .../notes/chat` pass `revise_notes` the app's
+    `settings` and a `crop_client` (`editor.crop.crop_client`, role `observer`, same transport and
+    topic ledger), so a `crop_image` turn (#493) locates its region through the app's own
+    transport, never a default one.
   - `prepare_notes`: "prepárame el tema" through `NotesGenerator.generate` (the batched mode of
     #326 by default: each batch an `incorporate` turn), the same generation as the button, never
     past a reached cap unconfirmed: that is `turn.error` 409 with code `cost_cap_reached` (the

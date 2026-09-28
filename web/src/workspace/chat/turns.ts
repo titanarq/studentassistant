@@ -99,6 +99,8 @@ export interface ChatEntry {
   action: GoStudyAction | null;
   /** The app feedback the turn recorded (#472): the «Mejora apuntada» / «Bug apuntado» chip. */
   feedback: FeedbackRef | null;
+  /** The image the turn cropped from a page and inserted (#493): «Recorte añadido: …». */
+  cropId: string | null;
 }
 
 export interface ChatState {
@@ -168,6 +170,7 @@ function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
     parent: null,
     action: null,
     feedback: null,
+    cropId: null,
     ...fields,
   };
 }
@@ -221,6 +224,7 @@ function fromHistory(turn: HistoryTurn, key: string, live: ChatEntry | undefined
     progress: live?.progress ?? null,
     parent: live?.parent != null && liveKeys.has(live.parent) ? live.parent : null,
     feedback: turn.feedback ?? live?.feedback ?? null,
+    cropId: turn.cropId ?? live?.cropId ?? null,
   });
 }
 
@@ -313,6 +317,7 @@ function applyOutcome(entry: ChatEntry, outcome: TurnOutcome): Partial<ChatEntry
     pendingId: outcome.pendingId ?? entry.pendingId,
     action: outcome.action,
     feedback: outcome.feedback,
+    cropId: outcome.cropId,
   };
 }
 

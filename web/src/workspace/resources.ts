@@ -112,7 +112,7 @@ export const GROUP_TITLES: Record<ResourceGroupKind, string> = {
   book: "Páginas del libro",
   pdf: "PDF",
   web: "Webs",
-  images: "Imágenes pegadas",
+  images: "Imágenes",
   transcript: "Fragmentos de la transcripción",
 };
 

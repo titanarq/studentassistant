@@ -8,7 +8,7 @@ import VoiceInputButton from "../../tutor/VoiceInputButton";
 import type { SourceSelection } from "../resources/selection";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
-import { capitalized, sourceName } from "./sources";
+import { capitalized, croppedImageName, sourceName } from "./sources";
 import { canRetry, type ChatEntry } from "./turns";
 import type { WorkspaceChat } from "./useWorkspaceChat";
 import "./chat.css";
@@ -160,7 +160,18 @@ function Spinner() {
 const onItsWay = (entry: ChatEntry): boolean => entry.status === "sending" || entry.status === "queued" || entry.status === "running";
 
 /** A source named in the chat, opening it in Recursos when it can. */
-function SourceButton({ sourceId, onOpenSource, text }: { sourceId: string; onOpenSource?: OpenSource; text?: string }) {
+function SourceButton({
+  sourceId,
+  onOpenSource,
+  text,
+  spoken,
+}: {
+  sourceId: string;
+  onOpenSource?: OpenSource;
+  text?: string;
+  /** The source's name in the button's label, when `sourceName` would not name it right. */
+  spoken?: string;
+}) {
   const name = text ?? sourceName(sourceId);
   const item = sourceItem(sourceId);
   if (onOpenSource === undefined || item === null) return <>{name}</>;
@@ -168,7 +179,7 @@ function SourceButton({ sourceId, onOpenSource, text }: { sourceId: string; onOp
     <button
       type="button"
       className="ws-chat-ref"
-      aria-label={`Ver la fuente: ${sourceName(sourceId)}`}
+      aria-label={`Ver la fuente: ${spoken ?? sourceName(sourceId)}`}
       onClick={(event) => onOpenSource(item.label, event.currentTarget, item.definition)}
     >
       {name}
@@ -395,6 +406,17 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
         </p>
       )}
       {entry.status === "done" && entry.feedback !== null && <FeedbackChip feedback={entry.feedback} />}
+      {entry.status === "done" && entry.cropId !== null && !entry.undone && (
+        <p className="ws-chat-incorporated">
+          Recorte añadido:{" "}
+          <SourceButton
+            sourceId={entry.cropId}
+            onOpenSource={onOpenSource}
+            text={capitalized(croppedImageName(entry.cropId))}
+            spoken={croppedImageName(entry.cropId)}
+          />
+        </p>
+      )}
       {entry.kind === "incorporate" && entry.status === "done" && entry.doubts > 0 && (
         <p className="ws-chat-doubts">{doubtsLine(entry.doubts)}</p>
       )}

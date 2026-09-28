@@ -954,6 +954,58 @@ it("keeps the «Mejora apuntada» chip of a history turn after a reload (#472)",
   expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
 });
 
+it("names the image a turn cropped from a page and opens it in Recursos, live and after a reload (#493)", async () => {
+  const { opened, onOpenSource } = setup({
+    [CHAT]: jsonResponse(
+      history([
+        turn({
+          turn_id: "turn-crop",
+          message: "Pon solo el diagrama de la página 3",
+          reply: "He añadido el recorte del diagrama de la página 3.",
+          crop: { source: "sources/notes/page-003.jpg", region: "el diagrama", source_id: "sources/images/img-002.jpg", path: "x" },
+        }),
+        turn({
+          turn_id: "turn-failed",
+          message: "Recorta la tabla de la foto",
+          reply: "No he podido añadir el recorte: la imagen está borrosa.",
+          applied: false,
+          summary: null,
+          changed_sections: [],
+          commit: null,
+          crop: { source: "sources/notes/page-004.jpg", region: "la tabla", error: "la imagen está borrosa." },
+        }),
+      ]),
+    ),
+  });
+  const entry = (await screen.findByText("Pon solo el diagrama de la página 3")).closest("li") as HTMLElement;
+  const line = within(entry).getByText(/Recorte añadido:/);
+  fireEvent.click(within(line).getByRole("button", { name: "Ver la fuente: imagen recortada 2" }));
+  expect(within(line).getByRole("button")).toHaveTextContent("Imagen recortada 2");
+  expect(onOpenSource).toHaveBeenCalledWith("recurso-images-img-002.jpg", expect.anything(), expect.stringContaining("../sources/images/img-002.jpg"));
+  const failed = (await screen.findByText("Recorta la tabla de la foto")).closest("li") as HTMLElement;
+  expect(within(failed).queryByText(/Recorte añadido/)).toBeNull();
+
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-7", kind: "edit", summary: "Recortar la tabla", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-7", request_id: "req-7", origin: "voice", kind: "revise" }));
+  });
+  const live = (await screen.findByText(/Pediste: Recortar la tabla/)).closest("li") as HTMLElement;
+  expect(within(live).queryByText(/Recorte añadido/)).toBeNull();
+  act(() =>
+    stream.push(
+      sseEvent(
+        "turn.result",
+        voiceResult("turn-7", "req-7", {
+          reply: "He añadido el recorte de la tabla.",
+          crop: { source: "sources/notes/page-004.jpg", region: "la tabla", source_id: "sources/images/img-003.jpg", path: "y" },
+        }),
+      ),
+    ),
+  );
+  expect(await within(live).findByText(/Recorte añadido:/)).toHaveTextContent("Recorte añadido: Imagen recortada 3");
+});
+
 it("scrolls the log to the newest turn as turns arrive and a reply streams", async () => {
   const { opened } = setup();
   const stream = await opened();

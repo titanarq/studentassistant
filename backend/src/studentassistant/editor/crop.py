@@ -32,14 +32,18 @@ import asyncio
 import base64
 import hashlib
 import math
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Self
+from functools import partial
+from typing import Any, Literal, Self
 
 import cv2
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from studentassistant.config import DEFAULT_CAPTURE_JPEG_QUALITY, Settings
+from studentassistant.editor.edits import EditOp, NewFootnote
 from studentassistant.editor.inputs import IMAGE_MEDIA_TYPES
 from studentassistant.editor.notes_format import (
     LINK_PREFIX,
@@ -53,6 +57,7 @@ from studentassistant.llm import (
     StructuredOutputError,
     get_client,
     load_prompt,
+    strict_tool,
     structured,
 )
 from studentassistant.sources.captures import (
@@ -63,6 +68,7 @@ from studentassistant.sources.captures import (
     sharpness,
 )
 from studentassistant.vault import Vault, put_source, read_source, topic_directory
+from studentassistant.vault.sources import SIDECAR_SUFFIX
 
 PROMPT_NAME = "editor_crop"
 ROLE = "observer"
@@ -234,6 +240,25 @@ def clean_crop(
     decoded = decode_image(image)
     if decoded is None:
         raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
+    return clean_decoded(
+        decoded, media_type, box, min_sharpness=min_sharpness, jpeg_quality=jpeg_quality
+    )
+
+
+def clean_decoded(
+    decoded: np.ndarray,
+    media_type: str,
+    box: BoundingBox,
+    *,
+    min_sharpness: float,
+    jpeg_quality: int = DEFAULT_CAPTURE_JPEG_QUALITY,
+) -> CleanCrop:
+    """`clean_crop` of an image already decoded (`captures.decode_image`: EXIF orientation
+    applied), so the box maps to the pixels the locating call saw.
+
+    Raises:
+        BlurryCropError: the cut's sharpness is below `min_sharpness`.
+    """
     height, width = decoded.shape[:2]
     left, top, right, bottom = box_pixels(box, width, height)
     region = decoded[top:bottom, left:right]
@@ -244,13 +269,7 @@ def clean_crop(
     deskewed = corners is not None
     if corners is not None:
         region = crop_page(region, corners)
-    if media_type == "image/png":
-        ok, encoded = cv2.imencode(".png", region)
-        if not ok:  # pragma: no cover - OpenCV encodes any 8-bit BGR image
-            raise RuntimeError("OpenCV could not encode the image as PNG")
-        data, content_type, extension = encoded.tobytes(), "image/png", "png"
-    else:
-        data, content_type, extension = encode_jpeg(region, jpeg_quality), "image/jpeg", "jpg"
+    data, content_type, extension = _encode(region, media_type, jpeg_quality)
     return CleanCrop(
         data=data,
         content_type=content_type,
@@ -260,6 +279,22 @@ def clean_crop(
         sharpness=score,
         deskewed=deskewed,
     )
+
+
+def oriented_image(decoded: np.ndarray, media_type: str, jpeg_quality: int) -> tuple[bytes, str]:
+    """`decoded` re-encoded for the locating call, `(bytes, media type)`: PNG for a PNG source,
+    else JPEG. It carries no EXIF orientation, so Claude sees the pixels the box is applied to."""
+    return _encode(decoded, media_type, jpeg_quality)[:2]
+
+
+def _encode(image: np.ndarray, media_type: str, jpeg_quality: int) -> tuple[bytes, str, str]:
+    """`(data, content type, extension)`: PNG for a PNG source, anything else a JPEG."""
+    if media_type == "image/png":
+        ok, encoded = cv2.imencode(".png", image)
+        if not ok:  # pragma: no cover - OpenCV encodes any 8-bit BGR image
+            raise RuntimeError("OpenCV could not encode the image as PNG")
+        return encoded.tobytes(), "image/png", "png"
+    return encode_jpeg(image, jpeg_quality), "image/jpeg", "jpg"
 
 
 async def clean_crop_async(
@@ -296,6 +331,12 @@ class CroppedImage:
     meta: dict[str, Any]
     # `«Imagen recortada N»`, pointing at the new file.
     provenance: Provenance
+
+    @property
+    def paths(self) -> list[str]:
+        """The vault-relative files stored: the image and its sidecar."""
+        directory, _, name = self.path.rpartition("/")
+        return [self.path, f"{directory}/{name.split('.', 1)[0]}{SIDECAR_SUFFIX}"]
 
     @property
     def footnote_label(self) -> str:
@@ -345,14 +386,26 @@ async def crop_source_image(
         raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
     if not description.strip():
         raise CropError(EMPTY_REGION_MESSAGE)
+    jpeg_quality = settings.sources.capture_jpeg_quality
+    # Decoded once, before any Claude call: a file OpenCV cannot read (a GIF) is refused here,
+    # and the box is located on the same oriented pixels it is applied to.
+    decoded = await asyncio.to_thread(decode_image, source.content)
+    if decoded is None:
+        raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
+    shown, shown_type = await asyncio.to_thread(
+        oriented_image, decoded, source.media_type, jpeg_quality
+    )
     client = client or crop_client(settings=settings)
-    box = await locate_region(client, source.content, source.media_type, description)
-    crop = await clean_crop_async(
-        source.content,
-        source.media_type,
-        box,
-        min_sharpness=settings.editor.crop_min_sharpness,
-        jpeg_quality=settings.sources.capture_jpeg_quality,
+    box = await locate_region(client, shown, shown_type, description)
+    crop = await asyncio.to_thread(
+        partial(
+            clean_decoded,
+            decoded,
+            source.media_type,
+            box,
+            min_sharpness=settings.editor.crop_min_sharpness,
+            jpeg_quality=jpeg_quality,
+        )
     )
     meta: dict[str, Any] = {
         "origin": CROPPED_ORIGIN,
@@ -386,8 +439,92 @@ async def crop_source_image(
     )
 
 
+# -- the `crop_image` tool of the revise turn (#493) -----------------------------------------------
+
+CROP_TOOL = "crop_image"
+CROP_TOOL_DESCRIPTION = (
+    "Crop one region of a page image the notes cite or the student selected in Recursos, and"
+    " insert the cropped image, cited, where `op`/`section`/`block` say."
+)
+CROP_FAILED_PREFIX = "No he podido añadir el recorte: "
+CROP_SOURCE_NOT_FOUND_MESSAGE = "No encuentro esa página entre las fuentes del tema."
+_PDF_PAGE = re.compile(r"^(?P<file>sources/pdf/(?P<stem>[A-Za-z0-9_-]+)\.pdf)#page=(?P<page>\d+)$")
+
+
+class CropImageRequest(BaseModel):
+    """The input of the `crop_image` tool: which page, which region, where it goes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(
+        description="The source_id of the page, as the catalogue gives it (a PDF page as"
+        " `sources/pdf/<file>.pdf#page=K`): one the notes cite or the student selected."
+    )
+    region: str = Field(
+        description="The region to crop, in the student's words («el diagrama de la página 3»)."
+    )
+    op: Literal["insert_after", "replace_block"] = Field(
+        description="`insert_after`: the image goes after block `block` (0 = first);"
+        " `replace_block`: it replaces block `block`."
+    )
+    section: str = Field(description="The anchor of the section, without `#`.")
+    block: int = Field(description="The block number within the section, as the block map shows.")
+    summary: str = Field(description="What this turn changes, one short Spanish sentence.")
+
+
+class CropRef(BaseModel):
+    """What a turn's crop was: the new source (`source_id`, `None` when it failed) and the page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    region: str
+    source_id: str | None = None
+    path: str | None = None
+    error: str | None = None
+
+
+def crop_image_tool() -> dict[str, Any]:
+    """The strict `crop_image` tool definition offered by a revise turn."""
+    return strict_tool(CROP_TOOL, CROP_TOOL_DESCRIPTION, CropImageRequest)
+
+
+def crop_source_path(vault: Vault, subject_slug: str, topic_slug: str, source_id: str) -> str:
+    """The vault-relative image of a topic-relative `source_id`: the file itself, or for a PDF
+    page (`sources/pdf/page-001.pdf#page=3`) its rendered page (`sources/pdf/page-001.p003.jpg`).
+    """
+    ref = source_id.strip()
+    match = _PDF_PAGE.match(ref)
+    if match is not None:
+        ref = f"sources/pdf/{match['stem']}.p{int(match['page']):03d}.jpg"
+    topic = topic_directory(vault, subject_slug, topic_slug).relative_to(vault.path)
+    return f"{topic.as_posix()}/{ref}"
+
+
+def crop_edit(request: CropImageRequest, cropped: CroppedImage) -> tuple[EditOp, NewFootnote]:
+    """The ordinary edit that shows and cites a crop: the image link with its footnote reference
+    as the block's text, and the «Imagen recortada N» footnote definition."""
+    label = cropped.footnote_label
+    op = EditOp(
+        op=request.op,
+        section=request.section,
+        block=request.block,
+        text=f"{cropped.markdown}[^{label}]",
+    )
+    definition = cropped.footnote.removeprefix(f"[^{label}]: ")
+    return op, NewFootnote(label=label, definition=definition)
+
+
+def placeholder_edit(request: CropImageRequest) -> EditOp:
+    """The request's edit with a stand-in text: checks the anchor before anything is cropped."""
+    return EditOp(op=request.op, section=request.section, block=request.block, text="-")
+
+
 __all__ = [
     "BLURRY_CROP_MESSAGE",
+    "CROP_FAILED_PREFIX",
+    "CROP_SOURCE_NOT_FOUND_MESSAGE",
+    "CROP_TOOL",
     "CROPPED_ORIGIN",
     "PROMPT_NAME",
     "ROLE",
@@ -396,12 +533,20 @@ __all__ = [
     "BoundingBox",
     "CleanCrop",
     "CropError",
+    "CropImageRequest",
+    "CropRef",
     "CroppedImage",
     "RegionNotFoundError",
     "box_pixels",
     "clean_crop",
     "clean_crop_async",
+    "clean_decoded",
+    "oriented_image",
+    "placeholder_edit",
     "crop_client",
+    "crop_edit",
+    "crop_image_tool",
+    "crop_source_path",
     "crop_source_image",
     "locate_region",
     "region_request",

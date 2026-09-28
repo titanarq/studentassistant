@@ -47,6 +47,7 @@ from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from studentassistant.editor.crop import crop_client
 from studentassistant.editor.doubts import LiveSink
 from studentassistant.editor.explain import (
     MAX_QUOTE_CHARS,
@@ -314,6 +315,13 @@ def revise_router() -> APIRouter:
                 turn_id=broadcast.turn_id,
                 live=live(request, subject_id, topic_id),
                 host=request.app.state.sessions.host,
+                # A `crop_image` turn locates the region with the app's own transport (#493).
+                crop_client=crop_client(
+                    settings=generator.settings,
+                    transport=generator.transport,
+                    ledger=LedgerBinding(vault, subject_id, topic_id),
+                ),
+                settings=generator.settings,
             )
 
         return stream_turn(request, generator, vault, subject_id, topic_id, "chat", work, broadcast)

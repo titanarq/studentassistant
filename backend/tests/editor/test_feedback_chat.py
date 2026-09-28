@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from revise_topic import ReviseTopic, make_revise_topic
+from studentassistant.editor.crop import CROP_TOOL
 from studentassistant.editor.feedback import FEEDBACK_TOOL, NOT_RECORDED_WARNING
 from studentassistant.editor.revise import (
     EDIT_TOOL,
@@ -120,8 +121,8 @@ def test_the_workspace_chat_records_a_mejora_and_leaves_the_notes(
 
     # The editor was offered the strict tool and told when to call it.
     [request] = fake.requests
-    assert [tool["name"] for tool in request.tools] == [EDIT_TOOL, FEEDBACK_TOOL]
-    assert request.tools[1]["strict"] is True
+    assert [tool["name"] for tool in request.tools] == [EDIT_TOOL, CROP_TOOL, FEEDBACK_TOOL]
+    assert request.tools[2]["strict"] is True
     assert "report_feedback" in _texts(request)
 
     # The chat history keeps the item, and the next turn is told it was recorded.

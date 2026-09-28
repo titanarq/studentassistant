@@ -133,6 +133,8 @@ export interface HistoryTurn {
   pendingIds: string[];
   /** `revise`: the app feedback the turn recorded (#472), shown as a chip; else null. */
   feedback: FeedbackRef | null;
+  /** `revise`: the image the turn cropped from a page (#493), topic-relative; else null. */
+  cropId: string | null;
 }
 
 export type TriageDecision = "set_aside" | "restore";
@@ -180,7 +182,17 @@ function readHistoryTurn(body: unknown): HistoryTurn | null {
     doubt: body.kind === "doubt" ? readDoubt(body, body.doubt_refs) : null,
     pendingIds: strings(body.pending_ids),
     feedback: readFeedback(body.feedback),
+    cropId: readCropId(body.crop),
   };
+}
+
+/**
+ * The new source of a turn's `crop` (`CropRef`, #493): its `source_id`, or null when the turn
+ * cropped nothing or the crop failed (its reason is already the reply).
+ */
+export function readCropId(value: unknown): string | null {
+  if (!isObject(value) || typeof value.error === "string") return null;
+  return optionalText(value.source_id);
 }
 
 export function readWorkspaceHistory(body: unknown): WorkspaceHistory | null {
@@ -247,6 +259,8 @@ export interface TurnOutcome {
   action: GoStudyAction | null;
   /** `revise`: the app feedback the turn recorded (#472). */
   feedback: FeedbackRef | null;
+  /** `revise`: the image the turn cropped from a page (#493). */
+  cropId: string | null;
 }
 
 /** The action of a `study` turn: the "Ir a Estudiar" button to the study screen. */
@@ -263,6 +277,7 @@ const OUTCOME_EXTRAS = {
   pendingId: null,
   action: null,
   feedback: null,
+  cropId: null,
 } satisfies Partial<TurnOutcome>;
 
 /** A `go_study` action with an in-app path, else null. */
@@ -374,6 +389,7 @@ export function readOutcome(body: unknown): TurnOutcome | null {
     pendingId: null,
     action: null,
     feedback: readFeedback(body.feedback),
+    cropId: readCropId(body.crop),
   };
 }
 
