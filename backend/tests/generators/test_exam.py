@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import Awaitable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pymupdf
@@ -382,3 +383,33 @@ def test_texts_become_html_blocks() -> None:
     assert text_html("Uno.\nDos.\n\n- a\n- b\n\n1. primero\n2. segundo") == (
         "<p>Uno.<br/>Dos.</p><ul><li>a</li><li>b</li></ul><ol><li>primero</li><li>segundo</li></ol>"
     )
+
+
+MERMAID = (
+    Path(__file__).parents[1] / "fixtures" / "generators" / "mermaid-flowchart.md"
+).read_text(encoding="utf-8")
+
+
+def test_a_mermaid_diagram_is_its_code_and_a_note_in_the_pdfs(
+    topic: ReviseTopic, fake: FakeClaude
+) -> None:
+    # #481: the PDF cannot draw mermaid; the Markdown keeps the fence the web draws.
+    question = _question(MERMAID, f"La solución sigue el esquema.\n\n{MERMAID}", points=10)
+    _generate(topic, fake, drafted_exercises=[], drafted_questions=[question], questions=1)
+
+    assert "```mermaid\nflowchart TD\n" in _text(topic, EXAM_MD)
+    assert "no disponible" not in _text(topic, EXAM_MD)
+    for name in (EXAM_PDF, SOLUTIONS_PDF):
+        _, text = _pdf_text(topic, name)
+        assert "```" not in text
+        assert 'flowchart TD\n  A["f(x)"] --> B{' in text  # the code, indentation and all
+        assert "No existe f'(a)\"]\nDiagrama no disponible en la exportación\n" in text
+        assert text.index("Sigue el esquema") < text.index("flowchart") < text.index("Explica")
+
+
+def test_a_fenced_block_becomes_preformatted_html() -> None:
+    assert text_html("Antes\n```mermaid\nflowchart TD\n  A --> B\n```\nDespués") == (
+        "<p>Antes</p><pre>flowchart TD\n  A --&gt; B</pre>"
+        '<p class="diagram-note">Diagrama no disponible en la exportación</p><p>Después</p>'
+    )
+    assert text_html("```python\nx = 1\n\ny = 2\n```") == "<pre>x = 1\n\ny = 2</pre>"

@@ -306,8 +306,10 @@ printed. Files under `generated/`, the statements apart from the solutions:
   sections each item comes from;
 - `examen.pdf`, `examen-soluciones.pdf` -- the same as A4 PDFs (`render_pdf`: PyMuPDF `Story`
   over HTML rendered from the same data; `**bold**`, `*italic*`, `- ` and `1. ` lists, any
-  `$..$` left as LaTeX source in monospace), the exam with a name/date line, a box to answer each
-  question sized by its points, and `<title> · Página i de n` at the foot of every page.
+  `$..$` left as LaTeX source in monospace, fenced code blocks as preformatted text), the exam
+  with a name/date line, a box to answer each question sized by its points, and `<title> · Página
+  i de n` at the foot of every page. A ```` ```mermaid ```` fence is not drawn: see "Mermaid in
+  the exports".
 - `examen.yaml` (`ExamFile`, since generator version 2, #283) -- the machine-readable exam the web
   corrects: `title`, `instructions`, `duration_minutes`, `total_points`, `exercises` and
   `questions`, each an `ExamQuestion` (`id`, `number`, `statement`, `difficulty`, `points`,
@@ -355,7 +357,9 @@ Files under `generated/`:
 - `diapositivas.pdf`, `diapositivas.pptx` -- exported by Marp CLI (`MarpExporter`: run in a
   temporary directory with `--allow-local-files --pdf|--pptx --output <file>`, its process group
   killed on a timeout). A missing `marp`, a failure or a timeout is a Spanish warning and the
-  Markdown is still stored (an older PDF/PPTX is then removed, never left stale).
+  Markdown is still stored (an older PDF/PPTX is then removed, never left stale). A bullet
+  holding a fenced block keeps the block's indentation; a mermaid fence is not drawn by Marp: see
+  "Mermaid in the exports".
 
 Configuration `[generators]` (`SA_GENERATORS__*`): `marp_command` (default `["marp"]`, e.g.
 `["npx", "--yes", "@marp-team/marp-cli"]`), `marp_timeout_seconds` (180), `marp_browser_path`
@@ -365,3 +369,25 @@ not a Python dependency. Items are the slides (`d01`, `d02`...) with their ancho
 the PDF/PPTX in "Material de estudio" (#79) through `GET .../generated/files/{name}`. Tests use a stand-in
 exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
 `@pytest.mark.integration` (`SA_TEST_MARP`).
+
+## Mermaid in the exports -- `diagrams.py` (#481)
+
+The web draws a ```` ```mermaid ```` fence as a diagram (#480), and the Markdown files
+(`examen.md`, `examen-soluciones.md`, `diapositivas.md`) keep the fence as Claude wrote it, so the
+"Material de estudio" preview draws it too. The printed exports cannot: rendering mermaid needs its
+JavaScript library and a browser (mermaid-cli drives one through puppeteer; Marp Core has no
+mermaid support), which the backend neither has nor may run in tests. Before #481 the exam PDFs
+printed the fence as a paragraph with its backticks and lost the indentation, and Marp printed a
+plain code block with no explanation. Now both fall back to the diagram's code as a code block
+followed by the Spanish note «Diagrama no disponible en la exportación» (`DIAGRAM_UNAVAILABLE`):
+
+- exam PDFs: `exam.text_html` renders every fenced block as `<pre>` (a mermaid one followed by
+  `<p class="diagram-note">`);
+- slides PDF/PPTX: `MarpExporter` writes Marp's copy of the deck through `note_mermaid_fences`,
+  which adds `*Diagrama no disponible en la exportación*` after every closed mermaid fence at its
+  indentation (inside the bullet that holds it); the stored `diapositivas.md` is unchanged.
+
+`fences(lines)` (fenced blocks with language, dedented body, indentation, line span) is shared by
+both. Tests: `tests/generators/test_diagrams.py`, and the fixture
+`tests/fixtures/generators/mermaid-flowchart.md` through both exports in `test_exam.py` and
+`test_slides.py` (a fake `marp` script records the deck it is given).
