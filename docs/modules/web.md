@@ -178,6 +178,18 @@
   estudio** (`/`). There is no doubts counter and no spend line since #450 (the doubts are asked
   in the chat; `WorkspaceCost` is gone). The page's root is its `main` (#413), so the embedded
   capture has none of its own. The split follows with a minimal gap. Two columns (a CSS grid):
+  - **Visual zones (#485).** The page is a desk (`--desk`: a shade darker than `--paper` in the
+    light theme, darker than the slate in the dark one) under the header bar, which is a solid band
+    edge to edge (`--header-bg`, ballpoint blue in light, a deep ink blue in dark; its text
+    `--on-header`, its links `--on-header-muted`, the mode switch's edge `--header-line`, its focus
+    ring `--on-header`). Captura/Recursos, the chat and the document are three cards on the desk,
+    with a gap between them: each has a `--line` border, `--radius-l` corners and `--card-shadow`,
+    and its own surface -- Captura/Recursos `--paper`, the chat `--chat-surface` (a calm blue-grey
+    tint in light, a bluish slate in dark), the document `--surface` (the white sheet / the slate
+    board). All of them are tokens of `tokens.css` for both themes; `src/styles/tokens.test.ts`
+    computes the WCAG contrast of every text colour on the new backgrounds (at least 4.5:1) and of
+    the band's borders and focus rings (at least 3:1) in both themes, and
+    `src/workspace/layout.test.ts` pins which token each zone uses.
   - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
     with wrap-around, Home/End) with **Captura** and **Recursos**. Both panels stay mounted and
     the inactive one is only `hidden`. Since #450 showing **Recursos** pauses a running capture
@@ -472,7 +484,13 @@
       unsent. While a capture runs the button is absent (the capture's speech already reaches the
       chat); a capture starting removes it and stops its recognition, as unmounting the panel does.
   - Right: the document (`DocumentPanel`, #316), headed "Apuntes · vN · guardado" with an
-    **Editar** button: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
+    **Editar** button. The header stays pinned at the top of the card (#485): the card is a flex
+    column that does not scroll, the header (`.workspace-document-header`, `flex: none`, sticky)
+    on top and `.workspace-document-body` below it, which alone scrolls, so **Editar** is on screen
+    at the bottom of a long document (the editor's column scrolls the same way). Below 900 px on
+    a screen at least 30rem tall the document view is one viewport high in the same way; on a
+    shorter one the card is no scroll container and the header sticks to the top of the page. The
+    body: `NotesView` (no "¿Por qué?" here), with the sections the last applied turn
     changed highlighted and pasted images shown from the topic's sources. A provenance footnote (in
     the document or in a chat answer), a chat source link or a Recursos card opens that source's
     **detail over the document column** (#473): `SourcePanel`'s `overlay` variant in its own grid

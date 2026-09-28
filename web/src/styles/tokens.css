@@ -15,6 +15,16 @@
   --line: #deded7;
   --line-strong: #b4b6ad;
 
+  /* The study workspace's zones (#485): the desk under the cards, each card's soft shadow, the
+     solid header band (ballpoint blue) and the chat card's calm blue-grey tint. */
+  --desk: #e8e7e0;
+  --card-shadow: 0 1px 2px rgb(29 34 48 / 7%), 0 6px 18px -10px rgb(29 34 48 / 30%);
+  --header-bg: #253f80;
+  --on-header: #ffffff;
+  --on-header-muted: #d5ddf1;
+  --header-line: #8196cc;
+  --chat-surface: #f1f4f8;
+
   /* Ink */
   --ink: #1d2230;
   --ink-muted: #545a68;
@@ -125,6 +135,14 @@
     --surface-sunken: #131a18;
     --line: #2f3c37;
     --line-strong: #4b5a54;
+
+    --desk: #0f1513;
+    --card-shadow: 0 1px 2px rgb(0 0 0 / 35%), 0 8px 22px -12px rgb(0 0 0 / 75%);
+    --header-bg: #213556;
+    --on-header: #eef1ea;
+    --on-header-muted: #bccae2;
+    --header-line: #768cb6;
+    --chat-surface: #1c2630;
 
     --ink: #e6e9e2;
     --ink-muted: #a8b1aa;
