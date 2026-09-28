@@ -187,3 +187,40 @@ def test_an_orphan_sidecar_is_retired_and_nothing_else(
     assert retire_orphan_sidecar(tmp_vault, path) is None  # no sidecar at all
     with pytest.raises(SourcePathError):
         retire_orphan_sidecar(tmp_vault, "subjects/../x")
+
+
+def test_an_orphan_sidecar_another_file_shares_or_that_describes_another_source_stays(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    # `img-001.jpg` is gone, but a pasted `img-001.png` shares `img-001.yaml` (#502): kept.
+    s, t = topic
+    png = put_pasted_image(tmp_vault, s, t, b"not really a png", "image/png")
+    sidecar = png.with_suffix(".yaml")
+    gone = _rel(tmp_vault, png.with_suffix(".jpg"))
+    before = sidecar.read_bytes()
+    assert retire_orphan_sidecar(tmp_vault, gone) is None
+    assert sidecar.read_bytes() == before
+    # With the file gone, a sidecar that does not record the expected identity stays too.
+    meta = yaml.safe_load(before.decode("utf-8"))
+    png.unlink()
+    path = _rel(tmp_vault, png)
+    assert retire_orphan_sidecar(tmp_vault, path, sha256="0" * 64) is None
+    assert retire_orphan_sidecar(tmp_vault, path, added_at=WHEN) is None
+    assert sidecar.read_bytes() == before
+    assert retire_orphan_sidecar(tmp_vault, path, sha256=meta["sha256"]) == sidecar
+
+
+def test_removing_a_source_that_is_not_the_expected_one_writes_nothing(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    s, t = topic
+    image = put_pasted_image(tmp_vault, s, t, JPEG, "image/jpeg", added_at=WHEN)
+    path = _rel(tmp_vault, image)
+    sidecar = image.with_suffix(".yaml")
+    before = sidecar.read_bytes()
+    with pytest.raises(SourceNotFoundError):
+        remove_source(tmp_vault, path, sha256="0" * 64)
+    with pytest.raises(SourceNotFoundError):
+        remove_source(tmp_vault, path, added_at=datetime(2020, 1, 1, tzinfo=UTC))
+    assert sidecar.read_bytes() == before
+    assert remove_source(tmp_vault, path, added_at=WHEN) == sidecar

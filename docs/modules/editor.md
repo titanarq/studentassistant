@@ -528,7 +528,12 @@ mode, and the student's message.
   been recorded after that undo, and only while the image at the path is still that turn's own
   crop (its sidecar's `sha256` and `added_at` equal the ones the turn recorded in `crop`): a crop
   number is reused once a revert removed both files, and a later crop at the same path is never
-  touched, cited or not. Only the latest undo is repaired; if two undos in a row both crashed
+  touched, cited or not. Nor is an image the student pasted meanwhile (`vault.put_pasted_image`,
+  which records no turn and so does not end the repair window) that took the number with another
+  extension (`img-001.png` after the undone `img-001.jpg`) and so the shared sidecar
+  `img-001.yaml`: an orphan sidecar is retired only while it records the undone crop's identity
+  and no other file shares its stem, both checked by the vault under the sources directory's
+  lock. Only the latest undo is repaired; if two undos in a row both crashed
   before their retirement, the older crop stays in Recursos until the student removes it.
 - `chat_history(vault, subject, topic) -> ChatHistory` (blocking, reads only): `turns`
   (`ChatTurn`: `time`, `kind` -- `revise`, or `explain` for a "¿Por qué?" answer --, `turn_id`,
@@ -1029,8 +1034,11 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   alone, the image then going with the turn's commit: the revert removes the image and the
   sidecar left behind is retired too (`vault.retire_orphan_sidecar`, #502). The retirement is
   idempotent -- a crop the revert removed whole or one retired already is left alone, and so is a
-  path the current notes cite or an image that is no longer the turn's own (`crop.sha256` and
-  `crop.added_at`, a later crop that reused the number) -- and runs after the `notes.undone`
+  path the current notes cite or a file that is no longer the turn's own (`crop.sha256` and
+  `crop.added_at`, checked by the vault under the directory lock: a later crop or a pasted image,
+  which records no turn, that reused the number; a sidecar is retired as an orphan only while it
+  records that identity and no other file, such as a pasted `img-001.png`, shares its stem) -- and
+  runs after the `notes.undone`
   record, re-run by the next undo if the process died in between, until the next turn is
   recorded (#502). A student save meanwhile is re-asked with the
   new block map, and the crop already made for the same source and region is reused, never cut

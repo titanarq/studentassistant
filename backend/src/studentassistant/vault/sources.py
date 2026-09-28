@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, get_args
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from yaml import YAMLError, safe_load
 
 from studentassistant.vault.errors import VaultError
@@ -80,6 +80,8 @@ _IMAGE_NUMBER = re.compile(r"^img-(\d{3,})\.")
 _EXTENSION = re.compile(r"^\.[A-Za-z0-9]+$")
 _DERIVED_SUFFIX = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9]+)+$")
 _META_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
+# A sidecar's `added_at`, as YAML gives it back (an ISO 8601 string or a datetime).
+_INSTANT: TypeAdapter[datetime] = TypeAdapter(datetime)
 
 # How long a writer waits for another process (or thread) to finish storing into the same
 # `sources/<kind>/` directory before giving up with `VaultBusyError`.
@@ -617,7 +619,12 @@ def removed_source_paths(vault: Vault, subject_slug: str, topic_slug: str) -> fr
 
 
 def remove_source(
-    vault: Vault, vault_relative_path: str, *, removed_at: datetime | None = None
+    vault: Vault,
+    vault_relative_path: str,
+    *,
+    removed_at: datetime | None = None,
+    sha256: str | None = None,
+    added_at: datetime | None = None,
 ) -> Path:
     """Retire one stored source (a soft delete, #451) and return its sidecar's path.
 
@@ -627,12 +634,15 @@ def remove_source(
     just that). Nothing is deleted: the content, its derived files (crop, transcriptions, PDF page
     files) and its git history stay, `read_source` still serves it, and `list_sources` leaves it
     out from now on. The caller commits. Other sources, triage `duplicate_of` references and the
-    session events that mention it are left as they are.
+    session events that mention it are left as they are. When `sha256` or `added_at` is given,
+    the source is retired only while its sidecar records those values (checked under the lock):
+    a caller retiring a source it stored itself never retires another that reused its path.
 
     Raises:
         SourcePathError: when the path is not a source path (see `read_source`).
         SourceNotFoundError: when no listed source is at that path -- none was ever stored there,
-            it names a derived file or a sidecar, or it was removed already.
+            it names a derived file or a sidecar, or it was removed already -- or the one there
+            does not record the given `sha256`/`added_at`.
         SourceFileError: when its sidecar is not a readable YAML mapping.
         SecretRefused: never in practice (the sidecar was guarded when stored); nothing written.
     """
@@ -650,6 +660,8 @@ def remove_source(
         meta = _read_sidecar(sidecar) or {}
         if is_removed(meta):
             raise SourceNotFoundError(f"the source at {vault_relative_path!r} was removed already")
+        if not _records_identity(meta, sha256, added_at):
+            raise SourceNotFoundError(f"the source at {vault_relative_path!r} is another one")
         meta[REMOVED_KEY] = {"at": removed_at or datetime.now(UTC), "by": "student"}
         text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
         guard(text)
@@ -658,7 +670,12 @@ def remove_source(
 
 
 def retire_orphan_sidecar(
-    vault: Vault, vault_relative_path: str, *, removed_at: datetime | None = None
+    vault: Vault,
+    vault_relative_path: str,
+    *,
+    removed_at: datetime | None = None,
+    sha256: str | None = None,
+    added_at: datetime | None = None,
 ) -> Path | None:
     """Retire the sidecar a source's content left behind (#502) and return its path.
 
@@ -667,7 +684,10 @@ def retire_orphan_sidecar(
     sidecar of a source whose content a later revert removed -- the sidecar gains the same
     `removed: {at, by: student}` mapping `remove_source` writes, atomically under the directory's
     lock. Nothing is deleted and the caller commits. `None`, with nothing written, when the
-    content is there, there is no sidecar (or it is a symlink) or it is marked removed already.
+    content is there, when any other file sharing the sidecar is there (`img-001.png` next to a
+    gone `img-001.jpg`: the sidecar is that file's), when there is no sidecar (or it is a
+    symlink), when it is marked removed already, or when `sha256`/`added_at` is given and the
+    sidecar does not record it (it describes another source).
 
     Raises:
         SourcePathError: when the path is not a source path (see `read_source`).
@@ -684,8 +704,10 @@ def retire_orphan_sidecar(
     with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
         if content.exists() or content.is_symlink() or sidecar.is_symlink():
             return None
+        if any(entry != sidecar and _sidecar_of(entry) == sidecar for entry in directory.iterdir()):
+            return None
         meta = _read_sidecar(sidecar)
-        if meta is None or is_removed(meta):
+        if meta is None or is_removed(meta) or not _records_identity(meta, sha256, added_at):
             return None
         meta[REMOVED_KEY] = {"at": removed_at or datetime.now(UTC), "by": "student"}
         text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
@@ -790,6 +812,20 @@ def _sidecar_of(content_path: Path) -> Path:
     """The sidecar a content or derived file belongs to: `page-001.page.jpg` -> `page-001.yaml`."""
     stem = content_path.name.split(".", 1)[0]
     return content_path.with_name(f"{stem}{SIDECAR_SUFFIX}")
+
+
+def _records_identity(
+    meta: Mapping[str, Any], sha256: str | None, added_at: datetime | None
+) -> bool:
+    """Whether the sidecar `meta` records `sha256` and `added_at`, each only when given."""
+    if sha256 is not None and meta.get("sha256") != sha256:
+        return False
+    if added_at is None:
+        return True
+    try:
+        return _INSTANT.validate_python(meta.get("added_at")) == added_at
+    except ValidationError:
+        return False
 
 
 def _read_sidecar(sidecar: Path) -> dict[str, Any] | None:

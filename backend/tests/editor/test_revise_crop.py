@@ -41,6 +41,7 @@ from studentassistant.vault import (
     GitSync,
     Vault,
     list_sources,
+    put_pasted_image,
     put_source,
     read_notes,
     read_source,
@@ -632,3 +633,48 @@ def test_undoing_a_turn_that_dropped_a_reused_crop_keeps_that_crop(
     assert meta is not None and "removed" not in meta
     log = _git(topic.vault, "log", "-n", "3", "--format=%s")
     assert "recorte retirado" not in log
+
+
+def _png() -> bytes:
+    ok, encoded = cv2.imencode(".png", np.full((40, 60, 3), 200, np.uint8))
+    assert ok
+    return encoded.tobytes()
+
+
+@pytest.mark.parametrize("cited", [False, True])
+def test_an_undo_repair_never_retires_a_pasted_image_that_reused_the_crop_number(
+    topic: ReviseTopic, sync: GitSync, cited: bool
+) -> None:
+    # Crop A is undone (the revert removes both its files), then the student pastes a PNG: it
+    # takes `img-001.png` and the shared-stem sidecar `img-001.yaml`, and pasting records no turn.
+    # The next undo's repair of A's `img-001.jpg` must leave the pasted image alone (#502).
+    _book_page(topic, _diagram())
+    first = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert first.crop is not None and first.crop.path is not None
+    _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _images(topic) == [] and not (topic.vault.path / first.crop.path).exists()
+    pasted = put_pasted_image(topic.vault, topic.subject, topic.topic, _png(), "image/png")
+    path = pasted.relative_to(topic.vault.path).as_posix()
+    assert pasted.name == "img-001.png" and pasted.with_suffix(".yaml").is_file()
+    if cited:
+        link = "![Pegada](../sources/images/img-001.png)"
+        notes = _notes(topic).replace("Se escribe $f'(x)$.", f"Se escribe $f'(x)$.\n\n{link}")
+        assert link in notes
+        write_notes(topic.vault, topic.subject, topic.topic, notes)
+    sync.checkpoint("fixture: the student pastes an image")
+    head = _git(topic.vault, "rev-parse", "HEAD")
+
+    with pytest.raises((NothingToUndoError, UndoConflictError)):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == [path]
+    meta = yaml.safe_load(pasted.with_suffix(".yaml").read_text(encoding="utf-8"))
+    assert meta["origin"] == "pasted" and "removed" not in meta
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+    assert "recorte retirado" not in _git(topic.vault, "log", "-n", "1", "--format=%s")
