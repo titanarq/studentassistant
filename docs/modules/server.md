@@ -279,7 +279,10 @@ Routes registered today:
     CSP; images (`jpeg`, `png`, `webp`, `gif`, `heic`/`heif`), `application/pdf`, `text/markdown`
     and `text/plain` keep their media type (text with `charset=utf-8`), any other `text/*` goes out
     as `text/plain` and everything else (HTML, SVG, YAML, unknown) as `application/octet-stream`,
-    so no source is ever rendered as a page of this origin.
+    so no source is ever rendered as a page of this origin. The one exception (#511): an SVG that
+    is exactly `vault.sanitize_svg`'s output (`is_safe_svg`, re-checked on every read: a diagram
+    the editor drew) is served as `image/svg+xml` under `default-src 'none'; style-src
+    'unsafe-inline'; sandbox`, so the web's `<img>` can draw it; any other SVG stays octet-stream.
   - `GET /api/sources/{vault_id:path}/meta` -> `SourceMeta`: `vault_id`, `kind`, `media_type` (the
     one the content route serves), `size`, `meta` (the parsed sidecar, `null` without one) and
     `transcription` (the sidecar's `transcription` when it is text, else `null`) and `removed`

@@ -57,6 +57,8 @@ it("names each source by its number and kind", () => {
   expect(sourceTitle({ kind: "web", file: "001-vapor.md" }, "x", { title: "La máquina de vapor" })).toBe("Web: La máquina de vapor");
   expect(sourceTitle({ kind: "images", file: "img-001.png" }, "", null)).toBe("Imagen pegada 1");
   expect(sourceTitle({ kind: "images", file: "img-002.jpg" }, "", { origin: "cropped" })).toBe("Imagen recortada 2");
+  expect(sourceTitle({ kind: "images", file: "img-003.svg" }, "", { origin: "drawn" })).toBe("Diagrama 3");
+  expect(sourceTitle({ kind: "images", file: "img-004.svg" }, "", null)).toBe("Diagrama 4");
 });
 
 it("shows a page's flattened image, falling back to the capture", () => {

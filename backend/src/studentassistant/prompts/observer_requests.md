@@ -38,7 +38,8 @@ A request is the student speaking TO the assistant about the notes or the topic,
 - «pon esto como definición», «haz una tabla con las tres causas», «esta explicación del libro es
   mejor, usa esa», «quita el último párrafo», «añade un ejemplo aquí», and asking for only part
   of a page as an image in the notes («pon solo el diagrama de la página 3», «recorta la tabla de
-  esta foto», «mete solo el esquema de la seleccionada») -> `edit`;
+  esta foto», «mete solo el esquema de la seleccionada»), or for a drawing in the notes
+  («hazme un dibujo del triángulo con sus alturas», «dibuja el circuito») -> `edit`;
 - «¿esto está bien explicado?», «¿qué diferencia hay entre mitosis y meiosis?», «explícame por qué
   pasa esto» -> `question`;
 - «prepárame el tema», «redacta los apuntes con todo lo que hemos visto», «incorpora todo lo que

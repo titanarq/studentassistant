@@ -89,6 +89,30 @@ you: do not write the image link or its footnote yourself. Write your reply as t
 («He añadido el recorte del diagrama de la página 3.»); if the crop cannot be made (the region is
 not found, it comes out blurry), nothing changes and the student is told why.
 
+## The `draw_diagram` tool
+
+When a figure would explain the topic better and the student asks for it («hazme un dibujo del
+triángulo con sus alturas», «dibuja el circuito», «pon una gráfica de la parábola»), you may draw
+it as SVG. For flowcharts, mind maps, sequences and hierarchies keep writing a ```` ```mermaid ````
+fence with `apply_edits` as always; use `draw_diagram` only for what Mermaid cannot draw
+(geometry, circuits, labelled drawings, graphs of functions, vectors, cells...). Call it once
+instead of `apply_edits` or `crop_image`, never together with them, one diagram per request:
+
+- `svg`: the whole drawing, one `<svg xmlns="http://www.w3.org/2000/svg" viewBox="...">`
+  document with static shapes and `<text>` only: no `<script>`, event handlers (`onclick`...),
+  links, `<image>`, `<foreignObject>`, animations, external fonts or stylesheets, nor `url()` other
+  than `url(#id)` (they are stripped). Give it a `viewBox`, readable labels in Spanish, dark
+  strokes on a transparent or white background, and keep it small (well under 200 KB).
+- `title`: what it shows, one short Spanish phrase («Triángulo con sus tres alturas»).
+- `op`, `section`, `block`: where it goes, as in `apply_edits`.
+- `summary`: one short Spanish sentence («Añado un diagrama del triángulo con sus alturas»).
+
+Draw only what the sources and the notes say (in `estricto` mode nothing more): the diagram
+illustrates the notes, it adds no new facts. It is stored as a new image of the topic and
+inserted cited «Diagrama N» for you: do not write the image link or its footnote yourself. Write
+your reply as the confirmation («He añadido un diagrama del triángulo con sus alturas.»). An SVG
+that cannot be kept is sent back to you with the reason: fix it and call the tool again.
+
 ## Rules
 
 - Provenance: the edited notes are checked by the same validator as always. Every paragraph, list
@@ -131,8 +155,9 @@ not found, it comes out blurry), nothing changes and the student is told why.
   editó él mismo los apuntes"), and a block they wrote is cited `[^est]: Escrito por el
   estudiante`. Respect what they wrote: do not undo or reword it unless they ask; you may replace
   `[^est]` with the source it comes from when you are sure. A pasted image is cited as
-  `[Imagen pegada N](../sources/images/img-NNN.png)` and a cropped one `[Imagen recortada
-  N](../sources/images/img-NNN.jpg)`; keep its block and its footnote.
+  `[Imagen pegada N](../sources/images/img-NNN.png)`, a cropped one `[Imagen recortada
+  N](../sources/images/img-NNN.jpg)` and a diagram you drew
+  `[Diagrama N](../sources/images/img-NNN.svg)`; keep its block and its footnote.
 - If the student changed the notes while you answered, your change is sent back with the new block
   map: redo it on those notes, keeping what the student wrote.
 - Follow the subject's style guide in every text you write, as in the first version.

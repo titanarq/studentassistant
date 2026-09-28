@@ -3,9 +3,9 @@
 Claude (role `generator`, prompt `generator_slides`) turns the master notes into a short deck: a
 title and, per slide, a title, a few bullets, optional speaker notes, the note anchors it comes
 from and, optionally, one figure. Figures are the source pages the notes cite (a notebook or
-textbook page, a PDF page's thumbnail); Claude is given their list, not their images, and each
-figure a slide uses is copied under `generated/diapositivas/` and credited on that slide's footer
-("Imagen: Libro, página 12").
+textbook page, a PDF page's thumbnail) and the SVG diagrams the editor drew (#511); Claude is
+given their list, not their images, and each figure a slide uses is copied under
+`generated/diapositivas/` and credited on that slide's footer ("Imagen: Libro, página 12").
 
 Files under `generated/`:
 
@@ -51,6 +51,7 @@ from studentassistant.generators.diagrams import fences, note_mermaid_fences
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 from studentassistant.vault import VaultError, get_subject, read_source, topic_directory
+from studentassistant.vault.svg import SVG_EXTENSION
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,8 @@ class Figure:
 
 
 def collect_figures(context: GeneratorContext) -> list[Figure]:
-    """The figures of the notes: every notes/book page image and PDF page they cite, in order.
+    """The figures of the notes: every notes/book page image, PDF page and SVG diagram (#511)
+    they cite, in order.
 
     A page with a cropped version (`page-NNN.page.jpg`) shows the crop; a PDF page shows its
     thumbnail (`page-NNN.pKKK.jpg`); a source whose image is not stored is left out.
@@ -142,11 +144,16 @@ def collect_figures(context: GeneratorContext) -> list[Figure]:
 
 
 def _figure_file(provenance: Provenance, topic_dir: Path) -> str | None:
-    if provenance.path is None or provenance.kind not in ("notes", "book", "pdf"):
+    if provenance.path is None or provenance.kind not in ("notes", "book", "pdf", "images"):
         return None
     path = PurePosixPath(provenance.path)
     candidates: list[PurePosixPath] = []
-    if provenance.kind == "pdf":
+    if provenance.kind == "images":
+        # Of the topic's images only an SVG diagram the editor drew is a figure (#511).
+        if path.suffix.lower() != SVG_EXTENSION:
+            return None
+        candidates.append(path)
+    elif provenance.kind == "pdf":
         page = (provenance.source_id or "").partition("#page=")[2]
         if not page.isdigit():
             return None

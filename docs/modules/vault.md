@@ -26,6 +26,7 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
   sources/images/img-NNN.png|jpg|webp        an image the student pasted into the notes (+ .yaml: origin: pasted, content_type, sha256, added_at),
                                              or a region cropped from a stored page (origin: cropped, + cropped_from, bbox, requested_region)
+  sources/images/img-NNN.svg                 a diagram the editor drew, sanitized (+ .yaml: origin: drawn, title, content_type, sha256, added_at)
   sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
@@ -241,6 +242,24 @@ another `img-NNN.<ext>`, whose sidecar has `origin: cropped` instead of `pasted`
 `cropped_from` (the vault-relative path of the page it was cut from, which is never modified),
 `bbox` (`[x0, y0, x1, y1]`, fractions of the page image) and `requested_region` (the student's
 description); the notes cite it as `[Imagen recortada N](../sources/images/img-NNN.<ext>)`.
+An SVG diagram the editor draws (`editor.diagram`, #511) is stored with `put_source(...,
+"images", "diagram.svg", ...)` as `img-NNN.svg` (sidecar `origin: drawn`, `title`,
+`content_type: image/svg+xml`, `sha256`, `added_at`); the notes cite it as
+`[Diagrama N](../sources/images/img-NNN.svg)`. `put_source` stores an `.svg` image only as
+`sanitize_svg` rebuilds it (an unusable one is `SvgError`, nothing written); `put_pasted_image`
+never accepts SVG.
+
+**SVG sanitizer** (`svg.py`, #511): `sanitize_svg(content) -> bytes` parses an SVG (refusing any
+DOCTYPE/ENTITY declaration and anything over `MAX_SVG_BYTES`, 256 KiB) and rebuilds it from an
+allow-list: only the drawing elements of `ALLOWED_ELEMENTS` in the SVG namespace (an unqualified
+`<svg>` is put in it) -- `script`, `foreignObject`, `image`, `a`, `iframe`, the animation elements
+and anything foreign are dropped with their subtree --; attributes unqualified (plus
+`xlink:href`, `xml:space`, `xml:lang`), no `on*` handler, no `javascript:`/`vbscript:`/`data:`
+value, `href` only as `#id`, `url()` only as `url(#id)`; CSS (`<style>`, `style=`) dropped when it
+holds `@import`, an external `url()`, `expression(`, a backslash escape or a script scheme;
+comments and processing instructions dropped. The output is deterministic UTF-8 XML and
+sanitizing it again changes nothing (`is_safe_svg(content)` checks exactly that). `SvgError` is a
+`ValueError` with a Spanish message. Tests: `tests/vault/test_svg.py`.
 `set_book(vault, subject_slug, topic_slug, title) -> Book` / `get_book(...) -> Book | None` keep
 the topic's textbook (`Book(title)`, spaces collapsed; `ValueError` for an empty title) in
 `sources/book/book.yaml`, which is not a source, not numbered and not indexed as one.

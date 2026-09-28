@@ -294,6 +294,14 @@ it("lists and opens an image pasted into the notes", async () => {
   );
 });
 
+it("lists an SVG diagram the editor drew as «Diagrama N», shown through an <img> (#511)", async () => {
+  stubApi({ [SUMMARY]: summary(0) });
+  renderTab("# Tema\n\n![Diagrama 1](../sources/images/img-001.svg)[^img001]\n\n[^img001]: [Diagrama 1](../sources/images/img-001.svg)\n");
+  await loaded();
+  const diagram = card(/Diagrama 1/);
+  expect(diagram.querySelector("img")).toHaveAttribute("src", `/api/sources/${TOPIC}/sources/images/img-001.svg`);
+});
+
 it("shows a pasted image in the viewer", () => {
   stubApi({ [SUMMARY]: summary(0) });
   render(

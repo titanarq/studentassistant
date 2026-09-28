@@ -27,11 +27,13 @@ import hashlib
 import html
 import io
 import itertools
+import json
 import logging
 import re
 import sqlite3
 import unicodedata
 import zipfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +49,7 @@ from studentassistant.generators.base import (
     NoteSection,
 )
 from studentassistant.generators.diagrams import DIAGRAM_UNAVAILABLE, fences
+from studentassistant.generators.images import NoteImage, note_images, split_images
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 from studentassistant.vault import VaultError, get_subject, read_generated
@@ -225,26 +228,43 @@ _INLINE_MATH = re.compile(r"(?<![\\$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 
-def anki_html(text: str) -> str:
+def anki_html(text: str, media: Mapping[str, str] | None = None) -> str:
     """A card's text as the HTML of an Anki field: escaped, `$$..$$`/`$..$` as MathJax `\\[..\\]`
     and `\\(..\\)`, `**bold**` as `<b>` and line breaks as `<br>`. A fenced code block is kept
     as `<pre>` (monospaced, nothing converted inside); Anki cannot draw a ```` ```mermaid ````
-    fence, so a closed one is followed by `DIAGRAM_UNAVAILABLE` (#505, see `diagrams`)."""
+    fence, so a closed one is followed by `DIAGRAM_UNAVAILABLE` (#505, see `diagrams`). An image
+    link of the notes (#511) is an `<img>` of the media file `media` maps its source id to, else
+    the text «[Imagen: alt]»."""
     lines = text.strip().split("\n")
     parts: list[str] = []
     done = 0
     for fence in fences(lines):
-        parts.append(_anki_text("\n".join(lines[done : fence.start])))
+        parts.append(_anki_text("\n".join(lines[done : fence.start]), media))
         parts.append(f"<pre>{html.escape(fence.body, quote=False)}</pre>")
         if fence.is_mermaid and fence.closed:
             parts.append(f"<p><i>{DIAGRAM_UNAVAILABLE}</i></p>")
         done = fence.end
-    parts.append(_anki_text("\n".join(lines[done:])))
+    parts.append(_anki_text("\n".join(lines[done:]), media))
     return "".join(parts)
 
 
-def _anki_text(text: str) -> str:
-    escaped = html.escape(text.strip(), quote=False)
+def _anki_text(text: str, media: Mapping[str, str] | None = None) -> str:
+    parts: list[str] = []
+    for piece in split_images(text.strip()):
+        if isinstance(piece, str):
+            parts.append(_anki_plain(piece))
+            continue
+        alt, source = piece
+        name = (media or {}).get(source)
+        if name is None:
+            parts.append(html.escape(f"[Imagen: {alt}]", quote=False))
+        else:
+            parts.append(f'<img src="{html.escape(name)}" alt="{html.escape(alt)}">')
+    return "".join(parts)
+
+
+def _anki_plain(text: str) -> str:
+    escaped = html.escape(text, quote=False)
     escaped = _DISPLAY_MATH.sub(lambda m: r"\[" + m.group(1).strip() + r"\]", escaped)
     escaped = _INLINE_MATH.sub(lambda m: r"\(" + m.group(1) + r"\)", escaped)
     escaped = _BOLD.sub(r"<b>\1</b>", escaped)
@@ -262,8 +282,15 @@ def render_apkg(
     sections: dict[str, NoteSection],
     *,
     timestamp: float,
+    images: Mapping[str, NoteImage] | None = None,
 ) -> bytes:
-    """The Anki package of the deck (`collection.anki2` built in memory, zipped)."""
+    """The Anki package of the deck (`collection.anki2` built in memory, zipped). `images` (source
+    id -> `NoteImage`) are shipped as media files named `sa-<subject>-<topic>-img-NNN.<ext>`
+    (an SVG as it is stored, sanitized) and shown where a card links them (#511)."""
+    media = {
+        source_id: f"sa-{subject}-{topic}-{image.name}"
+        for source_id, image in (images or {}).items()
+    }
     anki_deck = genanki.Deck(deck.deck_id, deck.deck)
     tags = [_anki_tag(subject), _anki_tag(topic)]
     for card in deck.cards:
@@ -272,8 +299,8 @@ def render_apkg(
             genanki.Note(
                 model=ANKI_MODEL,
                 fields=[
-                    anki_html(card.front),
-                    anki_html(card.back),
+                    anki_html(card.front, media),
+                    anki_html(card.back, media),
                     html.escape(f"Apuntes: {sources}", quote=False) if sources else "",
                 ],
                 tags=tags,
@@ -292,7 +319,11 @@ def render_apkg(
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("collection.anki2", database)
-        archive.writestr("media", "{}")
+        index: dict[str, str] = {}
+        for number, (source_id, name) in enumerate(sorted(media.items())):
+            archive.writestr(str(number), (images or {})[source_id].data)
+            index[str(number)] = name
+        archive.writestr("media", json.dumps(index))
     return buffer.getvalue()
 
 
@@ -352,12 +383,24 @@ class FlashcardsGenerator(Generator):
         )
         sections = {section.anchor: section for section in context.sections}
         now = context.clock() if context.clock is not None else datetime.now(UTC)
+        images = await asyncio.to_thread(
+            note_images,
+            context.vault,
+            context.subject,
+            context.topic,
+            [text for card in cards for text in (card.front, card.back)],
+        )
         return GeneratorOutput(
             files={
                 YAML_NAME: render_yaml(deck),
                 CSV_NAME: render_csv(deck, sections),
                 APKG_NAME: render_apkg(
-                    deck, context.subject, context.topic, sections, timestamp=now.timestamp()
+                    deck,
+                    context.subject,
+                    context.topic,
+                    sections,
+                    timestamp=now.timestamp(),
+                    images=images,
                 ),
             },
             items=[ItemProvenance(item=card.id, anchors=card.anchors) for card in cards],

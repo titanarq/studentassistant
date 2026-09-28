@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 from read_api_fixtures import JPEG_BYTES, WEB_MARKDOWN, ReadVault
 
+from studentassistant.vault import put_source
+
 
 def test_an_image_is_served_with_its_media_type(read_vault: ReadVault, reader: TestClient) -> None:
     response = reader.get(f"/api/sources/{read_vault.notes_page}")
@@ -137,3 +139,49 @@ def test_a_symlinked_sources_directory_is_refused(
     )
     assert response.status_code in (400, 404)
     assert b"secret bytes" not in response.content
+
+
+def _svg_source(read_vault: ReadVault, content: bytes) -> str:
+    """An `images` SVG at `img-NNN.svg`, written straight to disk to model a tampered vault."""
+    path = put_source(
+        read_vault.vault,
+        read_vault.subject,
+        read_vault.topic,
+        "images",
+        "diagram.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>',
+        {"origin": "drawn"},
+    )
+    if content:
+        path.write_bytes(content)
+    return path.relative_to(read_vault.vault.path).as_posix()
+
+
+def test_a_sanitized_svg_diagram_is_served_as_svg_under_the_sandbox(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    path = _svg_source(read_vault, b"")
+
+    response = reader.get(f"/api/sources/{path}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    policy = response.headers["content-security-policy"]
+    assert "default-src 'none'" in policy and "sandbox" in policy and "script" not in policy
+    assert b"<circle" in response.content
+    assert reader.get(f"/api/sources/{path}/meta").json()["media_type"] == "image/svg+xml"
+
+
+def test_an_svg_that_is_not_sanitized_is_never_served_as_svg(
+    read_vault: ReadVault, reader: TestClient
+) -> None:
+    path = _svg_source(
+        read_vault, b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    )
+
+    response = reader.get(f"/api/sources/{path}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert "sandbox" in response.headers["content-security-policy"]

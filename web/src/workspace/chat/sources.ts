@@ -17,14 +17,23 @@ export function sourceName(sourceId: string): string {
   const n = match === null ? null : Number(match[1]);
   if (n !== null && kind === "notes") return `página ${n}`;
   if (n !== null && kind === "book") return `página ${n} del libro`;
-  if (n !== null && kind === "images") return `imagen pegada ${n}`;
+  if (n !== null && kind === "images") return isDiagram(file) ? `diagrama ${n}` : `imagen pegada ${n}`;
   return sourceItem(sourceId)?.title ?? file;
 }
 
-/** «imagen recortada 2»: an image the editor cropped from a page (#493). */
+/** Whether an `images` source is an SVG diagram the editor drew (#511): only those are `.svg`. */
+export function isDiagram(sourceId: string): boolean {
+  return /\.svg$/i.test(sourceId);
+}
+
+/**
+ * «imagen recortada 2»: an image the editor cropped from a page (#493); «diagrama 3» for an SVG
+ * diagram it drew (#511), which a turn reports the same way.
+ */
 export function croppedImageName(sourceId: string): string {
   const match = NUMBER.exec(sourceId.split("/").at(-1) ?? "");
-  return match === null ? "imagen recortada" : `imagen recortada ${Number(match[1])}`;
+  const name = isDiagram(sourceId) ? "diagrama" : "imagen recortada";
+  return match === null ? name : `${name} ${Number(match[1])}`;
 }
 
 /** Capitalized, for the start of a line. */

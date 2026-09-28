@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
@@ -110,6 +111,16 @@ from studentassistant.editor.crop import (
     crop_source_path,
     placeholder_edit,
 )
+from studentassistant.editor.diagram import (
+    DIAGRAM_TOOL,
+    DrawDiagramRequest,
+    DrawnDiagram,
+    diagram_edit,
+    diagram_tool,
+    store_diagram,
+)
+from studentassistant.editor.diagram import placeholder_edit as diagram_placeholder_edit
+from studentassistant.editor.diagram import request_errors as diagram_request_errors
 from studentassistant.editor.doubts import (
     PENDING_REVIEWED_RECORD,
     EditorDoubt,
@@ -1041,6 +1052,31 @@ def _parse_crop_call(response: LLMResponse) -> tuple[CropImageRequest | None, li
     return value, []
 
 
+def _parse_diagram_call(
+    response: LLMResponse,
+) -> tuple[DrawDiagramRequest | None, list[str]]:
+    """The `draw_diagram` input (None without a call) and the errors of a malformed one (#511)."""
+    calls = [call for call in response.tool_calls if call.name == DIAGRAM_TOOL]
+    if not calls:
+        return None, []
+    if any(call.name in (EDIT_TOOL, CROP_TOOL) for call in response.tool_calls):
+        return None, [
+            f"Llama a `{DIAGRAM_TOOL}` sola en un turno, sin `{EDIT_TOOL}` ni `{CROP_TOOL}`: el"
+            " diagrama ya se inserta en los apuntes."
+        ]
+    if response.stop_reason == "max_tokens":
+        return None, [
+            "La llamada quedó cortada por el límite de longitud: dibuja un SVG más sencillo."
+        ]
+    if len(calls) > 1:
+        return None, [f"Llama a `{DIAGRAM_TOOL}` una sola vez: un diagrama por petición."]
+    try:
+        value = DrawDiagramRequest.model_validate(json.loads(calls[0].input_json))
+    except (json.JSONDecodeError, ValidationError) as error:
+        return None, [f"La entrada de `{DIAGRAM_TOOL}` no es válida: {error}"]
+    return value, []
+
+
 def _cited_files(notes: str | None) -> set[str]:
     """The topic-relative files the notes' footnote definitions link (as
     `incorporate.cited_source_paths`, which imports this module)."""
@@ -1299,7 +1335,48 @@ async def _crop_change(
     return value, [], ref, image
 
 
-async def _retire_crop(vault: Vault, image: CroppedImage) -> None:
+async def _diagram_change(
+    request: DrawDiagramRequest,
+    vault: Vault,
+    subject_slug: str,
+    topic_slug: str,
+    *,
+    notes: str,
+    cache: dict[tuple[str, str], CroppedImage | DrawnDiagram],
+) -> tuple[EditsOutput | None, list[str], CropRef | None, DrawnDiagram | None]:
+    """A `draw_diagram` call as a change: `(value, errors, diagram ref, stored diagram)` (#511).
+
+    An SVG `sanitize_svg` refuses, an empty title or summary and an anchor that does not apply
+    are sent back before anything is stored. A diagram stored in an earlier attempt of the turn
+    with the same sanitized drawing is reused.
+    """
+    svg, errors = diagram_request_errors(request)
+    try:
+        apply_edits(notes, [diagram_placeholder_edit(request)])
+    except EditError as error:
+        errors.extend(error.errors)
+    if errors or svg is None:
+        return None, errors, None, None
+    key = (DIAGRAM_TOOL, hashlib.sha256(svg).hexdigest())
+    diagram = cache.get(key)
+    if not isinstance(diagram, DrawnDiagram):
+        diagram = await store_diagram(vault, subject_slug, topic_slug, svg, request.title)
+        cache[key] = diagram
+    op, footnote = diagram_edit(request, diagram)
+    value = EditsOutput(ops=[op], footnotes=[footnote], summary=request.summary)
+    ref = CropRef(
+        source="",
+        region=" ".join(request.title.split()),
+        kind="diagram",
+        source_id=diagram.source_id,
+        path=diagram.path,
+        sha256=diagram.meta.get("sha256"),
+        added_at=diagram.meta.get("added_at"),
+    )
+    return value, [], ref, diagram
+
+
+async def _retire_crop(vault: Vault, image: CroppedImage | DrawnDiagram) -> None:
     """Retire a stored crop no applied change cites (`vault.remove_source`); never raises."""
     try:
         await asyncio.to_thread(remove_source, vault, image.path)
@@ -1446,9 +1523,10 @@ async def revise_notes(
     feedback: FeedbackRef | None = None
     feedback_failed = False
     # The turn's one crop, kept across re-asks so the same request is never cropped twice.
-    cropped: dict[tuple[str, str], CroppedImage] = {}
+    # A drawn diagram (#511) shares that cache, keyed by its sanitized drawing.
+    cropped: dict[tuple[str, str], CroppedImage | DrawnDiagram] = {}
     crop: CropRef | None = None
-    crop_image: CroppedImage | None = None
+    crop_image: CroppedImage | DrawnDiagram | None = None
     tool_name = EDIT_TOOL
 
     model = client.model
@@ -1472,7 +1550,7 @@ async def revise_notes(
         response = await client.create(
             messages,
             system=assembled.system,
-            tools=[tool, crop_image_tool(), feedback_tool()],
+            tools=[tool, crop_image_tool(), diagram_tool(), feedback_tool()],
             tool_choice={"type": "auto"},
             prompt_hash=prompt.hash,
             confirm_over_cap=confirm_over_cap,
@@ -1533,9 +1611,25 @@ async def revise_notes(
         crop_request, crop_errors = (
             (None, []) if has_feedback_call(response) else _parse_crop_call(response)
         )
+        diagram_request, diagram_errors = (
+            (None, []) if has_feedback_call(response) else _parse_diagram_call(response)
+        )
         tool_name = CROP_TOOL if crop_request is not None or crop_errors else EDIT_TOOL
+        if diagram_request is not None or diagram_errors:
+            tool_name = DIAGRAM_TOOL
         crop, crop_image = None, None
-        if crop_errors:
+        if diagram_errors:
+            value, errors = None, diagram_errors
+        elif diagram_request is not None:
+            value, errors, crop, crop_image = await _diagram_change(
+                diagram_request,
+                vault,
+                subject_slug,
+                topic_slug,
+                notes=notes,
+                cache=cropped,
+            )
+        elif crop_errors:
             value, errors = None, crop_errors
         elif crop_request is not None:
             value, errors, crop, crop_image = await _crop_change(
@@ -1807,7 +1901,7 @@ async def undo_last_revision(
             sync,
             pending_crop,
             before,
-            f"Deshecho en {subject_slug}/{topic_slug}: recorte retirado",
+            f"Deshecho en {subject_slug}/{topic_slug}: {_retired_note(pending_crop)}",
             repair=True,
         )
     if target is None:
@@ -1853,11 +1947,21 @@ async def undo_last_revision(
     # undo, which re-runs the retirement for the latest recorded undo (above) until a turn follows.
     if target.crop is not None:
         await asyncio.to_thread(
-            _retire_undone_crop, vault, sync, target.crop, after, f"{message} (recorte retirado)"
+            _retire_undone_crop,
+            vault,
+            sync,
+            target.crop,
+            after,
+            f"{message} ({_retired_note(target.crop)})",
         )
     sync.note_change()
     await _emit(on_event, NOTES_UNDONE_KIND, _event_payload(payload), subject_slug, topic_slug)
     return result
+
+
+def _retired_note(crop: CropRef) -> str:
+    """How an undo's repair commit names what it retired: a crop or a drawn diagram (#511)."""
+    return "diagrama retirado" if crop.kind == "diagram" else "recorte retirado"
 
 
 def _retire_undone_crop(

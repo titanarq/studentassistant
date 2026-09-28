@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from studentassistant.editor.inputs import fidelity_mode_of
 from studentassistant.editor.notes_format import (
     CONTENT_KINDS,
+    DIAGRAM_TEXT,
     EST_LABEL,
     EST_TEXT,
     IMAGE_TEXT,
@@ -82,7 +83,9 @@ Clock = Callable[[], datetime]
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 _IMAGE_LINK = re.compile(
-    r"\]\(" + re.escape(LINK_PREFIX) + r"sources/images/img-(?P<number>\d{3,})\.(?:png|jpg|webp)\)"
+    r"\]\("
+    + re.escape(LINK_PREFIX)
+    + r"sources/images/img-(?P<number>\d{3,})\.(?P<ext>png|jpg|webp|svg)\)"
 )
 _DEFINITION_LINE = re.compile(r"^\[\^([^\]\s]+)\]:")
 _DELIMITER_ROW = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$")
@@ -225,7 +228,8 @@ def _normalise_block(block: Block, footnotes: _Footnotes) -> Block:
             continue
         cited.add(number)
         link = found.group(0)[2:-1]
-        definition = f"[{IMAGE_TEXT} {number}]({link})"
+        text = DIAGRAM_TEXT if found.group("ext") == "svg" else IMAGE_TEXT
+        definition = f"[{text} {number}]({link})"
         refs.append(footnotes.add(f"img{number:03d}", definition))
     if not refs and not block.footnote_refs:
         refs.append(footnotes.add(EST_LABEL, EST_TEXT))

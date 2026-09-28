@@ -148,7 +148,8 @@ function text(value: unknown): string | null {
 
 /**
  * "Página 3 · apuntes", "Libro, página 83", "PDF «tema2.pdf»", "Web: …", "Imagen pegada 1", and
- * "Imagen recortada 2" for a region the editor cropped from a page (sidecar `origin: cropped`, #493).
+ * "Imagen recortada 2" for a region the editor cropped from a page (sidecar `origin: cropped`, #493),
+ * "Diagrama 3" for an SVG diagram the editor drew (sidecar `origin: drawn`, #511).
  */
 export function sourceTitle(ref: SourceRef, fallback: string, sidecar: Record<string, unknown> | null): string {
   const n = sourceNumber(ref.file);
@@ -166,7 +167,12 @@ export function sourceTitle(ref: SourceRef, fallback: string, sidecar: Record<st
       return `Web: ${title}`;
     }
     case "images": {
-      const name = sidecar?.origin === "cropped" ? "Imagen recortada" : "Imagen pegada";
+      const name =
+        sidecar?.origin === "drawn" || /\.svg$/i.test(ref.file)
+          ? "Diagrama"
+          : sidecar?.origin === "cropped"
+            ? "Imagen recortada"
+            : "Imagen pegada";
       return n === null ? name : `${name} ${n}`;
     }
   }

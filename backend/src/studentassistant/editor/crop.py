@@ -473,12 +473,18 @@ class CropImageRequest(BaseModel):
 
 
 class CropRef(BaseModel):
-    """What a turn's crop was: the new source (`source_id`, `None` when it failed) and the page."""
+    """What a turn's crop was: the new source (`source_id`, `None` when it failed) and the page.
+
+    A diagram the turn drew (`draw_diagram`, `editor.diagram`, #511) is recorded the same way, as
+    `kind: diagram` with an empty `source` and its title as `region`: it is stored, committed,
+    retired and undone exactly like a crop.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     source: str
     region: str
+    kind: Literal["crop", "diagram"] = "crop"
     source_id: str | None = None
     path: str | None = None
     error: str | None = None
