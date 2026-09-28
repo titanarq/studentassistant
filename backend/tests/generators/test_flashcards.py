@@ -10,6 +10,7 @@ import sqlite3
 import zipfile
 from collections.abc import Awaitable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -224,3 +225,25 @@ def test_anki_html_escapes_and_converts_math() -> None:
     assert anki_html("a < b & **c**\nd") == "a &lt; b &amp; <b>c</b><br>d"
     assert anki_html("$x^2$ y $$\\int f$$") == r"\(x^2\) y \[\int f\]"
     assert anki_html("cuesta 5$ o 6$") == "cuesta 5$ o 6$"
+
+
+NOTE = "<p><i>Diagrama no disponible en la exportación</i></p>"
+
+
+def test_anki_html_shows_a_mermaid_diagram_as_its_code_and_a_note() -> None:
+    # #505: Anki cannot draw mermaid; the code stays, monospaced and unconverted, with the note.
+    assert anki_html(
+        "Esquema **clave**:\n```mermaid\nflowchart TD\n  A --> B & $x$\n```\nFin."
+    ) == ("Esquema <b>clave</b>:<pre>flowchart TD\n  A --&gt; B &amp; $x$</pre>" + NOTE + "Fin.")
+    assert anki_html("```python\nx = 1\n```") == "<pre>x = 1</pre>"
+    assert anki_html("```mermaid\nsin cerrar") == "<pre>sin cerrar</pre>"
+    assert anki_html("```mermaid\r\nmindmap\r\n  root((A))\r\n```") == (
+        "<pre>mindmap\n  root((A))</pre>" + NOTE
+    )
+
+
+def test_the_mermaid_fixture_reaches_the_anki_card() -> None:
+    fixture = Path(__file__).parents[1] / "fixtures" / "generators" / "mermaid-flowchart.md"
+    field = anki_html(fixture.read_text(encoding="utf-8"))
+    assert field.startswith("Sigue el esquema de la clase:<pre>flowchart TD\n  A[")
+    assert field.endswith("No existe f'(a)\"]</pre>" + NOTE + "Explica cada paso.")

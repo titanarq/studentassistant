@@ -46,6 +46,7 @@ from studentassistant.generators.base import (
     ItemProvenance,
     NoteSection,
 )
+from studentassistant.generators.diagrams import DIAGRAM_UNAVAILABLE, fences
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 from studentassistant.vault import VaultError, get_subject, read_generated
@@ -226,7 +227,23 @@ _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 def anki_html(text: str) -> str:
     """A card's text as the HTML of an Anki field: escaped, `$$..$$`/`$..$` as MathJax `\\[..\\]`
-    and `\\(..\\)`, `**bold**` as `<b>` and line breaks as `<br>`."""
+    and `\\(..\\)`, `**bold**` as `<b>` and line breaks as `<br>`. A fenced code block is kept
+    as `<pre>` (monospaced, nothing converted inside); Anki cannot draw a ```` ```mermaid ````
+    fence, so a closed one is followed by `DIAGRAM_UNAVAILABLE` (#505, see `diagrams`)."""
+    lines = text.strip().split("\n")
+    parts: list[str] = []
+    done = 0
+    for fence in fences(lines):
+        parts.append(_anki_text("\n".join(lines[done : fence.start])))
+        parts.append(f"<pre>{html.escape(fence.body, quote=False)}</pre>")
+        if fence.is_mermaid and fence.closed:
+            parts.append(f"<p><i>{DIAGRAM_UNAVAILABLE}</i></p>")
+        done = fence.end
+    parts.append(_anki_text("\n".join(lines[done:])))
+    return "".join(parts)
+
+
+def _anki_text(text: str) -> str:
     escaped = html.escape(text.strip(), quote=False)
     escaped = _DISPLAY_MATH.sub(lambda m: r"\[" + m.group(1).strip() + r"\]", escaped)
     escaped = _INLINE_MATH.sub(lambda m: r"\(" + m.group(1) + r"\)", escaped)

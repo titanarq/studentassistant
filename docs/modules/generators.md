@@ -279,8 +279,9 @@ it restates. Files under `generated/`:
   `cards`: `id`, `front`, `back`, `anchors`) -- read back by the next generation;
 - `flashcards.csv` (`id,anverso,reverso,secciones`, the section titles joined with `; `);
 - `flashcards.apkg` (genanki, built in memory): one deck per topic, note type `ANKI_MODEL_ID`
-  (fields Anverso, Reverso, Apuntes; `$..$`/`$$..$$` as MathJax, `**bold**`, line breaks), tags
-  the subject and topic slugs.
+  (fields Anverso, Reverso, Apuntes; `$..$`/`$$..$$` as MathJax, `**bold**`, line breaks, fenced
+  blocks as `<pre>`), tags the subject and topic slugs. A ```` ```mermaid ```` fence is not drawn:
+  see "Mermaid in the exports".
 
 Stable ids, so re-importing the deck into Anki updates the notes instead of duplicating them:
 `deck_id_for(subject, topic)` is derived from the slugs, the note type id is fixed, and each
@@ -386,8 +387,17 @@ followed by the Spanish note «Diagrama no disponible en la exportación» (`DIA
 - slides PDF/PPTX: `MarpExporter` writes Marp's copy of the deck through `note_mermaid_fences`,
   which adds `*Diagrama no disponible en la exportación*` after every closed mermaid fence at its
   indentation (inside the bullet that holds it); the stored `diapositivas.md` is unchanged.
+- Anki cards (#505): `flashcards.anki_html` renders every fenced block of a front or back as
+  `<pre>` (escaped, no MathJax or bold conversion inside), a closed mermaid one followed by
+  `<p><i>Diagrama no disponible en la exportación</i></p>`; the YAML and CSV keep the fence.
+
+Only a **closed** mermaid fence gets the note, in all three exports (#505). An unclosed fence is
+malformed Markdown that every renderer shows as a plain code block running to the end of the
+text; the exports do the same and add nothing, because in the slides the note could only land
+inside that code block. `fences` drops the trailing `\r` of CRLF input from every body line.
 
 `fences(lines)` (fenced blocks with language, dedented body, indentation, line span) is shared by
-both. Tests: `tests/generators/test_diagrams.py`, and the fixture
+all three. Tests: `tests/generators/test_diagrams.py`, and the fixture
 `tests/fixtures/generators/mermaid-flowchart.md` through both exports in `test_exam.py` and
-`test_slides.py` (a fake `marp` script records the deck it is given).
+`test_slides.py` (a fake `marp` script records the deck it is given) and into an Anki field in
+`test_flashcards.py`.
