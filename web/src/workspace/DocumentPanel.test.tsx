@@ -37,7 +37,20 @@ beforeAll(async () => {
 const READY_TIMEOUT = 5_000;
 
 function workspace(notes: WorkspaceNotes, reloadNotes = vi.fn(async () => undefined)): WorkspaceState {
-  return { subjectId: "lengua", topicId: "la-comunicacion", notes, changedSections: new Set(), reloadNotes, doubtsKey: 0, doubtsChanged: vi.fn() };
+  return {
+    subjectId: "lengua",
+    topicId: "la-comunicacion",
+    notes,
+    changedSections: new Set(),
+    reloadNotes,
+    doubtsKey: 0,
+    doubtsChanged: vi.fn(),
+    doubtMarks: null,
+    showDoubt: vi.fn(async () => undefined),
+    showNextDoubt: vi.fn(async () => undefined),
+    showingDoubt: false,
+    doubtProblem: null,
+  };
 }
 
 const ready = (text = TEXT, revision = R1): WorkspaceNotes => ({ kind: "ready", text, revision, version: 4 });

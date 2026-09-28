@@ -51,7 +51,7 @@ export interface WorkspaceChatOptions {
 export const QUIET_MS = 20_000;
 export const QUIET_MAX_MS = 60_000;
 
-const DOUBT_EVENTS = new Set<WorkspaceEvent["type"]>(["doubt.asked", "doubt.resolved", "doubts.auto_resolved"]);
+const DOUBT_EVENTS = new Set<WorkspaceEvent["type"]>(["doubt.asked", "doubt.resolved", "doubts.auto_resolved", "doubts.marked"]);
 
 /**
  * The state of the workspace chat panel (#317, #329): the history, the live workspace stream

@@ -458,6 +458,18 @@ def list_doubts(vault: Vault, subject_slug: str, topic_slug: str) -> DoubtsQueue
     )
 
 
+def open_doubt(vault: Vault, subject_slug: str, topic_slug: str, pending_id: str) -> Doubt:
+    """One open doubt with its latest question (`None` when it has none yet); reads only
+    (blocking).
+
+    Raises:
+        UnknownDoubtError, DoubtClosedError: no such doubt, or it is closed.
+    """
+    item = _open_item(vault, subject_slug, topic_slug, pending_id)
+    questions, _ = _read_records(vault, subject_slug, topic_slug)
+    return Doubt(item=item, question=_latest(questions, item), outcome=None)
+
+
 # -- which doubt the chat asks next ----------------------------------------------------------------
 
 
@@ -546,6 +558,7 @@ class DoubtChatTurn(_Strict):
     time: datetime
     pending_id: str
     kind: str
+    text: str = Field(default="", description="What the doubt is about (its explanation).")
     question: str
     suggestions: list[str] = Field(default_factory=list)
     options: list[SourceOption] = Field(default_factory=list)
@@ -560,12 +573,20 @@ class DoubtChatTurn(_Strict):
 def doubt_chat_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[DoubtChatTurn]:
     """The doubts asked in the chat, oldest first, each with its outcome; reads only (blocking).
 
-    Built from the `pending.question` events asked in the chat and the `pending.resolved` ones.
+    Built from the `pending.question` events asked in the chat and the `pending.resolved` ones. A
+    doubt shown in the chat again (#516: a badge of the notes clicked) is one turn, at its latest
+    asking.
     """
     records = _read_all(vault, subject_slug, topic_slug)
     if not records.chat:
         return []
     state = _state(vault, subject_slug, topic_slug)
+    latest: dict[str, DoubtQuestion] = {}
+    for question in records.chat:
+        item = state.pending_item(question.pending_id)
+        key = item.id if item is not None else question.pending_id
+        latest.pop(key, None)
+        latest[key] = question
     pages = capture_pages(vault, subject_slug, topic_slug)
     started = {meta.id: meta.started_at for meta in list_sessions(vault, subject_slug, topic_slug)}
 
@@ -576,7 +597,7 @@ def doubt_chat_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[D
 
     times = _event_times(vault, subject_slug, topic_slug)
     turns: list[DoubtChatTurn] = []
-    for question in records.chat:
+    for question in latest.values():
         item = state.pending_item(question.pending_id)
         asked = time_of(question.asked_at, times.get(_key(question.asked_at)))
         if item is None or asked is None:
@@ -592,6 +613,7 @@ def doubt_chat_turns(vault: Vault, subject_slug: str, topic_slug: str) -> list[D
                 time=asked,
                 pending_id=item.id,
                 kind=item.kind,
+                text=item.text,
                 question=question.question,
                 suggestions=question.suggestions,
                 options=question.options,
@@ -1106,6 +1128,8 @@ class AskedDoubt(_Strict):
     """A doubt asked in the chat (`ask_in_chat`): the `doubt.asked` payload plus where it went."""
 
     pending_id: str
+    kind: str = ""
+    text: str = Field(default="", description="What the doubt is about (its explanation).")
     question: str
     suggestions: list[str] = Field(default_factory=list)
     options: list[SourceOption] = Field(default_factory=list)
@@ -1149,6 +1173,8 @@ async def ask_in_chat(
     pages = await asyncio.to_thread(capture_pages, vault, subject_slug, topic_slug)
     return AskedDoubt(
         pending_id=item.id,
+        kind=item.kind,
+        text=item.text,
         question=question.question,
         suggestions=question.suggestions,
         options=question.options,
@@ -1810,6 +1836,7 @@ __all__ = [
     "doubt_chat_turns",
     "editor_doubt_errors",
     "list_doubts",
+    "open_doubt",
     "raise_doubts",
     "review_doubts",
 ]

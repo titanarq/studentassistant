@@ -389,6 +389,65 @@
   opacity: 1;
 }
 
+/* Open doubts marked in the notes (#516): a discreet «?» in the right margin of the block (room is
+   made for it, so it never covers the text), on a section heading, or in a header at the top.
+   Only visual: the doubts are never part of the notes. */
+.notes-doubted {
+  padding-right: 2.25rem;
+}
+
+.notes-doubt {
+  position: absolute;
+  top: 0.15rem;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  min-width: 1.6rem;
+  min-height: 1.6rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--warn-line);
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.notes-doubt:hover:not(:disabled),
+.notes-doubt:focus-visible {
+  background: var(--warn-line);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.notes-doubt-count {
+  font-size: 0.8em;
+  font-weight: 700;
+}
+
+.notes-doubts-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+}
+
+.notes-doubts-top .notes-doubt {
+  position: static;
+}
+
 /* The phone-width toggles and the hint of the empty sources panel exist only below the
    breakpoint; wider, the sources panel floats as a dialog and nothing collapses. */
 .notes-toggle,

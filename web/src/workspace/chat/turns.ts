@@ -15,7 +15,8 @@
  *   with its `incorporation.progress`; each batch (an `incorporate` turn without request) is an
  *   entry whose `parent` is that run (a run started elsewhere gets an entry of its own).
  * - Doubts asked in the chat are entries keyed `doubt:<pending_id>` (`doubt.asked`, updated by
- *   `doubt.resolved`); the editor's auto-resolutions `auto:<pending_ids>`.
+ *   `doubt.resolved`; one shown again moves to the end, #516); the editor's auto-resolutions
+ *   `auto:<pending_ids>`.
  * - A history read replaces every entry it has (by `turn_id`, else by those keys; a live entry
  *   keeps its key, so nothing is announced twice, and the diff it received) and keeps the live
  *   ones it does not have yet, after it, in their order. An answer to a doubt that the history
@@ -452,8 +453,11 @@ function onEvent(state: ChatState, event: WorkspaceEvent): ChatState {
     }
     case "doubt.asked": {
       const key = doubtKey(event.doubt.pendingId);
-      if (state.entries.some((e) => e.key === key)) {
-        return update(state, key, (e) => ({ doubt: { ...event.doubt, answer: e.doubt?.answer ?? null } }));
+      const known = state.entries.find((e) => e.key === key);
+      if (known !== undefined) {
+        // Shown again (#516: a badge of the notes clicked): it moves to the end of the chat.
+        const moved = { ...known, doubt: { ...event.doubt, answer: known.doubt?.answer ?? null } };
+        return { ...state, entries: [...state.entries.filter((e) => e.key !== key), moved] };
       }
       return append(
         state,
@@ -489,6 +493,8 @@ function onEvent(state: ChatState, event: WorkspaceEvent): ChatState {
         blank(key, { origin: "system", kind: "doubts_resolved", status: "done", reply: event.summary, time: new Date().toISOString() }),
       );
     }
+    case "doubts.marked":
+      return state;
   }
 }
 

@@ -512,6 +512,9 @@ class ChatTurn(_Strict):
     doubt_refs: list[str] = Field(
         default_factory=list, description="`doubt`: the sources the doubt is about."
     )
+    doubt_text: str | None = Field(
+        default=None, description="`doubt`: what the doubt is about (its explanation, #516)."
+    )
     status: str | None = Field(
         default=None, description="`doubt`: open, resolved, auto_resolved or dismissed."
     )
@@ -856,6 +859,7 @@ def chat_history(vault: Vault, subject_slug: str, topic_slug: str) -> ChatHistor
             suggestions=turn.suggestions,
             options=turn.options,
             doubt_refs=turn.refs,
+            doubt_text=turn.text or None,
             status=turn.status,
             resolution=turn.resolution,
             answer=turn.answer,

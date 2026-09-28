@@ -44,7 +44,7 @@ type Stream = ReturnType<typeof streamResponse>;
 
 function setup(
   routes: Record<string, Response | (() => Response | Promise<Response>)> = {},
-  { capturing = false, quietMs }: { capturing?: boolean; quietMs?: number } = {},
+  { capturing = false, quietMs, workspace = {} }: { capturing?: boolean; quietMs?: number; workspace?: Partial<WorkspaceState> } = {},
 ) {
   const streams: Stream[] = [];
   const reloadNotes = vi.fn(async () => undefined);
@@ -67,6 +67,12 @@ function setup(
     reloadNotes,
     doubtsKey: 0,
     doubtsChanged,
+    doubtMarks: null,
+    showDoubt: vi.fn(async () => undefined),
+    showNextDoubt: vi.fn(async () => undefined),
+    showingDoubt: false,
+    doubtProblem: null,
+    ...workspace,
   };
   const view = (now: boolean) => (
     <WorkspaceContext.Provider value={state}>
@@ -389,7 +395,7 @@ it("shows an incorporation with its sources, its change and the doubts it raised
   expect(line).toHaveTextContent("Incorporadas: página 3, página 4");
   expect(within(entry).getByText("He añadido las causas de las páginas 3 y 4.")).toBeInTheDocument();
   expect(within(entry).getByText(/Cambio aplicado: Causas de las páginas 3 y 4/)).toBeInTheDocument();
-  expect(within(entry).getByText("Han surgido 2 dudas: te las pregunto aquí, de una en una.")).toBeInTheDocument();
+  expect(within(entry).getByText("Han surgido 2 dudas: las tienes marcadas en los apuntes.")).toBeInTheDocument();
   fireEvent.click(within(entry).getByRole("button", { name: "Ver los cambios" }));
   expect(within(entry).getByText(/Cambios en los apuntes/)).toBeInTheDocument();
 
@@ -462,6 +468,8 @@ it("gives a run started elsewhere an entry of its own", async () => {
 
 const ASKED = {
   pending_id: "p-000004",
+  kind: "illegible",
+  text: "Palabra dudosa en la página 3.",
   question: "En la página 3 no leo bien una palabra: ¿«escrita» o «escrito»?",
   suggestions: ["escrita", "escrito"],
   options: [],
@@ -480,12 +488,14 @@ it("asks a doubt in the chat, takes the typed answer and marks it answered", asy
   const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
   expect(doubt).toHaveClass("ws-chat-entry-doubt");
   expect(within(doubt).getByText("Duda")).toBeInTheDocument();
+  // Its explanation (#516), then the question.
+  expect(within(doubt).getByText("Palabra dudosa en la página 3.")).toHaveClass("ws-chat-explanation");
   const suggestions = within(doubt).getByRole("list", { name: "Sugerencias" });
   expect(suggestions.tagName).toBe("OL");
   expect(within(suggestions).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["escrita", "escrito"]);
   expect(within(doubt).getByRole("button", { name: "Ver la fuente: página 3" })).toBeInTheDocument();
-  // No answer buttons: it is answered by typing or saying it.
-  expect(within(doubt).queryByRole("button", { name: /escrit/ })).toBeNull();
+  // The suggestions are buttons too (#516); here it is answered by typing.
+  expect(within(suggestions).getAllByRole("button").map((b) => b.textContent)).toEqual(["escrita", "escrito"]);
   expect(input).toHaveAttribute("placeholder", "Responde a la duda (escribiendo o con el micrófono) o pide otra cosa…");
   expect(doubtsChanged).toHaveBeenCalledTimes(1);
 
@@ -537,9 +547,10 @@ it("shows a contradiction's options with their sources, which open in Recursos",
   );
   const options = await screen.findByRole("list", { name: "Qué dice cada fuente" });
   expect(within(options).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-    "Página 3: «1760»",
-    "Página 83 del libro: «1780»",
+    "«1760» Página 3",
+    "«1780» Página 83 del libro",
   ]);
+  expect(within(options).getByRole("button", { name: "Es correcto: «1780» (página 83 del libro)" })).toBeEnabled();
   fireEvent.click(within(options).getByRole("button", { name: "Ver la fuente: página 83 del libro" }));
   expect(onOpenSource).toHaveBeenCalledWith(
     "recurso-book-page-083.jpg",
@@ -548,6 +559,109 @@ it("shows a contradiction's options with their sources, which open in Recursos",
   );
   // The refs the options already name are not repeated.
   expect(screen.queryByText(/Sobre:/)).toBeNull();
+});
+
+it("answers a doubt by pressing a suggestion, through the doubts route (#516)", async () => {
+  const ANSWER = `${BASE}/doubts/p-000004/answer`;
+  const { opened, calls } = setup({
+    [`POST ${ANSWER}`]: jsonResponse({ pending_id: "p-000004", status: "resolved", resolution: "Pone «escrito».", notes_changed: true, warning: null }),
+  });
+  const stream = await opened();
+  act(() => stream.push(sseEvent("doubt.asked", ASKED)));
+  const doubt = (await screen.findByText(ASKED.question)).closest("li") as HTMLElement;
+  expect(within(doubt).getByText(/Pulsa una respuesta o contesta escribiendo o con el micrófono/)).toBeInTheDocument();
+  fireEvent.click(within(doubt).getByRole("button", { name: "escrito" }));
+  await waitFor(() => expect(calls(ANSWER, "POST")).toHaveLength(1));
+  const [, init] = calls(ANSWER, "POST")[0];
+  expect(JSON.parse((init as RequestInit).body as string)).toEqual({ suggestion: 2, confirm_over_cap: false });
+  act(() => stream.push(sseEvent("doubt.resolved", { pending_id: "p-000004", status: "resolved", resolution: "Pone «escrito».", notes_changed: true })));
+  expect(await within(doubt).findByText("Respondida: Pone «escrito».")).toBeInTheDocument();
+  expect(within(doubt).getByText("Respondiste: «escrito»")).toBeInTheDocument();
+  expect(within(doubt).getByRole("button", { name: "escrita" })).toBeDisabled();
+});
+
+it("says why a pressed answer was refused, and picks a contradiction's source by its button", async () => {
+  const ANSWER = `${BASE}/doubts/p-000009/answer`;
+  let refuse = true;
+  const { opened, calls } = setup({
+    [`POST ${ANSWER}`]: () =>
+      refuse
+        ? jsonResponse({ detail: "El editor ya está trabajando en los apuntes o las dudas de este tema." }, 409)
+        : jsonResponse({ pending_id: "p-000009", status: "resolved", resolution: "Es 1780.", notes_changed: true, warning: null }),
+  });
+  const stream = await opened();
+  act(() =>
+    stream.push(
+      sseEvent("doubt.asked", {
+        pending_id: "p-000009",
+        kind: "contradiction",
+        text: "Tus apuntes y el libro no coinciden en el año.",
+        question: "¿Cuál es el año?",
+        suggestions: [],
+        options: [
+          { source_id: "sources/notes/page-003.jpg", says: "1760" },
+          { source_id: "sources/book/page-083.jpg", says: "1780" },
+        ],
+        refs: ["sources/notes/page-003.jpg", "sources/book/page-083.jpg"],
+      }),
+    ),
+  );
+  const book = await screen.findByRole("button", { name: "Es correcto: «1780» (página 83 del libro)" });
+  fireEvent.click(book);
+  expect(await screen.findByText(/No se pudo aplicar tu respuesta: El editor ya está trabajando/)).toBeInTheDocument();
+  refuse = false;
+  fireEvent.click(book);
+  await waitFor(() => expect(calls(ANSWER, "POST")).toHaveLength(2));
+  const [, init] = calls(ANSWER, "POST")[1];
+  expect(JSON.parse((init as RequestInit).body as string)).toEqual({ source_id: "sources/book/page-083.jpg", confirm_over_cap: false });
+  await waitFor(() => expect(screen.queryByText(/No se pudo aplicar tu respuesta/)).toBeNull());
+});
+
+it("shows the doubts marked in the notes as one line with «Ver la siguiente» (#516)", async () => {
+  const showNextDoubt = vi.fn(async () => undefined);
+  const marks = (count: number) => ({
+    count,
+    marks: Array.from({ length: count }, (_, i) => ({
+      pendingId: `d-${i}`,
+      kind: "illegible",
+      text: "",
+      level: "top" as const,
+      blocks: [],
+      section: null,
+      asked: false,
+    })),
+  });
+  setup({}, { workspace: { doubtMarks: marks(3), showNextDoubt } });
+  const line = await screen.findByText("Tienes 3 dudas marcadas en los apuntes");
+  expect(line.closest("[role=status]")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Ver la siguiente" }));
+  expect(showNextDoubt).toHaveBeenCalledTimes(1);
+  cleanup();
+  setup({}, { workspace: { doubtMarks: marks(1), doubtProblem: "No se pudo mostrar la duda: Esa duda ya está cerrada." } });
+  expect(await screen.findByText("Tienes 1 duda marcada en los apuntes")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Esa duda ya está cerrada.");
+  cleanup();
+  setup({}, { workspace: { doubtMarks: marks(0) } });
+  await screen.findByRole("log");
+  expect(screen.queryByRole("button", { name: "Ver la siguiente" })).toBeNull();
+});
+
+it("moves a doubt shown again to the end of the chat, and a marks event re-reads the marks", async () => {
+  const { opened, doubtsChanged } = setup();
+  const stream = await opened();
+  act(() => stream.push(sseEvent("doubt.asked", ASKED)));
+  await screen.findByText(ASKED.question);
+  act(() => stream.push(sseEvent("doubts.auto_resolved", { pending_ids: ["p-000001"], summary: "He resuelto 1 duda con tus fuentes." })));
+  await screen.findByText("He resuelto 1 duda con tus fuentes.");
+  act(() => stream.push(sseEvent("doubt.asked", ASKED)));
+  await waitFor(() => {
+    const items = within(log()).getAllByRole("listitem").filter((li) => li.parentElement === log());
+    expect(items[items.length - 1]).toHaveTextContent(ASKED.question);
+  });
+  expect(screen.getAllByText(ASKED.question)).toHaveLength(1);
+  const before = doubtsChanged.mock.calls.length;
+  act(() => stream.push(sseEvent("doubts.marked", { count: 2 })));
+  await waitFor(() => expect(doubtsChanged).toHaveBeenCalledTimes(before + 1));
 });
 
 it("merges the new turn kinds of the history after a reconnect without duplicates", async () => {
@@ -1208,6 +1322,11 @@ describe("the Recursos selection as chips (#432)", () => {
       reloadNotes: vi.fn(async () => undefined),
       doubtsKey: 0,
       doubtsChanged: vi.fn(),
+      doubtMarks: null,
+      showDoubt: vi.fn(async () => undefined),
+      showNextDoubt: vi.fn(async () => undefined),
+      showingDoubt: false,
+      doubtProblem: null,
     };
     const held: { current: SourceSelection | null } = { current: null };
     function Harness() {

@@ -640,9 +640,10 @@ class EditorSettings(BaseModel):
     # The role (`[llm.roles.<role>]`) the study screen's written question chat (#334) uses:
     # `editor` (Opus, faithful to the notes) by default; `observer` (Sonnet) to compare.
     study_chat_role: StudyChatRole = "editor"
-    # Doubts asked in the workspace chat one at a time (#325, `server/doubt_chat.py`): after each
-    # editor write the next open doubt is asked (the unreviewed ones first reviewed by the editor,
-    # an Opus call). Off: nothing is asked in the chat; the doubts API still works.
+    # Doubts prepared for the notes viewer (#325, #516, `server/doubt_chat.py`): after each editor
+    # write the unreviewed open doubts are reviewed by the editor (an Opus call; the sources may
+    # settle them) and `doubts.marked` announced; they are marked in the notes and shown in the
+    # chat only when the student opens one. Off: nothing is reviewed; the doubts API still works.
     doubts_in_chat: bool = True
     # Incremental incorporation (#326, `editor/incorporate.py`): the most sources one chat request
     # incorporates in one editor call ("incorpora la página 3"; more is refused, asking for

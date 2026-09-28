@@ -1,4 +1,4 @@
-"""The doubts API for the web's pending panel: list, review, answer and dismiss (`editor.doubts`).
+"""The doubts API for the web: list, marks, review, ask, answer and dismiss (`editor.doubts`).
 
 Thin: the work is `studentassistant.editor.doubts`. Every route opens the vault through the
 `SessionService` (the pulled vault and its `GitSync` every other route uses) and runs one doubts
@@ -13,8 +13,12 @@ With an unended session of the topic (#325) the doubts' events go to that live s
 the bus (`DoubtChat.live`), so the routes work during a session too; an unended session this
 backend does not have active is still `session_open`. An answer or a dismissal is announced on
 the topic's workspace stream (`doubt.resolved`, and `notes.changed` origin `editor` when the notes
-changed), a review's auto-resolutions as `doubts.auto_resolved`; then the chat asks the next doubt
-(`DoubtChat.schedule`).
+changed), a review's auto-resolutions as `doubts.auto_resolved`; then the `DoubtChat` prepares the
+doubts again and announces the marks (`DoubtChat.schedule`, `doubts.marked`).
+
+Since #516 the doubts are marked in the notes viewer instead of asked one by one: `GET .../marks`
+says where (`editor.doubt_marks`), and `POST .../{pending_id}/ask` brings one doubt to the chat
+(`DoubtChat.show`: reviewed first when it has no question yet, then `doubt.asked`).
 
 Errors, as `{"detail": "...", "code"?: "..."}` in Spanish (`server.errors`): an unknown topic or
 doubt 404; a doubt already closed (`doubt_closed`), a topic with an unended session
@@ -34,6 +38,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel
 
+from studentassistant.editor.doubt_marks import DoubtMarks, doubt_marks
 from studentassistant.editor.doubts import (
     DoubtAnswer,
     DoubtClosedError,
@@ -59,7 +64,7 @@ from studentassistant.llm import (
 )
 from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.doubt_chat import DoubtChat
+from studentassistant.server.doubt_chat import DoubtChat, ShownDoubt
 from studentassistant.server.errors import ApiError, cost_cap_error
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
@@ -191,6 +196,20 @@ def doubts_router() -> APIRouter:
     async def doubts(request: Request, subject_id: SubjectId, topic_id: TopicId) -> DoubtsQueue:
         vault, _sync = await open_topic(request, subject_id, topic_id)
         return await asyncio.to_thread(list_doubts, vault, subject_id, topic_id)
+
+    @router.get("/api/subjects/{subject_id}/topics/{topic_id}/doubts/marks")
+    async def marks(request: Request, subject_id: SubjectId, topic_id: TopicId) -> DoubtMarks:
+        vault, _sync = await open_topic(request, subject_id, topic_id)
+        return await asyncio.to_thread(doubt_marks, vault, subject_id, topic_id)
+
+    @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/{pending_id}/ask")
+    async def ask(
+        request: Request, subject_id: SubjectId, topic_id: TopicId, pending_id: PendingId
+    ) -> ShownDoubt:
+        await open_topic(request, subject_id, topic_id)
+        chat = doubt_chat(request)
+        async with exclusive(request, subject_id, topic_id, editor=False):
+            return await chat.show(subject_id, topic_id, pending_id)
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/review")
     async def review(

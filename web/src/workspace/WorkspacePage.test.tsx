@@ -500,3 +500,50 @@ it("links the notes' versions from the header, naming the current version", asyn
   expect(link).toHaveAttribute("href", "/subjects/historia/topics/revolucion-industrial/versions");
   expect(link).toHaveTextContent("Versiones · v2");
 });
+
+it("marks the open doubts in the notes and shows one in the chat from its badge or «Ver la siguiente» (#516)", async () => {
+  const marks = (asked: boolean) =>
+    jsonResponse({
+      subject: "historia",
+      topic: "revolucion-industrial",
+      count: 2,
+      marks: [
+        { pending_id: "d-1", kind: "illegible", text: "Palabra dudosa", level: "block", blocks: [{ section: "contexto", number: 1 }], section: null, asked },
+        { pending_id: "d-2", kind: "incomplete", text: "Falta algo", level: "section", blocks: [], section: "causas", asked: false },
+      ],
+    });
+  let asked = false;
+  let readsAfterAsk = 0;
+  const fetchMock = renderPage({
+    ...ROUTES,
+    [`${BASE}/doubts/marks`]: () => {
+      if (asked) readsAfterAsk += 1;
+      return marks(asked);
+    },
+    [`POST ${BASE}/doubts/d-1/ask`]: () => {
+      asked = true;
+      return jsonResponse({ pending_id: "d-1", asked: true, status: "open", summary: null });
+    },
+    [`POST ${BASE}/doubts/d-2/ask`]: () => jsonResponse({ detail: "Esa duda ya está cerrada.", code: "doubt_closed" }, 409),
+  });
+  const doc = screen.getByRole("region", { name: "Documento" });
+  const badge = await within(doc).findByRole("button", { name: "1 duda abierta en este párrafo: verla en el chat" });
+  expect(badge.closest(".notes-block")).toHaveTextContent(/empezó en Gran Bretaña/);
+  expect(within(doc).getByRole("button", { name: "1 duda abierta sobre esta sección: verla en el chat" }).closest(".notes-block")).toHaveTextContent(
+    /Causas/,
+  );
+  const chatRegion = screen.getByRole("region", { name: "Chat" });
+  expect(within(chatRegion).getByText("Tienes 2 dudas marcadas en los apuntes")).toBeInTheDocument();
+
+  fireEvent.click(badge);
+  const posted = () => fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST").map(([path]) => path);
+  await waitFor(() => expect(posted()).toEqual([`${BASE}/doubts/d-1/ask`]));
+  // Asked: the marks are read again (d-1 now asked).
+  await waitFor(() => expect(readsAfterAsk).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // «Ver la siguiente» goes in order, skipping the doubt already asked; a refusal is explained.
+  fireEvent.click(within(chatRegion).getByRole("button", { name: "Ver la siguiente" }));
+  await waitFor(() => expect(posted()).toEqual([`${BASE}/doubts/d-1/ask`, `${BASE}/doubts/d-2/ask`]));
+  expect(await within(chatRegion).findByRole("alert")).toHaveTextContent("No se pudo mostrar la duda: Esa duda ya está cerrada.");
+}, PAGE_TEST_TIMEOUT);
