@@ -75,10 +75,23 @@ function lockScroll(): () => void {
   };
 }
 
+/** What Tab can reach inside `root`, in document order (enabled, not `tabindex="-1"`, rendered). */
+const TABBABLE =
+  'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
+
+function tabbableIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !(element as HTMLButtonElement).disabled &&
+      element.closest("[inert], [hidden]") === null,
+  );
+}
+
 /**
  * The modal itself: a native `<dialog>` opened with `showModal()`, so the browser dims and makes
- * inert everything behind it and keeps Tab inside. Escape (the dialog's `cancel`) and a click on
- * the backdrop cancel; the focus starts on «Cancelar» for a destructive action (on the confirm
+ * inert everything behind it; Tab and Shift+Tab cycle between its own controls. Escape (the
+ * dialog's `cancel`) and a click on the backdrop cancel; the focus starts on «Cancelar» for a destructive action (on the confirm
  * button otherwise) and goes back to the element that had it when the dialog closes.
  */
 export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
@@ -175,16 +188,29 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   // Escape is the dialog's own, taken in the capture phase on the dialog: nothing behind it (a
   // panel that closes on Escape from a window listener) sees it, and the browser does not turn it
   // into a close request; it cancels unless `onConfirm` is running.
-  // Tab while `onConfirm` runs (#491): both buttons are disabled, so nothing inside the dialog is
-  // tabbable and the browser would move the focus out of it (to <body> or its own toolbar), where
-  // a later Escape reaches the window's handlers. The focus stays on the card instead.
+  // Tab is the dialog's too. Past its last control Chromium puts a Tab stop on <body> (or its own
+  // toolbar) even under `showModal()`, where a later Escape reaches the window's handlers (#495):
+  // Tab and Shift+Tab cycle between the dialog's own controls instead. While `onConfirm` runs
+  // (#491) both buttons are disabled and nothing inside is tabbable: the focus stays on the card.
   useEffect(() => {
     const node = dialog.current;
     if (node === null) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Tab" && runningRef.current) {
+      if (event.key === "Tab") {
         event.preventDefault();
-        card.current?.focus();
+        const controls = runningRef.current ? [] : tabbableIn(node);
+        if (controls.length === 0) {
+          card.current?.focus();
+          return;
+        }
+        const at = controls.indexOf(document.activeElement as HTMLElement);
+        const next =
+          at === -1
+            ? event.shiftKey
+              ? controls.length - 1
+              : 0
+            : (at + (event.shiftKey ? controls.length - 1 : 1)) % controls.length;
+        controls[next].focus();
         return;
       }
       if (event.key !== "Escape") return;

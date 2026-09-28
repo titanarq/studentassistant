@@ -800,8 +800,9 @@ token):
   ignored), null closing it confirmed, a Spanish sentence (or a thrown
   error) shown as its `role="alert"` with only **Cerrar** (answers false). `useConfirm()` outside
   the provider throws; tests render under it (`render(ui, {wrapper: ConfirmProvider})`). The modal
-  is a native `<dialog>` opened with `showModal()` (top layer: the page behind is inert, Tab stays
-  inside), labelled by its `h2` and described by the message; Escape (handled on the dialog, so a
+  is a native `<dialog>` opened with `showModal()` (top layer: the page behind is inert), whose
+  Tab and Shift+Tab cycle between its own enabled controls in document order (#495: past the last
+  one Chromium would otherwise put a Tab stop on `<body>`, where Escape reaches window handlers), labelled by its `h2` and described by the message; Escape (handled on the dialog, so a
   panel behind that closes on Escape never sees it) and a click on the backdrop (a press that
   started there) cancel; the focus returns to the element that had it; the page's scroll is locked
   (`overflow: hidden` on `<html>`) while it is open. `confirmDialog.css` uses tokens only:
