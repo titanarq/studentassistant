@@ -4,6 +4,8 @@ export interface WorkspaceTab<K extends string> {
   key: K;
   label: ReactNode;
   panel: ReactNode;
+  /** An extra class for the panel, so a host can lay one panel out on its own. */
+  className?: string;
 }
 
 /**
@@ -71,7 +73,7 @@ export default function WorkspaceTabs<K extends string>({
           id={`${id}-panel-${tab.key}`}
           aria-labelledby={`${id}-tab-${tab.key}`}
           hidden={tab.key !== active}
-          className="workspace-tabpanel"
+          className={tab.className === undefined ? "workspace-tabpanel" : `workspace-tabpanel ${tab.className}`}
         >
           {tab.panel}
         </div>

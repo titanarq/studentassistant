@@ -43,9 +43,17 @@ export interface CapturePageProps {
    * pauses its camera and microphone until it turns false again (`CaptureScreen`'s `suspended`).
    */
   suspended?: boolean;
+  /** Since #470: whether the running capture is recording (`CaptureScreen`'s `onRecordingChange`). */
+  onRecordingChange?: (recording: boolean) => void;
 }
 
-export default function CapturePage({ now = Date.now, preset, onRunningChange, suspended = false }: CapturePageProps) {
+export default function CapturePage({
+  now = Date.now,
+  preset,
+  onRunningChange,
+  suspended = false,
+  onRecordingChange,
+}: CapturePageProps) {
   const [opened, setOpened] = useState<OpenedSession | null>(null);
   const running = opened !== null;
   useEffect(() => {
@@ -63,6 +71,11 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange, s
   const [tutor, setTutor] = useState<TutorTopic | null>(null);
   const onTutor = useCallback((topic: TutorTopic) => setTutor(topic), []);
   const onTutorClosed = useCallback(() => setTutor(null), []);
+
+  // A screen that gives way records nothing any more.
+  useEffect(() => {
+    if (!running) onRecordingChange?.(false);
+  }, [running, onRecordingChange]);
 
   if (opened === null && preset !== undefined) {
     return <TopicSessionStart subjectId={preset.subjectId} topicId={preset.topicId} onSession={onSession} now={now} />;
@@ -84,6 +97,7 @@ export default function CapturePage({ now = Date.now, preset, onRunningChange, s
       onEnded={onEnded}
       embedded={!standalone}
       suspended={suspended}
+      onRecordingChange={onRecordingChange}
     />
   );
 }

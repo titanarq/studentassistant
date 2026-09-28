@@ -316,6 +316,151 @@
   color: var(--correction);
 }
 
+/* ---- The workspace's embedded capture (#470): the preview and one camera icon ---- */
+
+.capture-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.capture-embedded {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Outside the workspace's one-viewport layout it keeps a 4:3 box; inside it takes the free space
+   of the tab (workspace.css) and the video scales into it. */
+.capture-stage {
+  position: relative;
+  flex: none;
+  aspect-ratio: 4 / 3;
+  max-height: 60vh;
+  margin-top: var(--space-2);
+  overflow: hidden;
+  border-radius: var(--radius-l);
+  background: var(--media-bg);
+}
+
+.capture-embedded .capture-preview,
+.capture-embedded .capture-flash {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+}
+
+.capture-notices {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  left: var(--space-2);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  pointer-events: none;
+}
+
+/* A notice is at most three lines over the preview; the whole sentence is its tooltip. */
+.capture-notice {
+  display: -webkit-box;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  font-size: var(--step--1);
+  font-weight: 400;
+  pointer-events: auto;
+}
+
+.capture-notice.capture-connection {
+  display: inline-flex;
+  font-weight: 700;
+}
+
+.capture-notice-bad {
+  border-left: 3px solid var(--correction);
+}
+
+.capture-notice-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.capture-notice-action p {
+  flex: 1 1 10rem;
+  margin: 0;
+}
+
+.capture-notice-action button {
+  min-height: 2rem;
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--step--1);
+}
+
+/* One line per server problem over the preview; the whole sentence is its tooltip. */
+.capture-notice.capture-health {
+  display: block;
+  margin: 0;
+  list-style: none;
+  border-left: 3px solid var(--warn-line);
+}
+
+.capture-notice.capture-health li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Same place and look as the Recursos toolbar (#461). */
+.capture-toolbar {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--line);
+  margin-top: var(--space-2);
+}
+
+.capture-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  min-width: 0;
+  height: 2.25rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink-muted);
+}
+
+.capture-tool:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 @media (max-width: 48rem) {
   .capture-step {
     padding: var(--space-3) var(--space-4);

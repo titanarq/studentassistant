@@ -100,11 +100,25 @@
 - **Embedded capture in the workspace's Captura tab** (#413): `CaptureScreen` `embedded` is a
   `section` ("Captura en curso") with an `h2`, not a `main` with an `h1` (the workspace owns
   both), and shows no "Dudas pendientes" line (since #450 the workspace has no counter either; the doubts are
-  asked in the chat). Its buttons are **Capturar**, **Importante**, **Libro** / **Apuntes** and
-  **Terminar**, the voice commands' buttons (VISION §5.3); the whole topic is prepared by asking
-  the chat («prepárame el tema»), never by a button. The standalone `/capture` keeps its `main`,
-  `h1` and doubts line, and has no «Terminar y preparar apuntes» either (see above); the Android
-  app keeps its own. The former `NotesProgress` view and `fetchNotesGeneration` are gone.
+  asked in the chat). Since #470 (human feedback 2026-09-28) it is only the camera preview and
+  a bottom toolbar (`.capture-toolbar`, same place and look as the Recursos toolbar) with one
+  icon button, a camera, `aria-label`/tooltip «Capturar página». Gone from the embedded screen:
+  the visible title and subject · topic line, the connection pill while connected, the «Cámara»
+  and «Controles» headings, the camera status sentence, **Importante**, **Libro** / **Apuntes**,
+  **Terminar**, the live transcript and the photo strip. **Importante** and the source switch stay
+  reachable by voice (`stt/commands.yaml`); without **Terminar** the session ends by the backend's
+  idle auto-end once the workspace is left (#425), or on `/capture`. The `h2` and the connection
+  and camera status lines stay for screen readers only (`.capture-sr-only`). What is wrong still
+  shows, compactly, over the top of the preview (`.capture-notices`, each at most three lines,
+  the whole sentence its tooltip; a server problem one line each): the connection when it is not
+  plainly open («Conectando…», «Reconectando…», «Conexión recuperada», lost), a blocking message,
+  a failure, the pause of a hidden tab, the STT warning, a lost camera with **Reactivar cámara**,
+  the server health lines, and «N fotos pendientes de subir» / «N fotos no se han podido subir».
+  The screen reports `onRecordingChange(live && !paused)` to its host. The whole topic is
+  prepared by asking the chat («prepárame el tema»), never by a button. The standalone
+  `/capture` keeps everything above (its `main`, `h1`, doubts line, every button, transcript and
+  photos), and has no «Terminar y preparar apuntes» either (see above); the Android app keeps
+  its own. The former `NotesProgress` view and `fetchNotesGeneration` are gone.
 - **Voice tutor** (#82, `src/tutor/`): once a topic is chosen, the capture page's picker also
   offers "Preguntar al tutor" (section "Estudiar con el tutor"; `SessionPicker`'s optional
   `onTutor(TutorTopic {subjectId, topicId, subjectName, topicName})`), and `CapturePage` shows
@@ -170,7 +184,11 @@
     exactly like a hidden browser tab (#425): `CapturePage`/`CaptureScreen` get `suspended`, the
     camera and the recognizer (or the audio stream) stop, the still-open socket says `button:
     pause`, and the tab reads "Captura en pausa"; back on **Captura** the socket says `resume` and
-    the camera and microphone start again ("Captura en curso"). Since #454 (protocol 1.7) that
+    the camera and microphone start again ("Captura en curso"). Since #470 those states are an
+    icon next to «Captura», not text: a red dot (`.workspace-rec-on`, pulsing; still with
+    `prefers-reduced-motion`) while the capture records (`CapturePage`'s `onRecordingChange`), a
+    grey one while it does not (paused on Recursos, or not recording); the dot's `role="img"`
+    name ("en curso" / "en pausa") keeps the tab's accessible name. Since #454 (protocol 1.7) that
     pause says `reason: "student"` (`SessionSocket.sendPause`; a bare `pause` right after `hello`,
     repeated with the reason after `hello.ack`, and never a reason to a backend older than 1.7),
     so the backend's idle auto-end (#425, `[server] capture_idle_end_seconds`, 5 min by default)
@@ -396,8 +414,12 @@
       its share. The columns' proportions are fluid (#450): the left column is 50 % at 900 px and
       shrinks linearly to 25 % at 1200 px and wider (`clamp(max(18rem, 25%), calc(50% - (100vw -
       56.25rem) * 0.97), 50%)`), the document takes the rest. On the left the tabs' list stays put
-      and only the active panel (`.workspace-tabpanel`: camera preview, controls, transcript,
-      photos, resources) scrolls (the list is also `position: sticky` outside this layout). The
+      and only the Recursos panel scrolls (the list is also `position: sticky` outside this
+      layout). The Captura panel (`.workspace-tabpanel-capture`, a `WorkspaceTab` `className`)
+      never scrolls since #470: the running capture fills it, the preview's box
+      (`.capture-stage`) takes the free height and the video scales into it (`object-fit:
+      contain`), the toolbar keeps its height below. Outside this layout the box is 4:3, at most
+      60vh. The
       Captura/Recursos box takes a fixed share of the left column (#458): 50 % at 720 px of
       viewport height, a third of every extra pixel of height taken off, down to 38 % from about
       1080 px (`clamp(38%, calc(50% - (100dvh - 45rem) / 3), 50%)`, never under 8rem). The chat
@@ -667,7 +689,7 @@ token):
   (`src/desk/DeskCreate.tsx`: `createSubject` / `createTopic` of `api.ts` and `describeFailure` of
   `failures.ts`, #368), and inside it only `api.ts` and
   `sessionSocket.ts` reach the network:
-  - `CapturePage.tsx`: `CapturePage({now?, preset?, onRunningChange?})` -- shows `SessionPicker`
+  - `CapturePage.tsx`: `CapturePage({now?, preset?, onRunningChange?, suspended?, onRecordingChange?})` -- shows `SessionPicker`
     until a session is open, then `CaptureScreen` keyed by `session_id` (`embedded` when there
     is a `preset`), then, standalone only, `SessionEnded` after **Terminar** (#413; with a
     `preset` an end goes straight back to `TopicSessionStart`), so a second session in

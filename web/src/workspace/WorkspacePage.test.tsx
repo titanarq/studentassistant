@@ -153,13 +153,18 @@ it("pauses a running capture on Recursos and resumes it back on Captura (#450)",
     expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
   );
   expect(tab("Captura en curso")).toBeInTheDocument();
+  // #470: the state is a red recording dot next to «Captura», not the words «en curso».
+  const dot = () => tab(/^Captura/).querySelector(".workspace-rec")!;
+  expect(dot()).toHaveClass("workspace-rec-on");
+  expect(tab(/^Captura/)).not.toHaveTextContent("en curso");
   // The embedded capture (#413): the page's one main is the workspace's, the capture has no h1
-  // of its own, no second doubts counter and no «Terminar y preparar apuntes».
+  // of its own, no second doubts counter and no «Terminar y preparar apuntes»; since #470 its one
+  // button is the camera icon.
   expect(screen.getAllByRole("main")).toHaveLength(1);
   const captureTab = document.getElementById("workspace-panel-capture")!;
   expect(within(captureTab).queryByRole("heading", { level: 1 })).toBeNull();
   expect(screen.queryByRole("status", { name: "Dudas pendientes" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Terminar" })).toBeInTheDocument();
+  expect(within(captureTab).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual(["Capturar página"]);
   expect(screen.queryByRole("button", { name: /preparar apuntes/ })).toBeNull();
 
   fireEvent.click(tab("Recursos"));
@@ -168,7 +173,7 @@ it("pauses a running capture on Recursos and resumes it back on Captura (#450)",
   const capturePanel = document.getElementById("workspace-panel-capture")!;
   expect(capturePanel).not.toBeVisible();
   // Still mounted and connected, but the camera and the recognizer stop and the backend hears `pause`.
-  expect(within(capturePanel).getByRole("button", { name: "Capturar", hidden: true })).toBeInTheDocument();
+  expect(within(capturePanel).getByRole("button", { name: "Capturar página", hidden: true })).toBeInTheDocument();
   expect(socket.readyState).toBe(WebSocket.OPEN);
   await waitFor(() => expect(fakes.videoTrack.readyState).toBe("ended"));
   expect(fakes.recognitions.some((r) => r.stopCount > 0 || r.abortCount > 0)).toBe(true);
@@ -180,17 +185,20 @@ it("pauses a running capture on Recursos and resumes it back on Captura (#450)",
       .map((m) => m.button);
   expect(buttons()).toEqual(["pause"]);
   expect(tab("Captura en pausa")).toBeInTheDocument();
+  expect(dot()).not.toHaveClass("workspace-rec-on");
+  expect(tab(/^Captura/)).not.toHaveTextContent("en pausa");
   expect(within(capturePanel).getByRole("status", { name: "Captura en pausa", hidden: true })).toHaveTextContent(
     "vuelve a la pestaña Captura",
   );
 
   fireEvent.click(tab("Captura en pausa"));
-  expect(screen.getByRole("button", { name: "Capturar" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Capturar página" })).toBeVisible();
   expect(buttons()).toEqual(["pause", "resume"]);
   await waitFor(() =>
     expect(screen.getByRole("status", { name: "Estado de la cámara" })).toHaveTextContent("La cámara está en marcha."),
   );
   expect(tab("Captura en curso")).toBeInTheDocument();
+  await waitFor(() => expect(dot()).toHaveClass("workspace-rec-on"));
   expect(fakes.sockets).toHaveLength(1);
 }, PAGE_TEST_TIMEOUT);
 

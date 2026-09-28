@@ -46,6 +46,8 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   const { notes } = state;
   const [topicName, setTopicName] = useState(topicId);
   const [tab, setTab] = useState<Tab>("capture");
+  /** Since #470: the running capture is recording (the Captura tab's red dot). */
+  const [recording, setRecording] = useState(false);
   const [view, setView] = useState<NarrowView>("document");
   const [capturing, setCapturing] = useState(false);
   const [open, setOpen] = useState<OpenResource | null>(null);
@@ -146,17 +148,29 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
                       label: (
                         <>
                           Captura
+                          {/* #470: an icon, not «en curso»; its name keeps the state for a screen reader. */}
                           {capturing && (
                             <>
                               {" "}
-                              <span className={tab === "capture" ? "workspace-live" : "workspace-paused"}>
-                                {tab === "capture" ? "en curso" : "en pausa"}
-                              </span>
+                              <span
+                                className={`workspace-rec${tab === "capture" && recording ? " workspace-rec-on" : ""}`}
+                                role="img"
+                                aria-label={tab === "capture" ? "en curso" : "en pausa"}
+                                title={tab === "capture" ? (recording ? "Grabando" : "Sin grabar") : "En pausa"}
+                              />
                             </>
                           )}
                         </>
                       ),
-                      panel: <CapturePage preset={preset} onRunningChange={setCapturing} suspended={tab !== "capture"} />,
+                      className: "workspace-tabpanel-capture",
+                      panel: (
+                        <CapturePage
+                          preset={preset}
+                          onRunningChange={setCapturing}
+                          onRecordingChange={setRecording}
+                          suspended={tab !== "capture"}
+                        />
+                      ),
                     },
                     {
                       key: "resources",
