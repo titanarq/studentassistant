@@ -436,6 +436,44 @@ it("reads a result with kind «answer» as an ordinary answer, with no «Abrir»
   expect(onGenerated).not.toHaveBeenCalled();
 });
 
+it("marks a turn that recorded app feedback with «Mejora apuntada», and an ordinary answer with none (#472)", async () => {
+  const feedback = { id: "fb-1", kind: "mejora", title: "Exportar los apuntes a PDF" };
+  renderChat({
+    [`POST ${TUTOR}`]: () =>
+      sseResponse([["result", answer({ reply: "He apuntado la mejora: Exportar los apuntes a PDF.", sections: [], refs: [], feedback })]]),
+  });
+
+  await askQuestion("Apunta una mejora: poder exportar a PDF");
+
+  const chip = await within(log()).findByTestId("feedback-chip");
+  expect(chip).toHaveTextContent(/^Mejora apuntada/);
+  expect(chip).toHaveAttribute("title", "Exportar los apuntes a PDF");
+  expect(within(log()).getByText(/He apuntado la mejora/)).toBeInTheDocument();
+  expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
+});
+
+it("keeps the «Bug apuntado» chip after a reload, from the history (#472)", async () => {
+  renderChat({
+    [TUTOR]: jsonResponse({
+      turns: [
+        turn(),
+        turn({
+          question: "Esto es un bug: el botón Hablar no responde",
+          reply: "He apuntado el bug: El botón Hablar no responde.",
+          sections: [],
+          refs: [],
+          feedback: { id: "fb-2", kind: "bug", title: "El botón Hablar no responde" },
+        }),
+      ],
+    }),
+  });
+
+  const chip = await within(log()).findByTestId("feedback-chip");
+  expect(chip).toHaveTextContent(/^Bug apuntado/);
+  expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
+  expect(chip.closest("li")).toHaveTextContent("Esto es un bug: el botón Hablar no responde");
+});
+
 it("puts a suggested phrase in the input without sending it", async () => {
   const { fetchMock, suggest } = renderChat({});
   const input = screen.getByRole("textbox", { name: "Tu pregunta" });

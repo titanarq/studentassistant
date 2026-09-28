@@ -894,6 +894,66 @@ function layOut(element: HTMLElement, { height = 200, content = 1000 } = {}) {
   };
 }
 
+it("marks a typed turn that recorded app feedback with «Bug apuntado», live, and no other turn (#472)", async () => {
+  const { opened } = setup({
+    [CHAT]: jsonResponse(history([turn({ turn_id: "turn-old" })])),
+  });
+  expect(await screen.findByText("Pon un ejemplo")).toBeInTheDocument();
+  const stream = await opened();
+  act(() => {
+    stream.push(sseEvent("request.detected", { request_id: "req-5", kind: "question", summary: "Un fallo del botón Hablar", transcript: TRANSCRIPT }));
+    stream.push(sseEvent("turn.started", { turn_id: "turn-5", request_id: "req-5", origin: "voice", kind: "revise" }));
+  });
+  const entry = (await screen.findByText(/Pediste: Un fallo del botón Hablar/)).closest("li") as HTMLElement;
+  expect(within(entry).queryByTestId("feedback-chip")).toBeNull();
+
+  act(() =>
+    stream.push(
+      sseEvent(
+        "turn.result",
+        voiceResult("turn-5", "req-5", {
+          reply: "He apuntado el bug: El botón Hablar no responde.",
+          applied: false,
+          summary: null,
+          notes_changed: false,
+          changed_sections: [],
+          diff: "",
+          commit: null,
+          feedback: { id: "fb-3", kind: "bug", title: "El botón Hablar no responde" },
+        }),
+      ),
+    ),
+  );
+  const chip = await within(entry).findByTestId("feedback-chip");
+  expect(chip).toHaveTextContent(/^Bug apuntado/);
+  expect(chip).toHaveAttribute("title", "El botón Hablar no responde");
+  expect(within(entry).queryByText(/Cambio aplicado/)).toBeNull();
+  expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
+});
+
+it("keeps the «Mejora apuntada» chip of a history turn after a reload (#472)", async () => {
+  setup({
+    [CHAT]: jsonResponse(
+      history([
+        turn({ turn_id: "turn-old" }),
+        turn({
+          turn_id: "turn-fb",
+          message: "Apunta una mejora: exportar a PDF",
+          reply: "He apuntado la mejora: Exportar los apuntes a PDF.",
+          applied: false,
+          summary: null,
+          changed_sections: [],
+          commit: null,
+          feedback: { id: "fb-1", kind: "mejora", title: "Exportar los apuntes a PDF" },
+        }),
+      ]),
+    ),
+  });
+  const entry = (await screen.findByText("Apunta una mejora: exportar a PDF")).closest("li") as HTMLElement;
+  expect(within(entry).getByTestId("feedback-chip")).toHaveTextContent(/^Mejora apuntada/);
+  expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
+});
+
 it("scrolls the log to the newest turn as turns arrive and a reply streams", async () => {
   const { opened } = setup();
   const stream = await opened();

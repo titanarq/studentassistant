@@ -7,6 +7,7 @@ import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
 import VoiceInputButton from "../../tutor/VoiceInputButton";
 import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
+import FeedbackChip from "../../chat/FeedbackChip";
 import "../../chat/chat.css";
 import "./studyChat.css";
 
@@ -191,6 +192,7 @@ export default function StudyChat({
               refs: [],
               sections: [],
               warning: null,
+              feedback: null,
               warnings: generation.warnings,
               generation: { option: generation.option, items: generation.items },
             },
@@ -294,6 +296,7 @@ export default function StudyChat({
                   {warning}
                 </p>
               ))}
+              {turn.feedback !== null && <FeedbackChip feedback={turn.feedback} />}
               {turn.generation !== null && <OpenButton option={turn.generation.option} onOpen={onOpenOption} />}
             </li>
           ))}
