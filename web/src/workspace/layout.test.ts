@@ -146,3 +146,123 @@ describe("the source's detail over the document column (#473)", () => {
     }
   });
 });
+
+/** `css` without its `@media` blocks: the rules that apply at every width. */
+function outsideMedia(css: string): string {
+  let result = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (let start = result.indexOf("@media"); start >= 0; start = result.indexOf("@media")) {
+    const open = result.indexOf("{", start);
+    let depth = 0;
+    let end = open;
+    for (; end < result.length; end += 1) {
+      if (result[end] === "{") depth += 1;
+      if (result[end] === "}") depth -= 1;
+      if (depth === 0) break;
+    }
+    result = result.slice(0, start) + result.slice(end + 1);
+  }
+  return result;
+}
+
+const ONE_COLUMN = "@media (max-width: 56.25rem) {";
+const ONE_COLUMN_TALL = "@media (max-width: 56.25rem) and (min-height: 30rem)";
+
+/**
+ * #485: scrolling a long document scrolled its header (version, «Editar») away. jsdom does no
+ * layout, so these tests pin the rules that keep it on screen: the document card is a column that
+ * does not scroll, its header never shrinks and is sticky, and only the body under it scrolls; in
+ * one column the document view is one viewport high the same way (and, on a short screen, the card
+ * is no scroll container, so the header sticks to the top of the page).
+ */
+describe("the document's header stays pinned (#485)", () => {
+  const base = outsideMedia(workspaceCss);
+
+  it("scrolls only the body under the header in the document card", () => {
+    const card = declarations(base, ".workspace-document");
+    expect(card.display).toBe("flex");
+    expect(card["flex-direction"]).toBe("column");
+    expect(card.overflow).toBe("hidden");
+    const header = declarations(base, ".workspace-document-header");
+    expect(header.flex).toBe("none");
+    expect(header.position).toBe("sticky");
+    expect(header.top).toBe("0");
+    expect(header.background).toBe("var(--surface)");
+    const body = declarations(base, ".workspace-document-body");
+    expect(body.flex).toBe("1 1 auto");
+    expect(body["min-height"]).toBe("0");
+    expect(body["overflow-y"]).toBe("auto");
+    // The editor's column scrolls the same way.
+    expect(declarations(base, ".workspace-document > .workspace-editing")["overflow-y"]).toBe("auto");
+  });
+
+  it("keeps the card a non-scrolling column in the two-column layout", () => {
+    const card = declarations(mediaBlock(workspaceCss, TWO_COLUMNS), ".workspace-document");
+    expect(card["min-height"]).toBe("0");
+    expect(card.overflow).toBeUndefined();
+    expect(card["overflow-y"]).toBeUndefined();
+  });
+
+  it("makes the one-column document view one viewport high, only the body scrolling", () => {
+    const tall = mediaBlock(workspaceCss, ONE_COLUMN_TALL);
+    const page = declarations(tall, '.workspace[data-view="document"]');
+    expect(page.height).toMatch(/dvh/);
+    expect(page.overflow).toBe("hidden");
+    const card = declarations(tall, '.workspace[data-view="document"] .workspace-document');
+    expect(card.display).toBe("flex");
+    expect(card["min-height"]).toBe("0");
+    expect(card.overflow).toBe("hidden");
+    expect(declarations(tall, '.workspace[data-view="document"] .workspace-document-body')["overflow-y"]).toBe("auto");
+    // The detail (#473) fills the document view's place the same way.
+    expect(declarations(tall, '.workspace[data-view="document"] .workspace-detail')["min-height"]).toBe("0");
+    // ...and is still what hides the document under it (a later rule, so it wins).
+    expect(workspaceCss.lastIndexOf('.workspace[data-detail="open"] .workspace-document')).toBeGreaterThan(
+      workspaceCss.indexOf(ONE_COLUMN_TALL),
+    );
+  });
+
+  it("lets the header stick to the page on a short one-column screen", () => {
+    const narrow = mediaBlock(workspaceCss, ONE_COLUMN);
+    expect(declarations(narrow, ".workspace-document").overflow).toBe("visible");
+    expect(declarations(narrow, ".workspace-document-body").overflow).toBe("visible");
+  });
+});
+
+/**
+ * #485: the workspace reads as zones -- a desk under a header band and three cards. jsdom does no
+ * painting, so these tests pin that each zone takes its own token (the colours and their contrast
+ * are checked in `styles/tokens.test.ts`).
+ */
+describe("the workspace's visual zones (#485)", () => {
+  const base = outsideMedia(workspaceCss);
+
+  it("puts the page on the desk under a solid header band", () => {
+    expect(declarations(base, ".workspace").background).toBe("var(--desk)");
+    const band = declarations(base, ".workspace-bar");
+    expect(band.background).toBe("var(--header-bg)");
+    expect(band.color).toBe("var(--on-header)");
+    expect(declarations(base, ".workspace-title").color).toBe("var(--on-header)");
+    expect(declarations(base, ".workspace-bar-end a").color).toBe("var(--on-header-muted)");
+    expect(declarations(base, ".workspace-bar :focus-visible")["outline-color"]).toBe("var(--on-header)");
+    expect(declarations(base, ".workspace-bar .mode-switch")["border-color"]).toBe("var(--header-line)");
+  });
+
+  it("makes Captura/Recursos, the chat and the document three cards with their own surfaces", () => {
+    for (const selector of [".workspace-sources", ".workspace-chat", ".workspace-document"]) {
+      const card = declarations(base, selector);
+      expect(card.border, selector).toBe("1px solid var(--line)");
+      expect(card["border-radius"], selector).toBe("var(--radius-l)");
+      expect(card["box-shadow"], selector).toBe("var(--card-shadow)");
+    }
+    expect(declarations(base, ".workspace-sources").background).toBe("var(--paper)");
+    expect(declarations(base, ".workspace-chat").background).toBe("var(--chat-surface)");
+    expect(declarations(base, ".workspace-document").background).toBe("var(--surface)");
+  });
+
+  it("uses no literal colour in the zones' rules", () => {
+    for (const selector of [".workspace", ".workspace-bar", ".workspace-sources", ".workspace-chat", ".workspace-document", ".workspace-document-header"]) {
+      for (const [property, value] of Object.entries(declarations(base, selector))) {
+        expect(value, `${selector} ${property}`).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+      }
+    }
+  });
+});

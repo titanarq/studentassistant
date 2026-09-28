@@ -1,5 +1,10 @@
 /* The study workspace (#312): two columns -- Captura/Recursos above the chat on the left, the
-   document on the right -- and one column with a three-way switch below 900 px (56.25rem). */
+   document on the right -- and one column with a three-way switch below 900 px (56.25rem).
+
+   Visual zones (#485): the page is a desk (`--desk`) under a solid header band (`--header-bg`);
+   Captura/Recursos, the chat and the document are three cards on it, each with its own surface
+   (`--paper`, `--chat-surface`, `--surface`: the white sheet / the slate board), a `--line`
+   border, `--card-shadow` and the `--radius-l` corners, with a gap of desk between them. */
 
 .workspace {
   /* #450: the whole screen width, a 16px side gutter. */
@@ -7,23 +12,70 @@
   margin: 0;
   padding: var(--space-2) var(--space-4) var(--space-4);
   overflow-wrap: anywhere;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: var(--desk);
 }
 
-/* ---- Header (#450): one compact bar ---- */
+/* #485: the three zones are cards on the desk. */
+.workspace-sources,
+.workspace-chat,
+.workspace-document {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--card-shadow);
+}
+
+.workspace-sources {
+  padding: var(--space-2) var(--space-3);
+  background: var(--paper);
+}
+
+.workspace-chat {
+  padding: var(--space-2) var(--space-3);
+  background: var(--chat-surface);
+}
+
+.workspace-document {
+  padding: var(--space-3) var(--space-4) 0;
+  background: var(--surface);
+}
+
+/* ---- Header (#450): one compact bar, a solid band edge to edge since #485 ---- */
 
 .workspace-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-4);
-  margin: 0 0 var(--space-2);
+  /* Out over the page's padding: the band spans the whole width from the very top. */
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-4)) var(--space-3);
+  padding: var(--space-2) var(--space-4);
   min-width: 0;
+  background: var(--header-bg);
+  color: var(--on-header);
+  box-shadow: var(--card-shadow);
+}
+
+/* The band's focus ring and the mode switch's edge in the band's own colours (the accent would
+   vanish on the blue). */
+.workspace-bar :focus-visible {
+  outline-color: var(--on-header);
+}
+
+.workspace-bar .mode-switch {
+  border-color: var(--header-line);
+}
+
+.workspace-bar .mode-switch-failure {
+  color: var(--on-header);
 }
 
 .workspace-title {
   flex: 0 1 auto;
   min-width: 0;
   margin: 0;
+  color: var(--on-header);
   font-family: var(--font-ui);
   font-size: var(--step-1);
   line-height: 1.2;
@@ -38,7 +90,7 @@
 }
 
 .workspace-title a:hover {
-  color: var(--accent);
+  color: var(--on-header);
   text-decoration: underline;
 }
 
@@ -53,11 +105,11 @@
 }
 
 .workspace-bar-end a {
-  color: var(--ink-muted);
+  color: var(--on-header-muted);
 }
 
 .workspace-bar-end a:hover {
-  color: var(--accent);
+  color: var(--on-header);
 }
 
 /* ---- Columns ---- */
@@ -94,11 +146,24 @@
   min-width: 0;
 }
 
+/* #485: the document card is a column -- its header on top, pinned, and below it the body, which
+   alone scrolls (so «Editar» is on screen at the bottom of a long document). */
 .workspace-document {
   position: sticky;
   top: 0;
   max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workspace-document-body,
+.workspace-document > .workspace-editing {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: var(--space-4);
 }
 
 /* Two columns on a screen tall enough (#412, #450): the page is exactly one viewport high and never
@@ -402,9 +467,26 @@
     display: block;
   }
 
+  .workspace-left {
+    gap: var(--space-4);
+  }
+
+  /* The page scrolls here: the card is no scroll container, so its header sticks to the top of
+     the screen (#485) while the body scrolls under it. */
   .workspace-document {
     position: static;
     max-height: none;
+    display: block;
+    overflow: visible;
+  }
+
+  .workspace-document-body,
+  .workspace-document > .workspace-editing {
+    overflow: visible;
+  }
+
+  .workspace-document {
+    padding-top: var(--space-1);
   }
 
   .workspace[data-view="document"] .workspace-left,
@@ -416,14 +498,66 @@
   }
 }
 
+/* #485: one column on a screen tall enough, the document view is one viewport high like the two
+   columns: the header band and the switch on top, the document card filling the rest, its header
+   pinned and only its body scrolling. (A source's detail takes the card's place and fills it the
+   same way; the rule that hides the document under it comes later and wins.) */
+@media (max-width: 56.25rem) and (min-height: 30rem) {
+  .workspace[data-view="document"] {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .workspace[data-view="document"] .workspace-header {
+    flex: none;
+  }
+
+  .workspace[data-view="document"] .workspace-columns {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace[data-view="document"] .workspace-document {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .workspace[data-view="document"] .workspace-document-body,
+  .workspace[data-view="document"] .workspace-document > .workspace-editing {
+    overflow-y: auto;
+  }
+
+  .workspace[data-view="document"] .workspace-detail {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+
 /* ---- The document and its editor (#316) ---- */
 
+/* #485: pinned at the top of the document card: out of the scrolling body in two columns, and
+   sticky to the top of the screen in one column (where the page scrolls). */
 .workspace-document-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: 0 0 var(--space-2);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
 }
 
 .workspace-document-title {
@@ -545,6 +679,11 @@
 @media (max-width: 56.25rem) {
   .workspace-conflict-versions {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stuck to the top of the screen, a little room above its title. */
+  .workspace-document-header {
+    padding-top: var(--space-2);
   }
 }
 
