@@ -745,36 +745,71 @@ def _is_call(text: str) -> bool:
     return parse_tool_calls(text) is not None
 
 
+_CALL_START = re.compile(r'(?:^|\n)[ \t]*(?:\{|```)|\{\s*"tool_calls"')
+"""Where a tool call may start: a line opening with `{` or a code fence, or `{"tool_calls"`."""
+_CALL_OPENER = '"tool_calls"'
+
+
 class _TextStream:
-    """Passes text deltas on, except a reply that looks like a tool call (held, then dropped)."""
+    """Passes text deltas on, holding back from where a tool call may start (`_CALL_START`).
+
+    The editor writes its reply to the student first and its tool call after it, in the same
+    text: the call's JSON carries the whole change (the notes, a Mermaid diagram), which must not
+    reach the chat. So the prose streams, and from a possible call on the text is held: dropped
+    when the answer turns out to be a tool call, sent at the end otherwise. A request with no
+    tools streams everything.
+    """
 
     def __init__(self, on_text: TextSink | None, expect_tools: bool) -> None:
         self.on_text = on_text
         self.expect_tools = expect_tools
         self.pending = ""
-        self.mode: str | None = None  # "stream" or "hold" once the first visible char is seen
+        self.fed = False
+        self.holding = False
 
     async def feed(self, delta: str) -> None:
         if self.on_text is None or not delta:
             return
-        if self.mode == "stream":
-            await self.on_text(delta)
-            return
+        self.fed = True
         self.pending += delta
-        if self.mode is None:
-            visible = self.pending.lstrip()
-            if not visible:
-                return
-            self.mode = "hold" if self.expect_tools and visible[0] in "{`" else "stream"
-            if self.mode == "stream":
-                pending, self.pending = self.pending, ""
-                await self.on_text(pending)
+        if self.holding:
+            return
+        if not self.expect_tools:
+            await self._send(len(self.pending))
+            return
+        match = _CALL_START.search(self.pending)
+        if match is not None:
+            self.holding = True
+            await self._send(match.start())
+            return
+        await self._send(self._safe_end())
+
+    def _safe_end(self) -> int:
+        """How much of `pending` cannot become the start of a call, whatever comes next."""
+        line = self.pending.rfind("\n") + 1
+        tail = self.pending[line:].lstrip(" \t")
+        if tail == "" or tail in ("`", "``"):
+            return line
+        brace = self.pending.rfind("{")
+        if brace >= 0:
+            after = self.pending[brace + 1 :].lstrip()
+            if _CALL_OPENER.startswith(after[: len(_CALL_OPENER)]):
+                return brace
+        return len(self.pending)
+
+    async def _send(self, end: int) -> None:
+        text, self.pending = self.pending[:end], self.pending[end:]
+        if text and self.on_text is not None:
+            await self.on_text(text)
 
     async def finish(self, text: str, *, is_tool_call: bool) -> None:
-        if self.on_text is None or self.mode == "stream" or is_tool_call:
+        if self.on_text is None or is_tool_call:
             return
-        if text:  # held back (or never streamed): the whole answer at once
-            await self.on_text(text)
+        if not self.fed:  # nothing streamed: the whole answer at once
+            if text:
+                await self.on_text(text)
+            return
+        await self._send(len(self.pending))
 
 
 def _error_for(event: dict[str, Any]) -> LLMError:
