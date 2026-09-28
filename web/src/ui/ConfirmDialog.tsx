@@ -75,11 +75,48 @@ function lockScroll(): () => void {
   };
 }
 
+/** What Tab can reach inside `root`, in document order (enabled, not `tabindex="-1"`, rendered). */
+const TABBABLE =
+  'a[href], button, input:not([type="hidden"]), select, textarea, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
+
+/**
+ * Whether `element` is rendered, so focusing it can work: not under `display: none`, not
+ * `visibility: hidden`, not in the body of a closed `<details>`. A browser answers with
+ * `checkVisibility()` or its layout boxes; without either (jsdom has no layout) the computed
+ * styles of the element and its ancestors decide, so an unknown case counts as rendered.
+ */
+function isRendered(element: HTMLElement): boolean {
+  if (typeof element.checkVisibility === "function") {
+    return element.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
+  }
+  const style = getComputedStyle(element);
+  if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+  if (element.getClientRects().length > 0) return true;
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    if (getComputedStyle(node).display === "none") return false;
+    const parent: HTMLElement | null = node.parentElement;
+    const closedDetails = parent instanceof HTMLDetailsElement && !parent.open;
+    if (closedDetails && parent.querySelector(":scope > summary") !== node) return false;
+  }
+  return true;
+}
+
+function tabbableIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.matches(":disabled") &&
+      element.closest("[inert], [hidden]") === null &&
+      isRendered(element),
+  );
+}
+
 /**
  * The modal itself: a native `<dialog>` opened with `showModal()`, so the browser dims and makes
- * inert everything behind it and keeps Tab inside. Escape (the dialog's `cancel`) and a click on
- * the backdrop cancel; the focus starts on «Cancelar» for a destructive action (on the confirm
- * button otherwise) and goes back to the element that had it when the dialog closes.
+ * inert everything behind it; Tab and Shift+Tab cycle between its own controls. Escape (the
+ * dialog's `cancel`) and a click on the backdrop cancel; the focus starts on «Cancelar» for a
+ * destructive action (on the confirm button otherwise) and goes back to the element that had it
+ * when the dialog closes.
  */
 export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   const { title, message, destructive = false, onConfirm } = options;
@@ -175,15 +212,31 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   // Escape is the dialog's own, taken in the capture phase on the dialog: nothing behind it (a
   // panel that closes on Escape from a window listener) sees it, and the browser does not turn it
   // into a close request; it cancels unless `onConfirm` is running.
-  // Tab while `onConfirm` runs (#491): both buttons are disabled, so nothing inside the dialog is
-  // tabbable and the browser would move the focus out of it (to <body> or its own toolbar), where
-  // a later Escape reaches the window's handlers. The focus stays on the card instead.
+  // Tab is the dialog's too. Past its last control Chromium puts a Tab stop on <body> (or its own
+  // toolbar) even under `showModal()`, where a later Escape reaches the window's handlers (#495):
+  // Tab and Shift+Tab cycle between the dialog's own controls instead. While `onConfirm` runs
+  // (#491) both buttons are disabled and nothing inside is tabbable: the focus stays on the card.
   useEffect(() => {
     const node = dialog.current;
     if (node === null) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Tab" && runningRef.current) {
+      if (event.key === "Tab") {
         event.preventDefault();
+        const controls = runningRef.current ? [] : tabbableIn(node);
+        if (controls.length === 0) {
+          card.current?.focus();
+          return;
+        }
+        const at = controls.indexOf(document.activeElement as HTMLElement);
+        const step = event.shiftKey ? controls.length - 1 : 1;
+        let next = at === -1 ? (event.shiftKey ? controls.length - 1 : 0) : (at + step) % controls.length;
+        // A candidate that does not take the focus (hidden in a way the filter missed) is passed
+        // over, so the cycle never sticks on it; after one lap with none, the card keeps it.
+        for (let tries = 0; tries < controls.length; tries += 1) {
+          controls[next].focus();
+          if (document.activeElement === controls[next]) return;
+          next = (next + step) % controls.length;
+        }
         card.current?.focus();
         return;
       }

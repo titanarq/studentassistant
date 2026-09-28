@@ -566,7 +566,7 @@ describe("deleting a source (#450, #486)", () => {
     expect(await within(refused).findByRole("alert")).toHaveTextContent("No se pudo borrar: Este servidor todavía no permite borrar fuentes.");
     // Only «Cerrar» is left, and it has the focus.
     expect(within(refused).queryByRole("button", { name: "Borrar" })).toBeNull();
-    expect(within(refused).getByRole("button", { name: "Cerrar" })).toHaveFocus();
+    await waitFor(() => expect(within(refused).getByRole("button", { name: "Cerrar" })).toHaveFocus());
     fireEvent.click(within(refused).getByRole("button", { name: "Cerrar" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();

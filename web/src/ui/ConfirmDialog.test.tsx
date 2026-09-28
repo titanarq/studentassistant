@@ -141,6 +141,134 @@ describe("the confirmation modal (#486)", () => {
     }
   });
 
+  it("cycles Tab and Shift+Tab between its own controls, so the focus never leaves it (#495)", () => {
+    const behind = vi.fn();
+    window.addEventListener("keydown", behind);
+    try {
+      const { answers, open } = renderAsker({
+        ...DELETE,
+        message: (
+          <p>
+            Saldrá de las fuentes del tema. <a href="#ayuda">Más información</a>
+          </p>
+        ),
+      });
+      const dialog = open();
+      const link = within(dialog).getByRole("link", { name: "Más información" });
+      const cancel = within(dialog).getByRole("button", { name: "Cancelar" });
+      const remove = within(dialog).getByRole("button", { name: "Borrar" });
+      expect(cancel).toHaveFocus();
+
+      // Forwards, in document order and back to the first past the last: never <body>.
+      const forwards = [remove, link, cancel, remove, link];
+      for (const expected of forwards) {
+        expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab" })).toBe(false);
+        expect(expected).toHaveFocus();
+      }
+      // Backwards, to the last before the first.
+      const backwards = [remove, cancel, link, remove, cancel];
+      for (const expected of backwards) {
+        expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab", shiftKey: true })).toBe(false);
+        expect(expected).toHaveFocus();
+      }
+      // From the card itself (a click on its text), Tab goes to the first control, Shift+Tab to the last.
+      const card = dialog.querySelector(".confirm-dialog-card") as HTMLElement;
+      card.focus();
+      fireEvent.keyDown(card, { key: "Tab" });
+      expect(link).toHaveFocus();
+      card.focus();
+      fireEvent.keyDown(card, { key: "Tab", shiftKey: true });
+      expect(remove).toHaveFocus();
+
+      // The focus stayed in the dialog: Escape, wherever the cycle left it, still cancels there.
+      behind.mockClear();
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+      expect(behind).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(answers).toEqual([]);
+    } finally {
+      window.removeEventListener("keydown", behind);
+    }
+  });
+
+  /** Tabs five times each way from «Cancelar» and checks the focus only ever lands on `cancel`/`remove`. */
+  function expectTwoButtonCycle(dialog: HTMLElement) {
+    const cancel = within(dialog).getByRole("button", { name: "Cancelar" });
+    const remove = within(dialog).getByRole("button", { name: "Borrar" });
+    expect(cancel).toHaveFocus();
+    for (const expected of [remove, cancel, remove, cancel, remove]) {
+      expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab" })).toBe(false);
+      expect(expected).toHaveFocus();
+    }
+    for (const expected of [cancel, remove, cancel, remove, cancel]) {
+      expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab", shiftKey: true })).toBe(false);
+      expect(expected).toHaveFocus();
+    }
+  }
+
+  it("leaves hidden controls of the message out of the Tab cycle (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <div>
+          <p>
+            Saldrá de las fuentes del tema. <a href="#oculto" style={{ display: "none" }}>oculto</a>
+          </p>
+          <p style={{ visibility: "hidden" }}>
+            <a href="#invisible">invisible</a>
+          </p>
+          <div style={{ display: "none" }}>
+            <button type="button">Dentro de un bloque oculto</button>
+          </div>
+          <details>
+            <summary>Detalles</summary>
+            <a href="#plegado">plegado</a>
+          </details>
+        </div>
+      ),
+    });
+    const dialog = open();
+    const summary = dialog.querySelector("summary") as HTMLElement;
+    const cancel = within(dialog).getByRole("button", { name: "Cancelar" });
+    const remove = within(dialog).getByRole("button", { name: "Borrar" });
+    // The closed <details> keeps its summary in the cycle, never its body.
+    for (const expected of [remove, summary, cancel, remove, summary]) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Tab" });
+      expect(expected).toHaveFocus();
+    }
+    summary.remove();
+    cancel.focus();
+    expectTwoButtonCycle(dialog);
+  });
+
+  it("skips the controls of a disabled fieldset (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <fieldset disabled>
+          <input aria-label="Nombre" />
+          <button type="button">Dentro</button>
+        </fieldset>
+      ),
+    });
+    expectTwoButtonCycle(open());
+  });
+
+  it("passes over a control that does not take the focus, so the cycle never sticks (#495)", () => {
+    const { open } = renderAsker({
+      ...DELETE,
+      message: (
+        <p>
+          Saldrá de las fuentes del tema. <a href="#terco">terco</a>
+        </p>
+      ),
+    });
+    const dialog = open();
+    // As a browser does with a control it cannot focus: `focus()` does nothing.
+    vi.spyOn(within(dialog).getByRole("link", { name: "terco" }), "focus").mockImplementation(() => {});
+    expectTwoButtonCycle(dialog);
+  });
+
   it("cancels on the browser's own cancel request", async () => {
     const { answers, open } = renderAsker();
     const dialog = open();
@@ -264,8 +392,9 @@ describe("the confirmation modal (#486)", () => {
         const { answers, open } = renderAsker({ ...DELETE, onConfirm: () => new Promise(() => undefined) });
         const dialog = open();
         const card = dialog.querySelector(".confirm-dialog-card") as HTMLElement;
-        // Before confirming, Tab is the browser's: it moves between the two buttons.
-        expect(fireEvent.keyDown(within(dialog).getByRole("button", { name: "Cancelar" }), { key: "Tab" })).toBe(true);
+        // Before confirming, Tab moves between the two buttons (#495).
+        expect(fireEvent.keyDown(within(dialog).getByRole("button", { name: "Cancelar" }), { key: "Tab" })).toBe(false);
+        expect(within(dialog).getByRole("button", { name: "Borrar" })).toHaveFocus();
         fireEvent.click(within(dialog).getByRole("button", { name: "Borrar" }));
         await waitFor(() => expect(card).toHaveFocus());
 
