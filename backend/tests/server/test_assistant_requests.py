@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -28,6 +30,7 @@ from studentassistant.config import (
     ServerSettings,
     Settings,
 )
+from studentassistant.editor.crop import CROP_TOOL, TOOL_NAME
 from studentassistant.editor.notes_format import notes_revision
 from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn
 from studentassistant.llm import FakeClaude, LLMAPIError
@@ -49,13 +52,16 @@ from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscription
 from studentassistant.vault import (
     Event,
+    GitSync,
     Vault,
     end_session,
     list_sessions,
+    put_source,
     read_notes,
     read_topic_events,
     resume_session,
     start_session,
+    write_notes,
 )
 
 LOCAL_BASE_URL = "http://localhost:8765"
@@ -252,6 +258,55 @@ def test_a_spoken_request_becomes_a_voice_chat_turn_and_streams(
         "text": "pon aquí la explicación del libro",
     }
     assert history["can_undo"] is True
+
+
+def _diagram() -> bytes:
+    """A sharp line drawing on white paper, as a JPEG."""
+    image = np.full((600, 800, 3), 255, np.uint8)
+    for i in range(12):
+        cv2.line(image, (50 + i * 50, 80), (90 + i * 50, 500), (0, 0, 0), 2)
+    cv2.circle(image, (400, 300), 120, (30, 30, 30), 3)
+    ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    assert ok
+    return encoded.tobytes()
+
+
+def test_a_spoken_crop_request_locates_the_region_with_the_apps_own_transport(
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+) -> None:
+    # A spoken request carries no Recursos selection: the page to crop is one the notes cite.
+    book_page = "sources/book/page-002.jpg"
+    put_source(topic.vault, topic.subject, topic.topic, "book", "foto.jpg", _diagram(), {})
+    notes = topic.notes.replace(
+        "Se escribe $f'(x)$.[^t2]", "Se escribe $f'(x)$.[^t2][^b2]"
+    ).replace("[^p1]: [Apuntes", f"[^b2]: [Libro, página 2](../{book_page})\n[^p1]: [Apuntes")
+    write_notes(topic.vault, topic.subject, topic.topic, notes)
+    GitSync(topic.vault).checkpoint("fixture: cite page 2")
+    session_id = _start(client, topic)
+    crop_call = {
+        "source": book_page,
+        "region": "el diagrama de la página",
+        "op": "insert_after",
+        "section": "definicion",
+        "block": 2,
+        "summary": "Añado el recorte del diagrama",
+    }
+    fake.reply_tool(CROP_TOOL, crop_call, text="He añadido el recorte del diagrama.")
+    fake.reply_tool(TOOL_NAME, {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75})
+
+    _publish(client, session_id, _request(1, text="pon solo el diagrama de la página 2"))
+    _settle(client)
+
+    # Sonnet's box came from the app's own transport (a default connection would never reach
+    # the fake), and the crop was applied as the voice turn's change.
+    assert [request.role for request in fake.requests] == ["editor", "observer"]
+    assert fake.requests[1].tools[0]["name"] == TOOL_NAME and fake.pending == 0
+    [turn] = client.get(_chat(topic)).json()["turns"]
+    assert turn["origin"] == "voice" and turn["applied"] is True
+    assert turn["crop"]["error"] is None
+    assert turn["crop"]["source_id"] == "sources/images/img-001.jpg"
+    stored = read_notes(topic.vault, topic.subject, topic.topic) or ""
+    assert "![Imagen recortada 1](../sources/images/img-001.jpg)[^img001]" in stored
 
 
 def test_two_requests_run_one_at_a_time_in_order(
