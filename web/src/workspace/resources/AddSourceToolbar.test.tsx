@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { parseNotes } from "../../notes/markdown";
 import { jsonResponse, stubApi } from "../../test/mockApi";
 import ResourcesTab from "../ResourcesTab";
+import { ConfirmProvider } from "../../ui/ConfirmDialog";
 
 const TOPIC = "subjects/historia/topics/revolucion-industrial";
 const BASE = "/api/subjects/historia/topics/revolucion-industrial";
@@ -55,6 +56,7 @@ function renderTab() {
       refreshKey={0}
       onOpen={() => undefined}
     />,
+    { wrapper: ConfirmProvider },
   );
 }
 

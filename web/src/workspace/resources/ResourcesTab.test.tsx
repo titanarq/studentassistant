@@ -7,6 +7,7 @@ import SourcePanel from "../../notes/SourcePanel";
 import ResourcesTab, { INCORPORATED_LABEL, type OpenResource } from "../ResourcesTab";
 import { type SourceSelection, SourceSelectionContext, useSourceSelection } from "./selection";
 import { META_CONCURRENCY } from "./useSourceMetas";
+import { ConfirmProvider } from "../../ui/ConfirmDialog";
 
 const TOPIC = "subjects/historia/topics/revolucion-industrial";
 const SOURCES = `/api/sources/${TOPIC}/sources`;
@@ -89,7 +90,7 @@ function renderTab(notes = NOTES, refreshKey = 0, onOpen = vi.fn()) {
     topicId: "revolucion-industrial",
     onOpen,
   };
-  const view = render(<ResourcesTab {...props} tree={tree(notes)} refreshKey={refreshKey} />);
+  const view = render(<ResourcesTab {...props} tree={tree(notes)} refreshKey={refreshKey} />, { wrapper: ConfirmProvider });
   return {
     onOpen,
     rerender: (next: string, key: number) => view.rerender(<ResourcesTab {...props} tree={tree(next)} refreshKey={key} />),
@@ -344,7 +345,7 @@ describe("the selection (#432)", () => {
   }
 
   async function renderSelecting() {
-    const view = render(<Selecting refreshKey={0} />);
+    const view = render(<Selecting refreshKey={0} />, { wrapper: ConfirmProvider });
     await loadedAll();
     return { rerender: (key: number) => view.rerender(<Selecting refreshKey={key} />) };
   }
@@ -428,6 +429,21 @@ describe("the selection (#432)", () => {
     expect(screen.getByText("1 seleccionada")).toBeInTheDocument();
   });
 
+  it("Escape in the delete modal cancels it and leaves the open detail alone (#486)", async () => {
+    stubApi(ROUTES);
+    await renderSelecting();
+    fireEvent.click(card(/Página 1 · apuntes/));
+    const detail = await screen.findByRole("dialog");
+    await screen.findByRole("button", { name: "Cerrar" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 2 · apuntes" }));
+    const ask = screen.getByRole("dialog", { name: "¿Borrar esta fuente?" });
+    fireEvent.keyDown(within(ask).getByRole("button", { name: "Cancelar" }), { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "¿Borrar esta fuente?" })).toBeNull());
+    expect(detail).toBeInTheDocument();
+  });
+
   it("offers no checkbox outside a workspace page", async () => {
     stubApi(ROUTES);
     renderTab();
@@ -436,48 +452,75 @@ describe("the selection (#432)", () => {
   });
 });
 
-describe("deleting a source (#450)", () => {
+describe("deleting a source (#450, #486)", () => {
   const PAGE_1 = `DELETE ${SOURCES}/notes/page-001.jpg`;
+  const TRASH_1 = "Borrar Página 1 · apuntes";
+  const deletes = (fetchMock: ReturnType<typeof stubApi>) => fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").length;
 
-  it("asks inline, deletes on «Borrar» and reads the list again", async () => {
+  it("asks in the confirmation modal, deletes on «Borrar» and reads the list again", async () => {
     let summaries = 0;
+    let answer: (response: Response) => void = () => undefined;
     const fetchMock = stubApi({
       ...ROUTES,
       [SUMMARY]: () => (summaries++ === 0 ? summary(2) : summary(1)),
-      [PAGE_1]: () => new Response(null, { status: 204 }),
+      [PAGE_1]: () => new Promise<Response>((resolve) => (answer = resolve)),
     });
     renderTab();
     await screen.findByRole("button", { name: /^Página 2/ });
     const confirmSpy = vi.spyOn(window, "confirm");
 
-    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" }));
+    const trash = screen.getByRole("button", { name: TRASH_1 });
+    trash.focus();
+    fireEvent.click(trash);
 
-    const ask = screen.getByRole("group", { name: "Borrar Página 1 · apuntes" });
-    expect(ask).toHaveTextContent("¿Borrar esta fuente?");
+    const ask = screen.getByRole("dialog", { name: "¿Borrar esta fuente?" });
+    expect(ask).toHaveAttribute("open");
+    expect(ask).toHaveTextContent("«Página 1 · apuntes» dejará de aparecer entre las fuentes del tema.");
+    // Over the whole page, not inside the card.
+    expect(within(screen.getByRole("list", { name: "Fuentes del tema" })).queryByRole("dialog")).toBeNull();
     expect(within(ask).getByRole("button", { name: "Cancelar" })).toHaveFocus();
     expect(confirmSpy).not.toHaveBeenCalled();
+    expect(deletes(fetchMock)).toBe(0);
     fireEvent.click(within(ask).getByRole("button", { name: "Borrar" }));
 
+    // Running: the modal stays, says so, and neither button nor Escape closes it.
+    expect(await within(ask).findByRole("button", { name: "Borrando…" })).toBeDisabled();
+    expect(within(ask).getByRole("button", { name: "Cancelar" })).toBeDisabled();
+    fireEvent.keyDown(ask, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "¿Borrar esta fuente?" })).toBeInTheDocument();
     await waitFor(() => expect(fetchMock.mock.calls.some(([path, init]) => `${init?.method} ${path}` === PAGE_1)).toBe(true));
+
+    answer(new Response(null, { status: 204 }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(summaries).toBe(2));
-    await waitFor(() => expect(screen.queryByRole("group", { name: /^Borrar/ })).toBeNull());
+    expect(deletes(fetchMock)).toBe(1);
   });
 
-  it("cancels with «Cancelar» or Escape, giving the focus back to the trash button", async () => {
+  it("cancels with «Cancelar», Escape or a click outside, giving the focus back to the trash button", async () => {
     const fetchMock = stubApi({ ...ROUTES, [SUMMARY]: summary(2) });
     renderTab();
-    const trash = await screen.findByRole("button", { name: "Borrar Página 1 · apuntes" });
+    const trash = await screen.findByRole("button", { name: TRASH_1 });
 
+    trash.focus();
     fireEvent.click(trash);
-    fireEvent.click(within(screen.getByRole("group", { name: "Borrar Página 1 · apuntes" })).getByRole("button", { name: "Cancelar" }));
-    expect(screen.queryByRole("group", { name: "Borrar Página 1 · apuntes" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" })).toHaveFocus();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "¿Borrar esta fuente?" })).getByRole("button", { name: "Cancelar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: TRASH_1 })).toHaveFocus();
 
-    fireEvent.click(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" }));
+    fireEvent.click(screen.getByRole("button", { name: TRASH_1 }));
     fireEvent.keyDown(screen.getByRole("button", { name: "Cancelar" }), { key: "Escape" });
-    expect(screen.queryByRole("group", { name: "Borrar Página 1 · apuntes" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Borrar Página 1 · apuntes" })).toHaveFocus();
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: TRASH_1 })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: TRASH_1 }));
+    const backdrop = screen.getByRole("dialog", { name: "¿Borrar esta fuente?" });
+    fireEvent.pointerDown(backdrop);
+    fireEvent.click(backdrop);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: TRASH_1 })).toHaveFocus();
+
+    expect(deletes(fetchMock)).toBe(0);
+    expect(card(/Página 1 · apuntes/)).toBeInTheDocument();
   });
 
   it("says when the server cannot delete sources yet, and the backend's detail of a refusal", async () => {
@@ -489,10 +532,15 @@ describe("deleting a source (#450)", () => {
     });
     renderTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Borrar Página 1 · apuntes" }));
+    fireEvent.click(await screen.findByRole("button", { name: TRASH_1 }));
     fireEvent.click(screen.getByRole("button", { name: "Borrar" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo borrar: Este servidor todavía no permite borrar fuentes.");
-    fireEvent.click(screen.getByRole("button", { name: "Cerrar" }));
+    const refused = screen.getByRole("dialog", { name: "¿Borrar esta fuente?" });
+    expect(await within(refused).findByRole("alert")).toHaveTextContent("No se pudo borrar: Este servidor todavía no permite borrar fuentes.");
+    // Only «Cerrar» is left, and it has the focus.
+    expect(within(refused).queryByRole("button", { name: "Borrar" })).toBeNull();
+    expect(within(refused).getByRole("button", { name: "Cerrar" })).toHaveFocus();
+    fireEvent.click(within(refused).getByRole("button", { name: "Cerrar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Borrar Página 2 · apuntes" }));
