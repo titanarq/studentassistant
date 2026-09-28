@@ -23,6 +23,12 @@ page's transcription and always its image, a PDF page's text), and their images 
 budget first (`max_page_images`), so «reescribe esto con el texto de la captura» works on them.
 An empty selection (a typed message with nothing selected) tells the editor so: it asks which
 pages «esto» is instead of guessing. `None` (a spoken request, the old notes chat) says nothing.
+With a selection, the facts of the selected captures and of those the notes cite follow it
+(`overlap.capture_facts`), and a contradiction between a selected capture and another capture of
+the same kind not selected is sent back (`overlap.same_kind_contradiction_errors`, #474). A
+selected capture that only repeats what the notes say goes in `nothing_new` (only selected
+sources may): the call changes nothing, carries no `NO_CHANGE_WARNING`, and its reply (or, when
+empty, `overlap.nothing_new_reply`) tells the student so.
 
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
@@ -75,7 +81,7 @@ import asyncio
 import difflib
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal
@@ -125,6 +131,12 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import (
+    capture_facts,
+    nothing_new_reply,
+    same_kind_contradiction_errors,
+)
+from studentassistant.editor.reviewed import settled_blocks, source_key
 from studentassistant.editor.style_guide import (
     append_rules,
     new_rules,
@@ -280,6 +292,11 @@ class EditsOutput(_Strict):
         description="Every point this change leaves unresolved (an illegible word, sources that"
         " disagree, something missing): never written into the notes, asked in the chat.",
     )
+    nothing_new: list[str] = Field(
+        default_factory=list,
+        description="With a Recursos selection: the selected source_ids that add nothing the"
+        " notes do not already say (said in the reply).",
+    )
 
 
 TurnOrigin = Literal["typed", "voice"]
@@ -327,6 +344,10 @@ class RevisionResult(_Strict):
         " the student confirms them.",
     )
     notes_changed: bool = False
+    nothing_new: list[str] = Field(
+        default_factory=list,
+        description="Selected sources the editor found add nothing new (#474).",
+    )
     doubts: list[str] = Field(
         default_factory=list, description="The pending ids of the doubts the turn raised."
     )
@@ -840,7 +861,8 @@ NO_SELECTION_NOTE = (
 )
 SELECTION_NOTE = (
     "(El estudiante tiene seleccionadas en Recursos las fuentes de «Selección actual del"
-    " estudiante», más arriba: «esto» y «estas páginas» son esas.)"
+    " estudiante», más arriba: «esto» y «estas páginas» son esas. Lo que los apuntes ya dicen de"
+    " ellas no se vuelve a escribir; si no aportan nada nuevo, ponlas en `nothing_new` y dilo.)"
 )
 
 SPOKEN_NOTE = (
@@ -857,6 +879,7 @@ def _turn_text(
     *,
     spoken: bool = False,
     selected: Sequence[str] | None = None,
+    settled: Collection[str] = (),
 ) -> str:
     heading = "## Nuevo mensaje del estudiante\n\n" + (f"{SPOKEN_NOTE}\n\n" if spoken else "")
     if selected is not None:
@@ -865,13 +888,15 @@ def _turn_text(
         "## Conversación hasta ahora\n\n"
         f"{_history_text(turns)}\n\n"
         f"## Mapa de bloques de los apuntes actuales (modo de fidelidad «{mode}»)\n\n"
-        f"{describe_sections(notes)}\n\n"
+        f"{describe_sections(notes, settled)}\n\n"
         f"{heading}"
         f"{message}\n"
     )
 
 
-def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
+def _stale_turn(
+    response: LLMResponse, notes: str, mode: str, settled: Collection[str] = ()
+) -> dict[str, Any]:
     """The re-ask after the notes changed under the turn: the new block map, apply again."""
     reason = (
         f"No se ha aplicado el cambio: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
@@ -885,7 +910,7 @@ def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
         {
             "type": "text",
             "text": f"{reason}\n\n## Mapa de bloques de los apuntes actuales (modo de fidelidad"
-            f" «{mode}»)\n\n{describe_sections(notes)}\n\nRespeta lo que ha escrito el"
+            f" «{mode}»)\n\n{describe_sections(notes, settled)}\n\nRespeta lo que ha escrito el"
             " estudiante: escribe otra vez una respuesta breve y llama a"
             f" `{EDIT_TOOL}` con el cambio completo sobre estos apuntes.",
         }
@@ -941,8 +966,10 @@ def _check(
     assembled: EditorInput,
     vault: Vault,
     pending: list[str],
+    selected: Sequence[str] = (),
 ) -> tuple[list[str], str | None]:
-    """`(errors, edited notes)` of a change."""
+    """`(errors, edited notes)` of a change; with a Recursos `selection`, no contradiction
+    between a selected capture and another of the same kind not selected (#474)."""
     errors: list[str] = []
     changes = value.ops or value.fidelity_mode is not None or value.confirmed_style_rules
     if changes and not value.summary.strip():
@@ -961,6 +988,15 @@ def _check(
                 " anterior; una regla nueva va en `proposed_style_rules`."
             )
     errors.extend(editor_doubt_errors(value.doubts, assembled))
+    if selected:
+        errors.extend(same_kind_contradiction_errors(value.doubts, selected))
+    chosen = {source_key(ref) for ref in selected}
+    for source_id in value.nothing_new:
+        if source_key(source_id) not in chosen:
+            errors.append(
+                f"`nothing_new` solo puede nombrar fuentes seleccionadas en Recursos; {source_id}"
+                " no lo es."
+            )
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -1164,6 +1200,7 @@ async def revise_notes(
         instruction=REVISE_INSTRUCTION + feedback_instruction(),
     )
     notes = _seeded(base, assembled.topic_title)
+    settled = await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, base)
     turn = {
         "type": "text",
         "text": _turn_text(
@@ -1173,10 +1210,20 @@ async def revise_notes(
             text,
             spoken=request is not None,
             selected=None if selected_sources is None else list(selected_sources),
+            settled=settled,
         ),
     }
-    # The selection goes after the cached prefix (the topic's sources), just before the turn.
-    chosen = selection.content if selection else []
+    # The selection goes after the cached prefix (the topic's sources), just before the turn,
+    # with the facts of the selected captures and those the notes cite (#474).
+    facts = (
+        await asyncio.to_thread(
+            capture_facts, vault, subject_slug, topic_slug, list(selected_sources), base
+        )
+        if selected_sources
+        else ""
+    )
+    facts_block = [{"type": "text", "text": facts}] if facts else []
+    chosen = [*(selection.content if selection else []), *facts_block]
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": [*assembled.content, *chosen, turn]}
     ]
@@ -1236,7 +1283,7 @@ async def revise_notes(
                     ),
                 },
             )
-            chosen_record = selection.record_content if selection else []
+            chosen_record = [*(selection.record_content if selection else []), *facts_block]
             await conversation.record(
                 "user",
                 message={
@@ -1272,7 +1319,13 @@ async def revise_notes(
         stale = False
         if value is not None:
             errors, edited = await asyncio.to_thread(
-                _check, value, notes, assembled, vault, _pending_rules(turns)
+                _check,
+                value,
+                notes,
+                assembled,
+                vault,
+                _pending_rules(turns),
+                list(selected_sources or ()),
             )
         if value is not None and edited is not None and not errors:
             applied, current = await asyncio.to_thread(
@@ -1309,7 +1362,12 @@ async def revise_notes(
         if not errors or attempt > MAX_REASKS:
             break
         reask = (
-            _stale_turn(response, notes, assembled.fidelity_mode)
+            _stale_turn(
+                response,
+                notes,
+                assembled.fidelity_mode,
+                await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, notes),
+            )
             if stale
             else _reask_turn(response, errors)
         )
@@ -1345,7 +1403,12 @@ async def revise_notes(
         guide = await asyncio.to_thread(read_style_guide, vault, subject_slug)
         result = result.model_copy(
             update={
-                "reply": reply or value.summary.strip(),
+                "reply": reply
+                or (
+                    nothing_new_reply(value.nothing_new)
+                    if value.nothing_new and not changed
+                    else value.summary.strip()
+                ),
                 "applied": bool(paths),
                 "summary": value.summary.strip() or None,
                 "ops": value.ops,
@@ -1354,6 +1417,7 @@ async def revise_notes(
                 "style_rules": added,
                 "proposed_style_rules": new_rules(guide.rules, _rules(value.proposed_style_rules)),
                 "notes_changed": changed,
+                "nothing_new": value.nothing_new,
                 "changed_sections": _changed_sections(value.ops) if changed else [],
                 "diff": _diff(notes, edited) if changed else "",
                 "notes": edited if changed else None,

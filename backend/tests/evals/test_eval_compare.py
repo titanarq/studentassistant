@@ -30,7 +30,14 @@ from studentassistant.evals.scoring import (
 RUN_TIMEOUT_S = 30
 
 
-def _case(name: str, *, page: float = 0.9, agreement: float = 0.8, kept: float = 0.7) -> CaseResult:
+def _case(
+    name: str,
+    *,
+    page: float = 0.9,
+    agreement: float = 0.8,
+    kept: float = 0.7,
+    unique: float | None = 1.0,
+) -> CaseResult:
     return CaseResult(
         case=name,
         estimate=CaseEstimate(case=name, roles=[]),
@@ -51,6 +58,7 @@ def _case(name: str, *, page: float = 0.9, agreement: float = 0.8, kept: float =
             generated_units=3,
             kept=kept,
             supported=1.0,
+            unique=unique,
             dropped=[],
             unsupported=[],
         ),
@@ -102,6 +110,44 @@ def test_a_drop_beyond_the_margin_is_a_regression() -> None:
     text = render_comparison(comparison)
     assert "| conservado | 70.0 % | 50.0 % | -20.0 pp | **regresión** |" in text
     assert "`20260101-000000`" in text
+
+
+def test_unique_is_compared_but_not_in_the_global_score() -> None:
+    comparison = compare_reports(
+        _report(_case("celula")),
+        _report(_case("celula", unique=0.5)),
+        margin=0.05,
+        previous_run="a",
+    )
+    scores = _scores(comparison, "celula")
+    assert scores["unique"] == (1.0, 0.5, -0.5, True)
+    assert scores["score"] == (0.85, 0.85, 0.0, False)
+    assert "| sin repetir | 100.0 % | 50.0 % | -50.0 pp | **regresión** |" in (
+        render_comparison(comparison)
+    )
+
+
+def test_a_report_without_unique_compares_as_unknown() -> None:
+    comparison = compare_reports(
+        _report(_case("celula", unique=None)),
+        _report(_case("celula")),
+        margin=0.05,
+        previous_run="a",
+    )
+    assert _scores(comparison, "celula")["unique"] == (None, 1.0, None, False)
+
+
+def test_the_report_shows_unique_and_the_repeated_units() -> None:
+    case = _case("celula", unique=0.5)
+    assert case.notes is not None
+    case.notes.repeated = ["Emisor: el que envía el mensaje."]
+    text = render_report(_report(case))
+    assert "| con fuente | sin repetir | global |" in text
+    assert "| 100.0 % | 50.0 % | 85.0 % |" in text
+    assert "sin repetir 50.0 %" in text
+    assert (
+        "- Ideas generadas que repiten otra anterior:\n  - Emisor: el que envía el mensaje." in text
+    )
 
 
 def test_cases_added_and_removed_are_listed() -> None:

@@ -20,6 +20,13 @@ through with the `editor` role (Opus) in two steps:
   notes yet no call is made (the next generation follows the decision).
 - **Dismiss** (`dismiss_doubt`): the student discards the doubt; no call, no edit.
 
+When the student answers or dismisses a doubt, the blocks then citing its sources are recorded as
+reviewed (`reviewed.record_reviewed`, reason `doubt_closed`, #474); every block map the editor sees
+here marks the settled ones «[revisado]» (`reviewed.settled_blocks`). The review's edits never
+change or delete a settled block (`overlap.settled_block_errors`, re-asked otherwise), and its
+instruction tells the editor to auto-resolve, with the block's source as evidence, a doubt about
+what a settled block already says instead of asking it (`SETTLED_REVIEW_RULE`).
+
 **Where the decisions go.** Every close is event-sourced (ADR-0003): an `observer.state_op`
 `resolve_pending` event (status `auto_resolved` from the `editor`, `resolved`/`dismissed` from the
 `user`), which is what closes the item in the observer's fold, followed by a `pending.resolved`
@@ -54,7 +61,7 @@ import logging
 import re
 import socket
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -62,6 +69,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.editor.edits import (
+    SETTLED_MARK,
     EditError,
     EditOp,
     NewFootnote,
@@ -85,6 +93,14 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import settled_block_errors
+from studentassistant.editor.reviewed import (
+    blocks_citing,
+    item_sources,
+    record_reviewed,
+    settled_blocks,
+    source_key,
+)
 from studentassistant.llm import LLMClient, LLMResponse, StructuredResult, load_prompt, structured
 from studentassistant.observer import (
     STATE_OP_EVENT_KIND,
@@ -443,15 +459,6 @@ def list_doubts(vault: Vault, subject_slug: str, topic_slug: str) -> DoubtsQueue
 # -- which doubt the chat asks next ----------------------------------------------------------------
 
 
-def _source_key(ref: str) -> str:
-    """The file a source id or reference names: `sources/pdf/x.pdf#page=3` -> `sources/pdf/x.pdf`,
-    `sessions/<id>#t=...` or `sessions/<id>/transcript.jsonl` -> `sessions/<id>`."""
-    path = ref.split("#", 1)[0]
-    if path.startswith("sessions/"):
-        return "/".join(path.split("/")[:2])
-    return path
-
-
 def _cited_keys(notes: str | None) -> set[str]:
     keys: set[str] = set()
     for definition in parse(notes or "").footnotes:
@@ -460,14 +467,14 @@ def _cited_keys(notes: str | None) -> set[str]:
         except ProvenanceError:
             continue
         if provenance.source_id is not None:
-            keys.add(_source_key(provenance.source_id))
+            keys.add(source_key(provenance.source_id))
     return keys
 
 
 def _item_page_keys(item: PendingItem, pages: dict[str, str]) -> set[str]:
     """The source files an item is about: its captures' pages and its source refs."""
-    keys = {_source_key(pages[capture]) for capture in item.refs.pages if capture in pages}
-    keys |= {_source_key(ref) for ref in item.refs.sources}
+    keys = {source_key(pages[capture]) for capture in item.refs.pages if capture in pages}
+    keys |= {source_key(ref) for ref in item.refs.sources}
     return {key for key in keys if not key.startswith("sessions/")}
 
 
@@ -806,7 +813,9 @@ def _reask_turn(response: LLMResponse, tool_name: str, errors: list[str]) -> dic
     return {"role": "user", "content": content}
 
 
-def _stale_turn(response: LLMResponse, tool_name: str, notes: str) -> dict[str, Any]:
+def _stale_turn(
+    response: LLMResponse, tool_name: str, notes: str, settled: Collection[str] = ()
+) -> dict[str, Any]:
     """The re-ask after the notes changed under the task: the new block map, answer again."""
     reason = (
         f"No se ha aplicado: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
@@ -820,7 +829,7 @@ def _stale_turn(response: LLMResponse, tool_name: str, notes: str) -> dict[str, 
         {
             "type": "text",
             "text": f"{reason}\n\nMapa de bloques de los apuntes actuales (para las"
-            f" ediciones):\n\n{describe_sections(notes)}\n\nRespeta lo que ha escrito el"
+            f" ediciones):\n\n{describe_sections(notes, settled)}\n\nRespeta lo que ha escrito el"
             f" estudiante y llama otra vez a `{tool_name}` con la respuesta completa sobre estos"
             " apuntes.",
         }
@@ -845,6 +854,12 @@ class _Task:
     confirm_over_cap: bool
     stale: bool = False
     """Whether the last attempt found the notes changed under it."""
+
+    async def _settled(self, notes: str) -> set[str]:
+        conversation = self.conversation
+        return await asyncio.to_thread(
+            settled_blocks, conversation.vault, conversation.subject, conversation.topic, notes
+        )
 
     async def run[T: BaseModel](
         self,
@@ -909,7 +924,7 @@ class _Task:
                 break
             last = result.responses[-1]
             reask = (
-                _stale_turn(last, tool_name, current)
+                _stale_turn(last, tool_name, current, await self._settled(current))
                 if current is not None
                 else _reask_turn(last, tool_name, errors)
             )
@@ -1144,15 +1159,27 @@ async def ask_in_chat(
 # -- review ---------------------------------------------------------------------------------------
 
 
-def _review_instruction(items: list[PendingItem], notes: str) -> str:
+SETTLED_REVIEW_RULE = (
+    "Los bloques marcados «[revisado]» ya los revisó el estudiante y no tienen dudas abiertas:"
+    " no los cambies ni los borres. Una duda sobre algo que un bloque «[revisado]» ya dice (la"
+    " misma idea, aunque otra captura de la misma página la lea distinto o con una marca de"
+    " duda) no se le pregunta: resuélvela con `auto_resolve`, sin ediciones, dando como prueba"
+    " la fuente que cita ese bloque y lo que dice."
+)
+"""The review's rule about settled blocks (#474), given when the block map marks any."""
+
+
+def _review_instruction(items: list[PendingItem], notes: str, settled: Collection[str] = ()) -> str:
     listing = "\n".join(_item_line(item) for item in items)
+    blocks = describe_sections(notes, settled)
+    rule = f"\n{SETTLED_REVIEW_RULE}\n" if settled and SETTLED_MARK in blocks else ""
     return (
         "## Tarea: revisar las dudas abiertas (herramienta `resolve_doubts`)\n\n"
         "En esta tarea sí resuelves las dudas abiertas que tus fuentes contestan, citándolas, y"
         " preguntas al estudiante las demás. Da una decisión por cada una de estas dudas:\n\n"
         f"{listing}\n\n"
         "Mapa de bloques de los apuntes actuales (para las ediciones):\n\n"
-        f"{describe_sections(notes)}\n"
+        f"{blocks}\n{rule}"
     )
 
 
@@ -1162,7 +1189,10 @@ def _check_review(
     assembled: EditorInput,
     vault: Vault,
     notes: str,
+    settled: Collection[str] = (),
 ) -> list[str]:
+    """Spanish errors of a review; its edits must not change or delete a settled block of
+    `notes` (`settled`, #474)."""
     errors: list[str] = []
     by_id = {item.id: item for item in items}
     seen: set[str] = set()
@@ -1227,7 +1257,10 @@ def _check_review(
         edited = apply_edits(notes, edits, value.footnotes)
     except EditError as error:
         return error.errors
-    return _notes_errors(assembled, vault, edited, notes)
+    return [
+        *settled_block_errors(notes, edited, settled),
+        *_notes_errors(assembled, vault, edited, notes),
+    ]
 
 
 def _fallback_question(item: PendingItem, decision: DoubtDecision | None) -> DoubtQuestion:
@@ -1303,7 +1336,11 @@ async def review_doubts(
         vault,
         subject_slug,
         topic_slug,
-        _review_instruction(items, base),
+        _review_instruction(
+            items,
+            base,
+            await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, base),
+        ),
         digest,
         max_page_images,
         max_attachment_bytes,
@@ -1322,7 +1359,8 @@ async def review_doubts(
 
     def check(value: DoubtsReviewOutput) -> list[str]:
         last[:] = [value]
-        return _check_review(value, items, assembled, vault, notes["base"])
+        settled = settled_blocks(vault, subject_slug, topic_slug, notes["base"])
+        return _check_review(value, items, assembled, vault, notes["base"], settled)
 
     async def apply(value: DoubtsReviewOutput) -> str | None:
         edits = [e for d in value.decisions if d.action == "auto_resolve" for e in d.edits]
@@ -1481,6 +1519,7 @@ def _answer_instruction(
     outcome: DoubtOutcome,
     decision: str,
     notes: str,
+    settled: Collection[str] = (),
 ) -> str:
     lines = [
         "## Tarea: aplicar la decisión del estudiante (herramienta `apply_decision`)",
@@ -1506,7 +1545,7 @@ def _answer_instruction(
         "",
         "Mapa de bloques de los apuntes actuales (para las ediciones):",
         "",
-        describe_sections(notes),
+        describe_sections(notes, settled),
     ]
     return "\n".join(lines) + "\n"
 
@@ -1557,7 +1596,14 @@ async def answer_doubt(
             vault,
             subject_slug,
             topic_slug,
-            _answer_instruction(item, question, outcome, decision, base),
+            _answer_instruction(
+                item,
+                question,
+                outcome,
+                decision,
+                base,
+                await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, base),
+            ),
             digest,
             max_page_images,
             max_attachment_bytes,
@@ -1626,6 +1672,8 @@ async def answer_doubt(
         message=f"Duda resuelta en {subject_slug}/{topic_slug}: {_short(item.text)}",
         live=live,
     )
+    if await asyncio.to_thread(_record_closed, vault, subject_slug, topic_slug, item, clock):
+        sync.note_change()
     result = ResolutionResult(
         subject=subject_slug,
         topic=topic_slug,
@@ -1651,6 +1699,25 @@ async def answer_doubt(
     return result
 
 
+def _record_closed(
+    vault: Vault, subject_slug: str, topic_slug: str, item: PendingItem, clock: Clock
+) -> bool:
+    """The student closed `item`: the blocks now citing its sources are reviewed (#474)."""
+    try:
+        sources = item_sources(
+            item,
+            capture_pages(vault, subject_slug, topic_slug),
+            _state(vault, subject_slug, topic_slug),
+        )
+        blocks = blocks_citing(read_notes(vault, subject_slug, topic_slug), sources)
+    except Exception:
+        logger.exception(
+            "could not find the blocks a closed doubt of %s/%s reviews", subject_slug, topic_slug
+        )
+        return False
+    return record_reviewed(vault, subject_slug, topic_slug, "doubt_closed", blocks, clock=clock)
+
+
 async def dismiss_doubt(
     vault: Vault,
     subject_slug: str,
@@ -1660,6 +1727,7 @@ async def dismiss_doubt(
     sync: GitSync,
     host: str | None = None,
     live: LiveSink | None = None,
+    clock: Clock = _utc_now,
 ) -> ResolutionResult:
     """Discard one doubt: closed as `dismissed`, no call, the notes untouched.
 
@@ -1679,6 +1747,8 @@ async def dismiss_doubt(
         message=f"Duda descartada en {subject_slug}/{topic_slug}: {_short(item.text)}",
         live=live,
     )
+    if await asyncio.to_thread(_record_closed, vault, subject_slug, topic_slug, item, clock):
+        sync.note_change()
     return ResolutionResult(
         subject=subject_slug,
         topic=topic_slug,

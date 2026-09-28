@@ -267,9 +267,13 @@ block number, instead of rewriting them. Meant for the edit loop (#63) as well.
   that is missing, malformed or already taken, an empty title, a level outside 2-6 or an unknown
   `after`; nothing is applied then. The
   result is not validated here: callers run `validate`.
-- `describe_sections(notes) -> str`: the block map (`#anchor -- heading`, then `bloque N (kind):
-  opening words`) sent to the editor so it can address blocks; notes without sections say so and
-  point at `add_section`.
+- `describe_sections(notes, settled=()) -> str`: the block map (`#anchor -- heading`, then
+  `bloque N (kind): opening words`) sent to the editor so it can address blocks; notes without
+  sections say so and point at `add_section`. A block whose key is in `settled`
+  (`reviewed.settled_blocks`) is marked `[revisado]` (`SETTLED_MARK`), with one legend line
+  (`SETTLED_LEGEND`) at the end. Every block map the editor sees (revision turns, incorporations,
+  the doubts review and answer, and their re-asks after a student save) passes the topic's
+  settled blocks.
 
 ### Doubts resolution -- `doubts.py`
 The observer's pending doubts (#55) worked through after the notes exist, with the `editor` role
@@ -651,8 +655,9 @@ call.
 - `StudentEditResult`: `subject`, `topic`, `revision`, `commit`, `diff`, `notes` (as saved),
   `changed_sections` (anchors whose section was added, removed, changed or moved:
   `versions.compare_notes`), `normalised` (the server changed the text), `notes_changed`.
-- Written with it: a `student_edit` record in `conversations/editor.jsonl` (the result without
-  `notes`), read by the editor's next turn, and `on_event("notes.edited", {...result without
+- Written with it: a `notes.reviewed` record (reason `student_edit`, the keys of the blocks the
+  save added or changed: `reviewed.changed_block_keys`), a `student_edit` record in
+  `conversations/editor.jsonl` (the result without `notes`), read by the editor's next turn, and `on_event("notes.edited", {...result without
   notes, "origin": "user"})`.
 - Entry point: the server's `PUT /api/subjects/{s}/topics/{t}/notes` (`docs/modules/server.md`).
 
@@ -821,6 +826,66 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   `CostConfirmationRequiredError` and the llm errors as in `generate_notes`.
 - Entry point: the server's `GET/POST /api/subjects/{s}/topics/{t}/tutor` (SSE,
   `docs/modules/server.md`).
+
+### Reviewed and settled blocks -- `reviewed.py` (#474)
+What the student already reviewed is derived, not stored per block: append-only `notes.reviewed`
+records in `conversations/editor.jsonl` (the existing conversation API, no vault layout change),
+`detail = {"reason": "student_edit" | "doubt_closed", "blocks": [<key>, ...]}`.
+- `block_key(text) -> str`: SHA-256 (hex) of a block's text without footnote references,
+  whitespace collapsed. Editing a block changes its key, so it is no longer reviewed until it is
+  reviewed again; moving it or changing only its footnotes keeps it.
+- Written when the student saves the notes (`direct_edit.save_student_edit`: the blocks added or
+  changed, `changed_block_keys(before, after)`) and when the student answers or dismisses a doubt
+  (`doubts.answer_doubt` / `dismiss_doubt`, after the close: the blocks then citing its sources,
+  `blocks_citing(notes, item_sources(...))` -- its captures' pages, its source refs, the sessions
+  of its transcript segments). `record_reviewed` writes nothing without blocks, and a failure to
+  write is only logged.
+- `reviewed_keys(vault, s, t) -> set[str]`: every key the records cover.
+- `settled_blocks(vault, s, t, notes) -> set[str]`: the keys of the blocks of `notes` that are
+  reviewed, carry no `[[?` mark and cite no source an open doubt names (`open_doubt_sources`; a
+  doubt whose pages are all set aside by triage is never asked, so it does not count). The block
+  map marks them `[revisado]`.
+
+### Overlapping captures: lock, contradictions, capture facts -- `overlap.py` (#474)
+Deterministic checks behind building the notes from successive, overlapping captures; an editor
+answer that breaks one is re-asked with the Spanish errors like any other validation error.
+- `settled_block_errors(before, after, settled, doubted=()) -> list[str]`: every settled block of
+  `before` must still be in `after` with the same `block_key` (text modulo footnote refs; it may
+  move or change its footnotes), and must not come to cite a source it did not cite that is in
+  `doubted` (source keys an open doubt names): citing it would make the block unsettled, so a turn
+  could unlock the block it was told not to touch -- e.g. a re-capture of a settled line whose
+  transcriber doubts are open, added as corroboration, would bring those doubts back to the
+  doubts review. A new citation of a source without open doubts stays allowed and the block stays
+  settled. Checked on every incorporation (`incorporate._check`, with `doubted` =
+  `open_doubt_sources` plus the sources of the doubts the incorporation raises) and on the doubts
+  review's auto-resolution edits (`doubts._check_review`, text and deletion only). `settled` and
+  `doubted` are computed from the notes and doubts before the turn's own edits, so what a turn
+  writes never changes which blocks it may touch. Not on a doubt answer, and **not on a revision
+  turn, even one with a Recursos selection**: there the student may ask to change a settled block,
+  so the lock is only the `editor_revise` prompt's rule (do not rewrite a «[revisado]» block from
+  a capture unless the student asks for that block), not a validator check.
+- `same_kind_contradiction_errors(doubts, requested) -> list[str]`: a `contradiction` doubt
+  between a requested capture and a capture of the same kind (notes/notes, book/book) not
+  requested now is refused: the editor keeps the notes' reading or replaces it when the new one is
+  clearly better. Captures incorporated together, and notes vs book, may still contradict. Checked
+  on incorporations (requested = the sources) and on revision turns with a Recursos selection
+  (requested = the selection).
+- `capture_facts(vault, s, t, requested, notes) -> str`: the `## Datos de cada captura` section
+  -- per capture of kind notes/book, the requested ones first, then those the notes cite: its
+  `[[?` marks (count and the first `MAX_LISTED_MARKS`), its sharpness (triage metrics, else the
+  selected still's) and its triage reasons in Spanish. Given in the incorporation input (after the
+  transcript segments) and after a revision turn's selection.
+- The doubts review (`review_doubts`), when the block map marks a settled block, gets
+  `SETTLED_REVIEW_RULE`: a doubt about what a settled block already says is auto-resolved without
+  edits, its evidence the source that block cites, never asked. "Never ask a doubt a settled block
+  already holds" is **prompt-enforced only**: telling whether a doubt concerns what a settled block
+  says is semantic, so no deterministic check backs it; only the lock above is checked.
+- Coverage: the synthetic overlapping captures of `backend/tests/fixtures/overlap/` (four pages of
+  one notebook page, two of them re-captures, plus the reference notes the editor should end with)
+  drive the FakeClaude tests of the lock, the contradiction refusal, the block map marks, the
+  reviewed records and the overlap-aware prompts, and the eval's *unique* score
+  (`evals.scoring.score_unique`: the share of generated units not repeating an earlier one;
+  `docs/modules/infra.md`, "Evals"), which measures repeated overlapping content in a real run.
 
 ### App feedback from the chat -- `feedback.py` (#472)
 The student reports a bug of the app itself or asks for an improvement («apunta una mejora: …»,

@@ -105,7 +105,7 @@ PAGE_KIND_TEXT = {"notes": "Apuntes", "book": "Libro"}
 
 # A transcription holds a scheme when it has a mermaid block, nested list items or arrows; an
 # uncertain word is `[[?palabra]]`, an illegible one `[[?]]` (the page transcription, #50).
-_UNCERTAIN = re.compile(r"\[\[\?[^\]]*\]\]")
+UNCERTAIN = re.compile(r"\[\[\?[^\]]*\]\]")
 _SCHEME = re.compile(r"```mermaid|^[ \t]{2,}(?:[-*+]|\d+[.)])[ \t]|->|→|⇒", re.MULTILINE)
 _PAGE_NAME = re.compile(r"^page-(?P<number>\d{3,})\.(?P<ext>[A-Za-z0-9]+)$")
 LOW_CONFIDENCE = 0.8
@@ -342,7 +342,7 @@ def needs_image(transcription: str | None, meta: dict[str, Any] | None = None) -
     confidence = (meta or {}).get("transcription_confidence")
     if isinstance(confidence, int | float) and confidence < LOW_CONFIDENCE:
         return True
-    return bool(_UNCERTAIN.search(transcription) or _SCHEME.search(transcription))
+    return bool(UNCERTAIN.search(transcription) or _SCHEME.search(transcription))
 
 
 def source_role(kind: str) -> SourceRole:
@@ -370,7 +370,9 @@ def _read_text(vault: Vault, vault_path: str) -> str | None:
         return None
 
 
-def _transcription(vault: Vault, source: StoredSource) -> str | None:
+def source_transcription(vault: Vault, source: StoredSource) -> str | None:
+    """The transcription of a stored page: its `page-NNN.md` sibling, else the sidecar's
+    `transcription`; None when it has none. Blocking."""
     text = _read_text(vault, _sibling(source.path, "md"))
     if text is None and source.meta is not None:
         stored = source.meta.get("transcription")
@@ -480,7 +482,7 @@ def _add_pages(
         catalogue.append(
             CitableSource(source_id, source.kind, _definition(text, source_id, source_id))
         )
-        transcription = _transcription(vault, source)
+        transcription = source_transcription(vault, source)
         header = f"### {text} ({source_id})"
         if transcription is not None and transcription.strip():
             builder.text(f"{header}\nTranscripción de la página:\n\n{transcription.strip()}\n")
@@ -639,7 +641,7 @@ def selection_input(
             text = page_citation_text(
                 source.kind, number, source.meta, book.title if book else None
             )
-            transcription = _transcription(vault, source)
+            transcription = source_transcription(vault, source)
             body = (
                 f"Transcripción de la página:\n\n{transcription.strip()}"
                 if transcription is not None and transcription.strip()

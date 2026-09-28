@@ -16,15 +16,21 @@ pages, book pages, PDFs, web pages, then pasted images).
 then the current notes (text and block map), the requested sources as `assemble_input` gives them
 (a page's transcription, plus its image when `needs_image`; a PDF as its document; a web page as
 its text), the transcript segments of each capture's `transcript_window` in the capture's own
-session, the open pending items whose refs name those sources and the catalogue of just those
-sources. The editor streams a Spanish reply and calls the strict tool `apply_edits`
-(`IncorporationOutput`: the edit ops of `edits.py`, `footnotes`, `summary`, `nothing_new` and
-`doubts`), checked like a revision turn -- the ops apply, the notes pass `validate` with
-`editor_written=True`, every incorporated source is cited unless `nothing_new` names it -- and
-re-asked at most `MAX_REASKS` times. It is applied under the per-topic write lock on the latest
-notes (re-asked with the new notes when the student saved meanwhile), committed as `Apuntes de
-<s>/<t>: incorporada(s) <fuentes>` and recorded as an `incorporation` conversation record, which
-the chat shows as a turn of kind `incorporate` and `revise.undo_last_revision` undoes.
+session, the facts of each capture requested or cited (`overlap.capture_facts`: uncertain
+marks, sharpness, triage flags), the open pending items whose refs name those sources and the
+catalogue of just those sources. The editor streams a Spanish reply and calls the strict tool
+`apply_edits` (`IncorporationOutput`: the edit ops of `edits.py`, `footnotes`, `summary`,
+`nothing_new` and `doubts`), checked like a revision turn -- the ops apply, the notes pass
+`validate` with `editor_written=True`, every incorporated source is cited unless `nothing_new`
+names it, no settled block («[revisado]») is changed or deleted and no contradiction is raised
+between a requested capture and another capture of the same kind not requested now (#474,
+`overlap.py`) -- and re-asked at most `MAX_REASKS` times. A source that only repeats what the
+notes say goes in `nothing_new`; with no reply of its own, the turn's reply is
+`overlap.nothing_new_reply`. It is applied under the per-topic
+write lock on the latest notes (re-asked with the new notes when the student saved meanwhile),
+committed as `Apuntes de <s>/<t>: incorporada(s) <fuentes>` and recorded as an `incorporation`
+conversation record, which the chat shows as a turn of kind `incorporate` and
+`revise.undo_last_revision` undoes.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal, Protocol
@@ -85,6 +91,13 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import (
+    capture_facts,
+    nothing_new_reply,
+    same_kind_contradiction_errors,
+    settled_block_errors,
+)
+from studentassistant.editor.reviewed import open_doubt_sources, settled_blocks
 from studentassistant.editor.revise import (
     EDIT_TOOL,
     INCORPORATION_RECORD,
@@ -355,19 +368,23 @@ class IncorporationResult(_Strict):
 INCORPORATE_INSTRUCTION = (
     "## Tarea: incorporar estas fuentes a los apuntes (herramienta `apply_edits`)\n\n"
     "Incorpora a los apuntes actuales lo que aportan las fuentes de arriba, y nada más: el resto"
-    " del tema no está aquí. Encaja cada idea en su sitio de la estructura de los apuntes. Si una"
-    " fuente ya está citada, afina lo que dicen los apuntes a partir de ella sin duplicarlo; si no"
+    " del tema no está aquí. Encaja cada idea en su sitio de la estructura de los apuntes. Las"
+    " capturas suelen solaparse (otra foto de la misma página): compara cada una con los apuntes,"
+    " no vuelvas a escribir lo que ya dicen (la misma idea, aunque se lea algo distinto) y añade"
+    " solo lo nuevo. Sustituye un fragmento solo si la lectura nueva es claramente mejor (antes"
+    " había un hueco, una lectura dudosa, un corte o algo ilegible, y la nueva no tiene marca de"
+    " duda) y el bloque no está «[revisado]»; una redacción distinta no es mejor. Si una fuente no"
     " aporta nada nuevo, dilo en tu respuesta y ponla en `nothing_new`. Contesta primero con tu"
     " respuesta en texto y llama después una vez a `apply_edits` con todo el cambio.\n"
 )
 
 
-def _notes_block(notes: str, mode: str) -> str:
+def _notes_block(notes: str, mode: str, settled: Collection[str] = ()) -> str:
     return (
         "## Apuntes actuales\n\nConserva las anclas de las secciones y todo lo que no cambie.\n\n"
         f"{notes.rstrip()}\n\n"
         f"## Mapa de bloques de los apuntes actuales (modo de fidelidad «{mode}»)\n\n"
-        f"{describe_sections(notes)}\n"
+        f"{describe_sections(notes, settled)}\n"
     )
 
 
@@ -410,7 +427,7 @@ def assemble_incorporation(
     builder = _Builder(max_page_images, max_attachment_bytes)
     catalogue: list[CitableSource] = []
 
-    builder.text(_notes_block(notes, mode))
+    builder.text(_notes_block(notes, mode, settled_blocks(vault, subject_slug, topic_slug, notes)))
     builder.text("## Fuentes que incorporar ahora\n")
     book = (
         get_book(vault, subject_slug, topic_slug)
@@ -457,6 +474,9 @@ def assemble_incorporation(
     if not spoken:
         lines.append("(No hay transcripción alrededor de estas páginas.)")
     builder.text("\n".join(lines).rstrip() + "\n")
+    facts = capture_facts(vault, subject_slug, topic_slug, source_ids, notes)
+    if facts:
+        builder.text(facts)
 
     state = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False).state
     pending: list[str] = []
@@ -571,8 +591,12 @@ def _check(
     ids: list[str],
     assembled: EditorInput,
     vault: Vault,
+    settled: Collection[str] = (),
+    doubted: Collection[str] = (),
 ) -> tuple[list[str], str | None]:
-    """`(errors, edited notes)` of an incorporation."""
+    """`(errors, edited notes)` of an incorporation; `settled` are the keys of the settled
+    blocks of `notes`, which it must not change, delete or make cite a new source that an open
+    doubt names (`doubted`, or one of the doubts this incorporation raises) (#474)."""
     errors: list[str] = []
     if not value.summary.strip():
         errors.append("Falta el resumen (`summary`) del cambio.")
@@ -590,6 +614,7 @@ def _check(
             value.doubts, dataclasses.replace(assembled, catalogue=[*assembled.catalogue, *extra])
         )
     )
+    errors.extend(same_kind_contradiction_errors(value.doubts, ids))
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -598,6 +623,10 @@ def _check(
     errors.extend(
         validate(edited, assembled.fidelity_mode, resolver, editor_written=True, previous=notes)
     )
+    raised = {option.source_id for doubt in value.doubts for option in doubt.options} | {
+        ref for doubt in value.doubts for ref in doubt.refs
+    }
+    errors.extend(settled_block_errors(notes, edited, settled, {*doubted, *raised}))
     cited = cited_source_paths(edited)
     for source_id in ids:
         if source_id not in cited and source_id not in value.nothing_new:
@@ -626,7 +655,9 @@ def _reask_turn(response: LLMResponse, errors: list[str]) -> dict[str, Any]:
     return {"role": "user", "content": content}
 
 
-def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
+def _stale_turn(
+    response: LLMResponse, notes: str, mode: str, settled: Collection[str] = ()
+) -> dict[str, Any]:
     reason = (
         f"No se ha aplicado el cambio: {NOTES_CHANGED_NOTE}, así que los números de bloque ya no"
         " corresponden."
@@ -638,8 +669,8 @@ def _stale_turn(response: LLMResponse, notes: str, mode: str) -> dict[str, Any]:
     content.append(
         {
             "type": "text",
-            "text": f"{reason}\n\n{_notes_block(notes, mode)}\nRespeta lo que ha escrito el"
-            " estudiante: escribe otra vez una respuesta breve y llama a"
+            "text": f"{reason}\n\n{_notes_block(notes, mode, settled)}\nRespeta lo que ha"
+            " escrito el estudiante: escribe otra vez una respuesta breve y llama a"
             f" `{EDIT_TOOL}` con la incorporación completa sobre estos apuntes.",
         }
     )
@@ -796,7 +827,14 @@ async def incorporate_sources(
         stale = False
         edited = None
         if value is not None:
-            errors, edited = await asyncio.to_thread(_check, value, notes, ids, assembled, vault)
+            # Both from the notes before this turn's edits: the turn cannot unlock what it edits.
+            settled = await asyncio.to_thread(
+                settled_blocks, vault, subject_slug, topic_slug, notes
+            )
+            doubted = await asyncio.to_thread(open_doubt_sources, vault, subject_slug, topic_slug)
+            errors, edited = await asyncio.to_thread(
+                _check, value, notes, ids, assembled, vault, settled, doubted
+            )
         if value is not None and edited is not None and not errors:
             applied, current = await asyncio.to_thread(
                 partial(
@@ -818,7 +856,12 @@ async def incorporate_sources(
         if not errors or attempt > MAX_REASKS:
             break
         reask = (
-            _stale_turn(response, notes, assembled.fidelity_mode)
+            _stale_turn(
+                response,
+                notes,
+                assembled.fidelity_mode,
+                await asyncio.to_thread(settled_blocks, vault, subject_slug, topic_slug, notes),
+            )
             if stale
             else _reask_turn(response, errors)
         )
@@ -851,7 +894,12 @@ async def incorporate_sources(
         changed = bool(paths)
         result = result.model_copy(
             update={
-                "reply": reply or value.summary.strip(),
+                "reply": reply
+                or (
+                    nothing_new_reply(value.nothing_new)
+                    if value.nothing_new and not changed
+                    else value.summary.strip()
+                ),
                 "applied": changed,
                 "summary": value.summary.strip() or None,
                 "ops": value.ops,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from studentassistant.evals import scoring
@@ -11,11 +13,13 @@ from studentassistant.evals.scoring import (
     content_words,
     levenshtein,
     normalize,
+    repeated_units,
     score_notes,
     score_page,
     score_requests,
     score_sections,
     score_triage,
+    score_unique,
     units,
 )
 from studentassistant.sources import triage
@@ -102,6 +106,52 @@ def test_notes_fidelity_counts_dropped_and_unsupported_units() -> None:
 def test_empty_generated_notes_keep_nothing() -> None:
     fidelity = score_notes("- Las mitocondrias producen energía.\n", "", [])
     assert fidelity.kept == 0.0 and fidelity.supported == 1.0 and fidelity.generated_units == 0
+
+
+OVERLAP = Path(__file__).resolve().parent.parent / "fixtures" / "overlap"
+
+
+def _overlap(name: str) -> str:
+    return (OVERLAP / name).read_text(encoding="utf-8")
+
+
+def test_the_overlap_reference_repeats_nothing() -> None:
+    assert score_unique(_overlap("reference.md")) == 1.0
+
+
+def test_overlapping_captures_written_in_twice_lower_unique_only() -> None:
+    # The four captures pasted one after another: every idea of pages 2 and 4 read again.
+    pasted = "\n\n".join(_overlap(f"page-00{i}.md") for i in range(1, 5))
+    repeated = repeated_units(units(pasted))
+    assert repeated == [
+        "Elementos de la comunicación:",
+        "Emisor: el que envía el mensaje.",
+        "Receptor: el que recibe el mensaje.",
+        "Mensaje: la información transmitida.",
+        "Canal: medio físico por el que viaja el mensaje, p.",
+        "las ondas sonoras.",
+        "Contexto: situación en la que se da la comunicación.",
+        "Elementos: emisor, receptor, mensaje, canal, código, contexto.",
+        "Si no hay un código común, no hay comunicación.",
+    ]
+    assert len(units(pasted)) == 19
+    assert score_unique(pasted) == round(10 / 19, 4)
+    # Nothing is lost and nothing is made up, so kept and supported cannot see it.
+    fidelity = score_notes(_overlap("reference.md"), pasted, [pasted])
+    assert (fidelity.kept, fidelity.supported) == (1.0, 1.0)
+    assert fidelity.unique == round(10 / 19, 4) and fidelity.repeated == repeated
+
+
+def test_different_ideas_sharing_words_are_no_repetition() -> None:
+    notes = (
+        "- Emisor: quien envía el mensaje.\n- Receptor: quien recibe el mensaje.\n"
+        "- Elementos: emisor, receptor, mensaje, canal, código y contexto.\n"
+    )
+    assert repeated_units(units(notes)) == [] and score_unique(notes) == 1.0
+
+
+def test_empty_notes_repeat_nothing() -> None:
+    assert score_unique("") == 1.0
 
 
 def _request(kind: str, *segments: str, summary: str = "") -> RequestItem:

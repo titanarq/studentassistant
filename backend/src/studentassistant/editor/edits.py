@@ -41,7 +41,7 @@ conversational edit loop as well.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,6 +54,7 @@ from studentassistant.editor.notes_format import (
     parse,
     serialize,
 )
+from studentassistant.editor.reviewed import block_key
 
 EditOpName = Literal[
     "replace_block",
@@ -70,6 +71,13 @@ EDIT_OP_NAMES: tuple[str, ...] = (
     "replace_section",
     "move_section",
     "add_section",
+)
+
+SETTLED_MARK = "[revisado]"
+"""How the block map marks a settled block (`reviewed.settled_blocks`)."""
+SETTLED_LEGEND = (
+    "([revisado]: bloque que el estudiante ya ha revisado y sin dudas abiertas; no lo cambies"
+    " ni lo borres.)"
 )
 
 _LABEL = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -555,19 +563,29 @@ def apply_edits(notes: str, ops: Sequence[EditOp], footnotes: Sequence[NewFootno
     return serialize(edited)
 
 
-def describe_sections(notes: str) -> str:
-    """A numbered map of the notes' blocks, for the editor to address them: one line per block."""
+def describe_sections(notes: str, settled: Collection[str] = ()) -> str:
+    """A numbered map of the notes' blocks, for the editor to address them: one line per block.
+
+    A block whose key (`reviewed.block_key`) is in `settled` is marked `[revisado]`: the student
+    reviewed it and no open doubt is about it, so it is not to be changed or deleted (#474).
+    """
     document = parse(notes)
     lines: list[str] = []
     if not document.sections:
         return "(Los apuntes todavía no tienen secciones: créalas con `add_section`.)"
+    marked = False
     for section in document.sections:
         lines.append(f"#{section.anchor} -- {section.heading.raw.strip()}")
         for number, block in enumerate(section.blocks, start=1):
             opening = " ".join(block.text.split())
             if len(opening) > 60:
                 opening = opening[:60].rstrip() + "…"
-            lines.append(f"  bloque {number} ({block.kind}): {opening}")
+            mark = ""
+            if settled and block.kind != "footnotes" and block_key(block.text) in settled:
+                mark, marked = f" {SETTLED_MARK}", True
+            lines.append(f"  bloque {number} ({block.kind}){mark}: {opening}")
+    if marked:
+        lines.append(SETTLED_LEGEND)
     return "\n".join(lines)
 
 
@@ -578,5 +596,7 @@ __all__ = [
     "EditOpName",
     "NewFootnote",
     "apply_edits",
+    "SETTLED_LEGEND",
+    "SETTLED_MARK",
     "describe_sections",
 ]
