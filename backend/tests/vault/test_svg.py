@@ -101,6 +101,91 @@ def test_an_svg_without_a_namespace_is_put_in_the_svg_namespace() -> None:
     assert 'xmlns="http://www.w3.org/2000/svg"' in text and "<circle" in text
 
 
+@pytest.mark.parametrize(
+    "css",
+    [
+        'rect { background: image-set("http://evil.example/x.png" 1x) }',
+        "rect { background: -webkit-image-set('https://evil.example/x.png' 1x) }",
+        'rect { background: IMAGE-SET("//evil.example/x.png" 1x) }',
+        'rect { background-image: src("https://evil.example/x.png") }',
+        '@font-face { font-family: f; src: local(Arial), "https://evil.example/f.woff" }',
+        "@font-face { font-family: f; src: local(Arial) }",
+        "rect { background: element(#a) }",
+        "rect { background: cross-fade(50% x, 50% y) }",
+        "rect { background: paint(worklet) }",
+        "rect { mask: image('https://evil.example/m.png') }",
+        "@namespace x 'https://evil.example/';",
+        '@document url-prefix("https://evil.example/") { rect { fill: red } }',
+        'rect { cursor: "https://evil.example/c.cur" }',
+        "rect { fill: some-future-fetch(x) }",
+    ],
+)
+def test_css_that_could_fetch_anything_is_dropped(css: str) -> None:
+    # In a stylesheet the whole text goes; in a `style=` attribute the attribute goes.
+    in_sheet = _clean(f"<style>{css}</style><g/>")
+    assert "<style />" in in_sheet or "<style></style>" in in_sheet
+    assert "style=" not in _clean(f"<rect style='{css.replace(chr(39), chr(34))}'/>")
+
+
+def test_a_fetching_function_in_a_presentation_attribute_is_dropped() -> None:
+    text = _clean('<rect mask="image-set(\'https://evil.example/m.png\' 1x)" width="2"/>')
+    assert "mask=" not in text and 'width="2"' in text
+
+
+def test_harmless_css_is_kept() -> None:
+    css = (
+        "rect { fill: rgb(10, 20, 30); stroke: url(#g); transform: rotate(45deg) "
+        "translate(calc(1px + 2px), 0); filter: drop-shadow(1px 1px 2px hsl(0 0% 0%)) } "
+        "@media (min-width: 10px) { text { font-family: 'DejaVu Sans' } }"
+    )
+    assert css in _clean(f"<style>{css}</style><g/>")
+    assert 'transform="rotate(30) scale(2)"' in _clean('<g transform="rotate(30) scale(2)"/>')
+
+
+UTF16_ENTITY = f'<!DOCTYPE s [<!ENTITY a "zzz">]><svg {NS}><text>&a;</text></svg>'
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        UTF16_ENTITY.encode("utf-16"),  # with BOM
+        UTF16_ENTITY.encode("utf-16-le"),
+        UTF16_ENTITY.encode("utf-16-be"),
+        UTF16_ENTITY.encode("utf-32"),
+        ('<?xml version="1.0" encoding="UTF-16"?>' + UTF16_ENTITY).encode("utf-16"),
+        f'<?xml version="1.0" encoding="UTF-16"?><svg {NS}><g/></svg>'.encode("utf-16"),
+        f'<?xml version="1.0" encoding="ISO-8859-1"?><svg {NS}><g/></svg>'.encode(),
+        f'<?xml version="1.0" encoding="UTF-7"?><svg {NS}><g/></svg>'.encode(),
+        f"<svg {NS}><text>\xe9</text></svg>".encode("latin-1"),  # not valid UTF-8
+    ],
+)
+def test_input_that_is_not_utf8_is_refused(data: bytes) -> None:
+    with pytest.raises(SvgError, match="UTF-8"):
+        sanitize_svg(data)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        UTF16_ENTITY,
+        UTF16_ENTITY.encode(),
+        b"\xef\xbb\xbf" + UTF16_ENTITY.encode(),
+        f'<?xml version="1.0"?>\n<!doctype svg><svg {NS}><g/></svg>',
+        f"<!--x--><!DOCTYPE svg SYSTEM 'file:///etc/passwd'><svg {NS}><g/></svg>",
+    ],
+)
+def test_declarations_are_refused_whatever_the_wrapping(content: str | bytes) -> None:
+    with pytest.raises(SvgError, match="DOCTYPE"):
+        sanitize_svg(content)
+
+
+def test_utf8_input_with_a_bom_or_a_utf8_declaration_is_accepted() -> None:
+    body = f"<svg {NS}><text>áé</text></svg>"
+    expected = sanitize_svg(body)
+    assert sanitize_svg(b"\xef\xbb\xbf" + body.encode()) == expected
+    assert sanitize_svg(f'<?xml version="1.0" encoding="utf-8"?>{body}'.encode()) == expected
+
+
 @pytest.fixture
 def topic(tmp_vault: Vault) -> Vault:
     create_subject(tmp_vault, "Mates")
