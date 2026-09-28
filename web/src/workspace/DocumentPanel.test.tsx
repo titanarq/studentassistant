@@ -3,9 +3,10 @@ import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { parseNotes } from "../notes/markdown";
 import { UPLOADING } from "../noteEditor/NoteEditor";
 import { jsonResponse, stubApi } from "../test/mockApi";
-import DocumentPanel, { ASSISTANT_CHANGED, BUSY, CHANGED_WHILE_EDITING } from "./DocumentPanel";
+import DocumentPanel, { ASSISTANT_CHANGED, BUSY, CHANGED_WHILE_EDITING, DISCARD_CHANGES } from "./DocumentPanel";
 import { type WorkspaceNotes, type WorkspaceState, WorkspaceContext } from "./state";
 import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
+import { ConfirmProvider } from "../ui/ConfirmDialog";
 
 const BASE = "/api/subjects/lengua/topics/la-comunicacion";
 const R1 = "1".repeat(64);
@@ -48,7 +49,7 @@ function renderPanel(state: WorkspaceState) {
       <DocumentPanel topicName="La comunicación" tree={tree} onOpenSource={() => undefined} activeLabel={null} />
     </WorkspaceContext.Provider>
   );
-  const result = render(view(state));
+  const result = render(view(state), { wrapper: ConfirmProvider });
   return { ...result, update: (next: WorkspaceState) => result.rerender(view(next)) };
 }
 
@@ -154,6 +155,45 @@ it("on notes_changed can discard the student's changes", async () => {
   await waitFor(() => expect(reloadNotes).toHaveBeenCalled());
   expect(screen.queryByLabelText("Apuntes en Markdown")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
+}, PAGE_TEST_TIMEOUT);
+
+it("«Cancelar» leaves at once when nothing changed, and asks in the modal before discarding changes (#486)", async () => {
+  const fetchMock = stubApi({});
+  const confirmSpy = vi.spyOn(window, "confirm");
+  renderPanel(workspace(ready()));
+
+  // Untouched: no question.
+  await editAsMarkdown();
+  fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
+
+  // Changed: the modal asks, «Seguir editando» (and Escape) keeps the text, the focus back on «Cancelar».
+  const area = await editAsMarkdown();
+  fireEvent.change(area, { target: { value: `${TEXT}\nMás.\n` } });
+  const cancel = screen.getByRole("button", { name: "Cancelar" });
+  cancel.focus();
+  fireEvent.click(cancel);
+  const ask = await screen.findByRole("dialog", { name: DISCARD_CHANGES });
+  expect(within(ask).getByRole("button", { name: "Seguir editando" })).toHaveFocus();
+  fireEvent.click(within(ask).getByRole("button", { name: "Seguir editando" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.getByLabelText("Apuntes en Markdown")).toHaveValue(`${TEXT}\nMás.\n`);
+  expect(cancel).toHaveFocus();
+
+  fireEvent.click(cancel);
+  fireEvent.keyDown(await screen.findByRole("dialog", { name: DISCARD_CHANGES }), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.getByLabelText("Apuntes en Markdown")).toHaveValue(`${TEXT}\nMás.\n`);
+
+  // «Descartar» leaves the editor without saving.
+  fireEvent.click(cancel);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: DISCARD_CHANGES })).getByRole("button", { name: "Descartar" }));
+  await waitFor(() => expect(screen.queryByLabelText("Apuntes en Markdown")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(confirmSpy).not.toHaveBeenCalled();
+  expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 }, PAGE_TEST_TIMEOUT);
 
 it("on notes_busy asks to wait and keeps the editor", async () => {

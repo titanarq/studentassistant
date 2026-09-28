@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import Router from "./Router";
+import { ConfirmProvider } from "./ui/ConfirmDialog";
 import { PAGE_TEST_TIMEOUT } from "./test/timeouts";
 
 afterEach(() => {
@@ -16,7 +17,7 @@ function stubFetch() {
 it.each(["/pair", "/pair/"])("renders the pairing page at %s", (pathname) => {
   const fetchMock = stubFetch();
 
-  render(<Router pathname={pathname} />);
+  render(<Router pathname={pathname} />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Emparejar un dispositivo" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/pair/codes", { method: "POST" });
@@ -25,7 +26,7 @@ it.each(["/pair", "/pair/"])("renders the pairing page at %s", (pathname) => {
 it("renders the study desk at /", () => {
   stubFetch();
 
-  render(<Router pathname="/" />);
+  render(<Router pathname="/" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Mesa de estudio" })).toBeInTheDocument();
 });
@@ -33,7 +34,7 @@ it("renders the study desk at /", () => {
 it.each(["/capture", "/capture/"])("renders the capture page at %s", (pathname) => {
   const fetchMock = stubFetch();
 
-  render(<Router pathname={pathname} />);
+  render(<Router pathname={pathname} />, { wrapper: ConfirmProvider });
 
   expect(
     screen.getByRole("heading", { name: "Capturar una sesión de estudio" }),
@@ -46,7 +47,7 @@ it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/
   (pathname) => {
     stubFetch();
 
-    render(<Router pathname={pathname} />);
+    render(<Router pathname={pathname} />, { wrapper: ConfirmProvider });
 
     expect(screen.getByRole("heading", { name: "Tema revolucion-industrial" })).toBeInTheDocument();
     expect(screen.getByRole("form", { name: "Añadir un PDF" })).toBeInTheDocument();
@@ -56,7 +57,7 @@ it.each(["/subjects/historia/topics/revolucion-industrial", "/subjects/historia/
 it("renders the notes viewer at the topic's /notes path", async () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/notes" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/notes" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("link", { name: "← Tema revolucion-industrial" })).toHaveAttribute(
     "href",
@@ -68,7 +69,7 @@ it("renders the notes viewer at the topic's /notes path", async () => {
 it("renders the study workspace at the topic's /workspace path", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("main", { name: "Espacio de estudio" })).toBeInTheDocument();
   expect(screen.getByRole("tablist", { name: "Captura o recursos" })).toBeInTheDocument();
@@ -77,7 +78,7 @@ it("renders the study workspace at the topic's /workspace path", () => {
 it("renders the pending-doubts panel at the topic's /pending path", async () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/pending" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/pending" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Dudas pendientes" })).toBeInTheDocument();
   expect(await screen.findByText(/No se pudieron cargar las dudas/)).toBeInTheDocument();
@@ -86,7 +87,7 @@ it("renders the pending-doubts panel at the topic's /pending path", async () => 
 it("renders the notes versions page at the topic's /versions path", () => {
   const fetchMock = stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/versions" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/versions" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Versiones de los apuntes de revolucion-industrial" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/topics/revolucion-industrial/notes/versions");
@@ -106,7 +107,7 @@ it("renders the live session view at /live, subscribed to the live stream", () =
   }
   vi.stubGlobal("EventSource", FakeEventSource);
 
-  render(<Router pathname="/live" />);
+  render(<Router pathname="/live" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Sesión en directo" })).toBeInTheDocument();
   expect(opened).toEqual(["/api/live"]);
@@ -115,7 +116,7 @@ it("renders the live session view at /live, subscribed to the live stream", () =
 it("renders the quiz page at <topic>/quiz", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/quiz" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/quiz" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Quiz de revolucion-industrial" })).toBeInTheDocument();
 });
@@ -123,7 +124,7 @@ it("renders the quiz page at <topic>/quiz", () => {
 it("renders the exam correction page at <topic>/exam", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/exam" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/exam" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Corregir examen de revolucion-industrial" })).toBeInTheDocument();
 });
@@ -131,7 +132,7 @@ it("renders the exam correction page at <topic>/exam", () => {
 it("renders the subject's style guide at /subjects/<subject>/style-guide", async () => {
   const fetchMock = stubFetch();
 
-  render(<Router pathname="/subjects/historia/style-guide" />);
+  render(<Router pathname="/subjects/historia/style-guide" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Guía de estilo de historia" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith("/api/subjects/historia/style-guide");
@@ -141,7 +142,7 @@ it("renders the subject's style guide at /subjects/<subject>/style-guide", async
 it("renders the preview of a generated Markdown file at <topic>/material/<name>", async () => {
   const fetchMock = stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/material/examen-soluciones.md" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/material/examen-soluciones.md" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "examen-soluciones de revolucion-industrial" })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith(
@@ -153,7 +154,7 @@ it("renders the preview of a generated Markdown file at <topic>/material/<name>"
 it("renders the practice page at <topic>/practice", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/practice" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/practice" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Practicar revolucion-industrial" })).toBeInTheDocument();
 });
@@ -161,7 +162,7 @@ it("renders the practice page at <topic>/practice", () => {
 it("renders the study screen at <topic>/study", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/study" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/study" />, { wrapper: ConfirmProvider });
 
   expect(screen.getByRole("heading", { name: "Estudiar" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Estudiar" })).toHaveAttribute("aria-current", "page");
@@ -170,7 +171,7 @@ it("renders the study screen at <topic>/study", () => {
 it("mounts the Construir · Estudiar switch in the study workspace header", () => {
   stubFetch();
 
-  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />);
+  render(<Router pathname="/subjects/historia/topics/revolucion-industrial/workspace" />, { wrapper: ConfirmProvider });
 
   const modes = screen.getByRole("navigation", { name: "Modo del tema" });
   const build = within(modes).getByRole("link", { name: "Construir" });

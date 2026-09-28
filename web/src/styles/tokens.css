@@ -25,6 +25,9 @@
   --header-line: #8196cc;
   --chat-surface: #f1f4f8;
 
+  /* The dimmed viewport behind a modal (the confirmation, #486). */
+  --scrim: rgb(29 34 48 / 55%);
+
   /* Ink */
   --ink: #1d2230;
   --ink-muted: #545a68;
@@ -46,6 +49,8 @@
   --correction: #b3261e;
   --correction-soft: #fbe9e6;
   --correction-line: #eab1aa;
+  --correction-hover: #8f1e18;
+  --on-correction: #ffffff;
 
   /* Semantic */
   --ok: #22693f;
@@ -144,6 +149,8 @@
     --header-line: #768cb6;
     --chat-surface: #1c2630;
 
+    --scrim: rgb(0 0 0 / 70%);
+
     --ink: #e6e9e2;
     --ink-muted: #a8b1aa;
     --ink-faint: #8a948d;
@@ -161,6 +168,8 @@
     --correction: #f29b91;
     --correction-soft: #3a2421;
     --correction-line: #7a3f38;
+    --correction-hover: #f7b8b0;
+    --on-correction: #2a1210;
 
     --ok: #8bd3a6;
     --ok-soft: #1d3428;

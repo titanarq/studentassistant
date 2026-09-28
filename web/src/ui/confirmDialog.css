@@ -1,0 +1,142 @@
+/* The confirmation modal (#486, `ConfirmDialog.tsx`): the whole viewport dimmed by the scrim, a
+   centred card on it (the workspace cards' surface and shadow, #485), an icon and the question,
+   then «Cancelar» and the confirm button (red pen when the action is destructive). Tokens only. */
+
+.confirm-dialog {
+  width: min(28rem, calc(100vw - 2 * var(--gutter)));
+  max-width: none;
+  max-height: calc(100dvh - 2 * var(--gutter));
+  margin: auto;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  overscroll-behavior: contain;
+}
+
+.confirm-dialog::backdrop {
+  background: var(--scrim);
+}
+
+.confirm-dialog-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: calc(100dvh - 2 * var(--gutter));
+  overflow: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  box-shadow: var(--card-shadow), var(--shadow-float);
+  font-family: var(--font-ui);
+  line-height: var(--leading-ui);
+}
+
+.confirm-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.confirm-dialog-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.confirm-dialog-destructive .confirm-dialog-icon {
+  background: var(--correction-soft);
+  color: var(--correction);
+}
+
+.confirm-dialog-title {
+  margin: 0;
+  font-size: var(--step-1);
+  line-height: 1.3;
+}
+
+.confirm-dialog-message {
+  color: var(--ink-muted);
+}
+
+.confirm-dialog-message > :first-child {
+  margin-top: 0;
+}
+
+.confirm-dialog-message > :last-child {
+  margin-bottom: 0;
+}
+
+.confirm-dialog-failure {
+  margin: 0;
+  color: var(--correction);
+}
+
+/* The card only takes the focus while `onConfirm` runs, to keep Escape inside: no ring. */
+.confirm-dialog-card:focus {
+  outline: none;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.confirm-dialog-actions button {
+  margin: 0;
+}
+
+.confirm-dialog-confirm {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.confirm-dialog-confirm:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.confirm-dialog-destructive .confirm-dialog-confirm {
+  border-color: var(--correction);
+  background: var(--correction);
+  color: var(--on-correction);
+}
+
+.confirm-dialog-destructive .confirm-dialog-confirm:hover:not(:disabled) {
+  border-color: var(--correction-hover);
+  background: var(--correction-hover);
+  color: var(--on-correction);
+}
+
+.confirm-dialog-actions button:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Phone width: the buttons take the whole row, the confirm one first under the thumb. */
+@media (max-width: 30rem) {
+  .confirm-dialog-card {
+    padding: var(--space-4);
+  }
+
+  .confirm-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
+  .confirm-dialog-actions button {
+    width: 100%;
+  }
+}
