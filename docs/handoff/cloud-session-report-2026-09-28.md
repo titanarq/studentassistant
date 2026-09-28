@@ -6,7 +6,7 @@ It lives only on the branch `handoff/cloud-2026-09-28`, never on `main`. Read it
 
 ## 1. State at the end
 
-- `main` is at `00873b2`.
+- `main` is at `a7ead04`.
 - No PR is open.
 - Every issue from the queue is closed except **#488** (study progress). The human deferred #488:
   it stays open with label `p3` and must not be dispatched until they revisit it. Feeding the
@@ -34,6 +34,7 @@ It lives only on the branch `handoff/cloud-2026-09-28`, never on `main`. Read it
 | #506 | #483 | Settled blocks stay settled against later or indirect doubts. |
 | #507 | #505 | The same mermaid fallback in Anki cards. The export edge cases are aligned. |
 | #508 | #502 | The crop retirement on undo survives crashes and a batch commit that splits the crop's files. |
+| #510 | #509 | Estudiar: «Repasos para hoy» is removed, the options are cards two per row showing title and state, images render in every notes view and the study chat, and the chat reads «Chat sobre el tema…» / «Enviar». |
 
 Several PRs were blocked by their first reviewer on a real, reproduced bug and fixed on the same
 branch before a second review merged them: #477, #478, #490, #499 and #508 (twice). All
