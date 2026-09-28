@@ -1119,7 +1119,7 @@ describe("the microphone button (#428)", () => {
     act(() => recognition.emitResult([{ transcript: "Pon un ejemplo", final: true }]));
     act(() => recognition.emitEnd());
     await waitFor(() => expect(calls(MESSAGES, "POST")).toHaveLength(1));
-    expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo" });
+    expect(JSON.parse(String((calls(MESSAGES, "POST")[0][1] as RequestInit).body))).toEqual({ text: "Pon un ejemplo." });
     expect(input).toHaveValue("");
     expect(screen.getByRole("button", { name: SPEAK })).toHaveAttribute("aria-pressed", "false");
   });

@@ -145,7 +145,9 @@
   - `voiceQuestion.ts`: `listenForQuestion(callbacks)` (a `VoiceQuestionStarter`:
     `onInterim`, `onFinal`, `onProblem(VoiceProblemCode)`, `onEnd`; returns `{stop()}`),
     `voiceQuestionSupported()`; the recognition constructor comes from
-    `capture/webSpeechTranscriber.ts`.
+    `capture/webSpeechTranscriber.ts`. The final text goes through `punctuate(text)` (the browser
+    writes Spanish unpunctuated): a capital first letter and a full stop, or «¿…?» when it opens
+    with a question word («qué», «cómo», «por qué», «puedes»…).
   - `VoiceInputButton.tsx` (#428): the chats' microphone button on top of `listenForQuestion`
     (props `value`, `onChange`, `onFinal`, `disabled`, `icon`, and the seams `listen` /
     `voiceSupported`), used by the Estudiar chat and the idle Construir chat. Idle it reads
@@ -194,7 +196,9 @@
     and the study chat: the textarea (Enter sends, Shift+Enter is a new line), then one row with
     the send button (`submitLabel`, **Enviar** by default), the microphone (`VoiceInputButton` with
     `icon`, the Web Speech path of #428; `voice: null` hides it) and the chat's own icon buttons
-    (`actions`); `before` is what goes above the textarea (the Recursos chips).
+    (`actions`); `before` is what goes above the textarea (the Recursos chips). The textarea grows
+    with its text up to 40vh, and text written while it is not focused (dictation) keeps its end in
+    view.
   - **Visual zones (#485).** The page is a desk (`--desk`: a shade darker than `--paper` in the
     light theme, darker than the slate in the dark one) under the header bar, which is a solid band
     edge to edge (`--header-bg`, ballpoint blue in light, a deep ink blue in dark; its text
