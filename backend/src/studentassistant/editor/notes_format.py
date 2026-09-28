@@ -50,6 +50,7 @@ EST_LABEL = "est"
 EST_TEXT = "Escrito por el estudiante"
 IMAGE_TEXT = "Imagen pegada"
 IMAGE_CROP_TEXT = "Imagen recortada"
+DIAGRAM_TEXT = "Diagrama"
 TRANSCRIPT_FILE_NAME = "transcript.jsonl"
 # `apuntes.md` lives in `notes/`, one level below the topic directory the source ids start at.
 LINK_PREFIX = "../"
@@ -71,7 +72,7 @@ _TARGETS: dict[str, re.Pattern[str]] = {
     "book": re.compile(r"^sources/book/page-(?P<page>\d{3,})\.[A-Za-z0-9]+$"),
     "pdf": re.compile(r"^sources/pdf/page-(?P<page>\d{3,})\.[A-Za-z0-9]+(?:#page=(?P<at>\d+))?$"),
     "web": re.compile(r"^sources/web/\d{3,}-[a-z0-9-]+\.md$"),
-    "images": re.compile(r"^sources/images/img-(?P<number>\d{3,})\.(?:png|jpg|webp)$"),
+    "images": re.compile(r"^sources/images/img-(?P<number>\d{3,})\.(?:png|jpg|webp|svg)$"),
     "transcript": re.compile(
         rf"^sessions/(?P<session>\d{{8}}-\d{{6}})/{re.escape(TRANSCRIPT_FILE_NAME)}"
         rf"#t=(?P<start>{_TIME})-(?P<end>{_TIME})$"
@@ -178,6 +179,13 @@ def cropped_image_provenance(number: int, extension: str = "jpg") -> Provenance:
     as «Imagen recortada N»: the same `images` source id as a pasted image, a distinct text."""
     path = f"sources/images/img-{number:03d}.{extension.lstrip('.').lower()}"
     return Provenance(kind="images", text=f"{IMAGE_CROP_TEXT} {number}", source_id=path, path=path)
+
+
+def diagram_provenance(number: int) -> Provenance:
+    """An SVG diagram the editor drew (`editor.diagram`, #511), `sources/images/img-NNN.svg`,
+    shown as «Diagrama N»: the same `images` source id shape as a pasted image."""
+    path = f"sources/images/img-{number:03d}.svg"
+    return Provenance(kind="images", text=f"{DIAGRAM_TEXT} {number}", source_id=path, path=path)
 
 
 IA_PROVENANCE = Provenance(kind="ia", text=IA_TEXT)

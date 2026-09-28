@@ -140,6 +140,7 @@ from studentassistant.vault.subjects import (
     subject_directory,
     subject_slugs,
 )
+from studentassistant.vault.svg import SVG_MEDIA_TYPE, SvgError, is_safe_svg, sanitize_svg
 from studentassistant.vault.sync import (
     Clock,
     Divergence,
@@ -176,6 +177,10 @@ from studentassistant.vault.vault import (
 )
 
 __all__ = [
+    "SVG_MEDIA_TYPE",
+    "SvgError",
+    "is_safe_svg",
+    "sanitize_svg",
     "FEEDBACK_KINDS",
     "FEEDBACK_STATUSES",
     "FeedbackAmbiguousError",

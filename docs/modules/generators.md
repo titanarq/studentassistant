@@ -371,6 +371,30 @@ the PDF/PPTX in "Material de estudio" (#79) through `GET .../generated/files/{na
 exporter (`SlidesGenerator.exporter`) and a fake `marp` script; a real export is
 `@pytest.mark.integration` (`SA_TEST_MARP`).
 
+## Images of the notes in the exports -- `images.py` (#511)
+
+The notes show a topic's images (pasted, cropped, and the SVG diagrams the editor draws) as
+`![Diagrama 1](../sources/images/img-001.svg)`. The exam and flashcards prompts say an item that
+needs a figure may copy such a link from the notes as it is (never invent one), and the slides
+generator offers a cited SVG diagram as a figure. The Markdown/YAML/CSV files keep the link (it
+resolves from `generated/` as from `notes/`); the printed exports draw it:
+
+- `note_images(vault, subject, topic, texts) -> {source_id: NoteImage}` reads through
+  `vault.read_source` every `sources/images/img-NNN.<png|jpg|webp|svg>` the texts link; a missing
+  file, or an SVG that is not exactly `vault.sanitize_svg`'s output, is left out and the link is
+  printed as «[Imagen: alt]». `split_images(text)` splits a text around its links.
+- exam PDFs: `exam.text_html(text, images)` / `inline_html` turn a link into an `<img>` of the
+  file embedded in the PyMuPDF `Story` archive (`render_pdf(..., files=...)`); an SVG is
+  rasterized to PNG first (`svg_to_png`, PyMuPDF at 200 dpi, no browser).
+- Anki: `flashcards.anki_html(text, media)` turns a link into `<img src="sa-<subject>-<topic>-img-NNN.<ext>">`
+  and `render_apkg(..., images=...)` ships each file as package media (`media` maps `"0"`... to
+  the names); an SVG goes as stored (sanitized), which Anki's web view draws.
+- slides: `collect_figures` also lists an `images` source the notes cite when it is an `.svg`
+  diagram (pasted and cropped images are still not figures); it is copied as
+  `diapositivas/figura-NN.svg`, credited «Imagen: Diagrama N», and Marp draws it.
+
+Mermaid fences are not affected (below). Tests: `tests/generators/test_note_images.py`.
+
 ## Mermaid in the exports -- `diagrams.py` (#481)
 
 The web draws a ```` ```mermaid ```` fence as a diagram (#480), and the Markdown files

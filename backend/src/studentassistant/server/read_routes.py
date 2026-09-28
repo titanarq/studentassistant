@@ -38,6 +38,7 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.vault import (
     SOURCE_KINDS,
+    SVG_MEDIA_TYPE,
     GitSync,
     SessionKind,
     SessionMeta,
@@ -49,6 +50,7 @@ from studentassistant.vault import (
     TranscriptSegment,
     Vault,
     is_removed,
+    is_safe_svg,
     list_generated,
     list_sessions,
     list_sources,
@@ -95,6 +97,13 @@ _SERVED_AS_IS = frozenset(
 _SOURCE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; img-src 'self'; sandbox",
+}
+# A diagram the editor drew (#511) is served as `image/svg+xml` only while it is exactly what
+# `vault.sanitize_svg` makes of it (no script, handler or external reference can be in it); its
+# own `<style>`/`style=` need inline styles, still nothing else. Any other SVG is octet-stream.
+_SVG_HEADERS = {
+    **_SOURCE_HEADERS,
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
 }
 
 
@@ -338,7 +347,9 @@ async def _not_found() -> AsyncIterator[None]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, UNKNOWN_SOURCE_DETAIL) from error
 
 
-def _served_media_type(media_type: str) -> str:
+def _served_media_type(media_type: str, content: bytes | None = None) -> str:
+    if media_type == SVG_MEDIA_TYPE and content is not None and is_safe_svg(content):
+        return SVG_MEDIA_TYPE
     if media_type in _SERVED_AS_IS:
         return f"{media_type}; charset=utf-8" if media_type.startswith("text/") else media_type
     if media_type.startswith("text/"):
@@ -559,7 +570,7 @@ def read_router() -> APIRouter:
         return SourceMeta(
             vault_id=vault_id,
             kind=_kind_of(vault_id),
-            media_type=_served_media_type(source.media_type),
+            media_type=_served_media_type(source.media_type, source.content),
             size=len(source.content),
             meta=source.meta,
             transcription=transcription if isinstance(transcription, str) else None,
@@ -581,10 +592,11 @@ def read_router() -> APIRouter:
         vault = await _vault(request)
         async with _not_found():
             source = await _read(read_source, vault, vault_id)
+        media_type = _served_media_type(source.media_type, source.content)
         return Response(
             content=source.content,
-            media_type=_served_media_type(source.media_type),
-            headers=_SOURCE_HEADERS,
+            media_type=media_type,
+            headers=_SVG_HEADERS if media_type == SVG_MEDIA_TYPE else _SOURCE_HEADERS,
         )
 
     return router

@@ -4,7 +4,8 @@ Each stored source is two files: the content exactly as it was handed over, and 
 holding its metadata (for a note page: capture id, session, capture time, transcript span; for a
 web page: url, fetch time). Pages of `notes`, `book` and `pdf` are numbered `page-NNN.<ext>` in
 the order they arrive; a web page is `NNN-<slug>.md`, its slug derived from the name it was given;
-an image the student pasted into the notes is `images/img-NNN.<png|jpg|webp>`.
+an image the student pasted into the notes is `images/img-NNN.<png|jpg|webp>`, a diagram the
+editor drew `images/img-NNN.svg` (sanitized before it is written, `svg.py`).
 The next number is found by scanning the directory, so numbering resumes after whatever is there
 already, including the derived files the `sources` module adds next to a page (`page-NNN.md`,
 `page-NNN.page.jpg`). Allocating a number and writing the files under it happen under one lock per
@@ -56,6 +57,7 @@ from studentassistant.vault.models import VaultFileModel
 from studentassistant.vault.secrets import guard
 from studentassistant.vault.slugs import is_slug, slugify
 from studentassistant.vault.subjects import SUBJECTS_DIRNAME
+from studentassistant.vault.svg import SVG_EXTENSION, sanitize_svg
 from studentassistant.vault.topics import TOPICS_DIRNAME, get_topic, require_topic, topic_directory
 from studentassistant.vault.vault import Vault
 
@@ -159,10 +161,11 @@ def put_source(
 
     For `notes`, `book` and `pdf`, `name` is the file the content came as, and only its extension is
     kept (`foto.JPG` -> `page-004.jpg`); for `images` the same gives `img-NNN.<ext>`, the extension
-    one of `.png`, `.jpg` (`.jpeg` too) or `.webp`. For `web`, `name` is the page's title and
-    becomes the slug of `NNN-<slug>.md`. `content` is written as it is: bytes untouched, text as
-    UTF-8. `meta` is dumped with the same deterministic YAML as every vault file; datetimes become
-    ISO 8601.
+    one of `.png`, `.jpg` (`.jpeg` too), `.webp` or `.svg` -- an SVG (a diagram the editor drew,
+    #511) is stored as `svg.sanitize_svg` rebuilds it, never as given. For `web`, `name` is the
+    page's title and becomes the slug of `NNN-<slug>.md`. `content` is written as it is: bytes
+    untouched, text as UTF-8. `meta` is dumped with the same deterministic YAML as every vault
+    file; datetimes become ISO 8601.
 
     `derived` (paged kinds only) maps name suffixes to files `sources` derived from the content,
     written next to it as `page-NNN.<suffix>` in the same call: `{"p003.txt": ..., "p003.jpg":
@@ -174,6 +177,8 @@ def put_source(
 
     Raises:
         UnknownSourceKindError: when `kind` is not a source kind; nothing is written.
+        SvgError: when an `.svg` image is not a drawing `sanitize_svg` can keep; nothing is
+            written.
         SourceError: when a paged source's `name` has no usable extension, or a `derived`
             suffix is malformed or given for a web source.
         ValueError: when a web source's `name` has no letter or digit to slug.
@@ -191,6 +196,9 @@ def put_source(
     get_topic(vault, subject_slug, topic_slug)
     directory = sources_directory(vault, subject_slug, topic_slug, kind)
     sidecar_text = dump_yaml(_META_ADAPTER.dump_python(dict(meta), mode="json"))
+    if kind == IMAGES_KIND and _image_extension(name) == SVG_EXTENSION:
+        # An SVG is drawn by the editor (#511): only its sanitized form is ever stored.
+        content = sanitize_svg(content)
     guard(content)
     guard(sidecar_text)
     derived_files = dict(derived or {})
@@ -270,9 +278,9 @@ def _extension_of(name: str) -> str:
 def _image_extension(name: str) -> str:
     extension = Path(name).suffix.lower()
     extension = ".jpg" if extension == ".jpeg" else extension
-    if extension not in IMAGE_EXTENSIONS.values():
+    if extension not in (*IMAGE_EXTENSIONS.values(), SVG_EXTENSION):
         raise SourceError(
-            f"cannot store {name!r} as an image: only .png, .jpg and .webp images are kept"
+            f"cannot store {name!r} as an image: only .png, .jpg, .webp and .svg images are kept"
         )
     return extension
 
@@ -561,7 +569,7 @@ def set_book(vault: Vault, subject_slug: str, topic_slug: str, title: str) -> Bo
 
 _PAGE_SOURCE = re.compile(r"^page-(\d{3,})\.([A-Za-z0-9]+)$")
 _WEB_SOURCE = re.compile(r"^(\d{3,})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
-_IMAGE_SOURCE = re.compile(r"^img-(\d{3,})\.(?:png|jpg|webp)$")
+_IMAGE_SOURCE = re.compile(r"^img-(\d{3,})\.(?:png|jpg|webp|svg)$")
 _DERIVED_TRANSCRIPTION = "md"
 _MEDIA_TYPES = mimetypes.MimeTypes()  # built-in table only: no host file makes it differ
 _MEDIA_TYPE_OVERRIDES = {".md": "text/markdown", ".yaml": "application/yaml"}
@@ -579,10 +587,11 @@ def list_sources(
     `include_removed`.
 
     A source is the content `put_source` stored: `page-NNN.<ext>` under `notes`, `book` and `pdf`,
-    `NNN-<slug>.md` under `web`, `img-NNN.<png|jpg|webp>` under `images`. Sidecars (`.yaml`) and the
-    derived files `sources` adds next to a page (`page-NNN.md`, `page-NNN.page.jpg`) are not sources
-    of their own; a `page-NNN.md` counts as the source only when no other `page-NNN.<ext>` is there.
-    Symlinks are never listed. A topic without `sources/` lists as empty. Nothing is written.
+    `NNN-<slug>.md` under `web`, `img-NNN.<png|jpg|webp|svg>` under `images`. Sidecars (`.yaml`) and
+    the derived files `sources` adds next to a page (`page-NNN.md`, `page-NNN.page.jpg`) are not
+    sources of their own; a `page-NNN.md` counts as the source only when no other `page-NNN.<ext>`
+    is there. Symlinks are never listed. A topic without `sources/` lists as empty.
+    Nothing is written.
 
     Raises:
         SubjectNotFoundError, SubjectFileError, TopicNotFoundError, TopicFileError: when the topic

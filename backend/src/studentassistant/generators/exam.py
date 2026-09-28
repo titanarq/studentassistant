@@ -30,6 +30,7 @@ import asyncio
 import html
 import io
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -45,6 +46,7 @@ from studentassistant.generators.base import (
     NoteSection,
 )
 from studentassistant.generators.diagrams import DIAGRAM_UNAVAILABLE, fences
+from studentassistant.generators.images import NoteImage, note_images, pdf_image, split_images
 from studentassistant.generators.registry import register
 from studentassistant.llm import load_prompt
 
@@ -322,9 +324,26 @@ _BULLET = re.compile(r"^\s*[-*]\s+")
 _NUMBERED = re.compile(r"^\s*\d+[.)]\s+")
 
 
-def inline_html(text: str) -> str:
+def inline_html(text: str, images: Mapping[str, str] | None = None) -> str:
     """One line of a text as HTML: escaped, `**bold**`, `*italic*`, `` `code` `` and any
-    `$..$`/`$$..$$` LaTeX left as its source in a math span."""
+    `$..$`/`$$..$$` LaTeX left as its source in a math span. An image link of the notes
+    (`![alt](../sources/images/img-NNN.<ext>)`, #511) is an `<img>` of the file `images` maps its
+    source id to (the PDF's embedded copy), else the text «[Imagen: alt]»."""
+    parts: list[str] = []
+    for piece in split_images(text):
+        if isinstance(piece, str):
+            parts.append(_inline_text(piece))
+            continue
+        alt, source = piece
+        name = (images or {}).get(source)
+        if name is None:
+            parts.append(html.escape(f"[Imagen: {alt}]", quote=False))
+        else:
+            parts.append(f'<img src="{html.escape(name)}" alt="{html.escape(alt)}"/>')
+    return "".join(parts)
+
+
+def _inline_text(text: str) -> str:
     escaped = html.escape(text, quote=False)
     escaped = _DISPLAY_MATH.sub(
         lambda m: f'<span class="math">{m.group(1).strip()}</span>', escaped
@@ -335,37 +354,44 @@ def inline_html(text: str) -> str:
     return _CODE.sub(r"<code>\1</code>", escaped)
 
 
-def text_html(text: str) -> str:
+def text_html(text: str, images: Mapping[str, str] | None = None) -> str:
     """A text of paragraphs (blank-line separated), `- `/`1. ` lists and fenced code blocks as
     HTML blocks. A ```` ```mermaid ```` fence cannot be drawn in the PDF: its code is kept, with
-    `DIAGRAM_UNAVAILABLE` after it if the fence is closed (#481, #505; see `diagrams`)."""
+    `DIAGRAM_UNAVAILABLE` after it if the fence is closed (#481, #505; see `diagrams`). Image
+    links become images through `images` (`inline_html`)."""
     lines = text.strip().split("\n")
     blocks: list[str] = []
     done = 0
     for fence in fences(lines):
-        blocks.append(_paragraphs_html("\n".join(lines[done : fence.start])))
+        blocks.append(_paragraphs_html("\n".join(lines[done : fence.start]), images))
         blocks.append(f"<pre>{html.escape(fence.body, quote=False)}</pre>")
         if fence.is_mermaid and fence.closed:
             blocks.append(f'<p class="diagram-note">{DIAGRAM_UNAVAILABLE}</p>')
         done = fence.end
-    blocks.append(_paragraphs_html("\n".join(lines[done:])))
+    blocks.append(_paragraphs_html("\n".join(lines[done:]), images))
     return "".join(blocks)
 
 
-def _paragraphs_html(text: str) -> str:
+def _paragraphs_html(text: str, images: Mapping[str, str] | None = None) -> str:
     blocks: list[str] = []
     for block in re.split(r"\n\s*\n", text.strip()):
         lines = [line for line in block.splitlines() if line.strip()]
         if not lines:
             continue
         if all(_BULLET.match(line) for line in lines):
-            items = "".join(f"<li>{inline_html(_BULLET.sub('', line))}</li>" for line in lines)
+            items = "".join(
+                f"<li>{inline_html(_BULLET.sub('', line), images)}</li>" for line in lines
+            )
             blocks.append(f"<ul>{items}</ul>")
         elif all(_NUMBERED.match(line) for line in lines):
-            items = "".join(f"<li>{inline_html(_NUMBERED.sub('', line))}</li>" for line in lines)
+            items = "".join(
+                f"<li>{inline_html(_NUMBERED.sub('', line), images)}</li>" for line in lines
+            )
             blocks.append(f"<ol>{items}</ol>")
         else:
-            blocks.append("<p>" + "<br/>".join(inline_html(line) for line in lines) + "</p>")
+            blocks.append(
+                "<p>" + "<br/>".join(inline_html(line, images) for line in lines) + "</p>"
+            )
     return "".join(blocks)
 
 
@@ -400,7 +426,7 @@ def _answer_space(question: Question, exam: Exam) -> str:
     return f'<div class="space" style="height: {height}px"></div>'
 
 
-def render_exam_html(exam: Exam) -> str:
+def render_exam_html(exam: Exam, images: Mapping[str, str] | None = None) -> str:
     title = html.escape(exam.title)
     parts = [f"<h1>Ejercicios y examen: {title}</h1>"]
     if exam.exercises:
@@ -408,7 +434,7 @@ def render_exam_html(exam: Exam) -> str:
         for question in exam.exercises:
             parts.append(_html_heading(question, "Ejercicio"))
             parts.append(f'<p class="meta">Dificultad: {question.difficulty}</p>')
-            parts.append(text_html(question.statement))
+            parts.append(text_html(question.statement, images))
     parts.append("<h2>Examen de práctica</h2>")
     parts.append(f'<p class="meta">{html.escape(_exam_header(exam))}</p>')
     parts.append(
@@ -416,10 +442,10 @@ def render_exam_html(exam: Exam) -> str:
         "Fecha: ______________</p>"
     )
     if exam.instructions:
-        parts.append(text_html(exam.instructions))
+        parts.append(text_html(exam.instructions, images))
     for question in exam.questions:
         parts.append(_html_heading(question, "Pregunta"))
-        parts.append(text_html(question.statement))
+        parts.append(text_html(question.statement, images))
         parts.append(_answer_space(question, exam))
     return "".join(parts)
 
@@ -436,9 +462,14 @@ def _rubric_html(question: Question) -> str:
     return f"<table><tr><th>Criterio</th><th>Puntos</th></tr>{rows}</table>"
 
 
-def _solution_html(question: Question, word: str, sections: dict[str, NoteSection]) -> str:
+def _solution_html(
+    question: Question,
+    word: str,
+    sections: dict[str, NoteSection],
+    images: Mapping[str, str] | None = None,
+) -> str:
     parts = [_html_heading(question, word), '<p class="label">Solución</p>']
-    parts.append(text_html(question.solution))
+    parts.append(text_html(question.solution, images))
     if question.rubric:
         parts += ['<p class="label">Criterios de corrección</p>', _rubric_html(question)]
     titles = _section_titles(question, sections)
@@ -447,23 +478,29 @@ def _solution_html(question: Question, word: str, sections: dict[str, NoteSectio
     return "".join(parts)
 
 
-def render_solutions_html(exam: Exam, sections: dict[str, NoteSection]) -> str:
+def render_solutions_html(
+    exam: Exam, sections: dict[str, NoteSection], images: Mapping[str, str] | None = None
+) -> str:
     parts = [f"<h1>Soluciones: {html.escape(exam.title)}</h1>"]
     if exam.exercises:
         parts.append("<h2>Ejercicios</h2>")
-        parts += [_solution_html(q, "Ejercicio", sections) for q in exam.exercises]
+        parts += [_solution_html(q, "Ejercicio", sections, images) for q in exam.exercises]
     parts.append("<h2>Examen de práctica</h2>")
-    parts += [_solution_html(q, "Pregunta", sections) for q in exam.questions]
+    parts += [_solution_html(q, "Pregunta", sections, images) for q in exam.questions]
     return "".join(parts)
 
 
 _MARGIN = 50
 
 
-def render_pdf(body_html: str, *, title: str) -> bytes:
-    """An A4 PDF of `body_html`, with `title` and `Página i de n` at the foot of every page."""
+def render_pdf(body_html: str, *, title: str, files: Mapping[str, bytes] | None = None) -> bytes:
+    """An A4 PDF of `body_html`, with `title` and `Página i de n` at the foot of every page;
+    `files` are the images its `<img src>` names (#511)."""
     buffer = io.BytesIO()
-    story = pymupdf.Story(html=f"<body>{body_html}</body>", user_css=_CSS)
+    archive = pymupdf.Archive()
+    for name, data in (files or {}).items():
+        archive.add(data, name)
+    story = pymupdf.Story(html=f"<body>{body_html}</body>", user_css=_CSS, archive=archive)
     writer = pymupdf.DocumentWriter(buffer)
     page_rect = pymupdf.paper_rect("a4")
     where = page_rect + (_MARGIN, _MARGIN, -_MARGIN, -_MARGIN)
@@ -491,15 +528,40 @@ def render_pdf(body_html: str, *, title: str) -> bytes:
         document.close()
 
 
-def render_files(exam: Exam, sections: dict[str, NoteSection]) -> dict[str, str | bytes]:
-    """The five files of the artifact (CPU-bound: run it in a worker thread)."""
+def exam_texts(exam: Exam) -> list[str]:
+    """Every text of the exam that may link an image of the notes."""
+    return [
+        exam.instructions,
+        *(q.statement for q in [*exam.exercises, *exam.questions]),
+        *(q.solution for q in [*exam.exercises, *exam.questions]),
+    ]
+
+
+def render_files(
+    exam: Exam,
+    sections: dict[str, NoteSection],
+    images: Mapping[str, NoteImage] | None = None,
+) -> dict[str, str | bytes]:
+    """The five files of the artifact (CPU-bound: run it in a worker thread). `images` (source id
+    -> `NoteImage`, `images.note_images`) are drawn in the PDFs where a text links them (#511);
+    the Markdown files keep the links."""
+    names: dict[str, str] = {}
+    files: dict[str, bytes] = {}
+    for source_id, image in (images or {}).items():
+        embedded = pdf_image(image)
+        if embedded is not None:
+            names[source_id], files[embedded[0]] = embedded[0], embedded[1]
     return {
         EXAM_YAML: dump_exam(exam_file(exam)),
         EXAM_MD: render_exam_markdown(exam),
         SOLUTIONS_MD: render_solutions_markdown(exam, sections),
-        EXAM_PDF: render_pdf(render_exam_html(exam), title=f"Examen: {exam.title}"),
+        EXAM_PDF: render_pdf(
+            render_exam_html(exam, names), title=f"Examen: {exam.title}", files=files
+        ),
         SOLUTIONS_PDF: render_pdf(
-            render_solutions_html(exam, sections), title=f"Soluciones: {exam.title}"
+            render_solutions_html(exam, sections, names),
+            title=f"Soluciones: {exam.title}",
+            files=files,
         ),
     }
 
@@ -574,7 +636,10 @@ class ExamGenerator(Generator):
         )
         warnings += point_warnings(exam)
         sections = {section.anchor: section for section in context.sections}
-        files = await asyncio.to_thread(render_files, exam, sections)
+        images = await asyncio.to_thread(
+            note_images, context.vault, context.subject, context.topic, exam_texts(exam)
+        )
+        files = await asyncio.to_thread(render_files, exam, sections, images)
         return GeneratorOutput(
             files=files,
             items=[

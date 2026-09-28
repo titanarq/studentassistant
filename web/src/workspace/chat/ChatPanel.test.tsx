@@ -954,6 +954,27 @@ it("keeps the «Mejora apuntada» chip of a history turn after a reload (#472)",
   expect(within(log()).getAllByTestId("feedback-chip")).toHaveLength(1);
 });
 
+it("names the SVG diagram a turn drew and opens it in Recursos (#511)", async () => {
+  const { onOpenSource } = setup({
+    [CHAT]: jsonResponse(
+      history([
+        turn({
+          turn_id: "turn-diagram",
+          message: "Hazme un dibujo del triángulo",
+          reply: "He añadido un diagrama del triángulo.",
+          crop: { source: "", region: "Triángulo", kind: "diagram", source_id: "sources/images/img-003.svg", path: "x" },
+        }),
+      ]),
+    ),
+  });
+  const entry = (await screen.findByText("Hazme un dibujo del triángulo")).closest("li") as HTMLElement;
+  const line = within(entry).getByText(/Diagrama añadido:/);
+  fireEvent.click(within(line).getByRole("button", { name: "Ver la fuente: diagrama 3" }));
+  expect(within(line).getByRole("button")).toHaveTextContent("Diagrama 3");
+  expect(onOpenSource).toHaveBeenCalledWith("recurso-images-img-003.svg", expect.anything(), expect.stringContaining("../sources/images/img-003.svg"));
+  expect(within(entry).queryByText(/Recorte añadido/)).toBeNull();
+});
+
 it("names the image a turn cropped from a page and opens it in Recursos, live and after a reload (#493)", async () => {
   const { opened, onOpenSource } = setup({
     [CHAT]: jsonResponse(

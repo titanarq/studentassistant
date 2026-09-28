@@ -42,4 +42,8 @@ The exam is printed, so write mathematics with Unicode symbols and plain text ra
 separate paragraphs with a blank line; a list is lines starting with `- ` (or `1. ` for steps);
 `**bold**` at most. No headings, no tables, no HTML, no footnotes or source references.
 
+When a question needs a figure of the notes (a diagram, a drawing, a pasted or cropped image),
+copy its image link from the notes exactly as it is, alone on its own line:
+`![Diagrama 1](../sources/images/img-001.svg)`. Never invent an image link.
+
 Record the exercises and the exam with the tool.

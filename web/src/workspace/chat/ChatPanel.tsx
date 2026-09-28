@@ -7,7 +7,7 @@ import { sourceItem } from "../resources";
 import type { SourceSelection } from "../resources/selection";
 import { reasonText } from "../resources/state";
 import type { DoubtView, SpokenSpan, TriageTarget } from "./api";
-import { capitalized, croppedImageName, sourceName } from "./sources";
+import { capitalized, croppedImageName, isDiagram, sourceName } from "./sources";
 import { canRetry, type ChatEntry } from "./turns";
 import type { WorkspaceChat } from "./useWorkspaceChat";
 import ChatComposer from "./ChatComposer";
@@ -408,7 +408,7 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, ba
       {entry.status === "done" && entry.feedback !== null && <FeedbackChip feedback={entry.feedback} />}
       {entry.status === "done" && entry.cropId !== null && !entry.undone && (
         <p className="ws-chat-incorporated">
-          Recorte añadido:{" "}
+          {isDiagram(entry.cropId) ? "Diagrama añadido:" : "Recorte añadido:"}{" "}
           <SourceButton
             sourceId={entry.cropId}
             onOpenSource={onOpenSource}

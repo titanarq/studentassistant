@@ -16,6 +16,9 @@ the cards in Anki, so each card is a question on the front and its answer on the
   footnotes and source references.
 - Mathematics in LaTeX between `$...$` (inline) or `$$...$$` (display), as in the notes. Plain
   text otherwise: no headings, no tables, no HTML; `**bold**` at most.
+- When a card is about a figure of the notes (a diagram, a drawing, a pasted or cropped image),
+  copy its image link from the notes exactly as it is into the card:
+  `![Diagrama 1](../sources/images/img-001.svg)`. Never invent an image link.
 - Cover the notes in their order, the important ideas first. Make at most the number of cards you
   are asked for; fewer when the notes are short. Never two cards asking the same thing.
 - `anchors`: the anchors (without `#`) of the note sections the card comes from, from the list

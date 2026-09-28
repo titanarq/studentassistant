@@ -248,7 +248,8 @@
     first page image; the pasted image -- and below it one muted, ellipsized line with its name,
     "Página 3 · apuntes", "Libro, página 83", "PDF «nombre»", "Web: …", "Imagen pegada 1", or
     "Imagen recortada 2" for a region the editor cropped from a page (sidecar `origin: cropped`,
-    #493; pasted and cropped images share the group «Imágenes»); no
+    #493), or "Diagrama 3" for an SVG diagram the editor drew (sidecar `origin: drawn` or an
+    `.svg` file, #511; pasted, cropped and drawn images share the group «Imágenes»); no
     state chip since #461), its state derived by `resourceStates` (`resources/state.ts`, #328):
     - pending: kept and not cited by the current notes -- no mark at all;
     - incorporated ("added", #461): kept and linked by a provenance footnote definition of the
@@ -471,7 +472,9 @@
       a page region into `sources/images/`, `docs/modules/editor.md`) shows «Recorte añadido:
       Imagen recortada N», a button that opens it in **Recursos** («Ver la fuente: imagen
       recortada N»; `readCropId`, `croppedImageName`), live and from the history, hidden once the
-      turn is undone. A failed crop (`crop.error`) shows only its reply.
+      turn is undone. A failed crop (`crop.error`) shows only its reply. A turn that drew an SVG
+      diagram (#511; `crop.kind: "diagram"`, its `source_id` an `.svg`, `isDiagram`) shows
+      «Diagrama añadido: Diagrama N» the same way («Ver la fuente: diagrama N»).
     - **Input on screen, log following the newest turn (#412, #450).** On a wide screen at least
       30rem tall (`workspace.css`, `min-width: 56.3125rem and min-height: 30rem`) the page is
       exactly one viewport high and never scrolls: the header on top, each column scrolling inside
@@ -1137,6 +1140,10 @@ token):
     and `MaterialPreviewPage` (a generated file sits in `generated/`, one level below the topic as
     `notes/` does, so the same `../sources/...` path resolves). Before #509 only `DocumentPanel`
     passed it, so pasted and cropped images read "[Imagen: Imagen recortada N]" elsewhere.
+    An SVG diagram the editor drew (`img-NNN.svg`, #511) resolves and renders the same way: always
+    as an `<img>` (an SVG image never runs scripts nor loads anything), never inserted as markup;
+    the backend serves it as `image/svg+xml` only once re-checked as sanitized, under a
+    `default-src 'none'; style-src 'unsafe-inline'; sandbox` CSP (test `NotesView.svg.test.tsx`).
   - Beside the notes (a sticky column from 80rem, below them otherwise) `NotesPage` shows the
     editor chat (`src/chat/`, #71). After a turn or an undo that changed the notes it reads them
     again (only the latest read is shown) and `NotesView` highlights (`notes-changed`) every

@@ -33,8 +33,9 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
 `studentassistant.editor.style_guide` and the voice tutor and the study screen's question chat in
 `studentassistant.editor.tutor` (#82, #334), the app feedback both chats record in
-`studentassistant.editor.feedback` (#472), and cropping a region of a stored page image in
-`studentassistant.editor.crop` (#484).
+`studentassistant.editor.feedback` (#472), cropping a region of a stored page image in
+`studentassistant.editor.crop` (#484), and SVG diagrams the editor draws in
+`studentassistant.editor.diagram` (#511).
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -60,6 +61,7 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
   | transcript span | `[Transcripción, 00:02:34–00:03:10](../sessions/20260924-183000/transcript.jsonl#t=00:02:34-00:03:10)` | `sessions/20260924-183000#t=00:02:34-00:03:10` | `sessions/20260924-183000/transcript.jsonl` |
   | pasted image | `[Imagen pegada 1](../sources/images/img-001.png)` | `sources/images/img-001.png` | same |
   | cropped image | `[Imagen recortada 2](../sources/images/img-002.jpg)` | `sources/images/img-002.jpg` | same |
+  | drawn diagram (#511) | `[Diagrama 3](../sources/images/img-003.svg)` | `sources/images/img-003.svg` | same |
   | AI | `[^ia]: Ampliado por la IA: no está en tus fuentes` | -- | -- |
   | student | `[^est]: Escrito por el estudiante` | -- | -- |
 
@@ -1085,3 +1087,41 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   own transport (the queued path's `crop_client`, #498) in `tests/server/test_assistant_requests.py`; through the server (the typed
   chat route, the app's transport serving both the turn and the box, the new image listed in the
   topic's sources and the history's `crop`) in `tests/server/test_revise_crop_routes.py`.
+
+### SVG diagrams the editor draws -- `diagram.py` (#511)
+Mermaid (a ```` ```mermaid ```` fence written with `apply_edits`) stays the way to draw
+flowcharts, mind maps and sequences. A figure Mermaid cannot draw (geometry, a circuit, a labelled
+drawing, the graph of a function) the editor draws as SVG from the workspace chat.
+- **Tool**: a revise turn offers, next to `apply_edits`, `crop_image` and `report_feedback`, the
+  strict tool `draw_diagram` (`DIAGRAM_TOOL`, `DrawDiagramRequest`: `svg`, `title`, `op`
+  `insert_after` | `replace_block`, `section`, `block`, `summary`). One diagram per turn, never
+  with `apply_edits` or `crop_image` (sent back, as is a truncated or repeated call). The prompt
+  `editor_revise` says when to prefer Mermaid, that the drawing is static and Spanish-labelled,
+  and that it only illustrates what the sources and notes say.
+- **Checked before anything is stored** (`request_errors`, and the anchor through
+  `placeholder_edit` + `apply_edits`): an SVG `vault.sanitize_svg` refuses (not XML, no `<svg>`
+  root, a DOCTYPE/entity, over 256 KiB, nothing drawable left), an empty or overlong title, an
+  empty summary or an anchor that does not apply is sent back (`tool_result` error naming
+  `draw_diagram`) and re-asked. Unsafe parts that can simply be stripped (scripts, handlers,
+  external references) are stripped, not sent back.
+- **Stored** by `store_diagram(vault, subject, topic, svg, title, *, added_at=None) ->
+  DrawnDiagram`: the sanitized drawing through `vault.put_source(..., "images", "diagram.svg",
+  ...)` as `sources/images/img-NNN.svg`, sidecar `origin: drawn` (`DRAWN_ORIGIN`), `title`,
+  `content_type: image/svg+xml`, `sha256` (of the sanitized bytes) and `added_at`. Nothing is
+  committed. `DrawnDiagram` has a crop's shape (`path`, `source_id`, `number`, `meta`,
+  `provenance` = `notes_format.diagram_provenance` «Diagrama N», `paths`, `footnote_label`,
+  `footnote`, `markdown`), and `diagram_edit` builds the ordinary `EditOp`
+  (`![Diagrama N](../sources/images/img-NNN.svg)[^imgNNN]`) and its `NewFootnote`.
+- **The turn** treats it exactly as a crop (above): the edit goes through `_check`, the notes lock
+  and the one locked write + checkpoint with the drawing's two files among the commit's paths; a
+  diagram stored in an attempt whose change is never applied is retired; the same sanitized
+  drawing re-asked after a stale re-ask is reused; `undo_last_revision` removes it with the turn
+  and retires it when a batch commit took it first (`… (diagrama retirado)`). `RevisionResult.crop`
+  / `ChatTurn.crop` carry it as a `CropRef` with `kind: "diagram"` (default `"crop"`), empty
+  `source`, the title as `region`, `source_id`, `path`, `sha256`, `added_at`.
+- A student save that links `../sources/images/img-NNN.svg` without its footnote gets
+  `[^imgNNN]: [Diagrama N](...)` (`direct_edit`), as a pasted image gets «Imagen pegada N».
+- Tests: `tests/editor/test_revise_diagram.py` (FakeClaude: success with the sanitized file,
+  footnote, commit, history and undo; an invalid SVG re-asked; a bad anchor; the tool together with
+  `apply_edits`/`crop_image`; a diagram retired when not applied; a student save; the prompt).
+
