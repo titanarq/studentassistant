@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTopics, topicPath } from "../desk/api";
 import { type ActionResult, describeActionFailure } from "../pending/doubts";
+import { useConfirm } from "../ui/ConfirmDialog";
+import { RestoreIcon } from "../ui/icons";
 import {
   fetchVersionDiff,
   fetchVersions,
@@ -17,7 +19,8 @@ import "./versions.css";
  * versions API of #64). It lists every version, newest first, with its date and message, marks
  * the one the current notes are, and says when the notes changed after the latest version. Two
  * versions (or a version and the current notes) are compared by section (`VersionDiffView`),
- * inline or side by side. "Restaurar" writes a version back as a new one, after a confirmation;
+ * inline or side by side. "Restaurar" writes a version back as a new one, after a confirmation in
+ * the app's modal (#491, `useConfirm`) that shows «Restaurando…» while it runs and keeps a refusal;
  * the list and the comparison are read again afterwards.
  */
 
@@ -56,8 +59,6 @@ export default function VersionsPage({ subjectId, topicId }: { subjectId: string
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [diff, setDiff] = useState<ActionResult<VersionDiff> | null>(null);
   const [layout, setLayout] = useState<DiffLayout>("inline");
-  const [confirming, setConfirming] = useState<number | null>(null);
-  const [restoring, setRestoring] = useState(false);
   const [restored, setRestored] = useState<ActionResult<RestoreResult> | null>(null);
   const reads = useRef(0);
   const diffReads = useRef(0);
@@ -96,14 +97,32 @@ export default function VersionsPage({ subjectId, topicId }: { subjectId: string
     };
   }, [subjectId, topicId, comparison]);
 
-  const restore = async (version: number) => {
-    setConfirming(null);
-    setRestoring(true);
-    setRestored(null);
-    const result = await restoreVersion(subjectId, topicId, version);
-    setRestored(result);
-    setRestoring(false);
-    if (result.kind === "ok") void loadList();
+  const confirm = useConfirm();
+
+  // Asked in the app's modal (#491): it stays open with «Restaurando…» while the backend works, and
+  // a refusal (another notes operation, already that version) stays in it with **Cerrar**.
+  const askRestore = (version: number, unversionedSince: number | null) => {
+    void confirm({
+      title: `¿Restaurar la versión ${version}?`,
+      message: (
+        <p>
+          Los apuntes actuales pasarán a ser los de la versión {version}, guardados como una versión nueva. No se pierde
+          ninguna versión.
+          {unversionedSince !== null && ` Los cambios hechos después de la versión ${unversionedSince} no tienen versión propia.`}
+        </p>
+      ),
+      confirmLabel: "Restaurar",
+      confirmIcon: <RestoreIcon />,
+      busyLabel: "Restaurando…",
+      onConfirm: async () => {
+        setRestored(null);
+        const result = await restoreVersion(subjectId, topicId, version);
+        if (result.kind !== "ok") return `No se pudo restaurar la versión: ${describeActionFailure(result)}`;
+        setRestored(result);
+        void loadList();
+        return null;
+      },
+    });
   };
 
   const versions = list?.kind === "ok" ? list.value : null;
@@ -131,9 +150,6 @@ export default function VersionsPage({ subjectId, topicId }: { subjectId: string
           </>
         )}
       </div>
-      {restored !== null && restored.kind !== "ok" && (
-        <p role="alert">No se pudo restaurar la versión: {describeActionFailure(restored)}</p>
-      )}
       {versions !== null && versions.versions.length === 0 && (
         <p>Todavía no hay versiones de los apuntes de este tema. Se crea una cada vez que el editor prepara el tema.</p>
       )}
@@ -154,32 +170,21 @@ export default function VersionsPage({ subjectId, topicId }: { subjectId: string
                     {entry.current && <span className="versions-current"> · la de los apuntes actuales</span>}
                     {when !== null && <span className="versions-date"> · {when}</span>}
                     {entry.message !== "" && <p className="versions-message">{entry.message}</p>}
-                    {!entry.current && confirming !== entry.version && (
-                      <button type="button" disabled={restoring} onClick={() => setConfirming(entry.version)}>
+                    {!entry.current && (
+                      <button
+                        type="button"
+                        aria-haspopup="dialog"
+                        onClick={() =>
+                          askRestore(entry.version, versions.changed_since_latest ? (latest ?? null) : null)
+                        }
+                      >
                         Restaurar la versión {entry.version}
                       </button>
-                    )}
-                    {confirming === entry.version && (
-                      <div role="group" aria-label={`Confirmar la restauración de la versión ${entry.version}`}>
-                        <p>
-                          Los apuntes actuales pasarán a ser los de la versión {entry.version}, guardados como una
-                          versión nueva. No se pierde ninguna versión.
-                          {versions.changed_since_latest &&
-                            ` Los cambios hechos después de la versión ${latest} no tienen versión propia.`}
-                        </p>
-                        <button type="button" onClick={() => void restore(entry.version)}>
-                          Sí, restaurar
-                        </button>{" "}
-                        <button type="button" onClick={() => setConfirming(null)}>
-                          Cancelar
-                        </button>
-                      </div>
                     )}
                   </li>
                 );
               })}
             </ol>
-            {restoring && <p>Restaurando…</p>}
           </section>
           <section aria-labelledby="versions-compare-heading">
             <h2 id="versions-compare-heading">Comparar</h2>

@@ -257,6 +257,35 @@ describe("the confirmation modal (#486)", () => {
       }
     });
 
+    it("keeps Tab inside while it runs, so a later Escape still stops at the dialog (#491)", async () => {
+      const behind = vi.fn();
+      window.addEventListener("keydown", behind);
+      try {
+        const { answers, open } = renderAsker({ ...DELETE, onConfirm: () => new Promise(() => undefined) });
+        const dialog = open();
+        const card = dialog.querySelector(".confirm-dialog-card") as HTMLElement;
+        // Before confirming, Tab is the browser's: it moves between the two buttons.
+        expect(fireEvent.keyDown(within(dialog).getByRole("button", { name: "Cancelar" }), { key: "Tab" })).toBe(true);
+        fireEvent.click(within(dialog).getByRole("button", { name: "Borrar" }));
+        await waitFor(() => expect(card).toHaveFocus());
+
+        // Nothing inside is tabbable while busy: the dialog keeps Tab (and Shift+Tab) on the card.
+        expect(fireEvent.keyDown(card, { key: "Tab" })).toBe(false);
+        expect(card).toHaveFocus();
+        expect(fireEvent.keyDown(card, { key: "Tab", shiftKey: true })).toBe(false);
+        expect(card).toHaveFocus();
+
+        behind.mockClear();
+        fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+        expect(behind).not.toHaveBeenCalled();
+        expect(dialog).toHaveAttribute("open");
+        expect(screen.getByRole("dialog")).toBe(dialog);
+        expect(answers).toEqual([]);
+      } finally {
+        window.removeEventListener("keydown", behind);
+      }
+    });
+
     it("shows a failure with only «Cerrar», which answers false", async () => {
       const { answers, opener, open } = renderAsker({ ...DELETE, onConfirm: async () => "No se pudo borrar: no." });
       const dialog = open();

@@ -175,17 +175,25 @@ export function ConfirmDialog({ options, onClose }: ConfirmDialogProps) {
   // Escape is the dialog's own, taken in the capture phase on the dialog: nothing behind it (a
   // panel that closes on Escape from a window listener) sees it, and the browser does not turn it
   // into a close request; it cancels unless `onConfirm` is running.
+  // Tab while `onConfirm` runs (#491): both buttons are disabled, so nothing inside the dialog is
+  // tabbable and the browser would move the focus out of it (to <body> or its own toolbar), where
+  // a later Escape reaches the window's handlers. The focus stays on the card instead.
   useEffect(() => {
     const node = dialog.current;
     if (node === null) return;
-    const onEscape = (event: globalThis.KeyboardEvent) => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Tab" && runningRef.current) {
+        event.preventDefault();
+        card.current?.focus();
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
       cancelRef.current();
     };
-    node.addEventListener("keydown", onEscape, true);
-    return () => node.removeEventListener("keydown", onEscape, true);
+    node.addEventListener("keydown", onKey, true);
+    return () => node.removeEventListener("keydown", onKey, true);
   }, []);
 
   // Any other close request the browser turns into `cancel` (a back gesture): the same answer,
