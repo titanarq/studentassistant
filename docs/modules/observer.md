@@ -301,7 +301,11 @@ and the context models are re-exported by `studentassistant.observer`.
   esto», «pasa a estudiar»: end the capture and switch the topic to Estudiar, #335; talking about
   studying as content, a plan for later or asking for one material is not `study`). Sonnet resolves «la página 3», «las dos últimas», «la
   que está borrosa» to `targets` from the sources list; a reference it cannot resolve is reported
-  as a `question` (the editor asks back); «la segunda», «pone "escrita"» while a doubt is asked are
+  as a `question` (the editor asks back); a comment about the app itself, not the notes or the
+  topic («apunta una mejora: que se pueda …», «esto es un bug: …», «la aplicación debería …»), is
+  a `question` too (#472): the editor records it in the vault's feedback inbox with its
+  `report_feedback` tool (`docs/modules/editor.md`) and never changes the notes, and a feedback
+  turn that was classified `edit` anyway is not re-asked for `apply_edits`; «la segunda», «pone "escrita"» while a doubt is asked are
   a `doubt_answer` (`answer`: the suggestion's number as digits, or the words). Plain dictation
   must yield an empty list. A request is refused when its `summary` is empty or over 140
   characters, or its `segment_ids` are empty, outside the window, repeated, not consecutive in

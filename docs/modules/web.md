@@ -408,6 +408,13 @@
     - The request's rendering is one switch on the entry's origin (`Request` in `ChatPanel.tsx`:
       voice, typed, or `system` for what the assistant does on its own), the reply's on its kind
       (`Reply`, `DoubtEntry`).
+    - **App feedback chip** (#472): a turn whose result or history turn carries `feedback`
+      `{id, kind, title}` (the editor recorded a bug or an improvement of the app in the vault's
+      feedback inbox instead of editing, `docs/modules/editor.md`) shows, under its reply, a small
+      chip «Bug apuntado» / «Mejora apuntada» (`src/chat/FeedbackChip.tsx`, the title as its
+      tooltip and as visually hidden text). `workspace/chat/api.ts` and `turns.ts` read it
+      (`readFeedback`) from the live `turn.result` and from `GET .../notes/chat`, the history's
+      value winning, so the chip survives a reload. Triage is not in the web: the CLI does it.
     - **Input on screen, log following the newest turn (#412, #450).** On a wide screen at least
       30rem tall (`workspace.css`, `min-width: 56.3125rem and min-height: 30rem`) the page is
       exactly one viewport high and never scrolls: the header on top, each column scrolling inside
@@ -595,6 +602,10 @@
     generation leaves no turn. History: `GET .../tutor` turns with `kind: "generation"` (read as
     `TutorTurn.generation` `{option, items}` in `tutor/api.ts`) show as finished generation
     turns with **Abrir**, whatever their `style`; older turns read unchanged.
+  - **App feedback chip** (#472): a finished answer whose `result` or history turn carries
+    `feedback` (`TutorTurn.feedback` in `tutor/api.ts`, `readFeedback`) shows the same chip as the
+    workspace chat, «Bug apuntado» / «Mejora apuntada» (`src/chat/FeedbackChip.tsx`), live and
+    after a reload.
   - The page (`StudyPage`) takes a generation's `result.study` as its `StudyState` (the badges
     turn "Listo" without another `GET .../study`; a read in course is dropped) and, if the open
     option shows that `material_kind`, remounts its content so it reads the new material.
@@ -977,6 +988,11 @@ token):
     backend's detail, the same line with the "Construir" link as the topic page (#434: no button
     writes the notes; they are asked for in the workspace chat); the chat appears once notes exist.
 - `src/chat/` (#71): the chat with the editor over the editor chat API (docs/modules/server.md).
+  - `feedback.ts` / `FeedbackChip.tsx` / `feedbackChip.css` (#472): `FeedbackRef` `{id, kind:
+    "bug" | "mejora", title}`, `readFeedback(value)` (a turn's `feedback`, `null` when absent or
+    malformed), `feedbackLabel` («Bug apuntado» / «Mejora apuntada») and the chip both chats
+    render on a turn that recorded app feedback (`data-testid="feedback-chip"`, class
+    `feedback-chip-<kind>`).
   - `sse.ts`: `readSse(body, onEvent)`, a reader of a `text/event-stream` body from a `fetch` POST
     (events split at blank lines, `event:` + joined `data:` lines, comments ignored; rejects when
     the stream breaks).

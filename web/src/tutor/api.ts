@@ -6,6 +6,7 @@
  */
 
 import { type ChatRef, readRefs, type StreamHandlers, type StreamOutcome, streamTurn } from "../chat/api";
+import { type FeedbackRef, readFeedback } from "../chat/feedback";
 import { type ReadResult, topicPath } from "../desk/api";
 
 /**
@@ -31,6 +32,8 @@ export interface TutorAnswer {
   /** The sections of the notes a written answer cites, in order; empty when spoken. */
   sections: SectionRef[];
   warning: string | null;
+  /** Written style: the app feedback the turn recorded (#472), shown as a chip; else null. */
+  feedback: FeedbackRef | null;
 }
 
 /**
@@ -74,6 +77,7 @@ export function readTutorAnswer(body: unknown): TutorAnswer | null {
     refs: readRefs(body.refs),
     sections: readSections(body.sections),
     warning: optionalText(body.warning),
+    feedback: readFeedback(body.feedback),
   };
 }
 

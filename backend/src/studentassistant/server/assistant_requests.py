@@ -811,6 +811,8 @@ class AssistantRequestConsumer:
             host=self.sessions.host,
             # An `edit` answered only in prose is re-asked once, then flagged (#452).
             expects_change=queued.request.kind == "edit",
+            # The session app feedback the turn may record is attributed to (#472).
+            session_id=queued.session_id,
         )
 
     async def _prepare(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:

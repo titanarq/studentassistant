@@ -25,6 +25,7 @@
  */
 
 import type { ChatRef } from "../../chat/api";
+import type { FeedbackRef } from "../../chat/feedback";
 import type {
   DoubtView,
   GoStudyAction,
@@ -96,6 +97,8 @@ export interface ChatEntry {
   parent: string | null;
   /** `study`: the "Ir a Estudiar" button (live only; the history does not keep these turns). */
   action: GoStudyAction | null;
+  /** The app feedback the turn recorded (#472): the «Mejora apuntada» / «Bug apuntado» chip. */
+  feedback: FeedbackRef | null;
 }
 
 export interface ChatState {
@@ -164,6 +167,7 @@ function blank(key: string, fields: Partial<ChatEntry>): ChatEntry {
     progress: null,
     parent: null,
     action: null,
+    feedback: null,
     ...fields,
   };
 }
@@ -216,6 +220,7 @@ function fromHistory(turn: HistoryTurn, key: string, live: ChatEntry | undefined
     doubt: turn.doubt,
     progress: live?.progress ?? null,
     parent: live?.parent != null && liveKeys.has(live.parent) ? live.parent : null,
+    feedback: turn.feedback ?? live?.feedback ?? null,
   });
 }
 
@@ -307,6 +312,7 @@ function applyOutcome(entry: ChatEntry, outcome: TurnOutcome): Partial<ChatEntry
     targets: outcome.targets.length > 0 ? outcome.targets : entry.targets,
     pendingId: outcome.pendingId ?? entry.pendingId,
     action: outcome.action,
+    feedback: outcome.feedback,
   };
 }
 

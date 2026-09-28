@@ -32,7 +32,8 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
 `studentassistant.editor.versions`,
 "¿Por qué pusiste esto?" in `studentassistant.editor.explain`, the subject style guide in
 `studentassistant.editor.style_guide` and the voice tutor and the study screen's question chat in
-`studentassistant.editor.tutor` (#82, #334).
+`studentassistant.editor.tutor` (#82, #334), and the app feedback both chats record in
+`studentassistant.editor.feedback` (#472).
 
 ### The format of `notes/apuntes.md`
 - **Preamble**: whatever comes before the first section -- the `# Tema` title and, optionally, an
@@ -431,7 +432,7 @@ mode, and the student's message.
   longer raised by a turn.
 - `await revise_notes(vault, subject, topic, message, *, client, sync, on_reply=None,
   on_event=None, digest=None, confirm_over_cap=False, clock=..., ..., request=None,
-  turn_id=None, selected_sources=None) -> RevisionResult`. The
+  turn_id=None, selected_sources=None, session_id=None) -> RevisionResult`. The
   editor first writes its Spanish reply as text -- streamed through `LLMClient.create(on_text=...)`
   to `on_reply("reply.delta", {"text", "attempt"})` -- and then, if anything changes, calls the
   strict tool `apply_edits` once (`EditsOutput`: `ops` (the `EditOp`s above), `footnotes`,
@@ -490,6 +491,7 @@ mode, and the student's message.
   `on_event("notes.edited", payload)` gets the result without the `notes` text.
 - `RevisionResult`: `subject`, `topic`, `turn_id`, `origin` (`typed` | `voice`), `request` (the
   `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`, `summary`, `ops`,
+  `feedback` (the `FeedbackRef` of the app feedback the turn recorded, #472, else `None`),
   `footnotes`, `fidelity_mode` (the new one, when changed), `style_rules` (added to the guide:
   the confirmed ones), `proposed_style_rules` (proposed, minus those the guide has), `notes_changed`,
   `doubts` (pending ids raised),
@@ -512,6 +514,7 @@ mode, and the student's message.
   `origin` (`typed` | `voice`), `request_summary` (the spoken request's short line, `None` when
   typed), `transcript` (its `ChatRequestRef`, `None` when typed), `message`, `reply`, `applied`,
   `summary` (the applied change's), `changed_sections`, `commit`, `undone`, `warning`, `refs`,
+  `feedback` (the recorded app feedback's `FeedbackRef`, #472),
   `proposed_style_rules` -- the turn's proposals the subject's guide does not have yet, also shown
   to the editor in the conversation so far) and `can_undo`. Since #325 also, in time order, turns
   of kind `doubt` (a doubt asked in the chat, `doubt_chat_turns`: `pending_id`, `question` --
@@ -782,7 +785,8 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   spoken style does and each section of the current `apuntes.md` it draws on as `[§anchor]` (a
   heading's `{#anchor}`; `[§ #anchor]` is read too). A request to change the document ("cámbiame
   esta definición") is answered "Eso se cambia en Construir: pídeselo allí al asistente." (prompt
-  rule): no tool is offered, nothing under `notes/` is written, no notes commit or tag. The client
+  rule): its only tool is `report_feedback` (app feedback, `feedback.py`, #472, below), nothing
+  under `notes/` is written, no notes commit or tag. The client
   is the caller's: the server passes the role `[editor] study_chat_role` names (`editor`, Opus, by
   default; `observer`, Sonnet, to compare), and the ledger records it. Each style is given only its
   own earlier turns as history (the voice tutor and the study chat are two conversations in one
@@ -792,7 +796,9 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   define with a usable provenance, in order of first citation: `cited_refs(document, reply)`),
   `sections` (written style only: `SectionRef` `{anchor, title}` per `[§anchor]` the reply cites
   that the current notes have, in order of first citation, `title` the heading's title as written:
-  `cited_sections(document, reply) -> (sections, unknown)`), `warning` (empty or cut answer, and in
+  `cited_sections(document, reply) -> (sections, unknown)`), `feedback` (written style: the
+  `FeedbackRef` of the app feedback the turn recorded, #472, else `None`; also on `TutorTurn`),
+  `warning` (empty or cut answer, and in
   the written style the cited anchors the notes lack, `§a, §b`; warnings are joined), `model`.
 - `tutor_history(vault, subject, topic) -> TutorHistory` (blocking, reads only): `turns`
   (`TutorTurn`: `time`, `kind`, `style`, `question`, `reply`, `refs`, `sections`, `warning`,
@@ -815,3 +821,42 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   `CostConfirmationRequiredError` and the llm errors as in `generate_notes`.
 - Entry point: the server's `GET/POST /api/subjects/{s}/topics/{t}/tutor` (SSE,
   `docs/modules/server.md`).
+
+### App feedback from the chat -- `feedback.py` (#472)
+The student reports a bug of the app itself or asks for an improvement («apunta una mejora: …»,
+«esto es un bug: …», «la app debería …») in the workspace chat (a revision turn, Construir) or the
+study chat (the written tutor, Estudiar); the editor records it in the vault's feedback inbox
+(`vault.feedback`, `feedback/inbox.jsonl`) for the maintainer to triage by hand. **The backend
+never calls GitHub** (the code repository is public, the vault is private; no token in the
+backend): the maintainer reads the inbox with `studentassistant feedback list` and marks items
+with `studentassistant feedback mark` (`docs/modules/server.md`, CLI).
+- Tool `report_feedback` (`FEEDBACK_TOOL`, strict, `feedback_tool()`): `FeedbackReport` --
+  `kind` (`bug` | `mejora`), `title` (short, Spanish), `body` (the student's words quoted plus a
+  one- or two-sentence summary). It is offered next to `apply_edits` in `revise_notes` and as the
+  only tool (`tool_choice: auto`) of the written style of `ask_tutor`; the voice tutor does not get
+  it. The rule of when to call it is the prompt `editor_feedback` (`feedback_instruction()`,
+  appended to `REVISE_INSTRUCTION` / `WRITTEN_INSTRUCTION`): only for feedback about the app,
+  never for the notes' content, never together with another tool, ask when in doubt; the text
+  reply is only the Spanish confirmation («He apuntado la mejora: …»).
+- `parse_feedback(response) -> FeedbackReport | None` (the first valid call; a malformed one is
+  logged and `None`), `has_feedback_call(response)`, `confirmation(ref)` (the reply used when the
+  model wrote none: «He apuntado el bug: <title>.»), `excerpt(lines, message)` (the last chat lines
+  plus the message, the newest `EXCERPT_CHARS` = 600).
+- `await record_feedback(vault, report, *, subject_slug, topic_slug, mode, route, session_id,
+  chat_excerpt, sync, clock=None) -> FeedbackRef | None`: stores the item with
+  `vault.add_feedback` (in a worker thread) with a `FeedbackContext` -- `subject`, `topic`, `route`
+  (`workspace` | `study`), `session_id` (revision: the caller's `session_id`, else the spoken
+  request's session; study chat: `None`), `mode` (`construir` | `estudiar`), `excerpt` (the last
+  two turns, each line cut at 200 characters) -- then `sync.note_change()`. Returns the
+  `FeedbackRef` (`id`, `kind`, `title`) the turn's result carries (`RevisionResult.feedback`,
+  `TutorAnswer.feedback`, and in the history `ChatTurn.feedback` / `TutorTurn.feedback`), which
+  the web shows as the chip «Mejora apuntada» / «Bug apuntado» (`CHIP_LABELS`).
+- **A feedback turn never changes the notes**: in `revise_notes` a response with a
+  `report_feedback` call ignores any `apply_edits` of the same response, is not re-asked for
+  `apply_edits` when the request classified as `edit`, and gets no `NO_CHANGE_WARNING`. The
+  editor's history text shows such a turn as «[Apuntado como comentario sobre la aplicación:
+  <title>]».
+- A malformed call or a store that fails (busy lock, secret guard, validation) never fails the
+  turn: nothing is recorded, `feedback` stays `None` and the turn's `warning` gets
+  `NOT_RECORDED_WARNING` («No he podido apuntar tu comentario sobre la aplicación; vuelve a
+  decírmelo.»).

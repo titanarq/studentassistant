@@ -1,0 +1,31 @@
+/* The chip of a chat turn that recorded app feedback (#472), in both chats. */
+.feedback-chip-row {
+  margin: var(--space-1) 0 0;
+}
+
+.feedback-chip {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-l);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--step--1);
+  font-weight: 700;
+}
+
+.feedback-chip-bug {
+  border-color: var(--correction-line);
+  background: var(--correction-soft);
+  color: var(--correction);
+}
+
+/* The title, for screen readers only (the tooltip shows it on hover). */
+.feedback-chip-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
