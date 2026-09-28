@@ -24,7 +24,9 @@ catalogue of just those sources. The editor streams a Spanish reply and calls th
 `validate` with `editor_written=True`, every incorporated source is cited unless `nothing_new`
 names it, no settled block («[revisado]») is changed or deleted and no contradiction is raised
 between a requested capture and another capture of the same kind not requested now (#474,
-`overlap.py`) -- and re-asked at most `MAX_REASKS` times. It is applied under the per-topic
+`overlap.py`) -- and re-asked at most `MAX_REASKS` times. A source that only repeats what the
+notes say goes in `nothing_new`; with no reply of its own, the turn's reply is
+`overlap.nothing_new_reply`. It is applied under the per-topic
 write lock on the latest notes (re-asked with the new notes when the student saved meanwhile),
 committed as `Apuntes de <s>/<t>: incorporada(s) <fuentes>` and recorded as an `incorporation`
 conversation record, which the chat shows as a turn of kind `incorporate` and
@@ -91,6 +93,7 @@ from studentassistant.editor.notes_format import (
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
 from studentassistant.editor.overlap import (
     capture_facts,
+    nothing_new_reply,
     same_kind_contradiction_errors,
     settled_block_errors,
 )
@@ -365,8 +368,12 @@ class IncorporationResult(_Strict):
 INCORPORATE_INSTRUCTION = (
     "## Tarea: incorporar estas fuentes a los apuntes (herramienta `apply_edits`)\n\n"
     "Incorpora a los apuntes actuales lo que aportan las fuentes de arriba, y nada más: el resto"
-    " del tema no está aquí. Encaja cada idea en su sitio de la estructura de los apuntes. Si una"
-    " fuente ya está citada, afina lo que dicen los apuntes a partir de ella sin duplicarlo; si no"
+    " del tema no está aquí. Encaja cada idea en su sitio de la estructura de los apuntes. Las"
+    " capturas suelen solaparse (otra foto de la misma página): compara cada una con los apuntes,"
+    " no vuelvas a escribir lo que ya dicen (la misma idea, aunque se lea algo distinto) y añade"
+    " solo lo nuevo. Sustituye un fragmento solo si la lectura nueva es claramente mejor (antes"
+    " había un hueco, una lectura dudosa, un corte o algo ilegible, y la nueva no tiene marca de"
+    " duda) y el bloque no está «[revisado]»; una redacción distinta no es mejor. Si una fuente no"
     " aporta nada nuevo, dilo en tu respuesta y ponla en `nothing_new`. Contesta primero con tu"
     " respuesta en texto y llama después una vez a `apply_edits` con todo el cambio.\n"
 )
@@ -880,7 +887,12 @@ async def incorporate_sources(
         changed = bool(paths)
         result = result.model_copy(
             update={
-                "reply": reply or value.summary.strip(),
+                "reply": reply
+                or (
+                    nothing_new_reply(value.nothing_new)
+                    if value.nothing_new and not changed
+                    else value.summary.strip()
+                ),
                 "applied": changed,
                 "summary": value.summary.strip() or None,
                 "ops": value.ops,

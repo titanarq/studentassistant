@@ -25,7 +25,10 @@ An empty selection (a typed message with nothing selected) tells the editor so: 
 pages «esto» is instead of guessing. `None` (a spoken request, the old notes chat) says nothing.
 With a selection, the facts of the selected captures and of those the notes cite follow it
 (`overlap.capture_facts`), and a contradiction between a selected capture and another capture of
-the same kind not selected is sent back (`overlap.same_kind_contradiction_errors`, #474).
+the same kind not selected is sent back (`overlap.same_kind_contradiction_errors`, #474). A
+selected capture that only repeats what the notes say goes in `nothing_new` (only selected
+sources may): the call changes nothing, carries no `NO_CHANGE_WARNING`, and its reply (or, when
+empty, `overlap.nothing_new_reply`) tells the student so.
 
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
@@ -128,8 +131,12 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
-from studentassistant.editor.overlap import capture_facts, same_kind_contradiction_errors
-from studentassistant.editor.reviewed import settled_blocks
+from studentassistant.editor.overlap import (
+    capture_facts,
+    nothing_new_reply,
+    same_kind_contradiction_errors,
+)
+from studentassistant.editor.reviewed import settled_blocks, source_key
 from studentassistant.editor.style_guide import (
     append_rules,
     new_rules,
@@ -285,6 +292,11 @@ class EditsOutput(_Strict):
         description="Every point this change leaves unresolved (an illegible word, sources that"
         " disagree, something missing): never written into the notes, asked in the chat.",
     )
+    nothing_new: list[str] = Field(
+        default_factory=list,
+        description="With a Recursos selection: the selected source_ids that add nothing the"
+        " notes do not already say (said in the reply).",
+    )
 
 
 TurnOrigin = Literal["typed", "voice"]
@@ -332,6 +344,10 @@ class RevisionResult(_Strict):
         " the student confirms them.",
     )
     notes_changed: bool = False
+    nothing_new: list[str] = Field(
+        default_factory=list,
+        description="Selected sources the editor found add nothing new (#474).",
+    )
     doubts: list[str] = Field(
         default_factory=list, description="The pending ids of the doubts the turn raised."
     )
@@ -845,7 +861,8 @@ NO_SELECTION_NOTE = (
 )
 SELECTION_NOTE = (
     "(El estudiante tiene seleccionadas en Recursos las fuentes de «Selección actual del"
-    " estudiante», más arriba: «esto» y «estas páginas» son esas.)"
+    " estudiante», más arriba: «esto» y «estas páginas» son esas. Lo que los apuntes ya dicen de"
+    " ellas no se vuelve a escribir; si no aportan nada nuevo, ponlas en `nothing_new` y dilo.)"
 )
 
 SPOKEN_NOTE = (
@@ -973,6 +990,13 @@ def _check(
     errors.extend(editor_doubt_errors(value.doubts, assembled))
     if selected:
         errors.extend(same_kind_contradiction_errors(value.doubts, selected))
+    chosen = {source_key(ref) for ref in selected}
+    for source_id in value.nothing_new:
+        if source_key(source_id) not in chosen:
+            errors.append(
+                f"`nothing_new` solo puede nombrar fuentes seleccionadas en Recursos; {source_id}"
+                " no lo es."
+            )
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -1379,7 +1403,12 @@ async def revise_notes(
         guide = await asyncio.to_thread(read_style_guide, vault, subject_slug)
         result = result.model_copy(
             update={
-                "reply": reply or value.summary.strip(),
+                "reply": reply
+                or (
+                    nothing_new_reply(value.nothing_new)
+                    if value.nothing_new and not changed
+                    else value.summary.strip()
+                ),
                 "applied": bool(paths),
                 "summary": value.summary.strip() or None,
                 "ops": value.ops,
@@ -1388,6 +1417,7 @@ async def revise_notes(
                 "style_rules": added,
                 "proposed_style_rules": new_rules(guide.rules, _rules(value.proposed_style_rules)),
                 "notes_changed": changed,
+                "nothing_new": value.nothing_new,
                 "changed_sections": _changed_sections(value.ops) if changed else [],
                 "diff": _diff(notes, edited) if changed else "",
                 "notes": edited if changed else None,

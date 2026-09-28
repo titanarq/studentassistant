@@ -16,10 +16,13 @@ it answers is checked here, and an answer that breaks it is re-asked with the Sp
 - **The facts of each capture** (`capture_facts`): for the requested captures and those the notes
   cite, the uncertain marks of its transcription, its sharpness and its triage flags, so that the
   editor can tell a clearly better reading from a merely different one.
+- **A capture that only repeats** (`nothing_new_reply`): the Spanish reply of a turn whose
+  `nothing_new` sources add nothing, when the editor wrote no reply of its own.
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
@@ -195,9 +198,37 @@ def capture_facts(
     return "\n".join(lines) + "\n"
 
 
+_PAGE_NUMBER = re.compile(r"page-0*(\d+)\.[A-Za-z0-9]+$")
+_NAMED_KIND = {"notes": "de tus apuntes", "book": "del libro"}
+
+
+def _spoken_name(ref: str) -> str:
+    """`sources/notes/page-003.jpg` -> `la página 3 de tus apuntes`; any other source as its id."""
+    key = source_key(ref)
+    kind, page = source_kind(key), _PAGE_NUMBER.search(key)
+    if kind in _NAMED_KIND and page is not None:
+        return f"la página {int(page.group(1))} {_NAMED_KIND[kind]}"
+    return f"`{key}`"
+
+
+def nothing_new_reply(source_ids: Sequence[str]) -> str:
+    """The Spanish chat reply of a turn whose sources only repeat the notes, when the editor
+    wrote none: `nothing_new` names every such source."""
+    names = [_spoken_name(ref) for ref in dict.fromkeys(source_ids)]
+    if not names:
+        return ""
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} y {names[-1]}"
+    verb = "no aporta" if len(names) == 1 else "no aportan"
+    return (
+        f"{listed[0].upper()}{listed[1:]} {verb} nada nuevo: los apuntes ya lo dicen, así que no"
+        " los he cambiado."
+    )
+
+
 __all__ = [
     "CAPTURE_KINDS",
     "capture_facts",
+    "nothing_new_reply",
     "same_kind_contradiction_errors",
     "settled_block_errors",
     "source_kind",

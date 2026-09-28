@@ -1,0 +1,6 @@
+{
+  "page-001": {"triage": {"status": "flagged", "reasons": ["partial"], "metrics": {"sharpness": 41.0}}},
+  "page-002": {"triage": {"status": "kept", "reasons": [], "metrics": {"sharpness": 188.0}}},
+  "page-003": {"triage": {"status": "kept", "reasons": [], "metrics": {"sharpness": 160.0}}},
+  "page-004": {"triage": {"status": "kept", "reasons": [], "metrics": {"sharpness": 152.0}}}
+}

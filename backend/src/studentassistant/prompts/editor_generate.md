@@ -40,6 +40,10 @@ the student's notes, made legible, complete and well organised.
 - Open pending items are doubts the student has not resolved yet. Do not resolve them by guessing:
   write what the sources support (or leave the fragment out) without marking it. Resolved items
   are decisions of the student: follow them.
+- Several captures are often the same page photographed again, or overlap (a photo repeating the
+  last lines of the previous one): write each idea once, from the reading with no uncertainty mark
+  when the captures differ; never write a page's content once per capture, and never add a
+  section listing how the captures differ.
 - Keep schemes as nested lists or as a `mermaid` block, and tables as Markdown tables.
 - If the subject's style guide is given, follow it.
 - If an earlier version of the notes is given, keep the anchors of its sections that still exist.
