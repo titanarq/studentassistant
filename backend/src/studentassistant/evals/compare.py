@@ -34,6 +34,7 @@ SCORE_LABELS: dict[str, str] = {
     "triage_reasons": "triaje (motivos)",
     "kept": "conservado",
     "supported": "con fuente",
+    "unique": "sin repetir",
     "score": "global",
 }
 
@@ -97,6 +98,7 @@ def case_scores(result: CaseResult) -> dict[str, float | None]:
         "triage_reasons": triage.reason_accuracy if triage else None,
         "kept": notes.kept if notes else None,
         "supported": notes.supported if notes else None,
+        "unique": notes.unique if notes else None,
         "score": result.score,
     }
 

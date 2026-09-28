@@ -156,7 +156,7 @@ class CaseResult(BaseModel):
     @property
     def score(self) -> float | None:
         """The mean of the case's headline scores: pages, sections, requests, triage, kept and
-        supported."""
+        supported (not *unique*, which is reported beside it)."""
         parts = [self.page_char_accuracy]
         if self.sections is not None:
             parts.append(self.sections.pairwise_agreement)
@@ -530,8 +530,8 @@ def render_report(report: EvalReport) -> str:
         f" {NOTES_PATH_LABELS.get(report.notes_path or '', '—')}",
         "",
         "| caso | páginas (caracteres) | páginas (palabras) | secciones | peticiones (F1)"
-        " | triaje (F1) | conservado | con fuente | global | coste |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        " | triaje (F1) | conservado | con fuente | sin repetir | global | coste |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for case in report.cases:
         sections = case.sections.pairwise_agreement if case.sections else None
@@ -539,10 +539,11 @@ def render_report(report: EvalReport) -> str:
         triage = case.triage.f1 if case.triage else None
         kept = case.notes.kept if case.notes else None
         supported = case.notes.supported if case.notes else None
+        unique = case.notes.unique if case.notes else None
         lines.append(
             f"| {case.case} | {_pct(case.page_char_accuracy)} | {_pct(case.page_word_accuracy)}"
             f" | {_pct(sections)} | {_pct(requests)} | {_pct(triage)} | {_pct(kept)}"
-            f" | {_pct(supported)}"
+            f" | {_pct(supported)} | {_pct(unique)}"
             f" | {_pct(case.score)} | {_usd(case.actual_usd)} |"
         )
     for case in report.cases:
@@ -585,7 +586,8 @@ def render_report(report: EvalReport) -> str:
             draft = " (borrador: no pasaron el validador)" if case.notes_draft else ""
             lines.append(
                 f"- Apuntes{draft}: conservado {_pct(n.kept)} de {n.reference_units} ideas de"
-                f" referencia, con fuente {_pct(n.supported)} de {n.generated_units} generadas"
+                f" referencia, con fuente {_pct(n.supported)} de {n.generated_units} generadas,"
+                f" sin repetir {_pct(n.unique)}"
             )
             for error in case.notes_errors:
                 lines.append(f"  - Validador: {error}")
@@ -595,6 +597,9 @@ def render_report(report: EvalReport) -> str:
             if n.unsupported:
                 lines.append("- Ideas generadas sin apoyo en las fuentes:")
                 lines += [f"  - {unit}" for unit in n.unsupported]
+            if n.repeated:
+                lines.append("- Ideas generadas que repiten otra anterior:")
+                lines += [f"  - {unit}" for unit in n.repeated]
     lines += ["", render_comparison(report.comparison, report.comparison_warnings).rstrip("\n")]
     return "\n".join(lines) + "\n"
 

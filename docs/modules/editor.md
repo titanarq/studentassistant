@@ -869,6 +869,12 @@ answer that breaks one is re-asked with the Spanish errors like any other valida
   `SETTLED_REVIEW_RULE`: a doubt about what a settled block already says is auto-resolved without
   edits, its evidence the source that block cites, never asked. This rule is the model's to follow;
   only the lock above is checked.
+- Coverage: the synthetic overlapping captures of `backend/tests/fixtures/overlap/` (four pages of
+  one notebook page, two of them re-captures, plus the reference notes the editor should end with)
+  drive the FakeClaude tests of the lock, the contradiction refusal, the block map marks, the
+  reviewed records and the overlap-aware prompts, and the eval's *unique* score
+  (`evals.scoring.score_unique`: the share of generated units not repeating an earlier one;
+  `docs/modules/infra.md`, "Evals"), which measures repeated overlapping content in a real run.
 
 ### App feedback from the chat -- `feedback.py` (#472)
 The student reports a bug of the app itself or asks for an improvement («apunta una mejora: …»,

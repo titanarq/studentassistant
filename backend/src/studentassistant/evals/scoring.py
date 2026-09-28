@@ -21,6 +21,11 @@ words of three letters or more that are not Spanish stop words (numbers always c
   dropped lowers it. *Supported* is the share of generated units whose content words are at least
   `SUPPORTED_SHARE` in the session's own material (transcript, page transcriptions) or the
   reference notes: content from nowhere lowers it.
+- Editor repetition (`score_unique`, also in `score_notes`): *unique* is `1 -` the share of
+  generated units repeating an earlier generated unit (the two share at least `REPEATED_SHARE`
+  of their combined content words -- the same idea read again, even slightly differently):
+  what overlapping captures written in twice lower. It is reported and compared, not averaged
+  into a case's global score, so earlier baselines stay comparable.
 - Request detection (`score_requests`): a detected request matches a reference request when both
   have the same kind and share at least one segment (each matched at most once, in order);
   precision, recall and F1 overall and per kind, plus the missed and spurious requests.
@@ -46,6 +51,9 @@ TRIAGE_REASONS: tuple[str, ...] = ("blank", "duplicate", "blurry", "partial", "s
 COVERED_SHARE = 0.5
 # A generated unit is supported when this share of its content words is in the sources.
 SUPPORTED_SHARE = 0.8
+# A generated unit repeats an earlier one when the two share this share of their combined
+# content words (their Jaccard index).
+REPEATED_SHARE = 0.5
 # Units with fewer content words than this say too little to score (a lone "Ejemplo:").
 MIN_UNIT_WORDS = 2
 
@@ -230,10 +238,32 @@ class NotesFidelity(BaseModel):
     generated_units: int
     kept: float
     supported: float
+    # `None` in reports written before #474.
+    unique: float | None = None
     # The reference units no generated unit covers, and the generated units the sources do not
     # support, as written: what a person reads to see why a score dropped.
     dropped: list[str]
     unsupported: list[str]
+    # The generated units repeating an earlier generated unit, as written.
+    repeated: list[str] = []
+
+
+def repeated_units(generated_units: Iterable[str]) -> list[str]:
+    """The units of `generated_units` repeating an earlier one of them (see `REPEATED_SHARE`)."""
+    seen: list[set[str]] = []
+    repeated: list[str] = []
+    for unit in generated_units:
+        got = content_words(unit)
+        if any(len(got & other) / len(got | other) >= REPEATED_SHARE for other in seen):
+            repeated.append(unit)
+        seen.append(got)
+    return repeated
+
+
+def score_unique(generated: str) -> float:
+    """*Unique* of `generated` notes: 1 - the share of their units repeating an earlier one."""
+    found = units(generated)
+    return _share(len(found) - len(repeated_units(found)), len(found))
 
 
 def score_notes(reference: str, generated: str, sources: Iterable[str]) -> NotesFidelity:
@@ -256,13 +286,16 @@ def score_notes(reference: str, generated: str, sources: Iterable[str]) -> Notes
         for unit, got in zip(generated_units, generated_words, strict=True)
         if len(got & vocabulary) / len(got) < SUPPORTED_SHARE
     ]
+    repeated = repeated_units(generated_units)
     return NotesFidelity(
         reference_units=len(reference_units),
         generated_units=len(generated_units),
         kept=_share(len(reference_units) - len(dropped), len(reference_units)),
         supported=_share(len(generated_units) - len(unsupported), len(generated_units)),
+        unique=_share(len(generated_units) - len(repeated), len(generated_units)),
         dropped=dropped,
         unsupported=unsupported,
+        repeated=repeated,
     )
 
 

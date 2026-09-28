@@ -211,6 +211,14 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
     content words in the session's transcript, its page transcriptions or the reference notes
     (content from nowhere lowers it). The report lists the dropped and unsupported units, whether
     the notes stayed a draft, and the validator's errors.
+  - *Editor repetition* (`score_unique`, also `NotesFidelity.unique`/`repeated`; #474): *unique*
+    = 1 - the share of generated units repeating an earlier generated unit (the two share at
+    least 50 % of their combined content words, `REPEATED_SHARE`: the same idea written again,
+    even read slightly differently). It catches overlapping captures incorporated twice, which
+    kept and supported cannot see. The report shows it beside the other scores and lists the
+    repeated units; it is compared between runs but NOT part of the global score, so earlier
+    baselines stay comparable (`None` in reports written before it). Its scoring test uses the
+    synthetic overlapping captures of `backend/tests/fixtures/overlap/`.
   - *Request detection*, when `requests.yaml` exists: the session's `assistant.request` events
     (not typed ones) against the reference; a detected request matches a reference one of the
     same kind sharing at least one segment, each matched once. Precision, recall and F1 overall
@@ -224,14 +232,15 @@ or models change. Student-facing guide (Spanish): `docs/runbooks/evaluacion.md`.
     share of listed captures on which run and reference agree about that reason, and its mean
     (`reason_accuracy`). The report lists the captures triaged otherwise than the reference.
   - *Global* per case: the mean of page character accuracy, section agreement, request F1,
-    triage F1, kept and supported (those that exist; no notes counts kept and supported as 0).
+    triage F1, kept and supported (those that exist; no notes counts kept and supported as 0);
+    *unique* is not in it.
 - **Comparison** (`compare.py`, `compare_reports` / `previous_report` / `render_comparison`;
   pure, no Claude). After a run, `run_eval` loads the most recent readable `report.json` among the
   sibling `runs/<UTC time>/` directories whose name sorts before its own; an unreadable one is
   named in a warning (log, CLI, `EvalReport.comparison_warnings`, the report) and skipped. Per
   case present in both runs and per score (page character/word accuracy, section
   agreement/coverage, request precision/recall/F1, triage precision/recall/F1/reason accuracy,
-  kept, supported, global): previous value, new value, delta (`None` when
+  kept, supported, unique, global): previous value, new value, delta (`None` when
   either is missing); a drop larger than `[eval] regression_margin` is a regression. Cases only in
   one run are listed as added/removed. Each run's request detector and notes path are shown
   (`None` for older reports, whose new fields are all optional). It is stored as `EvalReport.comparison` (`RunComparison`,
