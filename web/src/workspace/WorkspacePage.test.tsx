@@ -215,7 +215,10 @@ it("opens a footnote's source over the document, and closes it with the X or Esc
   const refs = await screen.findAllByRole("link", { name: "Fuente: Apuntes, página 2" });
   const documentColumn = screen.getByRole("region", { name: "Documento" });
   const heading = within(documentColumn).getByRole("heading", { name: /Contexto/ });
-  documentColumn.scrollTop = 120;
+  // #485: the body under the document's pinned header is what scrolls.
+  const documentBody = documentColumn.querySelector<HTMLElement>(".workspace-document-body")!;
+  expect(documentBody).toContainElement(heading);
+  documentBody.scrollTop = 120;
   fireEvent.click(refs[0]);
 
   // Over the document, not in Recursos: the tabs stay where they were (Captura keeps running).
@@ -236,7 +239,7 @@ it("opens a footnote's source over the document, and closes it with the X or Esc
   expect(refs[0]).toHaveFocus();
   expect(heading.isConnected).toBe(true);
   expect(within(documentColumn).getByRole("heading", { name: /Contexto/ })).toBe(heading);
-  expect(documentColumn.scrollTop).toBe(120);
+  expect(documentBody.scrollTop).toBe(120);
 
   // Escape anywhere closes it too.
   fireEvent.click(refs[0]);

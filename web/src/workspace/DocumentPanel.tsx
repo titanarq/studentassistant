@@ -12,6 +12,8 @@ import { useWorkspace } from "./state";
  * discard their changes or keep them on the current version (nothing is overwritten silently);
  * busy notes and format errors are explained in Spanish. While editing, a newer revision of the
  * notes (the assistant changed them) is announced without touching the student's text.
+ * Read-only, the header (version, **Editar**) sits above `.workspace-document-body`, the part that
+ * scrolls, so it stays on screen at the bottom of a long document (#485).
  */
 
 export const CHANGED_WHILE_EDITING = "Los apuntes han cambiado mientras editabas";
@@ -185,18 +187,21 @@ export default function DocumentPanel({ topicName, tree, onOpenSource, activeLab
           </button>
         )}
       </div>
-      {notes.kind === "loading" && <p>Cargando los apuntes…</p>}
-      {notes.kind === "empty" && <p className="workspace-empty">{EMPTY_NOTES}</p>}
-      {notes.kind === "failed" && <p role="alert">No se pudieron cargar los apuntes: {notes.message}</p>}
-      {tree !== null && (
-        <NotesView
-          tree={tree}
-          onOpenSource={onOpenSource}
-          activeLabel={activeLabel}
-          changedSections={changedSections}
-          resolveImage={resolveImage}
-        />
-      )}
+      {/* #485: only the body scrolls; the header above stays pinned at the top of the card. */}
+      <div className="workspace-document-body">
+        {notes.kind === "loading" && <p>Cargando los apuntes…</p>}
+        {notes.kind === "empty" && <p className="workspace-empty">{EMPTY_NOTES}</p>}
+        {notes.kind === "failed" && <p role="alert">No se pudieron cargar los apuntes: {notes.message}</p>}
+        {tree !== null && (
+          <NotesView
+            tree={tree}
+            onOpenSource={onOpenSource}
+            activeLabel={activeLabel}
+            changedSections={changedSections}
+            resolveImage={resolveImage}
+          />
+        )}
+      </div>
     </>
   );
 }
