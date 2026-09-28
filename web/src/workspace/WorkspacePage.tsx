@@ -8,22 +8,16 @@ import { SourceSelectionContext, useSourceSelection } from "./resources/selectio
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
 import WorkspaceChatSlot from "./WorkspaceChatSlot";
+import WorkspaceFrame, { type NarrowView } from "./WorkspaceFrame";
 import WorkspaceTabs from "./WorkspaceTabs";
-import ModeSwitch from "../study/ModeSwitch";
 import "../notes/notes.css";
-import "./workspace.css";
 
 type Tab = "capture" | "resources";
-/** What the single column shows below 900 px. */
-export type NarrowView = "document" | "left" | "chat";
+export type { NarrowView } from "./WorkspaceFrame";
 
 export { EMPTY_NOTES } from "./DocumentPanel";
 
-const VIEWS: Array<[NarrowView, string]> = [
-  ["document", "Documento"],
-  ["left", "Captura/Recursos"],
-  ["chat", "Chat"],
-];
+const VIEWS: Record<NarrowView, string> = { document: "Documento", left: "Captura/Recursos", chat: "Chat" };
 
 /**
  * `/subjects/<subject>/topics/<topic>/workspace`, "Espacio de estudio" (#312, epic #311): one
@@ -44,7 +38,8 @@ const VIEWS: Array<[NarrowView, string]> = [
  * chips above the chat input, sent with the next message.
  * Below 900 px the columns become one, with the switch Documento | Captura/Recursos | Chat; a
  * source's detail is shown in the document view's place, and closing it goes back to the view it
- * was opened from.
+ * was opened from. The header, the cards and the columns are `WorkspaceFrame` (#487), shared with
+ * **Estudiar**.
  */
 export default function WorkspacePage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const state = useWorkspaceState(subjectId, topicId);
@@ -127,117 +122,97 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   return (
     <WorkspaceContext.Provider value={state}>
       <SourceSelectionContext.Provider value={selection}>
-        <main className="workspace" data-view={view} data-detail={open === null ? undefined : "open"} aria-label="Espacio de estudio">
-          <header className="workspace-header">
-            <div className="workspace-bar">
-              <ModeSwitch subjectId={subjectId} topicId={topicId} current="build" />
-              <h1 className="workspace-title">
-                <a href={base} title="Abrir la página del tema">
-                  {topicName}
-                </a>
-              </h1>
-              {/* Right-aligned; room is left here for the settings and the profile. */}
-              <nav className="workspace-bar-end" aria-label="Más">
-                {notes.kind === "ready" && (
-                  <a
-                    className="workspace-versions"
-                    href={`${base}/versions`}
-                    aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
-                  >
-                    Versiones{notes.version === null ? "" : ` · v${notes.version}`}
-                  </a>
-                )}
-                <a className="workspace-home" href="/">
-                  Mesa de estudio
-                </a>
-              </nav>
-            </div>
-            <div className="workspace-switch" role="group" aria-label="Qué mostrar">
-              {VIEWS.map(([key, label]) => (
-                <button key={key} type="button" aria-pressed={view === key} onClick={() => setView(key)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </header>
-          <div className="workspace-columns">
-            <div className="workspace-left">
-              <section className="workspace-sources" aria-label="Captura y recursos">
-                <WorkspaceTabs<Tab>
-                  id="workspace"
-                  label="Captura o recursos"
-                  active={tab}
-                  onChange={changeTab}
-                  tabs={[
-                    {
-                      key: "capture",
-                      label: (
+        <WorkspaceFrame
+          mode="build"
+          subjectId={subjectId}
+          topicId={topicId}
+          topicName={topicName}
+          label="Espacio de estudio"
+          barEnd={
+            notes.kind === "ready" && (
+              <a
+                className="workspace-versions"
+                href={`${base}/versions`}
+                aria-label={notes.version === null ? "Versiones" : `Versiones (actual: v${notes.version})`}
+              >
+                Versiones{notes.version === null ? "" : ` · v${notes.version}`}
+              </a>
+            )
+          }
+          views={VIEWS}
+          view={view}
+          onView={setView}
+          leftLabel="Captura y recursos"
+          left={
+            <WorkspaceTabs<Tab>
+              id="workspace"
+              label="Captura o recursos"
+              active={tab}
+              onChange={changeTab}
+              tabs={[
+                {
+                  key: "capture",
+                  label: (
+                    <>
+                      Captura
+                      {/* #470: an icon, not «en curso»; its name keeps the state for a screen reader. */}
+                      {capturing && (
                         <>
-                          Captura
-                          {/* #470: an icon, not «en curso»; its name keeps the state for a screen reader. */}
-                          {capturing && (
-                            <>
-                              {" "}
-                              <span
-                                className={`workspace-rec${tab === "capture" && recording ? " workspace-rec-on" : ""}`}
-                                role="img"
-                                aria-label={tab === "capture" ? "en curso" : "en pausa"}
-                                title={tab === "capture" ? (recording ? "Grabando" : "Sin grabar") : "En pausa"}
-                              />
-                            </>
-                          )}
+                          {" "}
+                          <span
+                            className={`workspace-rec${tab === "capture" && recording ? " workspace-rec-on" : ""}`}
+                            role="img"
+                            aria-label={tab === "capture" ? "en curso" : "en pausa"}
+                            title={tab === "capture" ? (recording ? "Grabando" : "Sin grabar") : "En pausa"}
+                          />
                         </>
-                      ),
-                      className: "workspace-tabpanel-capture",
-                      panel: (
-                        <CapturePage
-                          preset={preset}
-                          onRunningChange={setCapturing}
-                          onRecordingChange={setRecording}
-                          suspended={tab !== "capture"}
-                        />
-                      ),
-                    },
-                    {
-                      key: "resources",
-                      label: "Recursos",
-                      panel: (
-                        <ResourcesTab
-                          subjectId={subjectId}
-                          topicId={topicId}
-                          tree={tree}
-                          refreshKey={resourcesShown}
-                          onOpen={show}
-                        />
-                      ),
-                    },
-                  ]}
-                />
-              </section>
-              <section className="workspace-chat" aria-label="Chat">
-                {/* A capture paused on Recursos (#450) hears nothing: the chat offers its own microphone. */}
-                <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing && tab === "capture"} />
-              </section>
-            </div>
-            <section className="workspace-document" aria-label="Documento">
-              <DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />
-            </section>
-            {/* #473: the source's detail, over the document column (its own grid cell, so the
-                document underneath is neither remounted nor scrolled). */}
-            {open !== null && (
-              <div className="workspace-detail">
-                <SourcePanel
-                  subjectId={subjectId}
-                  topicId={topicId}
-                  label={open.label}
-                  definition={open.definition}
-                  onClose={closeSource}
-                  variant="overlay"
-                />
-              </div>
-            )}
-          </div>
-        </main>
+                      )}
+                    </>
+                  ),
+                  className: "workspace-tabpanel-capture",
+                  panel: (
+                    <CapturePage
+                      preset={preset}
+                      onRunningChange={setCapturing}
+                      onRecordingChange={setRecording}
+                      suspended={tab !== "capture"}
+                    />
+                  ),
+                },
+                {
+                  key: "resources",
+                  label: "Recursos",
+                  panel: (
+                    <ResourcesTab
+                      subjectId={subjectId}
+                      topicId={topicId}
+                      tree={tree}
+                      refreshKey={resourcesShown}
+                      onOpen={show}
+                    />
+                  ),
+                },
+              ]}
+            />
+          }
+          chat={
+            /* A capture paused on Recursos (#450) hears nothing: the chat offers its own microphone. */
+            <WorkspaceChatSlot onOpenSource={openSource} capturing={capturing && tab === "capture"} />
+          }
+          document={<DocumentPanel topicName={topicName} tree={tree} onOpenSource={openSource} activeLabel={open?.label ?? null} />}
+          detail={
+            open !== null && (
+              <SourcePanel
+                subjectId={subjectId}
+                topicId={topicId}
+                label={open.label}
+                definition={open.definition}
+                onClose={closeSource}
+                variant="overlay"
+              />
+            )
+          }
+        />
       </SourceSelectionContext.Provider>
     </WorkspaceContext.Provider>
   );

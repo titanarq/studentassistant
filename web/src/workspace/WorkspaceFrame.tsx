@@ -1,0 +1,127 @@
+import type { ReactNode } from "react";
+import { topicPath } from "../desk/api";
+import ModeSwitch, { type Mode } from "../study/ModeSwitch";
+import "./workspace.css";
+
+/** What the single column shows below 900 px: the right card, the left card(s) or the chat. */
+export type NarrowView = "document" | "left" | "chat";
+
+export interface WorkspaceFrameProps {
+  /** Which of the two modes this is: the header's switch marks it as the current one. */
+  mode: Mode;
+  subjectId: string;
+  topicId: string;
+  topicName: string;
+  /** The accessible name of the whole screen. */
+  label: string;
+  /** Extra class names on the root (the mode's own rules hang from them). */
+  className?: string;
+  /** Links at the right of the header band, before «Mesa de estudio». */
+  barEnd?: ReactNode;
+  /** The labels of the single-column switch, in the order Documento, left, Chat. */
+  views: Record<NarrowView, string>;
+  view: NarrowView;
+  onView: (view: NarrowView) => void;
+  /** The left card (Captura/Recursos, the study options): its accessible name and class. */
+  leftLabel: string;
+  leftClassName?: string;
+  left: ReactNode;
+  /** The chat card's content, at the bottom of the left column. */
+  chat: ReactNode;
+  /** The right card: the document (or the study document with its material panel). */
+  documentClassName?: string;
+  /** `data-panel` of the right card (a study material or source shown over its edge). */
+  documentPanel?: boolean;
+  document: ReactNode;
+  /** The detail over the right card's cell (#473): the document underneath stays mounted. */
+  detail?: ReactNode;
+}
+
+const ORDER: NarrowView[] = ["document", "left", "chat"];
+
+/**
+ * The frame shared by **Construir** and **Estudiar** (#487): the desk under the header band (the
+ * switch Construir · Estudiar, the topic's name, the links on the right), and two columns -- on the
+ * left a card (`leftLabel`) above the chat card, on the right the document card, with a fluid split
+ * -- that fill one viewport from 900 px on (#450, #458: only the panels scroll inside, the chat's
+ * input always on screen). Below 900 px the columns become one, with the switch Documento | left |
+ * Chat (`views`). The styles are `workspace.css`: both modes use the same classes, so every change
+ * of the frame applies to both. `detail` is the #473 overlay over the document's grid cell.
+ */
+export default function WorkspaceFrame({
+  mode,
+  subjectId,
+  topicId,
+  topicName,
+  label,
+  className,
+  barEnd,
+  views,
+  view,
+  onView,
+  leftLabel,
+  leftClassName,
+  left,
+  chat,
+  documentClassName,
+  documentPanel = false,
+  document,
+  detail,
+}: WorkspaceFrameProps) {
+  const base = topicPath(subjectId, topicId);
+  const detailShown = detail !== undefined && detail !== null && detail !== false;
+  return (
+    <main
+      className={className === undefined ? "workspace" : `workspace ${className}`}
+      data-mode={mode}
+      data-view={view}
+      data-detail={detailShown ? "open" : undefined}
+      aria-label={label}
+    >
+      <header className="workspace-header">
+        <div className="workspace-bar">
+          <ModeSwitch subjectId={subjectId} topicId={topicId} current={mode} />
+          <h1 className="workspace-title">
+            <a href={base} title="Abrir la página del tema">
+              {topicName}
+            </a>
+          </h1>
+          {/* Right-aligned; room is left here for the settings and the profile. */}
+          <nav className="workspace-bar-end" aria-label="Más">
+            {barEnd}
+            <a className="workspace-home" href="/">
+              Mesa de estudio
+            </a>
+          </nav>
+        </div>
+        <div className="workspace-switch" role="group" aria-label="Qué mostrar">
+          {ORDER.map((key) => (
+            <button key={key} type="button" aria-pressed={view === key} onClick={() => onView(key)}>
+              {views[key]}
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="workspace-columns">
+        <div className="workspace-left">
+          <section className={leftClassName === undefined ? "workspace-sources" : `workspace-sources ${leftClassName}`} aria-label={leftLabel}>
+            {left}
+          </section>
+          <section className="workspace-chat" aria-label="Chat">
+            {chat}
+          </section>
+        </div>
+        <section
+          className={documentClassName === undefined ? "workspace-document" : `workspace-document ${documentClassName}`}
+          aria-label="Documento"
+          data-panel={documentPanel ? "open" : undefined}
+        >
+          {document}
+        </section>
+        {/* #473: the source's detail, over the document column (its own grid cell, so the
+            document underneath is neither remounted nor scrolled). */}
+        {detailShown && <div className="workspace-detail">{detail}</div>}
+      </div>
+    </main>
+  );
+}

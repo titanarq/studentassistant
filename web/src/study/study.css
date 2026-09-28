@@ -1,36 +1,16 @@
-/* The study screen (#333, epic #332): the study options on the left, the document on the right
-   with the option panel sliding in over its right edge; one column with a two-way switch below
-   900 px (56.25rem). */
+/* The study screen (#333, epic #332), in the frame of Construir since #487: the root is
+   `.workspace.study`, and the header band, the desk, the cards, the columns, the one-viewport
+   layout and the one-column switch are `workspace.css` (the classes `WorkspaceFrame` renders).
+   Here: the study options' card, the document card's panel sliding in over the right edge of its
+   body, and the embedded study material. */
 
 .study {
   --study-panel-width: min(26rem, 48%);
-
-  /* Wider than the other pages: the document keeps a reading column beside the open panel. */
-  max-width: 90rem;
-  margin: 0 auto;
-  padding: var(--space-4) var(--gutter) var(--space-6);
-  overflow-wrap: anywhere;
-}
-
-.study-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  margin-bottom: var(--space-1);
-}
-
-.study-title h1 {
-  margin: 0;
-}
-
-.study-header .page-context {
-  margin-bottom: var(--space-4);
 }
 
 /* The "versión de estudio" (#337): which notes version it is and whether the notes moved on. */
 .study-label {
-  margin: calc(-1 * var(--space-3)) 0 var(--space-4);
+  margin: 0 0 var(--space-2);
   font-size: var(--step--1);
 }
 
@@ -52,25 +32,31 @@
   color: var(--ink-muted);
 }
 
-.study-columns {
-  display: grid;
-  grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
-  gap: var(--space-5);
-  align-items: start;
-}
+/* ---- The left card: Repasos para hoy and the study options ---- */
 
-.study-left {
+.study-card-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
+  gap: var(--space-3);
 }
 
-.study-left h2 {
+.study-card h2 {
   margin: 0 0 var(--space-2);
   color: var(--ink-muted);
   font-size: var(--step--1);
   font-weight: 700;
+}
+
+/* Two columns: the card keeps the share of Captura/Recursos (`.workspace-sources`), and only its
+   body scrolls, so the chat below keeps its input on screen. */
+@media (min-width: 56.3125rem) and (min-height: 30rem) {
+  .study-card-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-bottom: var(--space-1);
+  }
 }
 
 /* ---- Repasos para hoy ---- */
@@ -104,18 +90,11 @@
 /* ---- The options ---- */
 
 .study-options {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-l);
-  overflow: hidden;
-}
-
-.study-options h2 {
-  padding: var(--space-3) var(--space-4) 0;
+  margin: 0;
 }
 
 .study-options > p {
-  padding: 0 var(--space-4);
+  margin: 0 0 var(--space-2);
 }
 
 .study-option-list {
@@ -131,7 +110,7 @@
   width: 100%;
   min-height: var(--target);
   margin: 0;
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-2);
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
@@ -142,7 +121,7 @@
 }
 
 .study-option:hover {
-  background: var(--paper);
+  background: var(--surface);
 }
 
 .study-option[aria-expanded="true"] {
@@ -174,42 +153,25 @@
   white-space: nowrap;
 }
 
-/* ---- The document and the panel over its right edge ---- */
+/* ---- The document card and the panel over the right edge of its body ---- */
 
-.study-right {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  min-width: 0;
+/* Below the card's pinned header (`.workspace-document-header`): the body, which scrolls, and the
+   material's or source's panel over its right edge. */
+.study-document-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .study-document {
-  height: 100%;
   box-sizing: border-box;
-  overflow-y: auto;
   transition: padding-right 0.25s var(--ease);
 }
 
 .study-right[data-panel="open"] .study-document {
   padding-right: calc(var(--study-panel-width) + var(--space-3));
-}
-
-.study-document-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
-.study-document-bar h2 {
-  margin: 0;
-  font-size: var(--step-0);
-}
-
-.study-version {
-  color: var(--ink-muted);
-  font-size: var(--step--1);
 }
 
 .study-edit {
@@ -233,11 +195,12 @@
 }
 
 .study-panel,
-.study .source-panel {
+.workspace .study-document-area > .source-panel {
   position: absolute;
   top: 0;
   right: 0;
-  bottom: 0;
+  bottom: var(--space-3);
+  z-index: 4;
   width: var(--study-panel-width);
   display: flex;
   flex-direction: column;
@@ -260,9 +223,16 @@
   }
 }
 
+/* Its body scrolls under its header (the workspace's own rule caps a source panel's body). */
+.workspace .study-document-area > .source-panel .source-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .study-panel,
-  .study .source-panel {
+  .workspace .study-document-area > .source-panel {
     animation: none;
   }
 
@@ -271,7 +241,15 @@
   }
 }
 
+/* Pinned like the document's header (#485): out of the scrolling body, and stuck to the top of
+   the screen where the page scrolls (one column on a short screen). */
 .study-panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: none;
+  background: var(--surface);
+  border-radius: var(--radius-l) var(--radius-s) 0 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -370,41 +348,9 @@
 
 /* ---- One column ---- */
 
-.study-switch {
-  display: none;
-}
-
 @media (max-width: 56.25rem) {
   .study {
     --study-panel-width: 100%;
-  }
-
-  .study-switch {
-    display: flex;
-    gap: var(--space-1);
-    margin-bottom: var(--space-4);
-  }
-
-  .study-switch button {
-    flex: 1 1 0;
-    min-width: 0;
-    min-height: var(--target-phone);
-    margin: 0;
-    padding-inline: var(--space-2);
-  }
-
-  .study-switch button[aria-pressed="true"] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--on-accent);
-  }
-
-  .study-columns {
-    display: block;
-  }
-
-  .study-right {
-    height: calc(100vh - var(--space-4));
   }
 
   .study-right[data-panel="open"] .study-document {
@@ -412,13 +358,9 @@
   }
 
   .study-panel,
-  .study .source-panel {
+  .workspace .study-document-area > .source-panel {
+    bottom: 0;
     border-radius: var(--radius-l);
-  }
-
-  .study[data-view="study"] .study-right,
-  .study[data-view="document"] .study-left {
-    display: none;
   }
 }
 
