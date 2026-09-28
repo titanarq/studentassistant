@@ -53,9 +53,7 @@ function renderTab() {
       topicId="revolucion-industrial"
       tree={TREE}
       refreshKey={0}
-      open={null}
       onOpen={() => undefined}
-      onClose={() => undefined}
     />,
   );
 }

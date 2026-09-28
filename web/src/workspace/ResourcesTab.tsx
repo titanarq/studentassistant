@@ -1,7 +1,6 @@
 import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { describeFailure, fetchTopicSummary, type ReadResult, type TopicSummary } from "../desk/api";
 import type { NotesTree } from "../notes/markdown";
-import SourcePanel from "../notes/SourcePanel";
 import { sourceUrl } from "../notes/api";
 import AddSourceToolbar from "./resources/AddSourceToolbar";
 import { DELETE_UNSUPPORTED, deleteSource, fetchTopicSources, GROUP_TITLES, resourceList, type TopicSources } from "./resources";
@@ -10,7 +9,7 @@ import { sourceVaultId } from "../notes/provenance";
 import { chipTitle, type SelectedSource, type SourceSelection, topicSourceId, useSelection } from "./resources/selection";
 import { useSourceMetas } from "./resources/useSourceMetas";
 
-/** The source open in the tab: a footnote label and its definition. */
+/** The source whose detail is open (over the document, #473): a footnote label and its definition. */
 export interface OpenResource {
   label: string;
   definition: string | undefined;
@@ -22,9 +21,8 @@ export interface ResourcesTabProps {
   tree: NotesTree | null;
   /** Bumped each time the tab is shown, so the counts are read again. */
   refreshKey: number;
-  open: OpenResource | null;
-  onOpen: (resource: OpenResource) => void;
-  onClose: () => void;
+  /** Opens a source's detail (over the document, #473); `trigger` gets the focus back on close. */
+  onOpen: (resource: OpenResource, trigger: HTMLElement) => void;
 }
 
 /** What the tab read: the topic's source list, or the summary when the backend has no list. */
@@ -203,7 +201,7 @@ function SourceCard({
   onDeleted,
 }: {
   entry: SourceEntry;
-  onOpen: (resource: OpenResource) => void;
+  onOpen: (resource: OpenResource, trigger: HTMLElement) => void;
   selection: CardSelection | null;
   onDeleted: (vaultId: string) => void;
 }) {
@@ -229,7 +227,11 @@ function SourceCard({
         </label>
       )}
       <DeleteControl entry={entry} onDeleted={onDeleted} />
-      <button type="button" className="resource-open" onClick={() => onOpen({ label: entry.label, definition: entry.definition })}>
+      <button
+        type="button"
+        className="resource-open"
+        onClick={(event) => onOpen({ label: entry.label, definition: entry.definition }, event.currentTarget)}
+      >
         <span className="resource-thumb-box">
           <Thumbnail entry={entry} />
           {entry.state === "incorporated" && (
@@ -271,11 +273,11 @@ function cardSelection(selection: SourceSelection | null, entry: SourceEntry, vi
  * trash button over each thumbnail (#450, `DELETE /api/sources/{id}` after an inline
  * confirmation); incorporating, setting aside and restoring are asked in the chat. Each stored source has a checkbox (#432): the ticked ones are the
  * workspace's selection (`resources/selection.ts`), shown as chips above the chat input and sent
- * with the next message; Shift-click ticks a range, «Quitar selección» clears it. Choosing a source (here or from a footnote of the document) shows it in
- * the sources viewer (`SourcePanel`) in the list's place; "Cerrar" goes back to the list. The
+ * with the next message; Shift-click ticks a range, «Quitar selección» clears it. Choosing a source hands it to the page (`onOpen`), which since #473
+ * shows its detail over the document column; the list stays as it was. The
  * sources' metadata is read again each time the tab is shown and after each change of the notes.
  */
-export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, open, onOpen, onClose }: ResourcesTabProps) {
+export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, onOpen }: ResourcesTabProps) {
   const [summary, setSummary] = useState<Loaded | null>(null);
   const [showSetAside, setShowSetAside] = useState(false);
   // Bumped after the toolbar added something: the list is read again, as `refreshKey` does.
@@ -327,14 +329,6 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
     if (!listed || prune === undefined) return;
     prune(new Map([...states.kept, ...states.setAside].map((entry) => [topicSourceId(entry.ref), chipTitle(entry.ref, entry.title)])));
   }, [listed, prune, states]);
-
-  if (open !== null) {
-    return (
-      <div className="workspace-resources">
-        <SourcePanel subjectId={subjectId} topicId={topicId} label={open.label} definition={open.definition} onClose={onClose} />
-      </div>
-    );
-  }
 
   const total = states.kept.length + states.setAside.length;
   // A deleted source (#450) leaves the list when it is read again; the selection drops it then.
@@ -410,7 +404,7 @@ export default function ResourcesTab({ subjectId, topicId, tree, refreshKey, ope
                   <button
                     type="button"
                     className="workspace-resource"
-                    onClick={() => onOpen({ label: item.label, definition: item.definition })}
+                    onClick={(event) => onOpen({ label: item.label, definition: item.definition }, event.currentTarget)}
                   >
                     {item.title}
                   </button>
