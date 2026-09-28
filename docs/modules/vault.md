@@ -24,7 +24,8 @@ subjects/<subject-slug>/topics/<topic-slug>/
   sources/book/page-NNN.*                    textbook pages, as notes pages; the sidecar adds book_page (+ _from, _printed, _spoken)
   sources/book/book.yaml                     the topic's textbook: title (never listed as a source)
   sources/web/NNN-<slug>.md (+ .yaml: url, fetched_at)
-  sources/images/img-NNN.png|jpg|webp        an image the student pasted into the notes (+ .yaml: origin: pasted, content_type, sha256, added_at)
+  sources/images/img-NNN.png|jpg|webp        an image the student pasted into the notes (+ .yaml: origin: pasted, content_type, sha256, added_at),
+                                             or a region cropped from a stored page (origin: cropped, + cropped_from, bbox, requested_region)
   sessions/<session-id>/session.yaml         started/ended, host, protocol version, kind
   sessions/<session-id>/transcript.jsonl     final segments (seq, t_start, t_end, text, words?)
   sessions/<session-id>/events.jsonl         event log (ADR-0003)
@@ -234,7 +235,12 @@ with a sidecar `origin: pasted`, `content_type`, `sha256` of the content and `ad
 by default); another type or an empty content is a `SourceError`, nothing written. The notes cite
 it as `[Imagen pegada N](../sources/images/img-NNN.<ext>)` (source id
 `sources/images/img-NNN.<ext>`, ADR-0005 proposal in epic #311). Images are listed, read and
-indexed as sources like the others (the index keeps no text of them).
+indexed as sources like the others (the index keeps no text of them). A region the editor crops
+out of a stored page (`editor.crop`, #484) is stored with `put_source(..., "images", ...)` as
+another `img-NNN.<ext>`, whose sidecar has `origin: cropped` instead of `pasted`, plus
+`cropped_from` (the vault-relative path of the page it was cut from, which is never modified),
+`bbox` (`[x0, y0, x1, y1]`, fractions of the page image) and `requested_region` (the student's
+description); the notes cite it as `[Imagen recortada N](../sources/images/img-NNN.<ext>)`.
 `set_book(vault, subject_slug, topic_slug, title) -> Book` / `get_book(...) -> Book | None` keep
 the topic's textbook (`Book(title)`, spaces collapsed; `ValueError` for an empty title) in
 `sources/book/book.yaml`, which is not a source, not numbered and not indexed as one.
