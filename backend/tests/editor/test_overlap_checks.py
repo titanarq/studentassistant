@@ -28,7 +28,7 @@ from studentassistant.editor.overlap import (
     settled_block_errors,
     source_kind,
 )
-from studentassistant.editor.reviewed import block_key, settled_blocks
+from studentassistant.editor.reviewed import block_key, record_reviewed, settled_blocks
 from studentassistant.editor.revise import EDIT_TOOL
 from studentassistant.llm import FakeClaude, LLMRequest
 from studentassistant.observer import STATE_OP_EVENT_KIND
@@ -37,6 +37,7 @@ from studentassistant.vault import (
     Vault,
     end_session,
     put_source,
+    read_conversation,
     read_notes,
     sources_directory,
     start_session,
@@ -526,3 +527,169 @@ def test_without_settled_blocks_the_review_is_not_given_the_rule(
     _review(plain, sync, fake)
 
     assert SETTLED_REVIEW_RULE not in _texts(fake.requests[0])
+
+
+# -- doubts the review did not see (#483) --------------------------------------------------------
+
+
+def _later_doubt(topic: DoubtsTopic, kind: str, refs: list[str]) -> None:
+    """An open doubt, `p-7`, added after the settled block was reviewed."""
+    session = start_session(
+        topic.vault, topic.subject, topic.topic, host="pc", protocol_version="1.1"
+    )
+    session.append_event("session.started", "user", {})
+    session.append_event(
+        STATE_OP_EVENT_KIND,
+        "observer",
+        {
+            "op": "add_pending",
+            "pending_id": "p-7",
+            "kind": kind,
+            "text": "Lectura dudosa en la grabación.",
+            "source_refs": refs,
+        },
+    )
+    session.append_event("session.ended", "user", {})
+    end_session(session)
+    GitSync(topic.vault).checkpoint("later doubt")
+
+
+def _settled(topic: DoubtsTopic) -> set[str]:
+    return settled_blocks(topic.vault, topic.subject, topic.topic, _notes(topic))
+
+
+def test_the_review_record_stores_the_cited_sources_and_the_doubts_open_then(
+    topic: DoubtsTopic,
+) -> None:
+    [record] = [
+        r.detail
+        for r in read_conversation(topic.vault, topic.subject, topic.topic, "editor")
+        if r.kind == "notes.reviewed"
+    ]
+    assert record is not None
+    assert record["sources"][block_key(NOTATION)] == [f"sessions/{topic.session}"]
+    assert record["open_doubts"] == ["p-4", "p-5"]
+
+
+def test_a_later_doubt_on_a_source_the_block_already_cited_keeps_it_settled(
+    topic: DoubtsTopic,
+) -> None:
+    _later_doubt(topic, "illegible", [transcript_id(topic, "00:00:10-00:00:15")])
+
+    assert block_key(NOTATION) in _settled(topic)
+
+
+def test_a_later_contradiction_on_a_source_the_block_cites_unsettles_it(
+    topic: DoubtsTopic,
+) -> None:
+    _later_doubt(topic, "contradiction", [transcript_id(topic, "00:00:10-00:00:15"), B1])
+
+    assert block_key(NOTATION) not in _settled(topic)
+
+
+def test_a_later_doubt_on_a_source_cited_only_after_the_review_unsettles_it(
+    topic: DoubtsTopic,
+) -> None:
+    notes = _notes(topic)
+    cited = notes.replace(NOTATION, "Se escribe $f'(x)$.[^t2][^p4]") + f"[^p4]: {P4_FOOTNOTE}\n"
+    s, t = topic.subject, topic.topic
+    assert block_key(NOTATION) in settled_blocks(topic.vault, s, t, cited)
+
+    _later_doubt(topic, "illegible", [P4])
+
+    assert block_key(NOTATION) not in settled_blocks(topic.vault, s, t, cited)
+
+
+def test_a_review_record_without_what_it_saw_counts_every_open_doubt(
+    topic: DoubtsTopic,
+) -> None:
+    _later_doubt(topic, "illegible", [transcript_id(topic, "00:00:10-00:00:15")])
+    # A record from before #483: no `sources`, no `open_doubts`; the latest review wins.
+    record_reviewed(topic.vault, topic.subject, topic.topic, "student_edit", [block_key(NOTATION)])
+
+    assert block_key(NOTATION) not in _settled(topic)
+
+
+def _raising(doubt: dict[str, Any]) -> dict[str, Any]:
+    """A valid incorporation of page 3 that also raises `doubt`."""
+    return {
+        "summary": "Añado la derivada de x² de la página 3",
+        "ops": [
+            {
+                "op": "insert_after",
+                "section": "definicion",
+                "block": 2,
+                "text": "La derivada de $x^2$ es $2x$.[^p3]",
+            }
+        ],
+        "footnotes": [{"label": "p3", "definition": P3_FOOTNOTE}],
+        "doubts": [doubt],
+    }
+
+
+def test_a_doubt_an_incorporation_raises_on_a_cited_source_keeps_the_block_settled(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    doubt = {
+        "kind": "illegible",
+        "text": "En la grabación no se oye bien la notación.",
+        "question": "¿Qué dijo el profesor?",
+        "suggestions": ["f'(x)"],
+        "refs": [transcript_id(topic, "00:00:10-00:00:15")],
+    }
+    fake = FakeClaude().reply_tool(EDIT_TOOL, _raising(doubt), text="He añadido la derivada.")
+
+    result = _incorporate(topic, sync, fake, [P3])
+
+    assert result.applied and not result.errors and len(result.doubts) == 1
+    assert block_key(NOTATION) in _settled(topic)
+
+
+def test_a_contradiction_an_incorporation_raises_on_a_cited_source_unsettles_the_block(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    doubt = _contradiction(P3, transcript_id(topic, "00:00:10-00:00:15"))
+    fake = FakeClaude().reply_tool(EDIT_TOOL, _raising(doubt), text="He añadido la derivada.")
+
+    result = _incorporate(topic, sync, fake, [P3])
+
+    assert result.applied and not result.errors and len(result.doubts) == 1
+    assert block_key(NOTATION) not in _settled(topic)
+
+
+def test_the_review_may_not_make_a_settled_block_cite_a_doubted_source(
+    topic: DoubtsTopic, sync: GitSync
+) -> None:
+    before = _notes(topic)
+    [p4, p5] = _asks(topic)
+    cite = {
+        **p4,
+        "action": "auto_resolve",
+        "question": None,
+        "suggestions": [],
+        "resolution": "Pone «incremental».",
+        "evidence": [{"source_id": P1, "quote": "cociente incremental"}],
+        "edits": [
+            {
+                "op": "replace_block",
+                "section": "definicion",
+                "block": 2,
+                "text": "Se escribe $f'(x)$.[^t2][^p1]",
+            }
+        ],
+    }
+    footnotes = [
+        {"label": "p1", "definition": "[Apuntes, página 1](../sources/notes/page-001.jpg)"}
+    ]
+    fake = (
+        FakeClaude()
+        .reply_tool(REVIEW_TOOL, {"decisions": [cite, p5], "footnotes": footnotes})
+        .reply_tool(REVIEW_TOOL, {"decisions": [{**cite, "edits": []}, p5]})
+    )
+
+    result = _review(topic, sync, fake)
+
+    reask = _texts(fake.requests[1])
+    assert f"no le añadas una nota al pie de {P1}, que tiene dudas abiertas" in reask
+    assert result.attempts == 2 and result.auto_resolved == ["p-4"]
+    assert _notes(topic) == before
