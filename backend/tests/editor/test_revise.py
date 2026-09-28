@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from revise_topic import BOOK_FOOTNOTE, ReviseTopic, ampliado_notes, make_revise_topic
+from studentassistant.editor.feedback import FEEDBACK_TOOL
 from studentassistant.editor.notes_format import parse, topic_source_resolver, validate
 from studentassistant.editor.revise import (
     EDIT_TOOL,
@@ -159,7 +160,7 @@ def test_demasiado_resumido_expands_a_section_and_commits_it(
     # What the editor was given: the whole topic, the block map and the message; the tool.
     (request,) = fake.requests
     assert request.role == "editor" and request.tool_choice == {"type": "auto"}
-    assert [tool["name"] for tool in request.tools] == [EDIT_TOOL]
+    assert [tool["name"] for tool in request.tools] == [EDIT_TOOL, FEEDBACK_TOOL]
     assert request.tools[0]["strict"] is True
     assert request.system[0]["text"] == load_prompt("editor_revise").content
     text = _last_text(request)

@@ -50,12 +50,12 @@ from studentassistant.server.bus import SessionBus
 from studentassistant.server.capture_liveness import CaptureLiveness
 from studentassistant.server.captures import captures_router
 from studentassistant.server.cost import cost_router
-from studentassistant.server.feedback_routes import feedback_router
 from studentassistant.server.devices import DeviceStore
 from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.doubts_routes import doubts_router
 from studentassistant.server.errors import install_error_handler
 from studentassistant.server.exam_routes import exam_router
+from studentassistant.server.feedback_routes import feedback_router
 from studentassistant.server.generators_routes import MaterialGenerators, generators_router
 from studentassistant.server.live_routes import live_router
 from studentassistant.server.network import HostAllowlistMiddleware, LanGuardMiddleware

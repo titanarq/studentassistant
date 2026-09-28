@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from revise_topic import ReviseTopic, make_revise_topic
+from studentassistant.editor.feedback import FEEDBACK_TOOL
 from studentassistant.editor.notes_format import parse
 from studentassistant.editor.revise import InvalidMessageError, NotesMissingError, chat_history
 from studentassistant.editor.tutor import (
@@ -215,7 +216,8 @@ def test_written_style_prompt_sections_and_refs(topic: ReviseTopic) -> None:
     [request] = fake.requests
     assert request.role == "editor"
     assert request.system[0]["text"] == load_prompt("editor_study_chat").content
-    assert request.tools in (None, [])
+    # The only tool records app feedback (#472); none changes the notes.
+    assert [tool["name"] for tool in request.tools] == [FEEDBACK_TOOL]
     text = _texts(request)
     assert "Tarea: responder por escrito" in text
     assert "Tarea: responder como tutor" not in text
@@ -266,7 +268,7 @@ def test_the_written_chat_never_edits_the_notes(topic: ReviseTopic) -> None:
     second = _ask(topic, fake, "Escríbeme la definición nueva", style="written")
     assert second.style == "written" and second.sections == []
     for request in fake.requests:
-        assert request.tools in (None, [])
+        assert [tool["name"] for tool in request.tools] == [FEEDBACK_TOOL]
     assert read_notes(topic.vault, topic.subject, topic.topic) == topic.notes
     assert _git_log(topic.vault) == log and _git_tags(topic.vault) == tags
     status = subprocess.run(

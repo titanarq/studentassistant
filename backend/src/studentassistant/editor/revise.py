@@ -1267,7 +1267,8 @@ async def revise_notes(
                 clock=clock,
             )
             feedback_failed = feedback is None
-        value, errors = _parse_call(response)
+        # A feedback turn never changes the notes, even if the editor also called `apply_edits`.
+        value, errors = (None, []) if has_feedback_call(response) else _parse_call(response)
         stale = False
         if value is not None:
             errors, edited = await asyncio.to_thread(
