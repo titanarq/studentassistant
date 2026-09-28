@@ -529,7 +529,10 @@ def test_the_selected_pages_take_the_image_budget_first_and_are_marked(
     [image] = images
     assert content[image - 1]["text"].startswith(f"### Seleccionada: Apuntes, página 1 ({page_1})")
     assert content[image - 2]["text"].startswith("## Selección actual del estudiante (Recursos)")
-    assert image == len(content) - 2
+    # Then the facts of the selected capture and of those the notes cite (#474), then the turn.
+    assert image == len(content) - 3
+    assert content[-2]["text"].startswith("## Datos de cada captura")
+    assert f"`{page_1}` (se incorpora ahora)" in content[-2]["text"]
     assert "«Selección actual del estudiante»" in content[-1]["text"]
     context = next(
         r

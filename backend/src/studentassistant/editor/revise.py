@@ -23,6 +23,9 @@ page's transcription and always its image, a PDF page's text), and their images 
 budget first (`max_page_images`), so «reescribe esto con el texto de la captura» works on them.
 An empty selection (a typed message with nothing selected) tells the editor so: it asks which
 pages «esto» is instead of guessing. `None` (a spoken request, the old notes chat) says nothing.
+With a selection, the facts of the selected captures and of those the notes cite follow it
+(`overlap.capture_facts`), and a contradiction between a selected capture and another capture of
+the same kind not selected is sent back (`overlap.same_kind_contradiction_errors`, #474).
 
 The change is checked before anything is written: the ops must apply (`apply_edits`), and the
 edited notes must pass the provenance validator (`notes_format.validate`) in the fidelity mode the
@@ -125,6 +128,7 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import capture_facts, same_kind_contradiction_errors
 from studentassistant.editor.reviewed import settled_blocks
 from studentassistant.editor.style_guide import (
     append_rules,
@@ -945,8 +949,10 @@ def _check(
     assembled: EditorInput,
     vault: Vault,
     pending: list[str],
+    selected: Sequence[str] = (),
 ) -> tuple[list[str], str | None]:
-    """`(errors, edited notes)` of a change."""
+    """`(errors, edited notes)` of a change; with a Recursos `selection`, no contradiction
+    between a selected capture and another of the same kind not selected (#474)."""
     errors: list[str] = []
     changes = value.ops or value.fidelity_mode is not None or value.confirmed_style_rules
     if changes and not value.summary.strip():
@@ -965,6 +971,8 @@ def _check(
                 " anterior; una regla nueva va en `proposed_style_rules`."
             )
     errors.extend(editor_doubt_errors(value.doubts, assembled))
+    if selected:
+        errors.extend(same_kind_contradiction_errors(value.doubts, selected))
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -1181,8 +1189,17 @@ async def revise_notes(
             settled=settled,
         ),
     }
-    # The selection goes after the cached prefix (the topic's sources), just before the turn.
-    chosen = selection.content if selection else []
+    # The selection goes after the cached prefix (the topic's sources), just before the turn,
+    # with the facts of the selected captures and those the notes cite (#474).
+    facts = (
+        await asyncio.to_thread(
+            capture_facts, vault, subject_slug, topic_slug, list(selected_sources), base
+        )
+        if selected_sources
+        else ""
+    )
+    facts_block = [{"type": "text", "text": facts}] if facts else []
+    chosen = [*(selection.content if selection else []), *facts_block]
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": [*assembled.content, *chosen, turn]}
     ]
@@ -1242,7 +1259,7 @@ async def revise_notes(
                     ),
                 },
             )
-            chosen_record = selection.record_content if selection else []
+            chosen_record = [*(selection.record_content if selection else []), *facts_block]
             await conversation.record(
                 "user",
                 message={
@@ -1278,7 +1295,13 @@ async def revise_notes(
         stale = False
         if value is not None:
             errors, edited = await asyncio.to_thread(
-                _check, value, notes, assembled, vault, _pending_rules(turns)
+                _check,
+                value,
+                notes,
+                assembled,
+                vault,
+                _pending_rules(turns),
+                list(selected_sources or ()),
             )
         if value is not None and edited is not None and not errors:
             applied, current = await asyncio.to_thread(

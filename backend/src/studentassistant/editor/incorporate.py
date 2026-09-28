@@ -16,15 +16,19 @@ pages, book pages, PDFs, web pages, then pasted images).
 then the current notes (text and block map), the requested sources as `assemble_input` gives them
 (a page's transcription, plus its image when `needs_image`; a PDF as its document; a web page as
 its text), the transcript segments of each capture's `transcript_window` in the capture's own
-session, the open pending items whose refs name those sources and the catalogue of just those
-sources. The editor streams a Spanish reply and calls the strict tool `apply_edits`
-(`IncorporationOutput`: the edit ops of `edits.py`, `footnotes`, `summary`, `nothing_new` and
-`doubts`), checked like a revision turn -- the ops apply, the notes pass `validate` with
-`editor_written=True`, every incorporated source is cited unless `nothing_new` names it -- and
-re-asked at most `MAX_REASKS` times. It is applied under the per-topic write lock on the latest
-notes (re-asked with the new notes when the student saved meanwhile), committed as `Apuntes de
-<s>/<t>: incorporada(s) <fuentes>` and recorded as an `incorporation` conversation record, which
-the chat shows as a turn of kind `incorporate` and `revise.undo_last_revision` undoes.
+session, the facts of each capture requested or cited (`overlap.capture_facts`: uncertain
+marks, sharpness, triage flags), the open pending items whose refs name those sources and the
+catalogue of just those sources. The editor streams a Spanish reply and calls the strict tool
+`apply_edits` (`IncorporationOutput`: the edit ops of `edits.py`, `footnotes`, `summary`,
+`nothing_new` and `doubts`), checked like a revision turn -- the ops apply, the notes pass
+`validate` with `editor_written=True`, every incorporated source is cited unless `nothing_new`
+names it, no settled block («[revisado]») is changed or deleted and no contradiction is raised
+between a requested capture and another capture of the same kind not requested now (#474,
+`overlap.py`) -- and re-asked at most `MAX_REASKS` times. It is applied under the per-topic
+write lock on the latest notes (re-asked with the new notes when the student saved meanwhile),
+committed as `Apuntes de <s>/<t>: incorporada(s) <fuentes>` and recorded as an `incorporation`
+conversation record, which the chat shows as a turn of kind `incorporate` and
+`revise.undo_last_revision` undoes.
 """
 
 from __future__ import annotations
@@ -85,6 +89,11 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import (
+    capture_facts,
+    same_kind_contradiction_errors,
+    settled_block_errors,
+)
 from studentassistant.editor.reviewed import settled_blocks
 from studentassistant.editor.revise import (
     EDIT_TOOL,
@@ -458,6 +467,9 @@ def assemble_incorporation(
     if not spoken:
         lines.append("(No hay transcripción alrededor de estas páginas.)")
     builder.text("\n".join(lines).rstrip() + "\n")
+    facts = capture_facts(vault, subject_slug, topic_slug, source_ids, notes)
+    if facts:
+        builder.text(facts)
 
     state = load_observer_snapshot(vault, subject_slug, topic_slug, write_back=False).state
     pending: list[str] = []
@@ -572,8 +584,10 @@ def _check(
     ids: list[str],
     assembled: EditorInput,
     vault: Vault,
+    settled: Collection[str] = (),
 ) -> tuple[list[str], str | None]:
-    """`(errors, edited notes)` of an incorporation."""
+    """`(errors, edited notes)` of an incorporation; `settled` are the keys of the settled
+    blocks of `notes`, which it must not change or delete (#474)."""
     errors: list[str] = []
     if not value.summary.strip():
         errors.append("Falta el resumen (`summary`) del cambio.")
@@ -591,6 +605,7 @@ def _check(
             value.doubts, dataclasses.replace(assembled, catalogue=[*assembled.catalogue, *extra])
         )
     )
+    errors.extend(same_kind_contradiction_errors(value.doubts, ids))
     try:
         edited = apply_edits(notes, value.ops, value.footnotes)
     except EditError as error:
@@ -599,6 +614,7 @@ def _check(
     errors.extend(
         validate(edited, assembled.fidelity_mode, resolver, editor_written=True, previous=notes)
     )
+    errors.extend(settled_block_errors(notes, edited, settled))
     cited = cited_source_paths(edited)
     for source_id in ids:
         if source_id not in cited and source_id not in value.nothing_new:
@@ -799,7 +815,12 @@ async def incorporate_sources(
         stale = False
         edited = None
         if value is not None:
-            errors, edited = await asyncio.to_thread(_check, value, notes, ids, assembled, vault)
+            settled = await asyncio.to_thread(
+                settled_blocks, vault, subject_slug, topic_slug, notes
+            )
+            errors, edited = await asyncio.to_thread(
+                _check, value, notes, ids, assembled, vault, settled
+            )
         if value is not None and edited is not None and not errors:
             applied, current = await asyncio.to_thread(
                 partial(

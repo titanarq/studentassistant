@@ -22,7 +22,10 @@ through with the `editor` role (Opus) in two steps:
 
 When the student answers or dismisses a doubt, the blocks then citing its sources are recorded as
 reviewed (`reviewed.record_reviewed`, reason `doubt_closed`, #474); every block map the editor sees
-here marks the settled ones «[revisado]» (`reviewed.settled_blocks`).
+here marks the settled ones «[revisado]» (`reviewed.settled_blocks`). The review's edits never
+change or delete a settled block (`overlap.settled_block_errors`, re-asked otherwise), and its
+instruction tells the editor to auto-resolve, with the block's source as evidence, a doubt about
+what a settled block already says instead of asking it (`SETTLED_REVIEW_RULE`).
 
 **Where the decisions go.** Every close is event-sourced (ADR-0003): an `observer.state_op`
 `resolve_pending` event (status `auto_resolved` from the `editor`, `resolved`/`dismissed` from the
@@ -66,6 +69,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from studentassistant.editor.edits import (
+    SETTLED_MARK,
     EditError,
     EditOp,
     NewFootnote,
@@ -89,6 +93,7 @@ from studentassistant.editor.notes_format import (
     validate,
 )
 from studentassistant.editor.notes_lock import checkpointing, holding_notes
+from studentassistant.editor.overlap import settled_block_errors
 from studentassistant.editor.reviewed import (
     blocks_citing,
     item_sources,
@@ -1154,15 +1159,27 @@ async def ask_in_chat(
 # -- review ---------------------------------------------------------------------------------------
 
 
+SETTLED_REVIEW_RULE = (
+    "Los bloques marcados «[revisado]» ya los revisó el estudiante y no tienen dudas abiertas:"
+    " no los cambies ni los borres. Una duda sobre algo que un bloque «[revisado]» ya dice (la"
+    " misma idea, aunque otra captura de la misma página la lea distinto o con una marca de"
+    " duda) no se le pregunta: resuélvela con `auto_resolve`, sin ediciones, dando como prueba"
+    " la fuente que cita ese bloque y lo que dice."
+)
+"""The review's rule about settled blocks (#474), given when the block map marks any."""
+
+
 def _review_instruction(items: list[PendingItem], notes: str, settled: Collection[str] = ()) -> str:
     listing = "\n".join(_item_line(item) for item in items)
+    blocks = describe_sections(notes, settled)
+    rule = f"\n{SETTLED_REVIEW_RULE}\n" if settled and SETTLED_MARK in blocks else ""
     return (
         "## Tarea: revisar las dudas abiertas (herramienta `resolve_doubts`)\n\n"
         "En esta tarea sí resuelves las dudas abiertas que tus fuentes contestan, citándolas, y"
         " preguntas al estudiante las demás. Da una decisión por cada una de estas dudas:\n\n"
         f"{listing}\n\n"
         "Mapa de bloques de los apuntes actuales (para las ediciones):\n\n"
-        f"{describe_sections(notes, settled)}\n"
+        f"{blocks}\n{rule}"
     )
 
 
@@ -1172,7 +1189,10 @@ def _check_review(
     assembled: EditorInput,
     vault: Vault,
     notes: str,
+    settled: Collection[str] = (),
 ) -> list[str]:
+    """Spanish errors of a review; its edits must not change or delete a settled block of
+    `notes` (`settled`, #474)."""
     errors: list[str] = []
     by_id = {item.id: item for item in items}
     seen: set[str] = set()
@@ -1237,7 +1257,10 @@ def _check_review(
         edited = apply_edits(notes, edits, value.footnotes)
     except EditError as error:
         return error.errors
-    return _notes_errors(assembled, vault, edited, notes)
+    return [
+        *settled_block_errors(notes, edited, settled),
+        *_notes_errors(assembled, vault, edited, notes),
+    ]
 
 
 def _fallback_question(item: PendingItem, decision: DoubtDecision | None) -> DoubtQuestion:
@@ -1336,7 +1359,8 @@ async def review_doubts(
 
     def check(value: DoubtsReviewOutput) -> list[str]:
         last[:] = [value]
-        return _check_review(value, items, assembled, vault, notes["base"])
+        settled = settled_blocks(vault, subject_slug, topic_slug, notes["base"])
+        return _check_review(value, items, assembled, vault, notes["base"], settled)
 
     async def apply(value: DoubtsReviewOutput) -> str | None:
         edits = [e for d in value.decisions if d.action == "auto_resolve" for e in d.edits]
