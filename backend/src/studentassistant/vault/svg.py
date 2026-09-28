@@ -5,17 +5,25 @@ The tutor-editor draws diagrams as SVG, and an SVG is LLM output: it may carry a
 the drawing and rebuilds it from an allow-list, so what reaches the vault (and what the read API
 serves as `image/svg+xml`) is only static vector drawing:
 
-- the input is parsed with the standard library after refusing any DOCTYPE or entity declaration
-  (no entity expansion, no external entity) and anything above `MAX_SVG_BYTES`;
+- bytes must be UTF-8 (an optional UTF-8 BOM aside): any other BOM, a NUL byte, invalid UTF-8
+  or an XML declaration naming another encoding is refused, so no check can be bypassed by
+  re-encoding (#515);
+- the decoded text is parsed with the standard library after refusing any DOCTYPE or entity
+  declaration, both by a scan of the text and by expat handlers that raise on one (no entity
+  expansion, no external entity), and anything above `MAX_SVG_BYTES`;
 - the root must be `<svg>` (in the SVG namespace, or without a namespace: it is put in it);
 - only the drawing elements of `ALLOWED_ELEMENTS` are kept; any other element (`script`,
   `foreignObject`, `image`, `a`, `iframe`, the animation elements, anything in another namespace)
   is dropped with its whole subtree;
 - attributes are kept only when unqualified (plus `xlink:href`, `xml:space`, `xml:lang`), not an
   event handler (`on*`), and with a value that holds no `javascript:`/`vbscript:`/`data:` scheme,
-  no `url(...)` other than `url(#id)` and no `@import`; `href`/`xlink:href` only as `#id`;
-- `<style>` text and `style` attributes are CSS: kept only without `@import`, external `url()`,
-  `expression(`, a backslash escape or a script scheme, else dropped;
+  no `url(...)` other than `url(#id)`, no function outside `_ALLOWED_FUNCTIONS` and no `@import`;
+  `href`/`xlink:href` only as `#id`;
+- `<style>` text and `style` attributes are CSS: kept only when every function call is in the
+  allow-list `_ALLOWED_FUNCTIONS` (colours, maths, transforms, filters, gradients and `url(#id)`:
+  nothing that can fetch, so `image-set(`, `src(`, `local(`, `element(`... are all refused), no
+  at-rule other than `@media`, no quoted string that looks like a URL, no `expression(`, no
+  backslash escape and no script scheme, else dropped (#515);
 - comments and processing instructions are dropped.
 
 The output is UTF-8 XML (`<?xml ...?>` header, SVG as the default namespace), deterministic for a
@@ -27,6 +35,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -76,16 +85,76 @@ ALLOWED_ELEMENTS = frozenset(
     }
 )
 _KEPT_QUALIFIED = {f"{{{XLINK_NS}}}href", f"{{{XML_NS}}}space", f"{{{XML_NS}}}lang"}
-_DECLARATION = re.compile(rb"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
+_DECLARATION = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 _SCHEME = re.compile(r"(javascript|vbscript|data)\s*:", re.IGNORECASE)
 _URL = re.compile(r"url\s*\(\s*['\"]?\s*(.?)", re.IGNORECASE)
 # A backslash is a CSS escape (`u\\72l(`), which could spell any of these: refused outright.
 _CSS_DANGER = re.compile(r"@import|expression\s*\(|behavior\s*:|-moz-binding|\\", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f\s]+")
+# Every CSS function kept: none of them can fetch a resource (`url()` is checked apart, #id only).
+# Any other function (`image-set`, `-webkit-image-set`, `src`, `local`, `element`, `cross-fade`,
+# `paint`, `attr`, `env`, ... and whatever CSS adds next) makes the value or the stylesheet unsafe.
+_ALLOWED_FUNCTIONS = frozenset(
+    {
+        "url",
+        "rgb",
+        "rgba",
+        "hsl",
+        "hsla",
+        "hwb",
+        "lab",
+        "lch",
+        "oklab",
+        "oklch",
+        "calc",
+        "min",
+        "max",
+        "clamp",
+        "var",
+        "matrix",
+        "translate",
+        "translatex",
+        "translatey",
+        "scale",
+        "scalex",
+        "scaley",
+        "rotate",
+        "skew",
+        "skewx",
+        "skewy",
+        "cubic-bezier",
+        "steps",
+        "linear-gradient",
+        "radial-gradient",
+        "repeating-linear-gradient",
+        "repeating-radial-gradient",
+        "blur",
+        "brightness",
+        "contrast",
+        "drop-shadow",
+        "grayscale",
+        "hue-rotate",
+        "invert",
+        "opacity",
+        "saturate",
+        "sepia",
+    }
+)
+# A function token is an identifier immediately followed by `(` (CSS allows no space between).
+_FUNCTION = re.compile(r"(?<![\w-])([\w-]+)\(")
+_AT_RULE = re.compile(r"@([\w-]*)")
+_ALLOWED_AT_RULES = frozenset({"media"})
+# A quoted string holding a scheme (`"http:`), a protocol-relative (`"//`) or absolute path.
+_URL_STRING = re.compile(r"['\"]\s*(?:[a-z][a-z0-9+.-]*:|/)", re.IGNORECASE)
+_BOMS = (b"\xfe\xff", b"\xff\xfe", b"\x00\x00\xfe\xff", b"\x2b\x2f\x76", b"\xf7\x64\x4c")
+_UTF8_BOM = b"\xef\xbb\xbf"
+_XML_ENCODING = re.compile(r"^\s*<\?xml[^>]*?\bencoding\s*=\s*['\"]([^'\"]*)['\"]", re.IGNORECASE)
+_UTF8_NAMES = frozenset({"utf-8", "utf8", "us-ascii", "ascii"})
 
 INVALID_SVG_MESSAGE = "El dibujo no es un SVG válido."
 TOO_LARGE_MESSAGE = f"El dibujo SVG es demasiado grande (máximo {MAX_SVG_BYTES // 1024} KiB)."
 DECLARATION_MESSAGE = "El SVG no puede llevar declaraciones DOCTYPE ni ENTITY."
+ENCODING_MESSAGE = "El dibujo SVG debe estar codificado en UTF-8."
 NOT_SVG_MESSAGE = "El dibujo debe tener un elemento raíz <svg>."
 EMPTY_SVG_MESSAGE = "El dibujo SVG no tiene nada que dibujar."
 
@@ -101,16 +170,19 @@ def sanitize_svg(content: bytes | str) -> bytes:
     """The drawing rebuilt from the allow-list, as UTF-8 XML bytes.
 
     Raises:
-        SvgError: the input is too large, declares a DOCTYPE or entity, is not well-formed XML,
-            its root is not `<svg>`, or nothing drawable is left once sanitized.
+        SvgError: the input is too large, is not UTF-8, declares a DOCTYPE or entity, is not
+            well-formed XML, its root is not `<svg>`, or nothing drawable is left once sanitized.
     """
     data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
     if len(data) > MAX_SVG_BYTES:
         raise SvgError(TOO_LARGE_MESSAGE)
-    if _DECLARATION.search(data):
+    text = _decode(data)
+    if _DECLARATION.search(text):
         raise SvgError(DECLARATION_MESSAGE)
+    _refuse_declarations(text)
     try:
-        root = ET.fromstring(data)
+        # A `str` is fed to expat as UTF-8 whatever the XML declaration says.
+        root = ET.fromstring(text)
     except ET.ParseError as error:
         raise SvgError(INVALID_SVG_MESSAGE) from error
     if _local(root.tag) != "svg" or _namespace(root.tag) not in ("", SVG_NS):
@@ -119,6 +191,41 @@ def sanitize_svg(content: bytes | str) -> bytes:
     if clean is None or (len(clean) == 0 and not (clean.text or "").strip()):
         raise SvgError(EMPTY_SVG_MESSAGE)
     return ET.tostring(clean, encoding="utf-8", xml_declaration=True)
+
+
+def _decode(data: bytes) -> str:
+    """`data` as text: UTF-8 only (#515), so every later check sees what expat will parse."""
+    if data.startswith(_UTF8_BOM):
+        data = data[len(_UTF8_BOM) :]
+    elif data.startswith(_BOMS):
+        raise SvgError(ENCODING_MESSAGE)
+    if b"\x00" in data:
+        raise SvgError(ENCODING_MESSAGE)  # UTF-16/32 without a BOM
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SvgError(ENCODING_MESSAGE) from error
+    declared = _XML_ENCODING.match(text)
+    if declared and declared.group(1).strip().lower() not in _UTF8_NAMES:
+        raise SvgError(ENCODING_MESSAGE)
+    return text
+
+
+def _refuse_declarations(text: str) -> None:
+    """Raise `SvgError` if expat meets any DOCTYPE or entity declaration in `text`."""
+
+    def refuse(*_args: object) -> None:
+        raise SvgError(DECLARATION_MESSAGE)
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.UnparsedEntityDeclHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
+    try:
+        parser.Parse(text, True)
+    except expat.ExpatError as error:
+        raise SvgError(INVALID_SVG_MESSAGE) from error
 
 
 def is_safe_svg(content: bytes) -> bool:
@@ -187,7 +294,7 @@ def _attribute(key: str, value: str) -> str | None:
         return None
     if local == "style":
         return value if _safe_css(value) else None
-    if _CSS_DANGER.search(value) or not _internal_urls(value):
+    if _CSS_DANGER.search(value) or not _internal_urls(value) or not _allowed_functions(value):
         return None
     return value
 
@@ -197,9 +304,18 @@ def _internal_urls(value: str) -> bool:
     return all(match.group(1) == "#" for match in _URL.finditer(value))
 
 
+def _allowed_functions(value: str) -> bool:
+    """Whether every function call in `value` is one that cannot fetch (`_ALLOWED_FUNCTIONS`)."""
+    return all(m.group(1).lower() in _ALLOWED_FUNCTIONS for m in _FUNCTION.finditer(value))
+
+
 def _safe_css(css: str) -> bool:
     squeezed = _CONTROL.sub("", css)
-    return not (_SCHEME.search(squeezed) or _CSS_DANGER.search(css) or not _internal_urls(css))
+    if _SCHEME.search(squeezed) or _CSS_DANGER.search(css) or _URL_STRING.search(css):
+        return False
+    if any(m.group(1).lower() not in _ALLOWED_AT_RULES for m in _AT_RULE.finditer(css)):
+        return False
+    return _internal_urls(css) and _allowed_functions(css)
 
 
 __all__ = [
