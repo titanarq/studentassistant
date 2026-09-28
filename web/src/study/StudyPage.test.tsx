@@ -4,6 +4,7 @@ import { artifact, materialsBody } from "../materials/testMaterials";
 import { NOTES } from "../notes/testNotes";
 import { jsonResponse, sseResponse, stubApi } from "../test/mockApi";
 import StudyPage, { sectionTitles } from "./StudyPage";
+import { notesImageUrl } from "../notes/api";
 import { parseNotes } from "../notes/markdown";
 import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
 
@@ -188,7 +189,7 @@ function block(name: RegExp) {
   return within(doc).getByRole("heading", { name }).closest(".notes-block") as HTMLElement;
 }
 
-it("shows the options, today's reviews, the question chat and the document in read mode", async () => {
+it("shows the options, the question chat and the document in read mode", async () => {
   renderPage();
 
   // #487: the workspace's frame -- the screen is «Estudiar», its header band names the topic.
@@ -210,8 +211,6 @@ it("shows the options, today's reviews, the question chat and the document in re
   expect(within(doc).queryByRole("button", { name: "¿Por qué pusiste esto?" })).toBeNull();
   expect(within(doc).queryByRole("textbox")).toBeNull();
 
-  const reviews = screen.getByRole("region", { name: "Repasos para hoy" });
-  expect(await within(reviews).findByText(/3 para repasar · 2 nuevas/)).toBeInTheDocument();
   const chat = screen.getByRole("region", { name: "Preguntas sobre el documento" });
   expect(within(chat).getByRole("textbox", { name: "Tu pregunta" })).toBeInTheDocument();
 
@@ -243,12 +242,49 @@ it("shows no study label when no version was marked yet", async () => {
   expect(screen.queryByText(/versión de estudio/)).toBeNull();
 });
 
-it("says when the next review is when there is nothing to review today", async () => {
-  renderPage({ "/api/practice/summary": summary([{ ...TOPIC_PRACTICE, due: 0, new: 0, next_due: "2026-09-28T08:00:00Z" }]) });
+it("has no «Repasos para hoy»: the flashcards' reviews are reached through Tarjetas de memoria (#509)", async () => {
+  const { fetchMock } = renderPage();
 
-  const reviews = screen.getByRole("region", { name: "Repasos para hoy" });
-  expect(await within(reviews).findByText(/^Nada que repasar hoy\. Próximo repaso: 28 de septiembre de 2026/)).toBeInTheDocument();
-  expect(within(reviews).queryByRole("button")).toBeNull();
+  await options();
+  expect(screen.queryByRole("region", { name: "Repasos para hoy" })).toBeNull();
+  expect(screen.queryByText(/Repasos para hoy|para repasar|Repasar ahora/)).toBeNull();
+  expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("/api/practice/summary");
+});
+
+it("lays the options out as cards two per row, each with its title and only its state (#509)", async () => {
+  renderPage({ [`${BASE}/study`]: jsonResponse(MIXED) });
+
+  const buttons = await options();
+  expect(buttons[0].closest("ul")).toHaveClass("study-option-list");
+  expect(buttons.map((button) => [...button.children].map((child) => child.textContent))).toEqual([
+    ["Esquema", "Listo"],
+    ["Ejercicios", "Sin generar"],
+    ["Examen", "Sin generar"],
+    ["Quiz", "Desactualizado"],
+    ["Tarjetas de memoria", "Listo"],
+    ["Diapositivas", "Desactualizado"],
+  ]);
+  // No subtitle any more: the whole card is the button, its name is the title and the state.
+  expect(document.querySelector(".study-option-description")).toBeNull();
+  expect(screen.queryByText("Repaso espaciado")).toBeNull();
+  expect(optionButton(/^Tarjetas de memoria/)).toHaveAccessibleName("Tarjetas de memoria Listo");
+  // The keyboard opens a card as a click does: it is a native button.
+  expect(optionButton(/^Quiz/).tagName).toBe("BUTTON");
+  expect(optionButton(/^Quiz/)).toHaveAttribute("type", "button");
+});
+
+it("draws the images of the notes in the study document instead of «[Imagen: …]» (#509)", async () => {
+  const text = `${NOTES}\n\n![Imagen recortada 2](../sources/images/crop-002.png)\n\n![Fuera](https://example.com/x.png)\n`;
+  renderPage({ [`${BASE}/notes`]: jsonResponse({ subject_id: "historia", topic_id: "revolucion-industrial", text, version: 5 }) });
+
+  const doc = screen.getByRole("region", { name: "Documento" });
+  const image = await within(doc).findByRole("img", { name: "Imagen recortada 2" });
+  const expected = notesImageUrl("historia", "revolucion-industrial", "../sources/images/crop-002.png");
+  expect(expected).not.toBeNull();
+  expect(image).toHaveAttribute("src", expected);
+  expect(within(doc).queryByText("[Imagen: Imagen recortada 2]")).toBeNull();
+  // A link that is not a topic source stays the placeholder.
+  expect(within(doc).getByText("[Imagen: Fuera]")).toBeInTheDocument();
 });
 
 it("shows each option's state as a text badge: Listo, Desactualizado with its reason, Sin generar", async () => {
@@ -330,9 +366,10 @@ it("closes the panel with Escape", async () => {
   expect(optionButton(/^Quiz/)).toHaveFocus();
 }, PAGE_TEST_TIMEOUT);
 
-it("opens Tarjetas de memoria from Repasos para hoy, with the ratings and source chips", async () => {
+it("opens Tarjetas de memoria from its option card, with the ratings and source chips", async () => {
   renderPage();
-  fireEvent.click(await screen.findByRole("button", { name: "Repasar ahora" }));
+  await options();
+  fireEvent.click(optionButton(/^Tarjetas de memoria/));
 
   const panel = screen.getByRole("region", { name: "Tarjetas de memoria" });
   fireEvent.click(await within(panel).findByRole("button", { name: "Mostrar respuesta" }));
@@ -499,7 +536,6 @@ it("lays the screen out in the frame of Construir: the options card above the ch
   const [card, chatCard] = [...left.children] as HTMLElement[];
   expect(card).toBe(screen.getByRole("region", { name: "Opciones de estudio" }));
   expect(card).toHaveClass("workspace-sources");
-  expect(card).toContainElement(screen.getByRole("region", { name: "Repasos para hoy" }));
   expect(card).toContainElement(screen.getByRole("region", { name: "Material de estudio" }));
   expect(chatCard).toBe(screen.getByRole("region", { name: "Chat" }));
   expect(chatCard).toHaveClass("workspace-chat");
@@ -629,7 +665,7 @@ it("a question asked on the study screen streams its answer with chips into the 
   await waitFor(() => expect(input).toBeEnabled());
 
   fireEvent.change(input, { target: { value: "¿Dónde empezó?" } });
-  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Enviar" }));
 
   fireEvent.click(await within(chatRegion()).findByRole("button", { name: "Ir a la sección 1. Contexto" }));
   await waitFor(() => expect(block(/Contexto/)).toHaveClass("notes-focus"));
@@ -650,7 +686,7 @@ async function askInChat(text: string) {
   const input = within(chatRegion()).getByRole("textbox", { name: "Tu pregunta" });
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.change(input, { target: { value: text } });
-  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Preguntar" }));
+  fireEvent.click(within(chatRegion()).getByRole("button", { name: "Enviar" }));
 }
 
 it("a quiz generated from the chat turns its badge to Listo and «Abrir «Quiz»» opens it beside the document", async () => {

@@ -32,7 +32,7 @@
   color: var(--ink-muted);
 }
 
-/* ---- The left card: Repasos para hoy and the study options ---- */
+/* ---- The left card: the study options ---- */
 
 .study-card-body {
   display: flex;
@@ -59,35 +59,7 @@
   }
 }
 
-/* ---- Repasos para hoy ---- */
-
-.study-reviews {
-  padding: var(--space-3) var(--space-4);
-  background: var(--surface-sunken);
-  border-radius: var(--radius-l);
-}
-
-.study-reviews h2 {
-  margin-bottom: var(--space-1);
-}
-
-.study-reviews p {
-  margin: 0;
-}
-
-.study-review-now {
-  margin: 0;
-  padding: 0;
-  min-height: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-
-/* ---- The options ---- */
+/* ---- The options: cards two per row, each a title and its state (#509) ---- */
 
 .study-options {
   margin: 0;
@@ -98,57 +70,66 @@
 }
 
 .study-option-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+.study-option-list > li {
+  display: flex;
+  min-width: 0;
+}
+
 .study-option {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1);
   width: 100%;
-  min-height: var(--target);
+  min-height: 4.5rem;
   margin: 0;
-  padding: var(--space-2) var(--space-2);
-  border: 0;
-  border-top: 1px solid var(--line);
-  border-radius: 0;
-  background: none;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-sunken);
   color: var(--ink);
   font-weight: 400;
   text-align: left;
+  cursor: pointer;
 }
 
 .study-option:hover {
+  border-color: var(--line-strong);
   background: var(--surface);
 }
 
-.study-option[aria-expanded="true"] {
-  background: var(--accent-soft);
+.study-option:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
 }
 
-.study-option-text {
-  flex: 1 1 auto;
-  min-width: 0;
+.study-option[aria-expanded="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .study-option-title {
   display: block;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .study-option[aria-expanded="true"] .study-option-title {
   color: var(--accent);
 }
 
-.study-option-description {
-  color: var(--ink-muted);
-  font-size: var(--step--1);
-}
-
+/* ink-muted, not ink-faint: AA on the card's sunken background in both themes. */
 .study-missing-badge {
-  color: var(--ink-faint);
+  color: var(--ink-muted);
   font-size: var(--step--1);
   white-space: nowrap;
 }

@@ -110,7 +110,7 @@ it("has the read-only line linking to Construir, and a bounded input", async () 
   expect(note).toHaveTextContent("Solo respondo preguntas: no cambio los apuntes. Para cambiarlos, ve a Construir.");
   expect(within(note).getByRole("link", { name: "Construir" })).toHaveAttribute("href", `${PAGE}/workspace`);
   const input = screen.getByRole("textbox", { name: "Tu pregunta" });
-  expect(input).toHaveAttribute("placeholder", "Pregunta sobre el documento…");
+  expect(input).toHaveAttribute("placeholder", "Chat sobre el tema…");
   expect(input).toHaveAttribute("maxLength", String(MAX_QUESTION_CHARS));
   expect(await screen.findByText(/Pregunta lo que no entiendas/)).toBeInTheDocument();
 });
@@ -637,7 +637,7 @@ it("offers a disabled «Hablar» with a hint in a browser without speech recogni
   const input = screen.getByRole("textbox", { name: "Tu pregunta" });
   await waitFor(() => expect(input).toBeEnabled());
   fireEvent.change(input, { target: { value: "¿Qué causas tuvo?" } });
-  expect(screen.getByRole("button", { name: "Preguntar" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Enviar" })).toBeEnabled();
 });
 
 it("stops a running recognition on unmount", async () => {
@@ -650,7 +650,7 @@ it("stops a running recognition on unmount", async () => {
   expect(stop).toHaveBeenCalledTimes(1);
 });
 
-it("has the workspace chat's input: a textarea with Preguntar and the microphone icon button in one row (#487)", async () => {
+it("has the workspace chat's input: a textarea with Enviar and the microphone icon button in one row (#487)", async () => {
   const { listen } = fakeListen();
   renderChat({}, true, null, { listen, voiceSupported: true });
   const input = screen.getByRole("textbox", { name: "Tu pregunta" });
@@ -658,7 +658,7 @@ it("has the workspace chat's input: a textarea with Preguntar and the microphone
   const form = input.closest("form") as HTMLFormElement;
   expect(form).toHaveClass("ws-chat-form");
   const row = form.querySelector(".ws-chat-actions") as HTMLElement;
-  expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Preguntar", SPEAK]);
+  expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Enviar", SPEAK]);
   const mic = within(row).getByRole("button", { name: SPEAK });
   // The icon, not the word «Hablar», with the tooltip the workspace chat's microphone has.
   expect(mic).toHaveClass("voice-input-icon");

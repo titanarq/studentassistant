@@ -80,6 +80,18 @@ describe("study screen in the workspace's frame (#487)", () => {
     expect(body["min-height"]).toBe("0");
   });
 
+  it("lays the options out as cards two per row, each a whole button with a clear focus (#509)", () => {
+    const list = declarations(studyCss, ".study-option-list");
+    expect(list.display).toBe("grid");
+    expect(list["grid-template-columns"]).toBe("repeat(2, minmax(0, 1fr))");
+    const card = declarations(studyCss, ".study-option");
+    expect(card.width).toBe("100%");
+    expect(card.border).toMatch(/var\(--line\)/);
+    expect(declarations(studyCss, ".study-option:focus-visible").outline).toBe("var(--focus-ring)");
+    expect(declarations(studyCss, '.study-option[aria-expanded="true"]').background).toBe("var(--accent-soft)");
+    expect(studyCss).not.toMatch(/\.study-(reviews|review-now|option-description)\b/);
+  });
+
   it("uses no literal colour in its own rules", () => {
     expect(studyCss).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(/i);
   });

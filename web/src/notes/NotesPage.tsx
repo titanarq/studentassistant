@@ -8,6 +8,7 @@ import { fetchNotes, type TopicNotes } from "./api";
 import { type Block, parseNotes } from "./markdown";
 import NotesView from "./NotesView";
 import SourcePanel from "./SourcePanel";
+import { useNotesImages } from "./useNotesImages";
 import "./notes.css";
 
 /**
@@ -32,6 +33,7 @@ import "./notes.css";
  */
 export default function NotesPage({ subjectId, topicId }: { subjectId: string; topicId: string }) {
   const [topicName, setTopicName] = useState(topicId);
+  const resolveImage = useNotesImages(subjectId, topicId);
   const [notes, setNotes] = useState<ReadResult<TopicNotes> | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
@@ -146,6 +148,7 @@ export default function NotesPage({ subjectId, topicId }: { subjectId: string; t
             changedSections={changed}
             onAskWhy={askWhy}
             askDisabled={chat.busy !== null}
+            resolveImage={resolveImage}
           />
         )}
       </main>

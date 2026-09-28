@@ -5,6 +5,7 @@ import { type OptionKey, STUDY_OPTIONS } from "../options";
 import { askStudyChat, type GenerationResult, type StudyChatOutcome } from "./api";
 import { useFollowLog } from "../../chat/useFollowLog";
 import ReplyView from "./ReplyView";
+import { useNotesImages } from "../../notes/useNotesImages";
 import ChatComposer from "../../workspace/chat/ChatComposer";
 import type { VoiceQuestionStarter } from "../../tutor/voiceQuestion";
 import FeedbackChip from "../../chat/FeedbackChip";
@@ -32,8 +33,9 @@ import "./studyChat.css";
  * the input, unsent.
  *
  * Since #487 it is the chat card of the shared frame (`WorkspaceFrame`), with the workspace chat's
- * input (`ChatComposer`): a textarea (Enter asks, Shift+Enter is a new line), **Preguntar** and the
- * microphone as an icon button in one row below it; its heading is for screen readers only.
+ * input (`ChatComposer`): a textarea («Chat sobre el tema…»; Enter asks, Shift+Enter is a new line),
+ * **Enviar** (the composer's own label, as in the Construir chat) and the microphone as an icon
+ * button in one row below it; its heading is for screen readers only.
  */
 
 export const MAX_QUESTION_CHARS = 1000;
@@ -118,6 +120,7 @@ export default function StudyChat({
   voiceSupported,
 }: StudyChatProps) {
   const [history, setHistory] = useState<History>({ state: "loading" });
+  const resolveImage = useNotesImages(subjectId, topicId);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [asking, setAsking] = useState<Asking | null>(null);
@@ -224,6 +227,7 @@ export default function StudyChat({
   }, [suggestion]);
 
   const chips = (cited: SectionRef[]) => ({
+    resolveImage,
     renderSection: (anchor: string, key: string): ReactNode => {
       const title = cited.find((s) => s.anchor === anchor)?.title ?? sections.get(anchor) ?? anchor;
       const stale = !sections.has(anchor);
@@ -357,12 +361,11 @@ export default function StudyChat({
       <ChatComposer
         id="study-chat-question"
         label="Tu pregunta"
-        placeholder="Pregunta sobre el documento…"
+        placeholder="Chat sobre el tema…"
         value={draft}
         onChange={setDraft}
         onSubmit={() => void ask(draft)}
         canSubmit={!busy && draft.trim() !== ""}
-        submitLabel="Preguntar"
         maxLength={MAX_QUESTION_CHARS}
         disabled={busy}
         inputRef={input}
