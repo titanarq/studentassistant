@@ -838,7 +838,10 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
 ### Reviewed and settled blocks -- `reviewed.py` (#474)
 What the student already reviewed is derived, not stored per block: append-only `notes.reviewed`
 records in `conversations/editor.jsonl` (the existing conversation API, no vault layout change),
-`detail = {"reason": "student_edit" | "doubt_closed", "blocks": [<key>, ...]}`.
+`detail = {"reason": "student_edit" | "doubt_closed", "blocks": [<key>, ...], "sources": {<key>:
+[<source key>, ...]}, "open_doubts": [<pending id>, ...]}` -- `sources` and `open_doubts` (#483)
+are what the review saw: the source files each block cited then and the ids of the doubts open
+then (a record written before #483 has neither).
 - `block_key(text) -> str`: SHA-256 (hex) of a block's text without footnote references,
   whitespace collapsed. Editing a block changes its key, so it is no longer reviewed until it is
   reviewed again; moving it or changing only its footnotes keeps it.
@@ -846,13 +849,27 @@ records in `conversations/editor.jsonl` (the existing conversation API, no vault
   changed, `changed_block_keys(before, after)`) and when the student answers or dismisses a doubt
   (`doubts.answer_doubt` / `dismiss_doubt`, after the close: the blocks then citing its sources,
   `blocks_citing(notes, item_sources(...))` -- its captures' pages, its source refs, the sessions
-  of its transcript segments). `record_reviewed` writes nothing without blocks, and a failure to
-  write is only logged.
-- `reviewed_keys(vault, s, t) -> set[str]`: every key the records cover.
+  of its transcript segments). `record_reviewed(..., notes=)` writes nothing without blocks, and a
+  failure to write is only logged (a failure to read the open doubts only drops `sources` and
+  `open_doubts`, so the record falls back to counting every open doubt).
+- `reviews(vault, s, t) -> dict[str, Review]`: per key, what its latest record saw (`Review`:
+  `sources`, `open_doubts`, both `None` for a record from before #483); `reviewed_keys` is its
+  keys.
 - `settled_blocks(vault, s, t, notes) -> set[str]`: the keys of the blocks of `notes` that are
-  reviewed, carry no `[[?` mark and cite no source an open doubt names (`open_doubt_sources`; a
+  reviewed, carry no `[[?` mark and cite no source of an open doubt that `unsettles` them (a
   doubt whose pages are all set aside by triage is never asked, so it does not count). The block
   map marks them `[revisado]`.
+- `unsettles(item, named, review) -> bool` (#483): an open doubt naming sources a reviewed block
+  cites unsettles it only if the review did not already cover it. **A contradiction always does**
+  -- a disagreement between sources is never settled silently (`DISAGREEMENT_RULE`), and notes vs
+  book or captures incorporated together may contradict by design, so a contradiction an
+  incorporation raises on a settled block's source unlocks it on purpose. Any other doubt does
+  only when it was open at the block's latest review (its id in `open_doubts`) or names a source
+  the block did not cite then. So a doubt opened later on a source the block already cited -- a
+  transcriber doubt on a repeated capture, an `illegible` doubt an incorporation raises -- leaves
+  it settled: the student already reviewed what the block says from that source, and the doubts
+  review auto-resolves it (`SETTLED_REVIEW_RULE`). A record from before #483 counts every open
+  doubt, as before.
 
 ### Overlapping captures: lock, contradictions, capture facts -- `overlap.py` (#474)
 Deterministic checks behind building the notes from successive, overlapping captures; an editor
@@ -866,8 +883,8 @@ answer that breaks one is re-asked with the Spanish errors like any other valida
   doubts review. A new citation of a source without open doubts stays allowed and the block stays
   settled. Checked on every incorporation (`incorporate._check`, with `doubted` =
   `open_doubt_sources` plus the sources of the doubts the incorporation raises) and on the doubts
-  review's auto-resolution edits (`doubts._check_review`, text and deletion only). `settled` and
-  `doubted` are computed from the notes and doubts before the turn's own edits, so what a turn
+  review's auto-resolution edits (`doubts._check_review`, with `doubted` = `open_doubt_sources`,
+  #483). `settled` and `doubted` are computed from the notes and doubts before the turn's own edits, so what a turn
   writes never changes which blocks it may touch. Not on a doubt answer, and **not on a revision
   turn, even one with a Recursos selection**: there the student may ask to change a settled block,
   so the lock is only the `editor_revise` prompt's rule (do not rewrite a «[revisado]» block from

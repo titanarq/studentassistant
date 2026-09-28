@@ -63,6 +63,11 @@ def _records(topic: DoubtsTopic) -> list[dict[str, Any]]:
     ]
 
 
+def _covered(topic: DoubtsTopic) -> list[dict[str, Any]]:
+    """The records' reason and blocks, without what each review saw (#483)."""
+    return [{"reason": r["reason"], "blocks": r["blocks"]} for r in _records(topic)]
+
+
 def _save(topic: DoubtsTopic, sync: GitSync, text: str) -> None:
     base = read_notes(topic.vault, topic.subject, topic.topic)
     assert base is not None
@@ -124,7 +129,11 @@ def test_a_student_save_records_the_blocks_it_added_or_changed(
 ) -> None:
     _save(topic, sync, topic.notes.replace(NOTATION, NEW_NOTATION))
 
-    assert _records(topic) == [{"reason": "student_edit", "blocks": [block_key(NEW_NOTATION)]}]
+    assert _covered(topic) == [{"reason": "student_edit", "blocks": [block_key(NEW_NOTATION)]}]
+    [record] = _records(topic)
+    # What the review saw (#483): the sources the block cited, the doubts open then.
+    assert record["sources"] == {block_key(NEW_NOTATION): [f"sessions/{topic.session}"]}
+    assert record["open_doubts"] == ["p-1", "p-4", "p-5"]
     assert reviewed_keys(topic.vault, topic.subject, topic.topic) == {block_key(NEW_NOTATION)}
 
 
@@ -139,7 +148,9 @@ def test_dismissing_a_doubt_reviews_the_blocks_citing_its_sources(
     # p-4 is about page 1 (its capture), cited only by the definition.
     _run(dismiss_doubt(topic.vault, topic.subject, topic.topic, "p-4", sync=sync))
 
-    assert _records(topic) == [{"reason": "doubt_closed", "blocks": [block_key(DEFINITION)]}]
+    assert _covered(topic) == [{"reason": "doubt_closed", "blocks": [block_key(DEFINITION)]}]
+    # Written after the close: the closed doubt is not among those open at the review.
+    assert _records(topic)[0]["open_doubts"] == ["p-1", "p-5"]
 
 
 def test_answering_a_doubt_reviews_the_blocks_citing_its_sources_after_the_edit(
@@ -169,7 +180,7 @@ def test_answering_a_doubt_reviews_the_blocks_citing_its_sources_after_the_edit(
     )
 
     assert result.notes_changed
-    assert _records(topic) == [{"reason": "doubt_closed", "blocks": [block_key(answered)]}]
+    assert _covered(topic) == [{"reason": "doubt_closed", "blocks": [block_key(answered)]}]
 
 
 # -- settled blocks and the block map ------------------------------------------------------

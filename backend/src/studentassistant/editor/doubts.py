@@ -23,7 +23,8 @@ through with the `editor` role (Opus) in two steps:
 When the student answers or dismisses a doubt, the blocks then citing its sources are recorded as
 reviewed (`reviewed.record_reviewed`, reason `doubt_closed`, #474); every block map the editor sees
 here marks the settled ones «[revisado]» (`reviewed.settled_blocks`). The review's edits never
-change or delete a settled block (`overlap.settled_block_errors`, re-asked otherwise), and its
+change or delete a settled block nor make one cite a source an open doubt names
+(`overlap.settled_block_errors`, re-asked otherwise; #483), and its
 instruction tells the editor to auto-resolve, with the block's source as evidence, a doubt about
 what a settled block already says instead of asking it (`SETTLED_REVIEW_RULE`).
 
@@ -97,6 +98,7 @@ from studentassistant.editor.overlap import settled_block_errors
 from studentassistant.editor.reviewed import (
     blocks_citing,
     item_sources,
+    open_doubt_sources,
     record_reviewed,
     settled_blocks,
     source_key,
@@ -1190,9 +1192,10 @@ def _check_review(
     vault: Vault,
     notes: str,
     settled: Collection[str] = (),
+    doubted: Collection[str] = (),
 ) -> list[str]:
     """Spanish errors of a review; its edits must not change or delete a settled block of
-    `notes` (`settled`, #474)."""
+    `notes` (`settled`, #474), nor make one cite a source an open doubt names (`doubted`, #483)."""
     errors: list[str] = []
     by_id = {item.id: item for item in items}
     seen: set[str] = set()
@@ -1258,7 +1261,7 @@ def _check_review(
     except EditError as error:
         return error.errors
     return [
-        *settled_block_errors(notes, edited, settled),
+        *settled_block_errors(notes, edited, settled, doubted),
         *_notes_errors(assembled, vault, edited, notes),
     ]
 
@@ -1360,7 +1363,8 @@ async def review_doubts(
     def check(value: DoubtsReviewOutput) -> list[str]:
         last[:] = [value]
         settled = settled_blocks(vault, subject_slug, topic_slug, notes["base"])
-        return _check_review(value, items, assembled, vault, notes["base"], settled)
+        doubted = open_doubt_sources(vault, subject_slug, topic_slug)
+        return _check_review(value, items, assembled, vault, notes["base"], settled, doubted)
 
     async def apply(value: DoubtsReviewOutput) -> str | None:
         edits = [e for d in value.decisions if d.action == "auto_resolve" for e in d.edits]
@@ -1709,13 +1713,16 @@ def _record_closed(
             capture_pages(vault, subject_slug, topic_slug),
             _state(vault, subject_slug, topic_slug),
         )
-        blocks = blocks_citing(read_notes(vault, subject_slug, topic_slug), sources)
+        notes = read_notes(vault, subject_slug, topic_slug)
+        blocks = blocks_citing(notes, sources)
     except Exception:
         logger.exception(
             "could not find the blocks a closed doubt of %s/%s reviews", subject_slug, topic_slug
         )
         return False
-    return record_reviewed(vault, subject_slug, topic_slug, "doubt_closed", blocks, clock=clock)
+    return record_reviewed(
+        vault, subject_slug, topic_slug, "doubt_closed", blocks, notes=notes, clock=clock
+    )
 
 
 async def dismiss_doubt(
