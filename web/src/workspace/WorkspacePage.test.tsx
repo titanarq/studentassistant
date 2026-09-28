@@ -91,6 +91,13 @@ function tab(name: RegExp | string) {
   return screen.getByRole("tab", { name });
 }
 
+/** The source's detail over the document column (#473). */
+function detail(name: string) {
+  const slot = document.querySelector<HTMLElement>(".workspace-detail");
+  expect(slot).not.toBeNull();
+  return within(slot!).getByRole("dialog", { name });
+}
+
 it("shows the two columns: tabs above the chat, the notes on the right, under a compact header", async () => {
   const fetchMock = renderPage();
 
@@ -202,20 +209,42 @@ it("pauses a running capture on Recursos and resumes it back on Captura (#450)",
   expect(fakes.sockets).toHaveLength(1);
 }, PAGE_TEST_TIMEOUT);
 
-it("opens a footnote's source in Recursos instead of a panel over the document", async () => {
+it("opens a footnote's source over the document, and closes it with the X or Escape (#473)", async () => {
   renderPage();
 
   const refs = await screen.findAllByRole("link", { name: "Fuente: Apuntes, página 2" });
+  const documentColumn = screen.getByRole("region", { name: "Documento" });
+  const heading = within(documentColumn).getByRole("heading", { name: /Contexto/ });
+  documentColumn.scrollTop = 120;
   fireEvent.click(refs[0]);
 
-  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
-  const resources = document.getElementById("workspace-panel-resources")!;
-  const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 2" });
+  // Over the document, not in Recursos: the tabs stay where they were (Captura keeps running).
+  expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
+  expect(within(document.getElementById("workspace-panel-resources")!).queryByRole("dialog")).toBeNull();
+  const dialog = detail("Apuntes, página 2");
+  expect(documentColumn).not.toContainElement(dialog);
   expect(await within(dialog).findByText("Carbón y hierro")).toBeInTheDocument();
+  expect(within(dialog).getByRole("img", { name: "Apuntes, página 2" })).toHaveAttribute(
+    "src",
+    `${SOURCES}/notes/page-002.page.jpg`,
+  );
+  expect(within(dialog).getByRole("heading", { name: "Apuntes, página 2" })).toHaveFocus();
 
+  // The X, named «Cerrar»: closed, the focus back on the footnote, the document untouched.
   fireEvent.click(within(dialog).getByRole("button", { name: "Cerrar" }));
-  expect(within(resources).queryByRole("dialog")).toBeNull();
-  expect(await within(resources).findByRole("list", { name: "Fuentes del tema" })).toBeInTheDocument();
+  expect(document.querySelector(".workspace-detail")).toBeNull();
+  expect(refs[0]).toHaveFocus();
+  expect(heading.isConnected).toBe(true);
+  expect(within(documentColumn).getByRole("heading", { name: /Contexto/ })).toBe(heading);
+  expect(documentColumn.scrollTop).toBe(120);
+
+  // Escape anywhere closes it too.
+  fireEvent.click(refs[0]);
+  expect(detail("Apuntes, página 2")).toBeInTheDocument();
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  expect(document.querySelector(".workspace-detail")).toBeNull();
+  expect(refs[0]).toHaveFocus();
+  expect(heading.isConnected).toBe(true);
 }, PAGE_TEST_TIMEOUT);
 
 it("lists the topic's sources in Recursos and opens one in the viewer", async () => {
@@ -244,9 +273,15 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
   expect(within(pages).getAllByRole("img", { name: "Incorporada a los apuntes" })).toHaveLength(5);
   expect(within(resources).queryByText(/pendientes ·|todavía no citan/)).toBeNull();
 
-  fireEvent.click(within(pages).getAllByRole("button").find((b) => b.classList.contains("resource-open") && b.textContent === "Página 1 · apuntes")!);
-  const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 1" });
+  const card = within(pages).getAllByRole("button").find((b) => b.classList.contains("resource-open") && b.textContent === "Página 1 · apuntes")!;
+  fireEvent.click(card);
+  const dialog = detail("Apuntes, página 1");
   expect(await within(dialog).findByText("Gran Bretaña, s. XVIII")).toBeInTheDocument();
+  // The list stays as it was in its box, and the focus goes back to the card on close.
+  expect(within(resources).queryByRole("dialog")).toBeNull();
+  expect(within(resources).getByRole("list", { name: "Fuentes del tema" })).toBe(pages);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cerrar" }));
+  expect(card).toHaveFocus();
 }, PAGE_TEST_TIMEOUT);
 
 it("says there are no notes yet instead of an error", async () => {
@@ -292,7 +327,7 @@ it("refreshes the document after the chat applied a change", async () => {
   expect(fetchMock.mock.calls.filter(([path]) => path === `${BASE}/notes`)).toHaveLength(2);
 }, PAGE_TEST_TIMEOUT);
 
-it("opens a contradiction's source of a chat doubt in Recursos", async () => {
+it("opens a contradiction's source of a chat doubt over the document", async () => {
   const stream = streamResponse();
   renderPage({
     ...ROUTES,
@@ -315,9 +350,7 @@ it("opens a contradiction's source of a chat doubt in Recursos", async () => {
     ),
   );
   fireEvent.click(await screen.findByRole("button", { name: "Ver la fuente: página 2" }, { timeout: 5000 }));
-  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
-  const resources = document.getElementById("workspace-panel-resources")!;
-  const dialog = within(resources).getByRole("dialog", { name: "Apuntes, página 2" });
+  const dialog = detail("Apuntes, página 2");
   expect(await within(dialog).findByText("Carbón y hierro")).toBeInTheDocument();
 }, PAGE_TEST_TIMEOUT);
 
@@ -333,11 +366,28 @@ it("switches the single column between document, capture/resources and chat", as
   expect(within(group).getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
   fireEvent.click(within(group).getByRole("button", { name: "Captura/Recursos" }));
   expect(root).toHaveAttribute("data-view", "left");
-  // A footnote switches the narrow view to the sources.
+  // A footnote's source takes the document view's place (#473); the document stays mounted.
   fireEvent.click(within(group).getByRole("button", { name: "Documento" }));
   const refs = await screen.findAllByRole("link", { name: "Fuente: Apuntes, página 1" });
   fireEvent.click(refs[0]);
+  expect(root).toHaveAttribute("data-view", "document");
+  expect(root).toHaveAttribute("data-detail", "open");
+  expect(detail("Apuntes, página 1")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Documento" })).toBeInTheDocument();
+  fireEvent.click(within(detail("Apuntes, página 1")).getByRole("button", { name: "Cerrar" }));
+  expect(root).not.toHaveAttribute("data-detail");
+  expect(root).toHaveAttribute("data-view", "document");
+
+  // Opened from Recursos, it shows in the document's place; closing it goes back to Recursos.
+  fireEvent.click(within(group).getByRole("button", { name: "Captura/Recursos" }));
+  fireEvent.click(tab("Recursos"));
+  const pages = await within(document.getElementById("workspace-panel-resources")!).findByRole("list", { name: "Fuentes del tema" });
+  const card = within(pages).getAllByRole("button").find((b) => b.classList.contains("resource-open"))!;
+  fireEvent.click(card);
+  expect(root).toHaveAttribute("data-view", "document");
+  fireEvent.keyDown(document.body, { key: "Escape" });
   expect(root).toHaveAttribute("data-view", "left");
+  expect(card).toHaveFocus();
   // The capture tab is never unmounted by the switch.
   expect(document.getElementById("workspace-panel-capture")).not.toBeNull();
 }, PAGE_TEST_TIMEOUT);
@@ -393,7 +443,7 @@ it("lists every stored source from the topic's source list, uncited webs include
   expect(fetchMock.mock.calls.some(([path]) => path === `${BASE}/summary`)).toBe(false);
 
   fireEvent.click(within(cards).getByRole("button", { name: /^(Web: )?El telar mecánico/ }));
-  const dialog = within(resources).getByRole("dialog", { name: "Web: El telar mecánico" });
+  const dialog = detail("Web: El telar mecánico");
   expect(await within(dialog).findByText(/Texto de la web/)).toBeInTheDocument();
 });
 

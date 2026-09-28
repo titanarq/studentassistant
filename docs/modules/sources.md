@@ -212,6 +212,14 @@ submodules.
   `SessionService.add_before_ended` before the observer's, so the observer sees the
   transcriptions before `session.ended`. `catch_up_vault` is registered with
   `SessionService.add_on_open` for the server-start catch-up below.
+- **The student's correction (#473).** The web's resource detail lets the student correct a
+  `notes`/`book` page's transcription by hand (`PUT /api/sources/{vault_id}/transcription`,
+  `server.md`), written by `vault.edit_page_transcription` over `page-NNN.md` with a
+  `transcription_edited` record in the sidecar (`vault.md`). Nothing in `sources` writes it or
+  reads it back: a corrected page already has its `.md`, so neither `PageTranscriber` nor the
+  catch-up transcribes it again, and the machine's text and its `page.transcribed` event stay as
+  provenance (git history, the session log, the record's `original_sha256`). A PDF page's `.txt`
+  or `.pKKK.md` is not editable.
 
 ### Textbook pages -- `transcription.py` (#58)
 - A capture taken while the session's source context is `book` (the `switch_source` button, or

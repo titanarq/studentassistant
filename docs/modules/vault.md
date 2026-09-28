@@ -212,6 +212,21 @@ anything else, `SourceNotFoundError` when the page's sidecar is not there.
 `update_page_meta(vault, vault_relative_path, updates) -> Path` merges `updates` into a stored
 page's sidecar (same path rules and errors; other keys kept in order; guarded, atomic, under the
 directory's lock): what `sources` learns after storing, such as a textbook page's `book_page`.
+`edit_page_transcription(vault, vault_relative_path, text, *, edited_at=None) -> Path` (#473) is
+the student's hand correction of a photographed page's transcription (`EDITABLE_TRANSCRIPTION_KINDS`:
+`notes`, `book`; a PDF page or any other kind is a `SourcePathError`; a derived file, a sidecar or
+a removed page a `SourceNotFoundError`). The page must already have a transcription (its
+`page-NNN.md` or a sidecar `transcription` string), else `NoTranscriptionError`: the student
+corrects what the transcriber read, never races it. The text (blank once stripped is a
+`ValueError`) is written as `page-NNN.md` ending in one newline, and a sidecar `transcription`
+string is replaced too, so every reader (the editor, the index, `/meta`, the Recursos viewer)
+reads the correction. The sidecar records it as the student's: `transcription_edited`
+(`TRANSCRIPTION_EDITED_KEY`) `{at, by: student, previous_sha256, original_sha256}` -- the hash of
+the text this correction replaced and of the text before the first correction (the machine's,
+kept across later corrections). Both files are written atomically under the directory's lock and
+pass the secret guard (`SecretRefused`, nothing written); an unreadable sidecar is a
+`SourceFileError`. The caller commits: the server commits what was pending first, so the
+machine's text stays in git history, then the correction.
 `put_pasted_image(vault, subject_slug, topic_slug, content, content_type, *, added_at=None) ->
 Path` stores an image the student pasted into the notes (#313) as `sources/images/img-NNN.<ext>`,
 the extension from `content_type` (`IMAGE_EXTENSIONS`: `image/png`, `image/jpeg`, `image/webp`),
