@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import VersionsPage, { defaultComparison } from "./VersionsPage";
 import { readVersions } from "./api";
 import { section, version, versionDiff, versions } from "./testVersions";
 import { PAGE_TEST_TIMEOUT } from "../test/timeouts";
+import { ConfirmProvider } from "../ui/ConfirmDialog";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -22,7 +23,7 @@ const CAUSAS_DIFF =
   "--- apuntes v2 #causas\n+++ apuntes v3 #causas\n@@ -1,3 +1,3 @@\n ## Causas {#causas}\n \n-La crisis de 1788.\n+La crisis fiscal de 1788.\n";
 
 function renderPage() {
-  render(<VersionsPage subjectId="historia" topicId="revolucion-francesa" />);
+  render(<VersionsPage subjectId="historia" topicId="revolucion-francesa" />, { wrapper: ConfirmProvider });
 }
 
 it("lists the versions newest first and compares the latest two by section", async () => {
@@ -138,16 +139,35 @@ it("restores a version after a confirmation and reads the history again", async 
   renderPage();
 
   fireEvent.click(await screen.findByRole("button", { name: "Restaurar la versión 1" }));
-  const confirm = screen.getByRole("group", { name: "Confirmar la restauración de la versión 1" });
-  expect(confirm).toHaveTextContent("No se pierde ninguna versión.");
+  const confirm = screen.getByRole("dialog", { name: "¿Restaurar la versión 1?" });
+  expect(confirm).toHaveAccessibleDescription(
+    "Los apuntes actuales pasarán a ser los de la versión 1, guardados como una versión nueva. No se pierde ninguna versión.",
+  );
   expect(fetchMock).not.toHaveBeenCalledWith(`${BASE}/1/restore`, expect.anything());
-  fireEvent.click(within(confirm).getByRole("button", { name: "Sí, restaurar" }));
+  fireEvent.click(within(confirm).getByRole("button", { name: "Restaurar" }));
+  expect(within(confirm).getByRole("button", { name: "Restaurando…" })).toBeDisabled();
+  expect(within(confirm).getByRole("button", { name: "Cancelar" })).toBeDisabled();
 
   expect(await screen.findByText("Se ha restaurado la versión 1 como versión 3.")).toBeInTheDocument();
   expect(screen.getByText("Algunas fuentes citadas ya no están en el tema.")).toBeInTheDocument();
   expect(await screen.findByRole("listitem", { name: "Versión 3" })).toHaveTextContent("la de los apuntes actuales");
   expect(fetchMock).toHaveBeenCalledWith(`${BASE}/1/restore`, { method: "POST" });
   expect(fetchMock).toHaveBeenCalledWith(`${BASE}/diff?from=2&to=3`);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("says in the confirmation that changes after the latest version have no version of their own", async () => {
+  stubApi({
+    ...TOPICS,
+    [BASE]: jsonResponse(versions([version(1), version(2, { current: false })], { changed_since_latest: true })),
+    [`${BASE}/diff?from=2`]: jsonResponse(versionDiff(2, null, [])),
+  });
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Restaurar la versión 1" }));
+  expect(screen.getByRole("dialog", { name: "¿Restaurar la versión 1?" })).toHaveTextContent(
+    "Los cambios hechos después de la versión 2 no tienen versión propia.",
+  );
 });
 
 it("cancels a restore without calling the backend", async () => {
@@ -158,10 +178,13 @@ it("cancels a restore without calling the backend", async () => {
   });
   renderPage();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Restaurar la versión 1" }));
-  fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+  const button = await screen.findByRole("button", { name: "Restaurar la versión 1" });
+  button.focus();
+  fireEvent.click(button);
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancelar" }));
 
-  expect(screen.getByRole("button", { name: "Restaurar la versión 1" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(button).toHaveFocus();
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 });
 
@@ -178,16 +201,23 @@ it("shows the backend's reason when a restore is refused", async () => {
   renderPage();
 
   fireEvent.click(await screen.findByRole("button", { name: "Restaurar la versión 1" }));
-  fireEvent.click(screen.getByRole("button", { name: "Sí, restaurar" }));
+  const confirm = screen.getByRole("dialog", { name: "¿Restaurar la versión 1?" });
+  fireEvent.click(within(confirm).getByRole("button", { name: "Restaurar" }));
 
-  expect(await screen.findByRole("alert")).toHaveTextContent(
+  expect(await within(confirm).findByRole("alert")).toHaveTextContent(
     "No se pudo restaurar la versión: El editor ya está trabajando en los apuntes o las dudas de este tema.",
   );
+  expect(within(confirm).queryByRole("button", { name: "Restaurar" })).toBeNull();
+  act(() => fireEvent.click(within(confirm).getByRole("button", { name: "Cerrar" })));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.queryByText(/Se ha restaurado/)).toBeNull();
 });
 
 it("explains a topic without versions and one with nothing to compare yet", async () => {
   stubApi({ ...TOPICS, [BASE]: jsonResponse(versions([], { has_notes: false })) });
-  const { unmount } = render(<VersionsPage subjectId="historia" topicId="revolucion-francesa" />);
+  const { unmount } = render(<VersionsPage subjectId="historia" topicId="revolucion-francesa" />, {
+    wrapper: ConfirmProvider,
+  });
   expect(await screen.findByText(/Todavía no hay versiones de los apuntes de este tema/)).toBeInTheDocument();
   unmount();
 

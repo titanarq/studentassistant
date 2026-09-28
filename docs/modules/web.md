@@ -750,7 +750,9 @@ token):
   otherwise), `destructive?` (red-pen confirm button, focus on the cancel button; otherwise the
   focus is on the confirm button), and `onConfirm?: () => Promise<string | null>` with
   `busyLabel?` («Un momento…»): work run while the modal stays open and busy (buttons disabled,
-  Escape and the backdrop ignored), null closing it confirmed, a Spanish sentence (or a thrown
+  the focus on the card, Tab and Shift+Tab kept on it (#491: with nothing tabbable inside, the
+  browser would move it out, where a later Escape reaches window handlers), Escape and the backdrop
+  ignored), null closing it confirmed, a Spanish sentence (or a thrown
   error) shown as its `role="alert"` with only **Cerrar** (answers false). `useConfirm()` outside
   the provider throws; tests render under it (`render(ui, {wrapper: ConfirmProvider})`). The modal
   is a native `<dialog>` opened with `showModal()` (top layer: the page behind is inert, Tab stays
@@ -762,8 +764,9 @@ token):
   `--shadow-float` (#485), the destructive button `--correction` / `--correction-hover` with
   `--on-correction` text (AA checked in `tokens.test.ts`); at phone width the buttons stack full
   width. The icons are `src/ui/icons.tsx` (`TrashIcon`, `CloseIcon`, `CheckIcon`, `WarningIcon`,
-  `QuestionIcon`: inline `currentColor` SVG, `aria-hidden`). Not yet on it: the inline restore
-  confirmation of `VersionsPage` (a follow-up).
+  `QuestionIcon`, `RestoreIcon`: inline `currentColor` SVG, `aria-hidden`). Every confirmation of
+  the app is on it since #491 (the last inline one, `VersionsPage`'s restore, moved); none uses
+  `window.confirm` or `window.alert`.
 - `src/Router.tsx` picks the page from `window.location.pathname` (`/pair` -> `PairPage`,
   `/capture` -> `CapturePage`, `/live` -> `LivePage`,
   `/subjects/<subject>/topics/<topic>` -> `TopicPage`, `/subjects/<subject>/topics/<topic>/notes`
@@ -1195,10 +1198,15 @@ token):
   "Apuntes actuales", `to` `null`), starting at `defaultComparison` (the latest version against
   the current notes when they changed after it, else the latest two; none with a single unchanged
   version); only the latest comparison read is shown. "Ver los cambios": "En línea" or "Lado a
-  lado". "Restaurar la versión <N>" (every version but the current one) asks for a confirmation
-  (a group with "Sí, restaurar" / "Cancelar"), then says "Se ha restaurado la versión <K> como
-  versión <N>." and the backend's warning, and reads the history (and so the comparison) again;
-  a refusal (409 another notes operation, already that version) shows its Spanish `detail`.
+  lado". "Restaurar la versión <N>" (every version but the current one) asks in the confirmation
+  modal (#491, `useConfirm`): «¿Restaurar la versión <N>?», the message "Los apuntes actuales
+  pasarán a ser los de la versión <N>, guardados como una versión nueva. No se pierde ninguna
+  versión." (plus "Los cambios hechos después de la versión <latest> no tienen versión propia."
+  when the notes changed after it), **Restaurar** (`RestoreIcon`) / **Cancelar**. Confirming
+  restores while the modal shows «Restaurando…»; on success it closes, the page says "Se ha
+  restaurado la versión <K> como versión <N>." and the backend's warning, and reads the history
+  (and so the comparison) again; a refusal (409 another notes operation, already that version)
+  stays in the modal as "No se pudo restaurar la versión: <Spanish `detail`>" with **Cerrar**.
   - `VersionDiffView`: one `article` "<title>: <Nueva|Quitada|Modificada>" per section that
     changed or moved (`sectionTitle`: the newer title, "Inicio de los apuntes" for the preamble),
     with "Sección renombrada, antes «<old>», cambiada de sitio.", the line counts and the section's

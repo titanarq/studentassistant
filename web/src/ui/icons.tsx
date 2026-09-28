@@ -79,3 +79,13 @@ export function QuestionIcon({ size }: IconProps) {
     </Icon>
   );
 }
+
+/** A counter-clockwise arrow: bringing an earlier version back. */
+export function RestoreIcon({ size }: IconProps) {
+  return (
+    <Icon size={size}>
+      <path d="M4 5v5h5" />
+      <path d="M4.5 14.5A8 8 0 1 0 6.3 6.3L4 10" />
+    </Icon>
+  );
+}
