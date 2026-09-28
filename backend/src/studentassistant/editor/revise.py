@@ -60,7 +60,12 @@ commit are one locked step (`notes_lock.checkpointing`, #410), so a turn applied
 commit to revert, unless the git lock stayed busy (`commit` None, said in its `warning`). A
 `crop_image` turn's crop is stored before that step, so a sync-loop batch commit in between can
 carry it instead of the turn's commit: the undo then retires it (`vault.remove_source`, #498), so
-no uncited «Imagen recortada N» is left in Recursos. Undoing again goes one more turn back.
+no uncited «Imagen recortada N» is left in Recursos; a sidecar left behind by a batch commit
+that took only it is retired too (`vault.retire_orphan_sidecar`, #502). The retirement runs after
+`notes.undone` is recorded and is idempotent, so the next undo re-runs it for the latest recorded
+undo when the process died in between -- only until another turn is recorded, and only while the
+file is still that turn's own crop (#502), never a later crop or pasted image that reused the
+number or the shared-stem sidecar. Undoing again goes one more turn back.
 
 **Spoken requests**: a turn may come from a request the student said aloud (an `assistant.request`
 of the session, run by the server's `assistant_requests.py`): `request` (`ChatRequestRef`) is then
@@ -184,6 +189,7 @@ from studentassistant.vault import (
     read_conversation,
     read_notes,
     remove_source,
+    retire_orphan_sidecar,
     set_fidelity_mode,
     subject_directory,
     topic_directory,
@@ -587,8 +593,8 @@ class _UndoTarget(BaseModel):
     commit: str
     paths: list[str]
     summary: str | None = None
-    # The vault path of the crop the turn stored (`crop_image`, #493), when it made one.
-    crop: str | None = None
+    # The crop the turn stored (`crop_image`, #493), when it made one: its path and identity.
+    crop: CropRef | None = None
 
 
 class ChatHistory(_Strict):
@@ -777,14 +783,31 @@ def _read_turns(
 
 def _undo_target(vault: Vault, subject_slug: str, topic_slug: str) -> _UndoTarget | None:
     """The latest applied, committed turn (a revision or an incorporation) not undone yet."""
+    return _undo_state(vault, subject_slug, topic_slug)[0]
+
+
+def _undo_state(
+    vault: Vault, subject_slug: str, topic_slug: str
+) -> tuple[_UndoTarget | None, CropRef | None]:
+    """`(_undo_target, the crop whose retirement the latest notes.undone may still owe)`.
+
+    That crop is the one the turn the latest `notes.undone` undid made, and only while no turn
+    (a revision or an incorporation) was recorded after that undo: a later turn may have stored a
+    crop at the same path (the number is reused once the revert removed the files), so the repair
+    window closes with it (#502).
+    """
     undone: set[str] = set()
+    pending: CropRef | None = None
     candidates: list[_UndoTarget] = []
+    crops: dict[str, CropRef | None] = {}
     for record in read_conversation(vault, subject_slug, topic_slug, CONVERSATION_NAME):
         if record.kind == NOTES_UNDONE_KIND and record.detail:
             commit = record.detail.get("undone_commit")
             if isinstance(commit, str):
                 undone.add(commit)
+                pending = crops.get(commit)
         elif record.kind in (REVISION_RECORD, INCORPORATION_RECORD) and record.detail:
+            pending = None
             model = RevisionResult if record.kind == REVISION_RECORD else _IncorporationView
             try:
                 result = model.model_validate(record.detail)
@@ -792,16 +815,16 @@ def _undo_target(vault: Vault, subject_slug: str, topic_slug: str) -> _UndoTarge
                 continue
             if result.applied and result.commit and result.paths:
                 crop = result.crop if isinstance(result, RevisionResult) else None
+                if crop is not None and (crop.error is not None or crop.path is None):
+                    crop = None
                 candidates.append(
                     _UndoTarget(
-                        commit=result.commit,
-                        paths=result.paths,
-                        summary=result.summary,
-                        crop=crop.path if crop is not None and crop.error is None else None,
+                        commit=result.commit, paths=result.paths, summary=result.summary, crop=crop
                     )
                 )
+                crops[result.commit] = crop
     remaining = [result for result in candidates if result.commit not in undone]
-    return remaining[-1] if remaining else None
+    return remaining[-1] if remaining else None, pending
 
 
 def chat_history(vault: Vault, subject_slug: str, topic_slug: str) -> ChatHistory:
@@ -1265,7 +1288,14 @@ async def _crop_change(
         cache[(source, region)] = image
     op, footnote = crop_edit(request, image)
     value = EditsOutput(ops=[op], footnotes=[footnote], summary=request.summary)
-    ref = CropRef(source=source, region=region, source_id=image.source_id, path=image.path)
+    ref = CropRef(
+        source=source,
+        region=region,
+        source_id=image.source_id,
+        path=image.path,
+        sha256=image.meta.get("sha256"),
+        added_at=image.meta.get("added_at"),
+    )
     return value, [], ref, image
 
 
@@ -1759,13 +1789,29 @@ async def undo_last_revision(
     Raises:
         NothingToUndoError: no applied turn is left to undo.
         UndoConflictError: a file the turn changed was changed again afterwards, or reverting the
-            turn's commit would change no file (it does not carry them); nothing written and no
-            `notes.undone` recorded.
+            turn's commit would change no file (it does not carry them); nothing written for it
+            and no `notes.undone` recorded.
+
+    Either error may follow a repair commit: the crop retirement an earlier, crashed undo still
+    owed (see `_retire_undone_crop`).
     """
-    target = await asyncio.to_thread(_undo_target, vault, subject_slug, topic_slug)
+    target, pending_crop = await asyncio.to_thread(_undo_state, vault, subject_slug, topic_slug)
+    before = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
+    if pending_crop is not None:
+        # The previous undo is recorded before its crop is retired: a crash in between left the
+        # crop in place, so its (idempotent) retirement is re-run first (#502) -- only until the
+        # next turn is recorded, and only while the file is still that turn's own crop.
+        await asyncio.to_thread(
+            _retire_undone_crop,
+            vault,
+            sync,
+            pending_crop,
+            before,
+            f"Deshecho en {subject_slug}/{topic_slug}: recorte retirado",
+            repair=True,
+        )
     if target is None:
         raise NothingToUndoError("No hay ningún cambio de la conversación que deshacer.")
-    before = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
     files_before = await asyncio.to_thread(_file_contents, vault, target.paths)
     message = f"Deshecho en {subject_slug}/{topic_slug}: {_short(target.summary or '')}"
     try:
@@ -1785,8 +1831,6 @@ async def undo_last_revision(
             "No se puede deshacer ese cambio: no quedó guardado como un paso propio en el"
             " historial, así que deshacerlo no cambiaría nada. Los apuntes siguen igual."
         )
-    if target.crop is not None:
-        await asyncio.to_thread(_retire_undone_crop, vault, sync, target.crop, message)
     after = await asyncio.to_thread(read_notes, vault, subject_slug, topic_slug) or ""
     changed = after != before
     result = UndoResult(
@@ -1805,27 +1849,64 @@ async def undo_last_revision(
     await _Conversation(vault, subject_slug, topic_slug, clock).record(
         NOTES_UNDONE_KIND, detail=payload
     )
+    # Retired only once the undo is recorded (#502): a crash in between is repaired by the next
+    # undo, which re-runs the retirement for the latest recorded undo (above) until a turn follows.
+    if target.crop is not None:
+        await asyncio.to_thread(
+            _retire_undone_crop, vault, sync, target.crop, after, f"{message} (recorte retirado)"
+        )
     sync.note_change()
     await _emit(on_event, NOTES_UNDONE_KIND, _event_payload(payload), subject_slug, topic_slug)
     return result
 
 
-def _retire_undone_crop(vault: Vault, sync: GitSync, path: str, message: str) -> None:
-    """Retire an undone turn's crop the revert left in place; blocking, never raises (#498).
+def _retire_undone_crop(
+    vault: Vault, sync: GitSync, crop: CropRef, notes: str, message: str, *, repair: bool = False
+) -> None:
+    """Retire an undone turn's crop the revert left in place; idempotent, blocking, never raises.
 
-    The crop is stored before the turn's locked apply, so a sync-loop batch commit landing in
-    between (a stale re-ask) carries its files and the turn's commit does not: reverting that
-    commit then leaves the image, cited by nothing, in Recursos. It is soft-deleted
-    (`vault.remove_source`) and committed like the revert. A crop the revert removed (the
-    turn's commit carried it) is no longer a source, and nothing happens.
+    The crop is stored before the turn's locked apply (`put_source`: the image, then its
+    sidecar), so a sync-loop batch commit landing in between (a stale re-ask) can carry its files
+    and the turn's commit not (#498): reverting that commit then leaves the image, cited by
+    nothing, in Recursos. It is soft-deleted (`vault.remove_source`) and committed as `message`.
+    When the batch commit took only the sidecar (#502), the revert removes the image and leaves
+    the sidecar, which is retired too (`vault.retire_orphan_sidecar`). A crop the revert removed
+    whole, or one retired already, is left alone, and so is one `notes` (the current notes)
+    cites.
+
+    A crop number is reused once a revert removed both files (`_next_number` counts the files on
+    disk), and the image and its sidecar share a stem (`img-001.jpg` and `img-001.png` both have
+    `img-001.yaml`), so the path alone does not say whose crop is there: a later turn's crop, or
+    an image the student pasted (`vault.put_pasted_image`, which records no turn), can take the
+    number. So the file is retired only while its sidecar records the `sha256` and `added_at` the
+    turn recorded (`CropRef`), checked by the vault under the directory's lock; an orphan sidecar
+    only when it records them too and no other file shares it. Without that identity (a turn
+    recorded before #502) an orphan sidecar is never retired, and `repair` (the start-of-undo
+    re-run for the latest recorded undo) retires nothing; the retirement right after an undo
+    still retires the image. `_undo_state` offers the repair only until the next turn is
+    recorded. Only the latest undo is repaired: an older crash's crop stays until the student
+    removes it.
     """
+    path = crop.path
+    if path is None:
+        return
+    tail = path.split("/topics/", 1)[-1].split("/", 1)[-1]
+    if tail in {source_key(ref) for ref in _cited_files(notes)}:
+        return
+    identified = crop.sha256 is not None and crop.added_at is not None
+    if repair and not identified:
+        return
     try:
         with checkpointing(sync) as commit_now:
             try:
-                remove_source(vault, path)
+                remove_source(vault, path, sha256=crop.sha256, added_at=crop.added_at)
             except SourceNotFoundError:
-                return
-            commit_now(f"{message} (recorte retirado)")
+                if not identified or (
+                    retire_orphan_sidecar(vault, path, sha256=crop.sha256, added_at=crop.added_at)
+                    is None
+                ):
+                    return
+            commit_now(message)
     except Exception:
         logger.exception("could not retire the undone crop %s", path)
 

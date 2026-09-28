@@ -258,9 +258,11 @@ followed) anywhere but that directory is a `SourcePathError`; a well-formed path
 `SourceError`s). A symlinked sidecar is never followed. Neither function writes or runs git.
 
 **Removing a source is a soft delete** (#451): no module deletes a source's files (only the purge
-removes burst originals, below). `remove_source(vault, vault_relative_path, *, removed_at=None) ->
+removes burst originals, below). `remove_source(vault, vault_relative_path, *, removed_at=None, sha256=None, added_at=None) ->
 Path` retires one listed source (same path rules as `read_source`; a derived file, a sidecar, a
-path with nothing listed there or a source removed already is a `SourceNotFoundError`): under the
+path with nothing listed there, a source removed already or -- when `sha256`/`added_at` is given
+-- a source whose sidecar does not record them, another one that reused the path, is a
+`SourceNotFoundError`): under the
 directory's lock it merges `removed: {at: <ISO 8601, now UTC by default>, by: student}`
 (`REMOVED_KEY`) into the sidecar, creating one if the source had none, and returns the sidecar's
 path; the caller commits. From then on `list_sources` leaves the source out (pass
@@ -268,7 +270,15 @@ path; the caller commits. From then on `list_sources` leaves the source out (pas
 (the web's source lists, the editor's catalogue, the Recursos selection check, triage, the index),
 while `read_source` still serves its content, its derived files and its sidecar, so a footnote of
 the notes that cites it keeps resolving. `is_removed(meta)` tells a removed sidecar;
-`removed_source_paths(vault, s, t)` gives a topic's removed sources' vault-relative paths. The
+`removed_source_paths(vault, s, t)` gives a topic's removed sources' vault-relative paths. `retire_orphan_sidecar(vault, vault_relative_path, *, removed_at=None, sha256=None, added_at=None) -> Path | None` (#502)
+retires the sidecar a source's content left behind (the content file gone, its sidecar still
+there, e.g. a batch commit took the sidecar of a crop whose image a revert then removed): the
+same `removed` mapping, under the directory's lock, returning the sidecar's path; `None` with
+nothing written when the content is there, another file shares the sidecar's stem (a pasted
+`img-001.png` next to a gone `img-001.jpg`: the sidecar is that file's), there is no sidecar, it
+is removed already or it does not record the given `sha256`/`added_at`, all checked under the
+lock. The
+caller commits. The
 number of a removed source is never reused (its files are still in the directory).
 
 ### Study history -- `study.py`

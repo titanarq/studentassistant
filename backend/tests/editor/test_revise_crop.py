@@ -10,6 +10,7 @@ from typing import Any
 import cv2
 import numpy as np
 import pytest
+import yaml
 
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.editor import revise as revise_module
@@ -28,7 +29,10 @@ from studentassistant.editor.revise import (
     EDIT_TOOL,
     REPLY_DELTA,
     REPLY_RESTART,
+    NothingToUndoError,
     RevisionResult,
+    UndoConflictError,
+    chat_history,
     revise_notes,
     undo_last_revision,
 )
@@ -37,6 +41,7 @@ from studentassistant.vault import (
     GitSync,
     Vault,
     list_sources,
+    put_pasted_image,
     put_source,
     read_notes,
     read_source,
@@ -462,3 +467,214 @@ def test_undoing_a_crop_a_batch_commit_took_first_retires_it(
     images = crop.rsplit("/", 1)[0]
     assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
     assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def _crop_a_batch_commit_takes_first(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch, *, split: bool = False
+) -> tuple[GitSync, RevisionResult, str]:
+    """A stale re-ask whose crop a sync-loop batch commit takes before the turn's commit: both
+    its files, or (`split`) only its sidecar, the image being written after the batch commit."""
+    clock = _Clock()
+    sync = GitSync(tmp_vault, clock=clock)
+    _book_page(topic, _diagram())
+    student = _notes(topic).replace("Se escribe $f'(x)$.", "Se escribe $f'(x)$ o $y'$.")
+    original = revise_module.crop_source_image
+
+    async def cropping_then_a_batch_commit(*args: Any, **kwargs: Any) -> CroppedImage:
+        image = await original(*args, **kwargs)
+        content = tmp_vault.path / image.path
+        data = content.read_bytes()
+        if split:
+            content.unlink()
+        write_notes(topic.vault, topic.subject, topic.topic, student)
+        sync.note_change()
+        clock.now += 3600
+        sync.run_due()
+        if split:
+            content.write_bytes(data)
+        return image
+
+    monkeypatch.setattr(revise_module, "crop_source_image", cropping_then_a_batch_commit)
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX)
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+    )
+    result = _revise(topic, sync, fake)
+    assert result.applied and result.crop is not None and result.crop.path is not None
+    return sync, result, result.crop.path
+
+
+def test_a_crash_between_the_undo_record_and_the_crop_retirement_is_repaired(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The undo is recorded before the crop is retired (#502): a crash in between leaves the undo
+    # recorded, and the next undo re-runs the (idempotent) retirement first.
+    sync, result, crop = _crop_a_batch_commit_takes_first(topic, tmp_vault, monkeypatch)
+    retire = revise_module._retire_undone_crop
+
+    def crashing(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the process dies here")
+
+    monkeypatch.setattr(revise_module, "_retire_undone_crop", crashing)
+    with pytest.raises(RuntimeError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    # The undo is on record (the turn reads as undone), the crop is still in Recursos.
+    history = chat_history(topic.vault, topic.subject, topic.topic)
+    assert [turn.undone for turn in history.turns if turn.commit == result.commit] == [True]
+    assert _images(topic) == [crop]
+
+    monkeypatch.setattr(revise_module, "_retire_undone_crop", retire)
+    with pytest.raises(NothingToUndoError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == []
+    meta = read_source(topic.vault, crop).meta
+    assert meta is not None and meta["removed"]["by"] == "student"
+    images = crop.rsplit("/", 1)[0]
+    assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
+    assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+    # Idempotent: repairing again changes nothing.
+    head = _git(topic.vault, "rev-parse", "HEAD")
+    with pytest.raises(NothingToUndoError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+
+
+def test_undoing_a_crop_whose_sidecar_alone_a_batch_commit_took_retires_the_sidecar(
+    topic: ReviseTopic, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The batch commit took only the crop's sidecar, the turn's commit its image (#502): the
+    # revert removes the image and would leave the sidecar behind; it is retired too.
+    sync, result, crop = _crop_a_batch_commit_takes_first(topic, tmp_vault, monkeypatch, split=True)
+    sidecar = crop.rsplit(".", 1)[0] + ".yaml"
+    committed = _git(topic.vault, "show", "--name-only", "--format=", result.commit or "").split()
+    assert crop in committed and sidecar not in committed
+
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert undone.undone_commit == result.commit and undone.notes_changed
+    assert LINK not in _notes(topic) and _images(topic) == []
+    assert not (tmp_vault.path / crop).exists()
+    meta = yaml.safe_load((tmp_vault.path / sidecar).read_text(encoding="utf-8"))
+    assert meta["origin"] == "cropped" and meta["removed"]["by"] == "student"
+    images = crop.rsplit("/", 1)[0]
+    assert _git(topic.vault, "status", "--porcelain", "--", images).strip() == ""
+    assert "recorte retirado" in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def _crop_undo_and_crop_again(topic: ReviseTopic, sync: GitSync) -> tuple[RevisionResult, str]:
+    """Crop A, undo it (the revert removes both its files), then crop B: B reuses A's number and
+    path, and the latest recorded undo is still A's."""
+    _book_page(topic, _diagram())
+    first = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert first.crop is not None and first.crop.path is not None
+    _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _images(topic) == [] and not (topic.vault.path / first.crop.path).exists()
+    second = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert second.applied and second.crop is not None and second.crop.path == first.crop.path
+    assert _images(topic) == [second.crop.path] and LINK in _notes(topic)
+    return second, second.crop.path
+
+
+def test_an_earlier_undo_repair_never_retires_a_later_crop_that_reused_its_path(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    # The student removes the figure from the notes by hand but keeps the crop in Recursos: the
+    # next undo conflicts, and the repair of A's undo must not retire B's crop (#502).
+    _, crop = _crop_undo_and_crop_again(topic, sync)
+    notes = "\n".join(line for line in _notes(topic).splitlines() if line not in (LINK, FOOTNOTE))
+    write_notes(topic.vault, topic.subject, topic.topic, notes)
+    sync.checkpoint("fixture: the student removes the figure")
+    head = _git(topic.vault, "rev-parse", "HEAD")
+
+    with pytest.raises(UndoConflictError):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == [crop]
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+    assert "recorte retirado" not in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+def test_undoing_a_turn_that_dropped_a_reused_crop_keeps_that_crop(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    # Turn C drops B's figure; undoing C brings the citation back and B's crop stays active.
+    _, crop = _crop_undo_and_crop_again(topic, sync)
+    drop = {
+        "summary": "Quito el recorte",
+        "ops": [{"op": "delete_block", "section": "definicion", "block": 3}],
+    }
+    dropped = _revise(
+        topic, sync, FakeClaude().reply_tool(EDIT_TOOL, drop, text="Quitado."), "quita la figura"
+    )
+    assert dropped.applied and LINK not in _notes(topic) and FOOTNOTE not in _notes(topic)
+
+    undone = _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert undone.undone_commit == dropped.commit
+    assert LINK in _notes(topic) and FOOTNOTE in _notes(topic)
+    assert _images(topic) == [crop]
+    meta = read_source(topic.vault, crop).meta
+    assert meta is not None and "removed" not in meta
+    log = _git(topic.vault, "log", "-n", "3", "--format=%s")
+    assert "recorte retirado" not in log
+
+
+def _png() -> bytes:
+    ok, encoded = cv2.imencode(".png", np.full((40, 60, 3), 200, np.uint8))
+    assert ok
+    return encoded.tobytes()
+
+
+@pytest.mark.parametrize("cited", [False, True])
+def test_an_undo_repair_never_retires_a_pasted_image_that_reused_the_crop_number(
+    topic: ReviseTopic, sync: GitSync, cited: bool
+) -> None:
+    # Crop A is undone (the revert removes both its files), then the student pastes a PNG: it
+    # takes `img-001.png` and the shared-stem sidecar `img-001.yaml`, and pasting records no turn.
+    # The next undo's repair of A's `img-001.jpg` must leave the pasted image alone (#502).
+    _book_page(topic, _diagram())
+    first = _revise(
+        topic,
+        sync,
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX),
+    )
+    assert first.crop is not None and first.crop.path is not None
+    _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert _images(topic) == [] and not (topic.vault.path / first.crop.path).exists()
+    pasted = put_pasted_image(topic.vault, topic.subject, topic.topic, _png(), "image/png")
+    path = pasted.relative_to(topic.vault.path).as_posix()
+    assert pasted.name == "img-001.png" and pasted.with_suffix(".yaml").is_file()
+    if cited:
+        link = "![Pegada](../sources/images/img-001.png)"
+        notes = _notes(topic).replace("Se escribe $f'(x)$.", f"Se escribe $f'(x)$.\n\n{link}")
+        assert link in notes
+        write_notes(topic.vault, topic.subject, topic.topic, notes)
+    sync.checkpoint("fixture: the student pastes an image")
+    head = _git(topic.vault, "rev-parse", "HEAD")
+
+    with pytest.raises((NothingToUndoError, UndoConflictError)):
+        _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+
+    assert _images(topic) == [path]
+    meta = yaml.safe_load(pasted.with_suffix(".yaml").read_text(encoding="utf-8"))
+    assert meta["origin"] == "pasted" and "removed" not in meta
+    assert _git(topic.vault, "rev-parse", "HEAD") == head
+    assert "recorte retirado" not in _git(topic.vault, "log", "-n", "1", "--format=%s")
