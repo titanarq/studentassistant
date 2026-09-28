@@ -266,3 +266,31 @@ export function notesImageUrl(subjectId: string, topicId: string, src: string): 
   const match = /^\.\.\/sources\/([a-z]+)\/([a-z0-9][a-z0-9._-]*)$/.exec(src);
   return match ? sourceUrl(`subjects/${subjectId}/topics/${topicId}/sources/${match[1]}/${match[2]}`) : null;
 }
+
+// -- the student's correction of a page transcription (#473) --------------------------------------
+
+/** What `saveTranscription` came to: the text as stored, or the Spanish reason it was refused. */
+export type SaveTranscriptionResult = { kind: "saved"; text: string } | { kind: "failed"; message: string };
+
+/**
+ * `PUT /api/sources/{vault_id}/transcription` (#473): replaces a photographed page's
+ * transcription with the student's own; `vaultId` is the page (`.../sources/notes/page-003.jpg`).
+ */
+export const TRANSCRIPTION_EDIT_UNSUPPORTED = "Este servidor todavía no permite corregir transcripciones.";
+
+export async function saveTranscription(vaultId: string, text: string): Promise<SaveTranscriptionResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${sourceUrl(vaultId)}/transcription`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    return { kind: "failed", message: UNREACHABLE };
+  }
+  const value = await body(response);
+  if (response.ok && typeof value.text === "string") return { kind: "saved", text: value.text };
+  if (response.status === 405) return { kind: "failed", message: TRANSCRIPTION_EDIT_UNSUPPORTED };
+  return { kind: "failed", message: detailOf(value, `El servidor respondió con un error (${response.status}).`) };
+}

@@ -4,6 +4,7 @@ import {
   fetchSourceMeta,
   fetchSourceText,
   fetchTranscript,
+  saveTranscription,
   sourceUrl,
   type TranscriptSpan,
 } from "./api";
@@ -22,6 +23,9 @@ import { originalPage, type Provenance, parseProvenance, sourceVaultId, stemOf }
  * - `[^ia]`: the AI mark.
  * It is a non-modal dialog: it never moves the notes, Escape or "Cerrar" closes it and the focus
  * goes back to the reference that opened it (the page does that through `onClose`).
+ * The `overlay` variant (#473, the workspace's resource detail over the document) closes with an
+ * X button (named «Cerrar») and with Escape anywhere on the page, and lets the student correct a
+ * page's transcription by hand (`saveTranscription`).
  */
 
 export interface SourcePanelProps {
@@ -31,6 +35,8 @@ export interface SourcePanelProps {
   /** The footnote's definition, `undefined` when the notes cite a label they never define. */
   definition: string | undefined;
   onClose: () => void;
+  /** `overlay` (#473): the X close button, Escape anywhere, the editable transcription. */
+  variant?: "panel" | "overlay";
 }
 
 function useRead<T>(read: () => Promise<ReadResult<T>>, key: string): ReadResult<T> | null {
@@ -137,7 +143,146 @@ function TextBlock({ result, missing, label }: { result: ReadResult<string> | nu
   return <pre className="source-text">{result.value}</pre>;
 }
 
-function PageSource({ subjectId, topicId, source }: { subjectId: string; topicId: string; source: Extract<Provenance, { kind: "page" }> }) {
+/**
+ * A page's transcription: its `page-NNN.md`, else the sidecar's `transcription` (the order the
+ * editor reads them in). With `editable` (#473) the student can correct it by hand.
+ */
+function PageTranscription({
+  vaultId,
+  mdResult,
+  fromSidecar,
+  editable,
+}: {
+  vaultId: string;
+  mdResult: ReadResult<string> | null;
+  fromSidecar: string | null;
+  editable: boolean;
+}) {
+  const [saved, setSaved] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const area = useRef<HTMLTextAreaElement | null>(null);
+  const editButton = useRef<HTMLButtonElement | null>(null);
+  const refocus = useRef(false);
+  const md = mdResult?.kind === "ok" && mdResult.value.trim() !== "" ? mdResult.value : null;
+  const sidecar = fromSidecar !== null && fromSidecar.trim() !== "" ? fromSidecar : null;
+  const current = saved ?? md ?? sidecar;
+  useEffect(() => {
+    if (draft !== null) area.current?.focus();
+    else if (refocus.current) {
+      refocus.current = false;
+      editButton.current?.focus();
+    }
+  }, [draft !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (current === null) {
+    // Still loading, missing or failed: what a read-only panel shows; nothing to correct yet.
+    return <TextBlock result={mdResult} missing="Esta página todavía no está transcrita." label="la transcripción" />;
+  }
+  const stop = () => {
+    refocus.current = true;
+    setDraft(null);
+    setError(null);
+  };
+  const save = () => {
+    if (draft === null) return;
+    if (draft.trim() === "") {
+      setError("La transcripción no puede quedar vacía.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    void saveTranscription(vaultId, draft).then((outcome) => {
+      setSaving(false);
+      if (outcome.kind === "saved") {
+        setSaved(outcome.text);
+        setNotice("Transcripción guardada.");
+        stop();
+      } else {
+        setError(outcome.message);
+      }
+    });
+  };
+  if (draft === null) {
+    return (
+      <>
+        <pre className="source-text">{current}</pre>
+        {editable && (
+          <div className="source-transcription-actions">
+            <button
+              ref={editButton}
+              type="button"
+              onClick={() => {
+                setNotice(null);
+                setDraft(current);
+              }}
+            >
+              Editar la transcripción
+            </button>
+            {notice !== null && (
+              <p className="source-transcription-notice" role="status">
+                {notice}
+              </p>
+            )}
+          </div>
+        )}
+      </>
+    );
+  }
+  return (
+    <form
+      className="source-transcription-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        save();
+      }}
+    >
+      <label htmlFor="source-transcription-text">Corrige la transcripción</label>
+      <textarea
+        id="source-transcription-text"
+        ref={area}
+        value={draft}
+        disabled={saving}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          // Escape leaves the edit (the detail stays open); a second Escape closes it.
+          if (event.key === "Escape" && !saving) {
+            event.preventDefault();
+            event.stopPropagation();
+            stop();
+          }
+        }}
+      />
+      {error !== null && (
+        <p className="source-transcription-error" role="alert">
+          No se pudo guardar: {error}
+        </p>
+      )}
+      <div className="source-transcription-actions">
+        <button type="submit" className="source-transcription-save" disabled={saving}>
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+        <button type="button" onClick={stop} disabled={saving}>
+          Cancelar
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function PageSource({
+  subjectId,
+  topicId,
+  source,
+  editable,
+}: {
+  subjectId: string;
+  topicId: string;
+  source: Extract<Provenance, { kind: "page" }>;
+  editable: boolean;
+}) {
   const vaultId = sourceVaultId(subjectId, topicId, source.sourceKind, source.file);
   const stem = stemOf(source.file);
   const derived = (suffix: string) => sourceVaultId(subjectId, topicId, source.sourceKind, `${stem}.${suffix}`);
@@ -149,11 +294,7 @@ function PageSource({ subjectId, topicId, source }: { subjectId: string; topicId
     <>
       <ZoomableImage src={sourceUrl(derived("page.jpg"))} fallback={sourceUrl(vaultId)} alt={source.text} />
       <h3>Transcripción</h3>
-      {fromSidecar !== null && fromSidecar.trim() !== "" ? (
-        <pre className="source-text">{fromSidecar}</pre>
-      ) : (
-        <TextBlock result={transcription} missing="Esta página todavía no está transcrita." label="la transcripción" />
-      )}
+      <PageTranscription vaultId={vaultId} mdResult={transcription} fromSidecar={fromSidecar} editable={editable} />
     </>
   );
 }
@@ -233,7 +374,16 @@ function TranscriptSource({ subjectId, topicId, source }: { subjectId: string; t
   );
 }
 
-export default function SourcePanel({ subjectId, topicId, label, definition, onClose }: SourcePanelProps) {
+function CloseIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
+
+export default function SourcePanel({ subjectId, topicId, label, definition, onClose, variant = "panel" }: SourcePanelProps) {
+  const overlay = variant === "overlay";
   const headingRef = useRef<HTMLHeadingElement>(null);
   const provenance: Provenance | null = definition === undefined ? null : parseProvenance(label, definition);
 
@@ -242,23 +392,44 @@ export default function SourcePanel({ subjectId, topicId, label, definition, onC
   }, [label]);
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
+    if (!overlay && event.key === "Escape") {
       event.preventDefault();
       onClose();
     }
   };
 
+  // The overlay closes with Escape wherever the focus is, unless something else took the key
+  // first (a card's delete confirmation, the transcription editor).
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!overlay) return;
+    const onWindowKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      closeRef.current();
+    };
+    window.addEventListener("keydown", onWindowKey);
+    return () => window.removeEventListener("keydown", onWindowKey);
+  }, [overlay]);
+
   const title = provenance === null ? `Fuente ${label}` : provenance.kind === "ia" ? "Ampliado por la IA" : provenance.text;
 
   return (
-    <aside className="source-panel" role="dialog" aria-modal="false" aria-labelledby="source-panel-title" onKeyDown={onKeyDown}>
+    <aside className={overlay ? "source-panel source-panel-overlay" : "source-panel"} role="dialog" aria-modal="false" aria-labelledby="source-panel-title" onKeyDown={onKeyDown}>
       <header className="source-panel-header">
         <h2 id="source-panel-title" tabIndex={-1} ref={headingRef}>
           {title}
         </h2>
-        <button type="button" onClick={onClose}>
-          Cerrar
-        </button>
+        {overlay ? (
+          <button type="button" className="source-panel-close" aria-label="Cerrar" title="Cerrar (Esc)" onClick={onClose}>
+            <CloseIcon />
+          </button>
+        ) : (
+          <button type="button" onClick={onClose}>
+            Cerrar
+          </button>
+        )}
       </header>
       <div className="source-panel-body">
         {provenance === null && <p>Los apuntes citan esta fuente pero no dicen cuál es.</p>}
@@ -266,7 +437,7 @@ export default function SourcePanel({ subjectId, topicId, label, definition, onC
           <p className="notes-ia">{provenance.text}. Revísalo antes de estudiarlo como tuyo.</p>
         )}
         {provenance?.kind === "unknown" && <p>{provenance.text}</p>}
-        {provenance?.kind === "page" && <PageSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
+        {provenance?.kind === "page" && <PageSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} editable={overlay} />}
         {provenance?.kind === "image" && <ImageSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
         {provenance?.kind === "pdf" && <PdfSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}
         {provenance?.kind === "web" && <WebSource key={label} subjectId={subjectId} topicId={topicId} source={provenance} />}

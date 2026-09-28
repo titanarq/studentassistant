@@ -400,6 +400,86 @@ def update_page_meta(vault: Vault, vault_relative_path: str, updates: Mapping[st
     return sidecar
 
 
+TRANSCRIPTION_EDITED_KEY = "transcription_edited"
+"""The sidecar key `edit_page_transcription` writes (#473): `{at, by: student, previous_sha256}`."""
+EDITABLE_TRANSCRIPTION_KINDS: tuple[str, ...] = ("notes", "book")
+"""The kinds whose page transcription the student may correct by hand (a photographed page)."""
+
+
+class NoTranscriptionError(SourceError):
+    """A page with no transcription yet: there is nothing to correct by hand."""
+
+
+def edit_page_transcription(
+    vault: Vault,
+    vault_relative_path: str,
+    text: str,
+    *,
+    edited_at: datetime | None = None,
+) -> Path:
+    """Replace a page's transcription with the student's own correction (#473); return its path.
+
+    `vault_relative_path` is a listed `notes` or `book` page (not a derived file, a sidecar or a
+    removed page). The page must have a transcription already -- its `page-NNN.md`, or a sidecar
+    `transcription` string --: the student corrects what the transcriber read, never races it.
+    `text` (not blank once stripped) is written as `page-NNN.md`, ending in one newline, so
+    everything that reads the page's transcription (the editor, the index, the Recursos viewer)
+    reads the correction. Provenance is kept: the sidecar gains `transcription_edited: {at:
+    <edited_at, now UTC by default>, by: student, previous_sha256: <sha256 of the replaced
+    text>}` and the replaced text stays in git history (the caller commits). Both files are
+    written atomically under the directory's lock and pass the secret guard.
+
+    Raises:
+        SourcePathError: when the path is not a page of `notes` or `book`.
+        SourceNotFoundError: when no listed page is at that path (never stored, derived, removed).
+        NoTranscriptionError: when the page has no transcription to correct.
+        SourceFileError: when its sidecar is not a readable YAML mapping.
+        ValueError: when `text` is blank.
+        SecretRefused: when the text looks like it carries a key; nothing is written.
+    """
+    parts = _checked_parts(vault_relative_path)
+    if parts[5] not in EDITABLE_TRANSCRIPTION_KINDS or _PAGE_NUMBER.match(parts[-1]) is None:
+        raise SourcePathError(f"{vault_relative_path!r} is not a photographed page")
+    body = text.strip("\n")
+    if not body.strip():
+        raise ValueError("a transcription cannot be blank")
+    body = body.rstrip() + "\n"
+    guard(body)
+    directory = vault.path.joinpath(*parts[:-1])
+    if not directory.is_dir() or directory.resolve() != vault.path.resolve().joinpath(*parts[:-1]):
+        raise SourceNotFoundError(f"there is no source at {vault_relative_path!r}")
+    stem = parts[-1].split(".", 1)[0]
+    target = directory / f"{stem}{TRANSCRIPTION_SUFFIX}"
+    with directory_lock(vault.path, directory).hold(SOURCE_LOCK_TIMEOUT_SECONDS):
+        names = {entry.name for _, entry in _source_entries(directory, parts[5])}
+        if parts[-1] not in names:
+            raise SourceNotFoundError(f"there is no source at {vault_relative_path!r}")
+        sidecar = _sidecar_of(directory / parts[-1])
+        if sidecar.is_symlink() or not sidecar.is_file():
+            raise SourceNotFoundError(f"there is no stored page at {vault_relative_path!r}")
+        meta = _read_sidecar(sidecar) or {}
+        if is_removed(meta):
+            raise SourceNotFoundError(f"the source at {vault_relative_path!r} was removed")
+        previous: str | None = None
+        if target.is_file() and not target.is_symlink():
+            previous = target.read_text(encoding="utf-8", errors="replace")
+        if previous is None or not previous.strip():
+            stored = meta.get("transcription")
+            previous = stored if isinstance(stored, str) and stored.strip() else None
+        if previous is None:
+            raise NoTranscriptionError(f"the page at {vault_relative_path!r} is not transcribed")
+        meta[TRANSCRIPTION_EDITED_KEY] = {
+            "at": edited_at or datetime.now(UTC),
+            "by": "student",
+            "previous_sha256": hashlib.sha256(previous.encode("utf-8")).hexdigest(),
+        }
+        meta_text = dump_yaml(_META_ADAPTER.dump_python(meta, mode="json"))
+        guard(meta_text)
+        write_text_atomic(target, body)
+        write_text_atomic(sidecar, meta_text)
+    return target
+
+
 # -- the textbook of a topic -----------------------------------------------------------------------
 
 BOOK_FILE_NAME = "book.yaml"
