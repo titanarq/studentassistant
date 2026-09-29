@@ -221,4 +221,4 @@ async def test_search_log_folds_into_records(tmp_vault: Vault, topic: tuple[str,
     assert (oldest.search_id, oldest.status, oldest.requested_by) == (first, "done", "voice")
     assert [r.url for r in oldest.results] == [HITS[0][0], HITS[1][0]]
     assert [(k.index, k.source_id) for k in oldest.kept] == [(0, "sources/web/001-x.md")]
-    assert oldest.session_id == "20260925-100000" and oldest.model == "claude-sonnet-5"
+    assert oldest.session_id == "20260925-100000" and oldest.model == "claude-sonnet-5-5"

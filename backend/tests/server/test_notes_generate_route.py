@@ -83,7 +83,7 @@ def test_generates_tags_and_answers_the_result(
     body = response.json()
     assert body["draft"] is False and body["version"] == 1
     assert body["tag"] == f"{topic.subject}/{topic.topic}/apuntes-v1"
-    assert body["model"] == "claude-opus-5-5"
+    assert body["model"] == "claude-sonnet-5-5"
     assert read_notes(topic.vault, topic.subject, topic.topic) == valid_notes(topic.session)
     assert fake.requests[0].role == "editor"
     # The topic summary now shows the version.

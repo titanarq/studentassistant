@@ -32,10 +32,10 @@ USER = [{"role": "user", "content": "Hola"}]
 @pytest.mark.parametrize(
     ("role", "model", "effort", "max_tokens"),
     [
-        ("observer", "claude-sonnet-5", "medium", 16_000),
-        ("transcriber", "claude-sonnet-5", "medium", 16_000),
-        ("editor", "claude-opus-5-5", "high", 64_000),
-        ("generator", "claude-opus-5-5", "high", 64_000),
+        ("observer", "claude-sonnet-5-5", "medium", 16_000),
+        ("transcriber", "claude-sonnet-5-5", "medium", 16_000),
+        ("editor", "claude-sonnet-5-5", "high", 64_000),
+        ("generator", "claude-sonnet-5-5", "high", 64_000),
     ],
 )
 def test_each_role_gets_its_configured_model_effort_and_max_tokens(
@@ -55,13 +55,13 @@ def test_each_role_gets_its_configured_model_effort_and_max_tokens(
 
 
 def test_roles_follow_the_config(settings: Settings) -> None:
-    settings.llm.roles.editor.model = "claude-opus-de-prueba"
+    settings.llm.roles.editor.model = "claude-sonnet-de-prueba"
     settings.llm.roles.editor.effort = "max"
     fake = FakeClaude().reply_text("ok")
 
     asyncio.run(get_client("editor", settings=settings, transport=fake).create(USER))
 
-    assert fake.requests[0].model == "claude-opus-de-prueba"
+    assert fake.requests[0].model == "claude-sonnet-de-prueba"
     assert fake.requests[0].api_params()["output_config"] == {"effort": "max"}
 
 
@@ -330,7 +330,7 @@ def stream_ok(text: str, model: str) -> httpx2.Response:
 
 
 def test_the_real_transport_streams_and_maps_usage(settings: Settings) -> None:
-    recorder = Recorder(stream_ok("Hola, Ana", "claude-opus-5-5"))
+    recorder = Recorder(stream_ok("Hola, Ana", "claude-sonnet-5-5"))
     client = get_client("editor", settings=settings, transport=sdk_transport(recorder))
 
     response = asyncio.run(client.create(USER, system="Eres el editor."))
@@ -342,14 +342,14 @@ def test_the_real_transport_streams_and_maps_usage(settings: Settings) -> None:
     assert response.usage.cache_read_input_tokens == 8
     (body,) = recorder.bodies
     assert body["stream"] is True
-    assert body["model"] == "claude-opus-5-5"
+    assert body["model"] == "claude-sonnet-5-5"
     assert body["output_config"] == {"effort": "high"}
     assert "thinking" not in body
     assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_the_real_transport_streams_the_text_deltas(settings: Settings) -> None:
-    recorder = Recorder(stream_ok("Hola, Ana", "claude-opus-5-5"))
+    recorder = Recorder(stream_ok("Hola, Ana", "claude-sonnet-5-5"))
     client = get_client("editor", settings=settings, transport=sdk_transport(recorder))
     deltas: list[str] = []
 
@@ -398,7 +398,7 @@ def test_a_mid_stream_overload_is_retryable(settings: Settings) -> None:
 def test_the_real_transport_is_retried_by_the_client(settings: Settings) -> None:
     recorder = Recorder(
         httpx2.Response(429, json=error_body("rate_limit_error"), headers={"retry-after": "3"}),
-        stream_ok("ok", "claude-sonnet-5"),
+        stream_ok("ok", "claude-sonnet-5-5"),
     )
     slept: list[float] = []
 

@@ -442,7 +442,7 @@ the stored PDF is sent base64 (4/3 of its size) to Claude, whose requests are ca
 | `pdf_thumbnail_quality` | 85 | -- |
 | `pdf_transcription_long_edge` | 1568 px | a scanned PDF page is rendered at it for its vision transcription (Claude downscales larger images) |
 | `pdf_transcription_quality` | 90 | -- |
-| `capture_long_edge` | 2000 px | the kept still of a capture and its page image are downscaled to it (never enlarged); ~170 dpi on an A4 page, ~3.8k image tokens (Opus/Sonnet read up to 2576 px) |
+| `capture_long_edge` | 2000 px | the kept still of a capture and its page image are downscaled to it (never enlarged); ~170 dpi on an A4 page, ~3.8k image tokens (Sonnet 5.5 reads up to 2576 px) |
 | `capture_jpeg_quality` | 85 | -- |
 | `capture_window_before_seconds` | 20 | a capture's transcript window starts this long before it |
 | `capture_window_after_seconds` | 10 | ...and ends this long after it |

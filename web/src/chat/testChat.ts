@@ -30,7 +30,7 @@ export function revision(overrides: Record<string, unknown> = {}) {
     attempts: 1,
     errors: [],
     warning: null,
-    model: "claude-opus",
+    model: "claude-sonnet-5-5",
     ...overrides,
   };
 }

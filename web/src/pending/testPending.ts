@@ -64,7 +64,7 @@ export function resolution(overrides: Partial<Record<string, unknown>> = {}) {
     commit: "abc123",
     attempts: 1,
     warning: null,
-    model: "claude-opus",
+    model: "claude-sonnet-5-5",
     ...overrides,
   };
 }

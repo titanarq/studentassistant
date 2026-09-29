@@ -35,7 +35,7 @@ def seed(
     usd: float | None,
     *,
     session: str = SESSION,
-    model: str = "claude-sonnet-5",
+    model: str = "claude-sonnet-5-5",
 ) -> None:
     entry = LedgerEntry(
         time=datetime.now(UTC),

@@ -706,7 +706,7 @@ def _first_crop(topic: ReviseTopic, sync: GitSync) -> RevisionResult:
     return result
 
 
-def test_a_bad_crop_is_redone_by_opus_with_the_feedback_and_retired_in_the_same_commit(
+def test_a_bad_crop_is_redone_at_higher_effort_with_the_feedback_and_retired_in_the_same_commit(
     topic: ReviseTopic, sync: GitSync
 ) -> None:
     first = _first_crop(topic, sync)
@@ -729,9 +729,10 @@ def test_a_bad_crop_is_redone_by_opus_with_the_feedback_and_retired_in_the_same_
     # The editor saw which image the previous turn cropped, so it could name it.
     turn_text = fake.requests[0].messages[0]["content"][-1]["text"]
     assert f"[Imagen recortada: {FIRST}, de {BOOK_PAGE}, zona «{REGION}»]" in turn_text
-    # The crop was redone with the retry role (Opus), the student's words as guidance.
+    # The crop was redone by the locator role at the retry effort, the student's words as guidance.
     [_, located] = fake.requests
-    assert located.role == "editor" and located.tools[0]["name"] == TOOL_NAME
+    assert located.role == "observer" and located.effort == "xhigh"
+    assert located.tools[0]["name"] == TOOL_NAME
     assert (
         "the student said: le falta la flecha de la derecha"
         in (located.messages[0]["content"][1]["text"])
@@ -749,7 +750,8 @@ def test_a_bad_crop_is_redone_by_opus_with_the_feedback_and_retired_in_the_same_
     assert sidecar in committed.split()
     assert yaml.safe_load((topic.vault.path / sidecar).read_text())["removed"]["by"] == "student"
     meta = read_source(topic.vault, result.crop.path).meta
-    assert meta["retry_of"] == first.crop.path and meta["locator"]["role"] == "editor"
+    assert meta["retry_of"] == first.crop.path and meta["locator"]["role"] == "observer"
+    assert meta["locator"]["effort"] == "xhigh"
 
     # Undoing the retry brings the first crop back, in the notes and in Recursos.
     _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))

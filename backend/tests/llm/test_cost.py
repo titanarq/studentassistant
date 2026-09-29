@@ -70,7 +70,7 @@ def test_toml_adds_a_model_and_overrides_one_price(
             max_usd_per_session = 1.5
             max_usd_per_day = 5
 
-            [llm.prices."claude-sonnet-5"]
+            [llm.prices."claude-sonnet-5-5"]
             input_per_mtok = 9.0
 
             [llm.prices."claude-nuevo"]
@@ -88,20 +88,20 @@ def test_toml_adds_a_model_and_overrides_one_price(
 
     assert llm.max_usd_per_session == 1.5
     assert llm.max_usd_per_day == 5.0
-    sonnet = llm.prices["claude-sonnet-5"]
+    sonnet = llm.prices["claude-sonnet-5-5"]
     assert sonnet.input_per_mtok == 9.0
-    assert sonnet.output_per_mtok == DEFAULT_LLM_PRICES["claude-sonnet-5"]["output_per_mtok"]
+    assert sonnet.output_per_mtok == DEFAULT_LLM_PRICES["claude-sonnet-5-5"]["output_per_mtok"]
     assert llm.prices["claude-nuevo"].output_per_mtok == 2.0
-    assert "claude-opus-5-5" in llm.prices
+    assert "claude-sonnet-5-5" in llm.prices
 
 
 def test_env_vars_override_caps_and_prices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SA_CONFIG", str(tmp_path / "absent.toml"))
     monkeypatch.setenv("SA_LLM__MAX_USD_PER_DAY", "2.5")
-    monkeypatch.setenv("SA_LLM__PRICES__claude-opus-5-5__OUTPUT_PER_MTOK", "30")
+    monkeypatch.setenv("SA_LLM__PRICES__claude-sonnet-5-5__OUTPUT_PER_MTOK", "30")
 
     llm = Settings().llm
 
     assert llm.max_usd_per_day == 2.5
-    assert llm.prices["claude-opus-5-5"].output_per_mtok == 30.0
-    assert llm.prices["claude-opus-5-5"].input_per_mtok == 4.0
+    assert llm.prices["claude-sonnet-5-5"].output_per_mtok == 30.0
+    assert llm.prices["claude-sonnet-5-5"].input_per_mtok == 2.0

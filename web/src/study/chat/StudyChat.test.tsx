@@ -28,7 +28,7 @@ function turn(overrides: Record<string, unknown> = {}) {
 
 function answer(overrides: Record<string, unknown> = {}) {
   const { time: _time, ...rest } = turn(overrides);
-  return { ...rest, model: "claude-opus" };
+  return { ...rest, model: "claude-sonnet-5-5" };
 }
 
 afterEach(() => {

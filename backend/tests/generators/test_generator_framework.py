@@ -165,7 +165,7 @@ def test_generates_writes_the_artifact_and_manifest_and_commits(
         ("p2", ["proximo-dia"]),
     ]
     assert meta.options == {"size": 3, "split": False}
-    assert meta.model == "claude-opus-5-5"
+    assert meta.model == "claude-sonnet-5-5"
     # The manifest is plain YAML a reader of the vault can open.
     raw = yaml.safe_load(_generated(topic, "prueba.meta.yaml"))
     assert raw["kind"] == KIND and raw["notes"]["version"] == 1

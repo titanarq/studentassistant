@@ -1,7 +1,7 @@
 """Crop one region of a stored page image: Claude locates the region (`locate_region`).
 
 The student asks for only part of a page ("solo el diagrama de la página 3"); Claude (the role
-`[editor] crop_locator_role`, `observer`/Sonnet by default -- no model id here) receives the page
+`[editor] crop_locator_role`, `observer` by default -- no model id here) receives the page
 as an image content block and the description, and answers through the strict tool `crop_region`
 (`llm.structured`) with a `BoundingBox`: four fractions of the image's width/height in `[0, 1]`,
 `x0 < x1`, `y0 < y1`. A box out of these bounds fails validation and is re-asked by `structured`
@@ -15,8 +15,9 @@ deterministic code (`map_from_window`). The cut (padded by `[editor] crop_margin
 then shown with the request through the strict tool `check_crop` (`CropVerdict`, prompt
 `editor_crop_check`): complete, or which sides to expand or shrink; one correction round
 (`correct_box`, `[editor] crop_correction_step`) is applied, never more. A crop redone because the
-student said the previous one was wrong uses `[editor] crop_retry_role` (`editor`/Opus by
-default) with the student's words as extra guidance (`crop_source_image(feedback=...)`).
+student said the previous one was wrong uses the same locator role and model at the higher
+effort `[editor] crop_retry_effort` (`xhigh` by default), with the student's words as extra
+guidance (`crop_source_image(feedback=...)`).
 
 The cleanup (`clean_crop`) is deterministic `numpy`/`cv2` code with no LLM call, built from
 `studentassistant.sources.captures`' building blocks: the image is cut to the box, the cut's
@@ -171,10 +172,9 @@ class CropVerdict(BaseModel):
 
 
 def locator_role(settings: Settings | None = None, quality: CropQuality = "standard") -> str:
-    """The role that locates a crop: `[editor] crop_locator_role`, or for a crop redone after the
-    student's complaint (`quality="high"`) `[editor] crop_retry_role`."""
-    editor = (settings or Settings()).editor
-    return editor.crop_retry_role if quality == "high" else editor.crop_locator_role
+    """The role that locates a crop: `[editor] crop_locator_role`, for a crop redone after the
+    student's complaint too (`quality="high"` only raises the effort, `crop_client`)."""
+    return (settings or Settings()).editor.crop_locator_role
 
 
 def crop_client(
@@ -184,16 +184,21 @@ def crop_client(
     ledger: LedgerBinding | None = None,
     quality: CropQuality = "standard",
 ) -> LLMClient:
-    """The client that locates regions: role `locator_role(settings, quality)` (`observer` by
-    default, from `[llm.roles.<role>]`)."""
-    return get_client(
-        locator_role(settings, quality), settings=settings, transport=transport, ledger=ledger
-    )
+    """The client that locates regions: role `locator_role(settings)` (`observer` by default,
+    from `[llm.roles.<role>]`); with `quality="high"` (a crop redone after the student's complaint)
+    the same role at `[editor] crop_retry_effort`."""
+    settings = settings or Settings()
+    if quality == "high":
+        role = locator_role(settings)
+        settings = settings.model_copy(deep=True)
+        getattr(settings.llm.roles, role).effort = settings.editor.crop_retry_effort
+    return get_client(locator_role(settings), settings=settings, transport=transport, ledger=ledger)
 
 
 def retry_client(client: LLMClient | None, *, settings: Settings | None = None) -> LLMClient:
-    """The locator of a crop redone after the student's complaint: `[editor] crop_retry_role`
-    over `client`'s transport and ledger (the app's own), or the default ones without `client`."""
+    """The locator of a crop redone after the student's complaint: the locator role at
+    `[editor] crop_retry_effort`, over `client`'s transport and ledger (the app's own), or the
+    default ones without `client`."""
     return crop_client(
         settings=settings,
         transport=None if client is None else client.transport,
@@ -689,7 +694,7 @@ async def crop_source_image(
     A crop redone because the student said an earlier one was wrong (#520) passes `retry_of`
     (that crop's vault-relative path) and `feedback` (the student's words): both guide the
     locator, the earlier crop's box too when it was cut from this same page, and without
-    `client` the locator is `crop_client(quality="high")` (`[editor] crop_retry_role`).
+    `client` the locator is `crop_client(quality="high")` (`[editor] crop_retry_effort`).
 
     Raises:
         SourcePathError, SourceNotFoundError: from `vault.read_source`; nothing is written.
@@ -737,6 +742,7 @@ async def crop_source_image(
         "added_at": added_at or datetime.now(UTC),
         "locator": {
             "role": client.role,
+            "effort": client.effort,
             "coarse_bbox": located.coarse.as_list(),
             "check": located.check,
         },

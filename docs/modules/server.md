@@ -419,7 +419,7 @@ Routes registered today:
   one-call `generate_notes` above): the generation is `editor.incorporate.incorporate_pending` --
   the topic's `pendiente` sources (notes pages first, then book, PDF, web) incorporated in
   sequential small batches of `[editor] incorporate_batch_size` (default 2, never more than
-  `incorporate_max_sources`), each one Opus call on the current notes plus only those sources,
+  `incorporate_max_sources`), each one editor call on the current notes plus only those sources,
   its own commit and chat entry. On the workspace stream each batch is a turn of kind
   `incorporate` (`turn.started`, `reply.delta`, `turn.result` with the `IncorporationResult`,
   `notes.changed` origin `editor`, or `turn.error`), followed by `incorporation.progress`
@@ -797,7 +797,7 @@ Routes registered today:
   a chat turn runs); one question per topic runs at a time (its own lock). Used by the web capture
   page's tutor and the Android app's (#248) with the default `style: "spoken"` (role `editor`),
   and by the study screen's question chat (#336) with `style: "written"` (#334), whose role is
-  `[editor] study_chat_role` (`SA_EDITOR__STUDY_CHAT_ROLE`: `editor`, Opus, by default, or
+  `[editor] study_chat_role` (`SA_EDITOR__STUDY_CHAT_ROLE`: `editor`, by default, or
   `observer`, Sonnet, to compare; the ledger records the role used).
   - `POST /api/subjects/{subject_id}/topics/{topic_id}/tutor`, body `{"question": "¿Qué era la
     derivada?", "style": "spoken", "confirm_over_cap": false}` (`question` 1-1000 characters;

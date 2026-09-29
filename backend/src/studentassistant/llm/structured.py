@@ -1,6 +1,6 @@
 """Structured outputs: a strict tool, `tool_choice: auto` and an instruction to call it (ADR-0004).
 
-Forced tool choice (`any`/`tool`) is rejected by Opus 5.5, so Claude is asked to call the tool;
+Forced tool choice (`any`/`tool`) is rejected by Sonnet 5.5, so Claude is asked to call the tool;
 its input is parsed with `loads_tolerant` (small JSON defects of a call written as text repaired,
 #320) and validated against the caller's Pydantic model. A missing or invalid call is re-asked
 with the error `client.structured_reasks` times (once on the API, twice on the claude-code

@@ -136,7 +136,7 @@ async def test_ledger_entries_include_the_web_search_price(tmp_vault: Vault) -> 
 
 def test_transport_reads_server_tool_use_counts() -> None:
     message = SimpleNamespace(
-        model="claude-sonnet-5",
+        model="claude-sonnet-5-5",
         stop_reason="end_turn",
         content=[],
         usage=SimpleNamespace(
