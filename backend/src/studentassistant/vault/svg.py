@@ -173,7 +173,13 @@ def sanitize_svg(content: bytes | str) -> bytes:
         SvgError: the input is too large, is not UTF-8, declares a DOCTYPE or entity, is not
             well-formed XML, its root is not `<svg>`, or nothing drawable is left once sanitized.
     """
-    data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+    if isinstance(content, str):
+        try:
+            data = content.encode("utf-8")
+        except UnicodeEncodeError as error:  # a lone surrogate has no UTF-8 form
+            raise SvgError(ENCODING_MESSAGE) from error
+    else:
+        data = bytes(content)
     if len(data) > MAX_SVG_BYTES:
         raise SvgError(TOO_LARGE_MESSAGE)
     text = _decode(data)
