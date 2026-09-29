@@ -54,8 +54,8 @@ CLIENTE DE CAPTURA «tonto»
 BACKEND UBUNTU (toda la inteligencia)
   ├─ transcripción enchufable + comandos de voz deterministas
   ├─ fuentes: selección de la foto más nítida, recorte, transcripción de la página
-  ├─ OBSERVADOR (Claude Sonnet): memoria rápida, clasifica lo que le enseñas en vivo
-  ├─ EDITOR-TUTOR (Claude Opus): construye contigo el apunte maestro
+  ├─ OBSERVADOR (Claude Sonnet 5.5): memoria rápida, clasifica lo que le enseñas en vivo
+  ├─ EDITOR-TUTOR (Claude Sonnet 5.5): construye contigo el apunte maestro
   └─ BÓVEDA: todo se guarda en un repositorio git privado en GitHub
         │
         ▼
@@ -85,7 +85,7 @@ APUNTES DEFINITIVOS ──► esquema · quiz · flashcards · ejercicios/examen
    **dudas pendientes**; el sistema nunca te interrumpe mientras capturas.
 6. Mientras hablas, el asistente distingue cuándo le estás pidiendo algo («pon esto como
    definición», «haz una tabla con las tres causas», «esta explicación del libro es mejor, usa
-   esa») y se lo pasa al editor (Opus), que cambia el documento en ese momento. En el chat no ves
+   esa») y se lo pasa al editor (Sonnet 5.5), que cambia el documento en ese momento. En el chat no ves
    toda la transcripción: ves un resumen breve de cada petición (con «…» para desplegar
    exactamente lo que dijiste) y la respuesta del editor. También puedes escribirle. «Prepárame el
    tema» sigue ahí como una petición más: redacta el tema completo con todo lo capturado.
@@ -108,15 +108,15 @@ APUNTES DEFINITIVOS ──► esquema · quiz · flashcards · ejercicios/examen
    en modo lectura (con un enlace **Editar en Construir**). Al abrir una opción, se desliza un
    panel sobre el borde del documento y se resalta la parte del documento de la que trata cada
    tarjeta o pregunta.
-10. Resolución de dudas: Opus resuelve solo lo que puede con tus fuentes (y te dice de dónde lo ha
+10. Resolución de dudas: el editor resuelve solo lo que puede con tus fuentes (y te dice de dónde lo ha
     sacado) y te pregunta el resto, una a una: «Hay una contradicción entre tus apuntes y el libro
     sobre esta fecha, ¿cuál uso? ¿conservo una nota con lo que pone en tus apuntes?».
 11. Cada cambio queda versionado (Apuntes v1, v2, v3…) y sincronizado con GitHub.
 
 ## 5. Mejoras sobre la idea original
 
-Revisado con el estudiante el 2026-09-24: una sesión = un tema; mecanismo de purga; Opus 5.5 como
-editor; transcripción en el cliente con Google y proveedores enchufables; desarrollo con una web
+Revisado con el estudiante el 2026-09-24: una sesión = un tema; mecanismo de purga; Sonnet 5.5 como
+único modelo; transcripción en el cliente con Google y proveedores enchufables; desarrollo con una web
 de captura en el portátil y la app Android en paralelo.
 
 Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
@@ -135,15 +135,15 @@ Estas decisiones refinan la idea inicial; las vinculantes están en `docs/adr/`.
    del LLM sin mejorarlo. Las sesiones ya guardadas se quedan como están.
 3. **Comandos de voz deterministas.** «Mira aquí», «siguiente», «importante», «ahora el libro»,
    «ya está, prepárame el tema» se detectan con una gramática configurable sobre la transcripción,
-   sin LLM: latencia mínima, coste cero y comportamiento predecible. Sonnet se reserva para
+   sin LLM: latencia mínima, coste cero y comportamiento predecible. Sonnet 5.5 se reserva para
    *entender*, no para *obedecer*. Cada comando tiene también su botón. Las peticiones al
-   asistente no son comandos: por defecto las interpreta Sonnet sobre la transcripción; como
+   asistente no son comandos: por defecto las interpreta Sonnet 5.5 sobre la transcripción; como
    alternativa, la palabra de activación «anel» («anel, haz una tabla…») las detecta la misma
    gramática determinista. Se elige en la configuración para poder compararlas.
-4. **Transcripción de cada página como fuente derivada.** Al capturar, Sonnet (visión) pasa la
+4. **Transcripción de cada página como fuente derivada.** Al capturar, Sonnet 5.5 (visión) pasa la
    página a Markdown conservando la estructura (flechas y esquemas como listas anidadas o
    diagramas), marca las palabras dudosas `[[?soberanía]]` y usa lo que dijiste alrededor de la
-   foto como pista. Opus trabaja sobre ese texto y sólo vuelve a mirar la imagen cuando hace falta.
+   foto como pista. El editor trabaja sobre ese texto y sólo vuelve a mirar la imagen cuando hace falta.
 5. **Una sesión = un tema de una asignatura, basada en eventos.** El contexto de los modelos es
    sólo el de ese tema: nunca se mezclan temas. Todo lo que ocurre (segmentos de voz, capturas, comandos,
    operaciones del observador) es un registro *append-only*. El estado del observador es el
@@ -198,11 +198,11 @@ sessions/<fecha>/events.jsonl
 
 | Rol | Modelo por defecto | Qué hace |
 |---|---|---|
-| Observador («memoria rápida») | Claude Sonnet (`claude-sonnet-5`) | En vivo: clasifica lo que enseñas en secciones, conceptos y fuentes; enlaza fotos con lo que dijiste; acumula dudas. Transcribe las páginas. |
-| Editor-tutor | Claude Opus 5.5 (`claude-opus-5-5`) | Bajo demanda: genera el apunte maestro, lo edita contigo, resuelve dudas, explica el porqué de cada párrafo, genera el material de estudio. |
+| Observador («memoria rápida») | Claude Sonnet 5.5 (`claude-sonnet-5-5`) | En vivo: clasifica lo que enseñas en secciones, conceptos y fuentes; enlaza fotos con lo que dijiste; acumula dudas. Transcribe las páginas. |
+| Editor-tutor | Claude Sonnet 5.5 (`claude-sonnet-5-5`) | Bajo demanda: genera el apunte maestro, lo edita contigo, resuelve dudas, explica el porqué de cada párrafo, genera el material de estudio. |
 | Transcripción de voz | Enchufable. Por defecto en el cliente con Google (Web Speech API en el navegador, SpeechRecognizer en Android). Opcionales en el servidor: faster-whisper local, APIs en la nube | Voz → texto en español con marcas de tiempo. |
 
-Los modelos se configuran por rol; no hay ningún identificador de modelo escrito en el código.
+La aplicación usa únicamente Claude Sonnet 5.5 para todos los roles (observador, editor-tutor, recorte de imágenes y generadores). Los modelos se configuran por rol; no hay ningún identificador de modelo escrito en el código.
 
 ## 8. Fases
 
@@ -210,8 +210,8 @@ Los modelos se configuran por rol; no hay ningún identificador de modelo escrit
 |---|---|---|
 | 0. Fundaciones | Monorepo, CI, contrato móvil↔PC, bóveda | Esqueletos que compilan y se prueban |
 | 1. Esqueleto andante | Página web de captura en el portátil, sesión, transcripción en vivo, fotos a la bóveda, push a GitHub (la app Android avanza en paralelo) | Sesión completa **sin IA** |
-| 2. Observador | Sonnet mantiene el estado de la sesión, transcribe páginas, bandeja de dudas | La sesión «se entiende» |
-| 3. Editor + web | Opus genera y edita el apunte maestro con procedencia; web de revisión | **MVP: el objetivo de 20 minutos** |
+| 2. Observador | Sonnet 5.5 mantiene el estado de la sesión, transcribe páginas, bandeja de dudas | La sesión «se entiende» |
+| 3. Editor + web | Sonnet 5.5 genera y edita el apunte maestro con procedencia; web de revisión | **MVP: el objetivo de 20 minutos** |
 | 4. Más fuentes | Libro, PDF, búsqueda web | Apuntes enriquecidos |
 | 5. Generadores | Esquema, quiz, flashcards, ejercicios/examen, diapositivas | Material de estudio |
 | 6. Modo estudio | Práctica, repetición espaciada, tutor por voz | Estudiar con el sistema |

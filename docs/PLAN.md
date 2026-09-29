@@ -2,7 +2,7 @@
 
 Visión: [`VISION.md`](VISION.md) · Decisiones: [`adr/`](adr/) · Reglas para agentes: [`../AGENTS.md`](../AGENTS.md) · Tablero: https://github.com/orgs/titanarq/projects/3
 
-Revisado con el estudiante el 2026-09-24: una sesión = un tema de una asignatura + purga de contexto y de bóveda; Opus 5.5 como editor; transcripción enchufable, por defecto en el cliente con Google; desarrollo con una **página web de captura en el portátil** (cámara + micro) y la app Android en paralelo, fuera del camino crítico.
+Revisado con el estudiante el 2026-09-24: una sesión = un tema de una asignatura + purga de contexto y de bóveda; Sonnet 5.5 como único modelo (decisión del 2026-09-29, sustituye a Opus 5.5 y Sonnet 5); transcripción enchufable, por defecto en el cliente con Google; desarrollo con una **página web de captura en el portátil** (cámara + micro) y la app Android en paralelo, fuera del camino crítico.
 
 ## Cómo lo desarrolla agent-os
 
@@ -20,8 +20,8 @@ M0 (esqueletos backend/web/android, CI, protocolo, bóveda) → M1 (emparejado, 
 
 - **M0 Fundaciones** (8 tareas): Monorepo skeletons, CI, phone<->PC contract, vault library.
 - **M1 Esqueleto andante** (10 tareas): Phone paired, session, audio -> live transcript, stills stored in the vault and pushed to GitHub. No AI yet.
-- **M2 Observador** (9 tareas): Sonnet keeps the session state live, transcribes pages, accumulates doubts.
-- **M3 MVP: apuntes maestros** (21 tareas): Opus generates and edits the master notes with provenance; review web. The 20-minute goal.
+- **M2 Observador** (9 tareas): Sonnet 5.5 keeps the session state live, transcribes pages, accumulates doubts.
+- **M3 MVP: apuntes maestros** (21 tareas): Sonnet 5.5 generates and edits the master notes with provenance; review web. The 20-minute goal.
 - **M4 Más fuentes** (12 tareas): Textbook, PDF and web search as sources.
 - **M5 Generadores** (7 tareas): Outline, quiz, flashcards, exercises/exam, slides.
 - **M6 Modo estudio** (3 tareas): Practice, spaced repetition, voice tutor.
@@ -87,35 +87,35 @@ Speech-to-text is a pluggable provider (ADR-0008). Default: transcription on the
 
 ### #6 Claude integration layer  ·  `p1` · M2 Observador
 
-One place to talk to Claude: model per role from config (observer/transcriber = Sonnet, editor/generators = Opus), streaming, prompt caching, validated structured outputs, versioned prompts, a cost ledger in the vault and a `FakeClaude` every other module tests against.
+One place to talk to Claude: model per role from config (every role -- observer, transcriber, editor, crop, generators -- uses Sonnet 5.5, `claude-sonnet-5-5`), streaming, prompt caching, validated structured outputs, versioned prompts, a cost ledger in the vault and a `FakeClaude` every other module tests against.
 
 | # | tarea | módulo | prio | hito | bloqueada por |
 |---|---|---|---|---|---|
 | #26 | LLM client per role, prompt registry and FakeClaude | llm | p1 | M2 | #14 |
 | #28 | Cost ledger per topic and cost caps | llm | p1 | M2 | #26 #20 |
 
-### #7 Observer: Sonnet understands the session live  ·  `p1` · M2 Observador
+### #7 Observer: Sonnet 5.5 understands the session live  ·  `p1` · M2 Observador
 
-While the student shows pages and talks, Claude Sonnet acts as fast memory: picks the sharpest photo and transcribes each page, assigns what is said to sections and concepts, links photos with what was said about them, tracks the source context (notes/book) and accumulates a pending-doubts list without interrupting. At the end it writes a topic digest so the topic can be resumed another day.
+While the student shows pages and talks, Claude Sonnet 5.5 acts as fast memory: picks the sharpest photo and transcribes each page, assigns what is said to sections and concepts, links photos with what was said about them, tracks the source context (notes/book) and accumulates a pending-doubts list without interrupting. At the end it writes a topic digest so the topic can be resumed another day.
 
 | # | tarea | módulo | prio | hito | bloqueada por |
 |---|---|---|---|---|---|
 | #44 | Capture processing: sharpest still, downscale, page crop and deskew | sources | p1 | M2 | #36 #20 |
 | #50 | Page transcription with Claude vision, using the spoken hints | sources | p1 | M2 | #44 #26 |
 | #29 | Observer knowledge state: state ops and a pure fold over session events | observer | p1 | M2 | #20 |
-| #51 | Live observer loop with Sonnet: batches in, validated state ops out | observer | p1 | M2 | #29 #26 #43 #28 |
+| #51 | Live observer loop with Sonnet 5.5: batches in, validated state ops out | observer | p1 | M2 | #29 #26 #43 #28 |
 | #55 | Pending-doubts queue: detect, deduplicate and surface without interrupting | observer | p1 | M2 | #51 |
 | #56 | Topic digest at session end and "continúa el tema" | observer | p1 | M2 | #51 |
 | #60 | Context purge: roll the observer conversation over to snapshot + digest | observer | p1 | M2 | #56 #29 |
 
-### #8 Tutor-editor: Opus builds the master notes  ·  `p1` · M3 MVP: apuntes maestros
+### #8 Tutor-editor: Sonnet 5.5 builds the master notes  ·  `p1` · M3 MVP: apuntes maestros
 
-On "ya está, prepárame el tema", Claude Opus writes the master notes from everything captured, with provenance on every paragraph; then the student revises them in conversation ("demasiado resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro"), resolves the pending doubts and can ask "¿por qué pusiste esto?" months later.
+On "ya está, prepárame el tema", Claude Sonnet 5.5 writes the master notes from everything captured, with provenance on every paragraph; then the student revises them in conversation ("demasiado resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro"), resolves the pending doubts and can ask "¿por qué pusiste esto?" months later.
 
 | # | tarea | módulo | prio | hito | bloqueada por |
 |---|---|---|---|---|---|
 | #30 | Master notes format: anchors, provenance footnotes, fidelity validator | editor | p1 | M3 | #20 |
-| #61 | "Prepárame el tema": Opus generates the first version of the notes | editor | p1 | M3 | #30 #56 #50 #55 |
+| #61 | "Prepárame el tema": Sonnet 5.5 generates the first version of the notes | editor | p1 | M3 | #30 #56 #50 #55 |
 | #63 | Revise the notes in conversation: chat reply plus section edit ops | editor | p1 | M3 | #61 |
 | #68 | Resolve pending doubts: auto-resolve with evidence, ask the rest | editor | p1 | M3 | #63 |
 | #69 | "¿Por qué pusiste esto?": explain a block from its cited sources | editor | p2 | M3 | #63 |

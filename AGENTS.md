@@ -12,13 +12,16 @@ into faithful digital study notes through a **multimodal conversation**: the stu
 to a capture client (a web page using the laptop's camera and microphone during development, an
 Android app in parallel) and talks about them; speech is transcribed by a pluggable provider
 (default: Google on the client, ADR-0008); an Ubuntu PC backend receives the transcript,
-stores every source, lets **Claude Sonnet** (the *observer*) understand and classify the session
-live, and lets **Claude Opus** (the *tutor-editor*) build and revise the master notes with the
+stores every source, lets **Claude Sonnet 5.5** (the *observer*) understand and classify the session
+live, and lets the same **Claude Sonnet 5.5** (the *tutor-editor*) build and revise the master notes with the
 student. Quizzes, flashcards, exams and slides are generated from those notes later.
 
 All content (sources, transcripts, session events, LLM conversations and state, notes, generated
 material) lives in a separate private git repository, **the vault**, synced to GitHub, so the
 whole state can be restored on another PC by installing the app and pointing it at the vault.
+
+The app uses ONLY Claude Sonnet 5.5 (`claude-sonnet-5-5`) for every role (observer, tutor-editor,
+crop, generators); the model id lives in config defaults only.
 
 MVP goal: "I sit with my notebook and phone for twenty minutes and end up with digital notes that
 really represent what I meant to write."
@@ -66,8 +69,8 @@ Each module maps 1:1 to a `module:<name>` label and `docs/modules/<name>.md`:
 | vault | `studentassistant.vault` | git-backed content store: layout, writers, commit/push/pull, setup, SQLite index |
 | sources | `studentassistant.sources` | source ingestion: capture processing, page transcription, textbook, PDF, web |
 | llm | `studentassistant.llm` | Claude client wrapper: API or Claude Code CLI backend, model roles, caching, structured outputs, cost ledger, fakes |
-| observer | `studentassistant.observer` | Sonnet observer: event-sourced session state, pending-review queue, topic digest |
-| editor | `studentassistant.editor` | Opus tutor-editor: master notes with provenance, edit loop, doubts, "why" |
+| observer | `studentassistant.observer` | Sonnet 5.5 observer: event-sourced session state, pending-review queue, topic digest |
+| editor | `studentassistant.editor` | Sonnet 5.5 tutor-editor: master notes with provenance, edit loop, doubts, "why" |
 | web | `web/` | web capture page (laptop camera/mic, Web Speech API) and review UI: study desk, notes + sources, editor chat, pending |
 | generators | `studentassistant.generators` | outline, quiz, flashcards, exercises/exam, slides |
 
