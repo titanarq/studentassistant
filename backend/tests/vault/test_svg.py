@@ -164,6 +164,13 @@ def test_input_that_is_not_utf8_is_refused(data: bytes) -> None:
         sanitize_svg(data)
 
 
+def test_a_str_that_has_no_utf8_form_is_refused() -> None:
+    content = f"<svg {NS}><text>\ud800</text></svg>"  # lone surrogate
+    with pytest.raises(SvgError, match="UTF-8"):
+        sanitize_svg(content)
+    assert is_safe_svg(content) is False  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "content",
     [
