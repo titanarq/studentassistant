@@ -1,5 +1,5 @@
-import { MathText } from "../math/Math";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
+import ChatMarkdown from "./ChatMarkdown";
 import DiffView from "./DiffView";
 import type { EditorChat as Chat, ChatEntry } from "./useEditorChat";
 import "./chat.css";
@@ -49,7 +49,11 @@ function Entry({ entry, onOpenSource, confirming, onConfirmRule }: EntryProps) {
       </p>
       <div className="chat-reply">
         <span className="chat-who">Editor:</span>{" "}
-        {entry.reply !== "" ? <MathText text={entry.reply} /> : entry.streaming ? "El editor está pensando…" : null}
+        {entry.reply !== "" ? (
+          <ChatMarkdown text={entry.reply} />
+        ) : entry.streaming ? (
+          "El editor está pensando…"
+        ) : null}
       </div>
       {entry.refs.length > 0 && (
         <p className="chat-refs">

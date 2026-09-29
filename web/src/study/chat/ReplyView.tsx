@@ -18,13 +18,15 @@ export interface ReplyViewProps {
   renderSource: (label: string, key: string) => ReactNode;
   /** Where an image of the answer is shown from (#509); `null` (or no resolver) keeps «[Imagen: …]». */
   resolveImage?: (src: string) => string | null;
+  /** Extra class on the root, next to `study-reply`. */
+  className?: string;
 }
 
 function safeHref(href: string): string | null {
   return /^(https?:|mailto:)/i.test(href) ? href : null;
 }
 
-export default function ReplyView({ text, renderSection, renderSource, resolveImage }: ReplyViewProps) {
+export default function ReplyView({ text, renderSection, renderSource, resolveImage, className }: ReplyViewProps) {
   const withSections = (value: string, key: string): ReactNode[] => {
     const out: ReactNode[] = [];
     let last = 0;
@@ -149,5 +151,5 @@ export default function ReplyView({ text, renderSection, renderSource, resolveIm
     }
   };
 
-  return <div className="study-reply">{parseNotes(text).blocks.map((b, index) => block(b, String(index)))}</div>;
+  return <div className={className === undefined ? "study-reply" : `study-reply ${className}`}>{parseNotes(text).blocks.map((b, index) => block(b, String(index)))}</div>;
 }

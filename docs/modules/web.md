@@ -1542,3 +1542,14 @@ document card with its pinned header, the material panel under it with its own h
 microphone icon in one row; Enter asks, Shift+Enter does not); and `src/study/layout.test.ts`
 reads `study.css` from disk to pin that it redefines none of the frame's rules and that only the
 options' body, the document's body and the material's body scroll.
+
+### Chat replies as Markdown (`chat/ChatMarkdown.tsx`)
+The replies of the notes-page editor chat (`EditorChat`) and of the workspace chat (`ChatPanel`)
+are drawn by `ChatMarkdown`, which wraps the study chat's `ReplyView` (the notes' own
+`parseNotes`/`parseInline`, so no HTML of a reply ever becomes markup; links only for
+http(s)/mailto, with `rel="noopener noreferrer"`). The subset is the one of the editor prompts
+(see `docs/modules/editor.md`, "Reply format of the chats"). `[^p4]` shows as `[p4]`; half-written
+Markdown while a reply streams stays plain text until it closes. Styles: `.chat-md` in
+`chat/chat.css`. The reading aloud of the voice tutor (`tutor/speech.ts` `spokenText`) also turns
+links into their text, addresses into "un enlace" and list items into sentences ("Primero, ...").
+The placeholders («El editor está pensando…») stay plain.

@@ -12,6 +12,13 @@ it("reads the answer without footnote marks, doubts or Markdown", () => {
   expect(spokenText("  \n")).toBe("");
 });
 
+it("humanizes what is read aloud: links, addresses and lists", () => {
+  expect(spokenText("Mira [la guía](https://example.com/a/b) o https://example.com/x.")).toBe("Mira la guía o un enlace.");
+  expect(spokenText("Tres cosas:\n- **Uno** rápido\n- Dos\n\n1. Suma\n2. Resta\n> Ojo")).toBe(
+    "Tres cosas: Uno rápido. Dos. Primero, suma. Segundo, resta. Ojo",
+  );
+});
+
 it("shows each footnote mark as its label", () => {
   expect(shownText("Un límite.[^p1][^t1]")).toBe("Un límite.[p1][t1]");
 });

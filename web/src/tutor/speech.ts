@@ -21,12 +21,41 @@ const UNCERTAIN = /\[\[\?([^\]]*)\]\]/g;
 const EMPHASIS = /(\*\*|__|\*|_|`|\$)/g;
 const HEADING = /^#{1,6}\s+/gm;
 
-/** The answer as it is read aloud: no `[^label]` marks, `[[?..]]` doubts or Markdown symbols. */
+const MARKDOWN_LINK = /!?\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*\)/g;
+const BARE_URL = /\b(?:https?:\/\/|www\.)[^\s)]*[^\s).,;:!?]/gi;
+const QUOTE = /^\s{0,3}>\s?/gm;
+const BULLET = /^\s*[-*+•]\s+/;
+const NUMBERED = /^\s*(\d{1,2})[.)]\s+/;
+const ORDINALS = ["primero", "segundo", "tercero", "cuarto", "quinto", "sexto", "séptimo", "octavo", "noveno", "décimo"];
+
+/** A list item as a sentence: the marker goes, "1." becomes "Primero, ...", the item ends in a full stop. */
+function spokenLine(line: string): string {
+  const numbered = NUMBERED.exec(line);
+  let text = line.replace(BULLET, "").replace(NUMBERED, "").trim();
+  if (text === "") return "";
+  const ordinal = numbered === null ? undefined : ORDINALS[Number(numbered[1]) - 1];
+  if (ordinal !== undefined) text = `${ordinal[0].toUpperCase()}${ordinal.slice(1)}, ${text[0].toLowerCase()}${text.slice(1)}`;
+  return /[.!?:;…]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * The answer as it is read aloud, humanized: no `[^label]` marks, `[[?..]]` doubts or Markdown
+ * symbols; a link is read as its text, a bare address as "un enlace"; list items become sentences
+ * ("Primero, ...") instead of "guion" or "uno punto". The tutor's prompt already asks the model for
+ * spoken prose (no lists, no addresses, formulas in words); this is the safety net for what still
+ * slips through.
+ */
 export function spokenText(reply: string): string {
   return reply
     .replace(FOOTNOTE_REF, "")
     .replace(UNCERTAIN, "$1")
+    .replace(MARKDOWN_LINK, "$1")
+    .replace(BARE_URL, "un enlace")
     .replace(HEADING, "")
+    .replace(QUOTE, "")
+    .split("\n")
+    .map((line) => (BULLET.test(line) || NUMBERED.test(line) ? spokenLine(line) : line))
+    .join("\n")
     .replace(EMPHASIS, "")
     .replace(/\s+([.,;:!?])/g, "$1")
     .replace(/\s+/g, " ")
