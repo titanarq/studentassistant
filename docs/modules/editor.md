@@ -1006,20 +1006,21 @@ with `studentassistant feedback mark` (`docs/modules/server.md`, CLI).
   decírmelo.»).
 
 ### Cropping a region of a page image -- `crop.py` (#484)
-The student asks for only part of a stored page («solo el diagrama de la página 3»); Sonnet
-locates the region and deterministic code cuts it out, cleans it up and stores it as a new,
-separately cited source. The original page is never modified. A crop reads and writes the vault
+The student asks for only part of a stored page («solo el diagrama de la página 3»); Claude
+(Sonnet by default) locates the region in two passes and checks the cut (#520), and deterministic
+code cuts it out, cleans it up and stores it as a new, separately cited source. The original page is never modified. A crop reads and writes the vault
 and calls Claude, so it is not an `EditOp` of the pure `apply_edits` pipeline: the revise turn
 runs it first and then applies an ordinary edit citing it (`crop_image`, below, #493).
 - `await crop_source_image(vault, subject_slug, topic_slug, vault_relative_path, description, *,
-  settings=None, client=None, added_at=None) -> CroppedImage`: reads the page with
+  settings=None, client=None, added_at=None, feedback=None, retry_of=None) -> CroppedImage`: reads the page with
   `vault.read_source` (a `notes` or `book` page, a PDF page thumbnail, any stored image of a
-  media type in `inputs.IMAGE_MEDIA_TYPES`), locates the region, cleans the cut up and stores it.
+  media type in `inputs.IMAGE_MEDIA_TYPES`), locates the region, cleans the cut up and stores it
+  (`locate_crop`, below).
   Nothing is committed (the caller commits). The page is decoded once
   (`captures.decode_image`, EXIF orientation applied) **before** any Claude call, and the image
-  sent to Sonnet is that decoded page re-encoded (`oriented_image`: PNG for a PNG, else JPEG at
-  `[sources] capture_jpeg_quality`, no EXIF left), so the box maps to the pixels Sonnet saw;
-  the cut is made on the same decoded pixels (`clean_decoded`). Errors, each with nothing written:
+  sent to Claude is that decoded page re-encoded (`oriented_image`: PNG for a PNG, else JPEG at
+  `[sources] capture_jpeg_quality`, no EXIF left), so the box maps to the pixels Claude saw;
+  the zoomed image and every cut are made from the same decoded pixels (`clean_decoded`). Errors, each with nothing written:
   `SourcePathError` / `SourceNotFoundError` bubble from `read_source`; `CropError` (a
   `ValueError`, Spanish message) when the source is not an image Claude reads, or one OpenCV
   cannot decode (a GIF), both refused before the Sonnet call (`UNSUPPORTED_IMAGE_MESSAGE`), or the
@@ -1027,16 +1028,45 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   Claude refuses or gives no valid box after the re-ask; `BlurryCropError` (a `CropError`,
   `BLURRY_CROP_MESSAGE` «El recorte solicitado sale borroso; prueba con otra foto de la página.»);
   any other `LLMError` of the call.
-- **Locating the region** (`locate_region(client, image, media_type, description) ->
-  BoundingBox`): one call through `studentassistant.llm` with role `observer` (Sonnet by default,
-  `crop_client(settings=..., transport=..., ledger=...)`; no model id here), the page as an image
-  content block (the `inputs` shape, `region_request`) plus the description, answered through the
-  strict tool `crop_region` (`llm.structured`, `max_tokens` 300). `BoundingBox` is `x0`, `y0`,
-  `x1`, `y1`, fractions of the image's width/height from its top-left corner, each in `[0, 1]`,
-  `x0 < x1`, `y0 < y1`, no extra keys; a box breaking these fails validation and is re-asked by
-  `structured` itself, never used raw. The prompt `editor_crop` asks for a **tight** box around only
-  the requested content, excluding blank margins, the desk/background and fingers holding the
-  page: that is the whole reframing step, there is no separate pass.
+- **Locating the region** (`locate_region(client, image, media_type, description, *, zoomed=False,
+  feedback=None, previous=None) -> BoundingBox`): one call through `studentassistant.llm`, the
+  image as an image content block (the `inputs` shape, `region_request`) plus the description,
+  answered through the strict tool `crop_region` (`llm.structured`, `max_tokens` 300).
+  `BoundingBox` is `x0`, `y0`, `x1`, `y1`, fractions of the image's width/height from its
+  top-left corner, each in `[0, 1]`, `x0 < x1`, `y0 < y1`, no extra keys; a box breaking these
+  fails validation and is re-asked by `structured` itself, never used raw. The prompt
+  `editor_crop` asks for a **tight** box around only the requested content, excluding blank
+  margins, the desk/background and fingers holding the page, and explains the zoomed second pass
+  and the student's complaint. The role is `[editor] crop_locator_role` (`observer`, Sonnet, by
+  default; `editor`, Opus, optional; `locator_role(settings, quality)`,
+  `crop_client(settings=..., transport=..., ledger=..., quality="standard")`; no model id here).
+- **Two passes, a check, a margin** (#520, `locate_crop(client, decoded, media_type, description,
+  *, settings, feedback=None, previous=None) -> LocatedCrop`): (1) a **coarse** box on the whole
+  page. (2) With `[editor] crop_refine` (default on), the coarse box padded by
+  `[editor] crop_zoom_margin` (default 0.1 of the page's width/height per side) is cut from the
+  full-resolution decoded page (`zoom_window(box, margin, width, height)`, pixels as
+  `box_pixels` maps them) and the box asked again on that zoomed image (`zoomed=True`: «give the
+  tight box on THIS image»); it is mapped back to page fractions by `map_from_window(local,
+  window, width, height)`: each edge is the window's pixel offset plus the fraction of the
+  window's size, over the page's size -- plain arithmetic, no rounding. (3) The box is padded by
+  `[editor] crop_margin` (default 0.02 of the page per side) and clamped to the image
+  (`pad_box`), then cut and cleaned up (`clean_decoded`). (4) With `[editor] crop_verify`
+  (default on) that crop is shown with the request (`check_crop`, strict tool `check_crop`,
+  prompt `editor_crop_check`, `CropVerdict`: `complete`, and `left`/`top`/`right`/`bottom` each
+  `ok` | `expand` | `shrink`); the sides it names are moved once (`correct_box`: by
+  `[editor] crop_correction_step`, default 0.25, of the box's width or height, clamped; a shrink
+  that would leave no box keeps that axis), padded and cut again -- one correction round, never
+  checked again. A refusal or no valid verdict keeps the cut (`check` `unchecked`). So a crop
+  costs **three** Claude calls by default (coarse, refine, check; plus any schema re-ask), one
+  with both switches off. `LocatedCrop`: `box` (final, padded), `crop`, `coarse`, `tight`
+  (before the margin), `check` (`complete` | `corrected` | `unchecked`). Everything but the
+  Claude calls is deterministic, and the same boxes give byte-identical output.
+- **Redone after the student's complaint** (#520): `feedback` (the student's words) and `retry_of`
+  (the vault-relative path of the wrong crop) are added to every call of the pipeline as
+  guidance, plus the wrong crop's `bbox` on the coarse pass when it was cut from the same page;
+  without `client` the locator is `crop_client(quality="high")`, i.e. `[editor] crop_retry_role`
+  (`editor`, Opus, by default); `retry_client(client, settings=...)` builds that role over a
+  given client's transport and ledger (the app's own).
 - **Cleanup** (`clean_crop(image, media_type, box, *, min_sharpness, jpeg_quality) -> CleanCrop`,
   and `clean_crop_async`, the same in a worker thread): pure, deterministic `numpy`/`cv2` code
   with no LLM call -- the same bytes and box always give byte-identical output -- built from
@@ -1056,8 +1086,10 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   (`sources/images/img-NNN.<ext>` + `img-NNN.yaml`), in a worker thread. The sidecar:
   `origin: cropped` (`CROPPED_ORIGIN`), `cropped_from` (the page's vault-relative path),
   `bbox` (`[x0, y0, x1, y1]`, the fractions used), `requested_region` (the description, stripped),
-  `content_type`, `sha256` (of the stored crop) and `added_at` (now, UTC, by default) -- readable
-  back as `vault.read_source(...).meta` of the new file, so the crop traces back to its page.
+  `content_type`, `sha256` (of the stored crop) and `added_at` (now, UTC, by default), `locator`
+  (`role`, `coarse_bbox`, `check`, #520) and, for a crop redone after a complaint, `retry_of` and
+  `feedback` -- readable back as `vault.read_source(...).meta` of the new file, so the crop traces
+  back to its page.
 - `CroppedImage` (what it returns): `path` (vault-relative), `source_id`
   (`sources/images/img-NNN.<ext>`), `number`, `box`, `crop`, `meta`, `provenance`
   (`cropped_image_provenance`), and the properties `footnote_label` (`imgNNN`), `footnote`
@@ -1070,11 +1102,11 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   `CropImageRequest`: `source` -- a topic-relative source id as the catalogue gives it, a PDF page
   as `sources/pdf/<file>.pdf#page=K`, whose rendered page `<stem>.pKKK.jpg` is what is cropped
   (`crop_source_path`) --, `region`, `op` `insert_after` | `replace_block`, `section`, `block`,
-  `summary`). One crop per turn, never together with `apply_edits`. Before anything is cropped the
+  `summary`, and `retry_of` / `feedback`, null for a new crop, #520). One crop per turn, never together with `apply_edits`. Before anything is cropped the
   call is checked: the source must be one the notes cite or one of the Recursos selection, the
   region and summary non-empty, and the anchor must apply (`placeholder_edit` through
   `apply_edits`); a failure is sent back (`tool_result` error naming `crop_image`) like a failing
-  change. Then `crop_source_image` runs (client: `revise_notes(crop_client=...)`, role `observer`;
+  change. Then `crop_source_image` runs (client: `revise_notes(crop_client=...)`, role `[editor] crop_locator_role`;
   `settings`), outside `apply_edits` and outside the notes lock, and `crop_edit` builds an
   ordinary `EditOp` whose `text` is the image link plus `[^imgNNN]` and the `NewFootnote` of
   «Imagen recortada N»; that `EditsOutput` goes through the same `_check`, the notes lock and the
@@ -1109,7 +1141,30 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   confirmation («He añadido el recorte del diagrama de la página 3.»). The request classifier's
   prompt (`observer_requests`) lists these requests as `edit`, so a spoken or typed one reaches the
   editor with `expects_change`.
-- Tests: `FakeClaude` scripts the box (valid, out of bounds and re-asked, refusal); fixture images
+- **Redoing a bad crop from the chat** (#520): the editor's history shows an applied crop turn as
+  «[Imagen recortada: sources/images/img-NNN.<ext>, de <page>, zona «…»]». When the student then
+  says it came out wrong («el recorte ha salido mal», «le falta un trozo», «no es esa zona»), the
+  prompt `editor_revise` has the editor call `crop_image` again with `retry_of` = that crop's
+  source id, `feedback` = the student's words and `replace_block` on the block holding the wrong
+  image. `retry_of` must be the crop of the latest notes-changing turn (a revision or an
+  incorporation), applied and not undone (`_retry_target`), else it is sent back like any
+  invalid call. The crop is redone by `crop_source_image(feedback=..., retry_of=...)` with
+  `retry_client(crop_client)` (`[editor] crop_retry_role`, Opus by default, over the app's
+  transport). The wrong crop is retired through the undo's own retirement
+  (`_retire_crop_files`, shared with `_retire_undone_crop`: kept while the edited notes still
+  cite it; identity-checked `vault.remove_source`, else an orphan sidecar) **inside the retry's
+  locked commit**, its sidecar among the turn's `paths`: undoing the retry reverts that sidecar
+  too, so the first crop comes back to the notes and to Recursos, and the new one is removed as
+  any crop turn's. `CropRef.retry_of` names the replaced crop in the record, the event and the
+  history.
+- Tests: `tests/editor/test_crop_reliable.py` (#520) covers the geometry (`pad_box` clamping,
+  `zoom_window`, `map_from_window`, `correct_box`), the configurable locator and retry roles,
+  the two passes with a complete check, one correction round never re-checked, no verdict, the
+  single-pass settings, and a retry's feedback, earlier box and sidecar; the retry from the chat
+  (Opus locator, the feedback, the wrong crop retired in the same commit and brought back by
+  undo, kept while still cited, a `retry_of` refused, the prompt) is in
+  `tests/editor/test_revise_crop.py`, whose other tests and `test_crop_store.py` run the
+  single-pass settings. `FakeClaude` scripts the box (valid, out of bounds and re-asked, refusal); fixture images
   built in the tests cover the sharp/blurred filter, a rotated rectangle deskewed and an
   axis-aligned one left as the plain crop, byte-identical output, and with `tmp_vault` the stored
   file, its sidecar and the footnote, an undecodable GIF refused without a call, and an EXIF-rotated

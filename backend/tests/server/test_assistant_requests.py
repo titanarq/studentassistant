@@ -30,7 +30,7 @@ from studentassistant.config import (
     ServerSettings,
     Settings,
 )
-from studentassistant.editor.crop import CROP_TOOL, TOOL_NAME
+from studentassistant.editor.crop import CHECK_TOOL_NAME, CROP_TOOL, TOOL_NAME
 from studentassistant.editor.notes_format import notes_revision
 from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn
 from studentassistant.llm import FakeClaude, LLMAPIError
@@ -293,14 +293,19 @@ def test_a_spoken_crop_request_locates_the_region_with_the_apps_own_transport(
     }
     fake.reply_tool(CROP_TOOL, crop_call, text="He añadido el recorte del diagrama.")
     fake.reply_tool(TOOL_NAME, {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75})
+    # The refined box on the zoomed page and the check of the cut (#520).
+    fake.reply_tool(TOOL_NAME, {"x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9})
+    complete = {"complete": True, "left": "ok", "top": "ok", "right": "ok", "bottom": "ok"}
+    fake.reply_tool(CHECK_TOOL_NAME, complete)
 
     _publish(client, session_id, _request(1, text="pon solo el diagrama de la página 2"))
     _settle(client)
 
     # Sonnet's box came from the app's own transport (a default connection would never reach
     # the fake), and the crop was applied as the voice turn's change.
-    assert [request.role for request in fake.requests] == ["editor", "observer"]
+    assert [request.role for request in fake.requests] == ["editor", *["observer"] * 3]
     assert fake.requests[1].tools[0]["name"] == TOOL_NAME and fake.pending == 0
+    assert fake.requests[3].tools[0]["name"] == CHECK_TOOL_NAME
     [turn] = client.get(_chat(topic)).json()["turns"]
     assert turn["origin"] == "voice" and turn["applied"] is True
     assert turn["crop"]["error"] is None

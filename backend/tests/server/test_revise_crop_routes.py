@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from revise_topic import ReviseTopic, make_revise_topic
 from studentassistant.config import ObserverSettings, ServerSettings, Settings
 from studentassistant.editor.crop import (
+    CHECK_TOOL_NAME,
     CROP_FAILED_PREFIX,
     CROP_TOOL,
     TOOL_NAME,
@@ -36,6 +37,9 @@ BOOK_PAGE = "sources/book/page-002.jpg"
 @pytest.fixture
 def topic(tmp_vault: Vault) -> ReviseTopic:
     return make_revise_topic(tmp_vault)
+
+
+COMPLETE = {"complete": True, "left": "ok", "top": "ok", "right": "ok", "bottom": "ok"}
 
 
 @pytest.fixture
@@ -114,15 +118,23 @@ def test_a_crop_turn_stores_the_image_and_the_history_carries_it(
     client: TestClient, fake: FakeClaude, topic: ReviseTopic
 ) -> None:
     _cite_book_page(topic)
+    # The default crop (#520): a coarse box, a refined one on the zoomed page, then the check.
     fake.reply_tool(CROP_TOOL, _crop_call(BOOK_PAGE), text=CONFIRMATION).reply_tool(TOOL_NAME, BOX)
+    fake.reply_tool(TOOL_NAME, {"x0": 0.1, "y0": 0.1, "x1": 0.9, "y1": 0.9})
+    fake.reply_tool(CHECK_TOOL_NAME, COMPLETE)
 
     result = _chat(client, topic)
 
     assert result["applied"] and result["reply"] == CONFIRMATION
     crop = result["crop"]
     assert crop["error"] is None and crop["source_id"] == "sources/images/img-001.jpg"
-    # Sonnet located the region through the app's own transport.
-    assert [request.role for request in fake.requests] == ["editor", "observer"]
+    # Sonnet located and checked the region through the app's own transport.
+    assert [request.role for request in fake.requests] == ["editor", *["observer"] * 3]
+    assert [request.tools[0]["name"] for request in fake.requests[1:]] == [
+        TOOL_NAME,
+        TOOL_NAME,
+        CHECK_TOOL_NAME,
+    ]
     [image] = _images(client, topic)
     assert image == crop["path"] and image.endswith(crop["source_id"])
     meta = client.get(f"/api/sources/{image}/meta").json()["meta"]

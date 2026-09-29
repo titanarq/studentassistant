@@ -92,6 +92,7 @@ import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -110,6 +111,7 @@ from studentassistant.editor.crop import (
     crop_source_image,
     crop_source_path,
     placeholder_edit,
+    retry_client,
 )
 from studentassistant.editor.diagram import (
     DIAGRAM_TOOL,
@@ -927,6 +929,11 @@ def _history_text(turns: list[ChatTurn]) -> str:
             lines.append("[No se aplicó ningún cambio: no pasó la validación.]")
         if turn.feedback is not None:
             lines.append(f"[Apuntado como comentario sobre la aplicación: {turn.feedback.title}]")
+        crop = turn.crop
+        if turn.applied and crop is not None and crop.kind == "crop" and crop.source_id:
+            lines.append(
+                f"[Imagen recortada: {crop.source_id}, de {crop.source}, zona «{crop.region}»]"
+            )
         if turn.proposed_style_rules:
             rules = "; ".join(f"«{rule}»" for rule in turn.proposed_style_rules)
             lines.append(f"[Propuesto para la guía de estilo, sin confirmar aún: {rules}]")
@@ -1095,12 +1102,42 @@ def _cited_files(notes: str | None) -> set[str]:
     return cited
 
 
+def _retry_target(turns: Sequence[ChatTurn]) -> CropRef | None:
+    """The crop a `crop_image` retry may redo (#520): the one the latest notes-changing turn (a
+    revision or an incorporation) made, while that turn is applied and not undone."""
+    changing = [turn for turn in turns if turn.kind in ("revise", "incorporate")]
+    latest = changing[-1] if changing else None
+    if latest is None or not latest.applied or latest.undone or latest.crop is None:
+        return None
+    crop = latest.crop
+    if crop.kind != "crop" or crop.error is not None or crop.source_id is None or not crop.path:
+        return None
+    return crop
+
+
 def _crop_errors(
-    request: CropImageRequest, notes: str, base: str | None, selected: Sequence[str]
+    request: CropImageRequest,
+    notes: str,
+    base: str | None,
+    selected: Sequence[str],
+    retry_target: CropRef | None = None,
 ) -> list[str]:
     """What makes a `crop_image` call unusable before anything is cropped: a source neither
-    cited by the notes nor selected, an empty region or summary, an anchor that does not apply."""
+    cited by the notes nor selected, an empty region or summary, an anchor that does not apply,
+    a `retry_of` that is not the crop the previous turn made (#520)."""
     errors: list[str] = []
+    retry_of = (request.retry_of or "").strip()
+    if retry_of and (
+        retry_target is None or source_key(retry_of) != source_key(retry_target.source_id or "")
+    ):
+        errors.append(
+            "`retry_of` solo puede nombrar la imagen que recortó el turno anterior"
+            + (
+                f" ({retry_target.source_id}); {retry_of} no lo es."
+                if retry_target is not None
+                else "; el turno anterior no recortó ninguna, así que deja `retry_of` a null."
+            )
+        )
     allowed = {source_key(ref) for ref in (*_cited_files(base), *selected)}
     if source_key(request.source.strip()) not in allowed:
         errors.append(
@@ -1201,13 +1238,16 @@ def _apply(
     value: EditsOutput,
     current_mode: str,
     extra_paths: Sequence[str] = (),
+    retire: CropRef | None = None,
 ) -> tuple[list[str], str | None, str | None, list[str]]:
     """Write and commit one change as one locked step; blocking. `(paths, commit, new mode, rules
     added)`.
 
     The writes and their checkpoint run under the vault's git lock (`checkpointing`), so the sync
     loop cannot commit these files first and leave the turn's commit -- the one an undo reverts
-    -- without them.
+    -- without them. `retire` is the crop a retry replaces (#520): retired like an undone turn's
+    crop (`_retire_crop_files`, unless the edited notes still cite it) in the same commit, so
+    undoing the retry brings it back.
     """
     root = vault.path
     paths: list[str] = []
@@ -1229,6 +1269,11 @@ def _apply(
             return [], None, None, []
         # A crop's image and sidecar, stored before the lock: committed with the notes citing them.
         paths.extend(extra_paths)
+        if retire is not None:
+            try:
+                paths.extend(_retire_crop_files(vault, retire, edited))
+            except Exception:
+                logger.exception("could not retire the replaced crop %s", retire.path)
         commit = commit_now(
             f"Apuntes de {subject_slug}/{topic_slug} revisados: {_short(value.summary)}"
         )
@@ -1250,6 +1295,7 @@ def _apply_if_current(
     value: EditsOutput,
     current_mode: str,
     extra_paths: Sequence[str] = (),
+    retire: CropRef | None = None,
 ) -> tuple[_Applied | None, str | None]:
     """Apply the change under the write lock when the notes are still `base`; blocking.
 
@@ -1270,6 +1316,7 @@ def _apply_if_current(
             value=value,
             current_mode=current_mode,
             extra_paths=extra_paths,
+            retire=retire,
         )
         return applied, current
 
@@ -1290,22 +1337,28 @@ async def _crop_change(
     notes: str,
     base: str | None,
     selected: Sequence[str],
-    cache: dict[tuple[str, str], CroppedImage],
+    cache: dict[tuple[str, str], CroppedImage | DrawnDiagram],
     client: LLMClient | None,
     settings: Settings | None,
+    retry_target: CropRef | None = None,
 ) -> tuple[EditsOutput | None, list[str], CropRef | None, CroppedImage | None]:
     """A `crop_image` call as a change: `(value, errors, crop, cropped image)`.
 
-    Errors to send back (a source not allowed, an anchor that does not apply) come before any
-    crop. A crop that fails is `crop.error` (Spanish) with no value: the turn ends there. A crop
-    made in an earlier attempt of the turn for the same source and region is reused.
+    Errors to send back (a source not allowed, an anchor that does not apply, a `retry_of` that
+    is not `retry_target`) come before any crop. A crop that fails is `crop.error` (Spanish) with
+    no value: the turn ends there. A crop made in an earlier attempt of the turn for the same
+    source and region is reused. A retry (#520) is located by `crop.retry_client` (the
+    `[editor] crop_retry_role`, Opus by default, over `client`'s transport) with the student's
+    `feedback`; the crop it replaces is retired when the change is applied (`_apply`).
     """
     source, region = request.source.strip(), request.region.strip()
-    errors = _crop_errors(request, notes, base, selected)
+    errors = _crop_errors(request, notes, base, selected, retry_target)
     if errors:
         return None, errors, None, None
-    image = cache.get((source, region))
-    if image is None:
+    retry = retry_target if (request.retry_of or "").strip() else None
+    key = (source, region) if retry is None else (f"retry:{source}", region)
+    image = cache.get(key)
+    if not isinstance(image, CroppedImage):
         try:
             image = await crop_source_image(
                 vault,
@@ -1314,7 +1367,9 @@ async def _crop_change(
                 crop_source_path(vault, subject_slug, topic_slug, source),
                 region,
                 settings=settings,
-                client=client,
+                client=client if retry is None else retry_client(client, settings=settings),
+                feedback=None if retry is None else request.feedback,
+                retry_of=None if retry is None else retry.path,
             )
         except (SourcePathError, SourceNotFoundError):
             return (
@@ -1325,7 +1380,7 @@ async def _crop_change(
             )
         except CropError as error:
             return None, [], CropRef(source=source, region=region, error=str(error)), None
-        cache[(source, region)] = image
+        cache[key] = image
     op, footnote = crop_edit(request, image)
     value = EditsOutput(ops=[op], footnotes=[footnote], summary=request.summary)
     ref = CropRef(
@@ -1335,6 +1390,7 @@ async def _crop_change(
         path=image.path,
         sha256=image.meta.get("sha256"),
         added_at=image.meta.get("added_at"),
+        retry_of=None if retry is None else retry.source_id,
     )
     return value, [], ref, image
 
@@ -1418,9 +1474,11 @@ async def revise_notes(
     The editor may instead crop a region of a page with `crop_image` (#493): the source must be
     one the notes cite or the selection holds, and the anchor must apply, else the call is sent
     back like a failing change. The crop itself (`crop.crop_source_image`, through
-    `crop_client`, role `observer`, and `settings`) runs outside `apply_edits`; the stored crop is
-    then inserted, linked and cited «Imagen recortada N», by an ordinary edit op checked and
-    applied like any other, its files committed with the notes. A crop that fails (the source is
+    `crop_client`, role `[editor] crop_locator_role`, and `settings`; a retry of the previous
+    turn's crop, `retry_of`, is located by `[editor] crop_retry_role`, #520) runs outside
+    `apply_edits`; the stored crop is then inserted, linked and cited «Imagen recortada N», by
+    an ordinary edit op checked and applied like any other, its files committed with the notes
+    (a retry's replaced crop retired in the same commit). A crop that fails (the source is
     not an image, the region is not found, the cut is blurry) changes nothing: the reply is the
     Spanish reason and the result's `crop` carries it.
 
@@ -1531,6 +1589,8 @@ async def revise_notes(
     cropped: dict[tuple[str, str], CroppedImage | DrawnDiagram] = {}
     crop: CropRef | None = None
     crop_image: CroppedImage | DrawnDiagram | None = None
+    # The crop a `crop_image` retry may redo: the previous turn's (#520).
+    retry_target = _retry_target(turns)
     tool_name = EDIT_TOOL
 
     model = client.model
@@ -1647,6 +1707,7 @@ async def revise_notes(
                 cache=cropped,
                 client=crop_client,
                 settings=settings,
+                retry_target=retry_target,
             )
             if crop is not None and crop.error is not None:
                 await conversation.record(
@@ -1678,6 +1739,7 @@ async def revise_notes(
                     value=value,
                     current_mode=assembled.fidelity_mode,
                     extra_paths=crop_image.paths if crop_image is not None else (),
+                    retire=retry_target if crop is not None and crop.retry_of else None,
                 )
             )
             if applied is None:
@@ -1995,28 +2057,49 @@ def _retire_undone_crop(
     recorded. Only the latest undo is repaired: an older crash's crop stays until the student
     removes it.
     """
-    path = crop.path
-    if path is None:
-        return
-    tail = path.split("/topics/", 1)[-1].split("/", 1)[-1]
-    if tail in {source_key(ref) for ref in _cited_files(notes)}:
-        return
-    identified = crop.sha256 is not None and crop.added_at is not None
-    if repair and not identified:
-        return
     try:
         with checkpointing(sync) as commit_now:
-            try:
-                remove_source(vault, path, sha256=crop.sha256, added_at=crop.added_at)
-            except SourceNotFoundError:
-                if not identified or (
-                    retire_orphan_sidecar(vault, path, sha256=crop.sha256, added_at=crop.added_at)
-                    is None
-                ):
-                    return
-            commit_now(message)
+            if _retire_crop_files(vault, crop, notes, repair=repair):
+                commit_now(message)
     except Exception:
-        logger.exception("could not retire the undone crop %s", path)
+        logger.exception("could not retire the undone crop %s", crop.path)
+
+
+def _retire_crop_files(
+    vault: Vault, crop: CropRef, notes: str, *, repair: bool = False
+) -> list[str]:
+    """Soft-delete a turn's stored crop, uncommitted; blocking. The vault-relative sidecar
+    written (`[]` when nothing was retired).
+
+    The rules of `_retire_undone_crop`: a crop `notes` cites is kept; the file is retired only
+    while its sidecar records `crop.sha256`/`crop.added_at` (`vault.remove_source`), else an
+    orphan sidecar recording them (`vault.retire_orphan_sidecar`); with `repair`, nothing without
+    that identity. A crop retry (#520) retires the crop it replaces through this too, inside the
+    retry's commit.
+
+    Raises:
+        Whatever `remove_source` / `retire_orphan_sidecar` raise but `SourceNotFoundError`.
+    """
+    path = crop.path
+    if path is None:
+        return []
+    tail = path.split("/topics/", 1)[-1].split("/", 1)[-1]
+    if tail in {source_key(ref) for ref in _cited_files(notes)}:
+        return []
+    identified = crop.sha256 is not None and crop.added_at is not None
+    if repair and not identified:
+        return []
+    try:
+        sidecar: Path | None = remove_source(
+            vault, path, sha256=crop.sha256, added_at=crop.added_at
+        )
+    except SourceNotFoundError:
+        if not identified:
+            return []
+        sidecar = retire_orphan_sidecar(vault, path, sha256=crop.sha256, added_at=crop.added_at)
+    if sidecar is None:
+        return []
+    return [sidecar.relative_to(vault.path).as_posix()]
 
 
 def _file_contents(vault: Vault, paths: Sequence[str]) -> list[bytes | None]:
