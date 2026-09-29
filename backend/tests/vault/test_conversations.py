@@ -41,7 +41,7 @@ def test_records_append_in_order_under_the_topic(tmp_vault: Vault, topic: tuple[
     second = record(
         "assistant",
         message={"role": "assistant", "content": [{"type": "text", "text": "Hola"}]},
-        model="claude-sonnet-5",
+        model="claude-sonnet-5-5",
         prompt_hash="sha256:abc",
         usage={"input_tokens": 10, "output_tokens": 2},
     )

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_MAX_SECONDS = 30.0
 
-# Opus 5.5 rejects a forced tool choice; ADR-0004 forbids it for every role.
+# Sonnet 5.5 rejects a forced tool choice; ADR-0004 forbids it for every role.
 _ALLOWED_TOOL_CHOICES = {"auto", "none"}
 
 
@@ -105,7 +105,7 @@ class LLMClient:
         if tool_choice is not None and tool_choice.get("type") not in _ALLOWED_TOOL_CHOICES:
             raise ValueError(
                 f"tool_choice {tool_choice.get('type')!r} is not allowed: use 'auto' plus an "
-                "instruction (forced tool use is rejected by Opus 5.5, ADR-0004)"
+                "instruction (forced tool use is rejected by Sonnet 5.5, ADR-0004)"
             )
         blocks = system_blocks(system)
         tool_list = list(tools or [])

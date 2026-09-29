@@ -30,7 +30,7 @@ def entry(subject: str, topic: str, **overrides: object) -> LedgerEntry:
     fields: dict[str, object] = {
         "time": datetime(2026, 9, 24, 10, 0, tzinfo=UTC),
         "role": "editor",
-        "model": "claude-opus-test",
+        "model": "claude-sonnet-test",
         "prompt_hash": "abc123",
         "input_tokens": 1200,
         "output_tokens": 300,

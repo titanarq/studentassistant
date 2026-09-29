@@ -1,6 +1,6 @@
 # ADR-0004: Claude is reached only through the llm module
 
-Status: accepted (2026-09-24)
+Status: accepted (2026-09-24); model decision amended 2026-09-29
 
 ## Decision
 - Only `studentassistant.llm` imports the `anthropic` SDK. `studentassistant.llm` is also the
@@ -9,12 +9,16 @@ Status: accepted (2026-09-24)
   subscription (`claude -p` stream-json, one long-lived process per conversation). `auto` uses
   the API when a key is on the machine and Claude Code otherwise. Other modules ask for a **role**
   (`observer`, `transcriber`, `editor`, `generator`) and get a client configured from
-  `config.toml` (`[llm.roles.<role>] model = ..., effort = ...`). Defaults: `claude-sonnet-5`
-  for observer and page transcription, `claude-opus-5-5` for editor and generators (better
-  and cheaper than Opus 5; its effort defaults to `medium`, so effort is always set explicitly,
-  and thinking cannot be disabled).
+  `config.toml` (`[llm.roles.<role>] model = ..., effort = ...`). Default (human decision,
+  2026-09-29, replacing Opus 5.5 and Sonnet 5): **`claude-sonnet-5-5` in every role**, with no date
+  suffix ($2 input / $10 output / $0.20 cache read per MTok); the roles differ only by effort.
+  Its effort defaults to `high`, so effort is always set explicitly, and thinking cannot be
+  disabled (`{type: "disabled"}`, `budget_tokens` and non-default `temperature` / `top_p` /
+  `top_k` return 400, and so does assistant prefill). Rerunning a crop the student
+  complained about uses the same model at a higher effort instead of another model. The Claude
+  Code backend passes the same model id.
 - Structured outputs use **strict tools with `tool_choice: auto`** plus an instruction, or
-  `output_config.format` -- never forced `tool_choice` (`any`/`tool`), which Opus 5.5 rejects.
+  `output_config.format` -- never forced `tool_choice` (`any`/`tool`), which Sonnet 5.5 rejects.
   Every tool input is validated against its Pydantic model before it is applied. Under the
   Claude Code backend, client tools are emulated through a JSON reply protocol and still
   validated against their Pydantic model.

@@ -62,7 +62,7 @@ class LLMRequest(BaseModel):
 
     def api_params(self) -> dict[str, Any]:
         """Keyword arguments for `messages.stream(...)`. `thinking` is never sent: omitting it runs
-        adaptive thinking, and disabling it is rejected by Opus 5.5 (ADR-0004)."""
+        adaptive thinking, and disabling it is rejected by Sonnet 5.5 (ADR-0004)."""
         params: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,

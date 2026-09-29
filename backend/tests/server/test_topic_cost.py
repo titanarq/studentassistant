@@ -43,7 +43,7 @@ def seed(
     entry = LedgerEntry(
         time=time or datetime.now(UTC),
         role=role,
-        model="claude-sonnet-5",
+        model="claude-sonnet-5-5",
         input_tokens=100,
         output_tokens=10,
         cache_read_tokens=5,

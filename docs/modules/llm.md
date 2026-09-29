@@ -20,11 +20,20 @@ Decision: ADR-0004.
 
 | key | observer / transcriber | editor / generator |
 |---|---|---|
-| `model` | `claude-sonnet-5` | `claude-opus-5-5` |
+| `model` | `claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | `effort` (`low`..`max`, always sent) | `medium` | `high` |
 | `max_tokens` | `16000` | `64000` |
 | `turn_timeout_seconds` | observer `90`, transcriber unset | unset |
 | `max_attempts` | observer `2`, transcriber unset | unset |
+
+Claude Sonnet 5.5 (`claude-sonnet-5-5`, no date suffix) is the only model in every role and the
+Claude Code backend gets the same id through `--model` (human decision 2026-09-29, ADR-0004); the
+roles differ by effort, not by model. Requests never use what Sonnet 5.5 rejects on the API
+(400): `thinking` is never sent (adaptive thinking; `{type: "disabled"}` and `budget_tokens` are
+rejected), forced `tool_choice` `any`/`tool` (`LLMClient` refuses it; strict tools with
+`{type: "auto"}` plus an instruction, validated and re-asked by `structured`), assistant prefill,
+and non-default `temperature` / `top_p` / `top_k` (none is sent). Effort defaults to `high` on the
+API, so it is always sent explicitly.
 
 `[llm] max_attempts = 4`: attempts per call (first one included) before a 429/5xx/connection error
 surfaces. A role's own `max_attempts` wins over it (`get_client` resolves it).
@@ -163,7 +172,7 @@ Tests drive it with a fake `claude` script (`tests/llm/fake_claude_cli.py`, with
 WebSearch / WebFetch tool events: `web_search(...)`, `web_fetch(...)`), never the real CLI.
 
 Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
-`SA_LLM__PRICES__claude-sonnet-5__INPUT_PER_MTOK=2`):
+`SA_LLM__PRICES__claude-sonnet-5-5__INPUT_PER_MTOK=2`):
 
 - `[llm] max_usd_per_session`, `max_usd_per_day` (floats, USD): unset = no cap. The day is the
   UTC day, so the day cap resets at UTC midnight.
@@ -173,8 +182,7 @@ Cost (every key also `SA_LLM__<KEY>`, e.g. `SA_LLM__MAX_USD_PER_DAY=5`,
 
 | model | input | output | cache write | cache read |
 |---|---|---|---|---|
-| `claude-sonnet-5` | 2.00 | 10.00 | 2.50 | 0.20 |
-| `claude-opus-5-5` | 4.00 | 20.00 | 5.00 | 0.20 |
+| `claude-sonnet-5-5` | 2.00 | 10.00 | 2.50 | 0.20 |
 
 No price or cap lives anywhere but these config defaults.
 

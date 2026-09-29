@@ -38,10 +38,10 @@ def test_defaults_when_no_toml_file_exists(config_toml: Path) -> None:
     assert settings.server.host == "0.0.0.0"
     assert settings.server.port == 8765
     assert settings.vault.path == Path.home() / "StudentAssistant" / "vault"
-    assert settings.llm.roles.observer.model == "claude-sonnet-5"
-    assert settings.llm.roles.transcriber.model == "claude-sonnet-5"
-    assert settings.llm.roles.editor.model == "claude-opus-5-5"
-    assert settings.llm.roles.generator.model == "claude-opus-5-5"
+    assert settings.llm.roles.observer.model == "claude-sonnet-5-5"
+    assert settings.llm.roles.transcriber.model == "claude-sonnet-5-5"
+    assert settings.llm.roles.editor.model == "claude-sonnet-5-5"
+    assert settings.llm.roles.generator.model == "claude-sonnet-5-5"
 
 
 def test_toml_file_overrides_the_defaults(config_toml: Path) -> None:
@@ -56,7 +56,7 @@ def test_toml_file_overrides_the_defaults(config_toml: Path) -> None:
         path = "~/otro-vault"
 
         [llm.roles.editor]
-        model = "claude-opus-del-toml"
+        model = "claude-sonnet-del-toml"
         """,
     )
 
@@ -65,10 +65,10 @@ def test_toml_file_overrides_the_defaults(config_toml: Path) -> None:
     assert settings.server.host == "127.0.0.1"
     assert settings.server.port == 9100
     assert settings.vault.path == Path.home() / "otro-vault"
-    assert settings.llm.roles.editor.model == "claude-opus-del-toml"
+    assert settings.llm.roles.editor.model == "claude-sonnet-del-toml"
     # What the file does not mention keeps its default.
-    assert settings.llm.roles.observer.model == "claude-sonnet-5"
-    assert settings.llm.roles.generator.model == "claude-opus-5-5"
+    assert settings.llm.roles.observer.model == "claude-sonnet-5-5"
+    assert settings.llm.roles.generator.model == "claude-sonnet-5-5"
 
 
 def test_env_var_overrides_the_toml_file(
@@ -82,16 +82,16 @@ def test_env_var_overrides_the_toml_file(
         port = 9100
 
         [llm.roles.editor]
-        model = "claude-opus-del-toml"
+        model = "claude-sonnet-del-toml"
         """,
     )
     monkeypatch.setenv("SA_SERVER__PORT", "9999")
-    monkeypatch.setenv("SA_LLM__ROLES__EDITOR__MODEL", "claude-opus-del-entorno")
+    monkeypatch.setenv("SA_LLM__ROLES__EDITOR__MODEL", "claude-sonnet-del-entorno")
 
     settings = Settings()
 
     assert settings.server.port == 9999
-    assert settings.llm.roles.editor.model == "claude-opus-del-entorno"
+    assert settings.llm.roles.editor.model == "claude-sonnet-del-entorno"
     # The environment only replaces what it names: the file's host still applies.
     assert settings.server.host == "127.0.0.1"
 

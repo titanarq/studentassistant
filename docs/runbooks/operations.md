@@ -106,8 +106,8 @@ backends take work**, one run each at a time (`max_parallel_issues: 2`):
 | class | backend / model | ceilings | on a Claude quota cut |
 |---|---|---|---|
 | `mechanical-qwen` | qwen / `qwen3.8-max` (worktree `../studentassistant-qwen`) | 400k context, $5, 80M tokens | n/a |
-| `complex-qwen` | claude / `claude-opus-5-5` (worktree `../studentassistant-claude`) | 800k, $20, 150M | redispatched on Qwen |
-| `complex-claude` | claude / `claude-opus-5-5` | 800k, $20, 150M | redispatched on Qwen |
+| `complex-qwen` | claude / `claude-sonnet-5-5` (worktree `../studentassistant-claude`) | 800k, $20, 150M | redispatched on Qwen |
+| `complex-claude` | claude / `claude-sonnet-5-5` | 800k, $20, 150M | redispatched on Qwen |
 
 The class names are kept because issue bodies reference them. `mechanical-qwen` is the first
 worker class on the qwen backend, so it also names the model a Qwen quota fallback launches with
@@ -126,7 +126,8 @@ claude, `qwen_fallback_eligible: true`) carries the harder critical-path backend
 Everything else stays on `mechanical-qwen`/`complex-qwen`. The refiner's extras
 (`config/agent_prompts/refiner.md`, updated with the human's authorization) route complex tasks in
 those five modules to `complex-claude` and everything else to the Qwen classes. Every Claude class
-and role runs `claude-opus-5-5` (human's decision, 2026-09-24).
+and role ran `claude-opus-5-5` (human's decision, 2026-09-24); since 2026-09-29 (the human) they
+all run `claude-sonnet-5-5`.
 
 ## Starting the agents
 

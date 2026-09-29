@@ -1,8 +1,8 @@
 """Incorporating a few sources into the notes, one small editor request at a time (#326).
 
 The student asks in the chat to incorporate a few pages ("incorpora la página 3", "incorpora las
-dos últimas"), and each request is one small, separate `editor` call (Opus) on the current notes
-plus **only** those sources -- never the whole topic at once: Opus is slow and worse with large
+dos últimas"), and each request is one small, separate `editor` call on the current notes
+plus **only** those sources -- never the whole topic at once: the model is slow and worse with large
 batches. "Prepárame el tema", when asked, runs the same incorporation over the pending sources in
 sequential small batches (`incorporate_pending`).
 

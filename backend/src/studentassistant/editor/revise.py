@@ -1,6 +1,6 @@
 """Revising the notes in conversation: a chat reply plus section edit ops, validated and committed.
 
-The student talks to the editor (`editor` role, Opus) about notes it already wrote -- "demasiado
+The student talks to the editor (`editor` role) about notes it already wrote -- "demasiado
 resumido", "pon un ejemplo", "no inventes", "usa la explicación del libro" -- and each turn is:
 
 1. **The reply**: the editor first writes a Spanish answer as plain text, which streams to the
@@ -1348,7 +1348,7 @@ async def _crop_change(
     is not `retry_target`) come before any crop. A crop that fails is `crop.error` (Spanish) with
     no value: the turn ends there. A crop made in an earlier attempt of the turn for the same
     source and region is reused. A retry (#520) is located by `crop.retry_client` (the
-    `[editor] crop_retry_role`, Opus by default, over `client`'s transport) with the student's
+    locator role at `[editor] crop_retry_effort`, over `client`'s transport) with the student's
     `feedback`; the crop it replaces is retired when the change is applied (`_apply`).
     """
     source, region = request.source.strip(), request.region.strip()
@@ -1475,7 +1475,7 @@ async def revise_notes(
     one the notes cite or the selection holds, and the anchor must apply, else the call is sent
     back like a failing change. The crop itself (`crop.crop_source_image`, through
     `crop_client`, role `[editor] crop_locator_role`, and `settings`; a retry of the previous
-    turn's crop, `retry_of`, is located by `[editor] crop_retry_role`, #520) runs outside
+    turn's crop, `retry_of`, is located at `[editor] crop_retry_effort`, #520) runs outside
     `apply_edits`; the stored crop is then inserted, linked and cited «Imagen recortada N», by
     an ordinary edit op checked and applied like any other, its files committed with the notes
     (a retry's replaced crop retired in the same commit). A crop that fails (the source is

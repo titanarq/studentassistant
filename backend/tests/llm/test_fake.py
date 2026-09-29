@@ -27,7 +27,7 @@ def test_replays_text_tool_calls_and_usage_in_order(settings: Settings) -> None:
         assert first.text == "Hola"
         assert first.usage.input_tokens == 10
         assert first.stop_reason == "end_turn"
-        assert first.model == "claude-sonnet-5"
+        assert first.model == "claude-sonnet-5-5"
 
         second = await client.create([{"role": "user", "content": "Tema"}])
         assert second.text == "Vale."
@@ -55,7 +55,7 @@ def test_records_model_effort_system_messages_and_tools(settings: Settings) -> N
     )
 
     (request,) = fake.requests
-    assert request.model == "claude-opus-5-5"
+    assert request.model == "claude-sonnet-5-5"
     assert request.effort == "high"
     assert request.role == "editor"
     assert request.system[0]["text"] == "Eres el editor."

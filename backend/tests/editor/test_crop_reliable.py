@@ -127,18 +127,23 @@ def test_correction_moves_the_named_sides_by_a_step_of_the_box() -> None:
 # -- the locator role ------------------------------------------------------------------------------
 
 
-def test_the_locator_role_is_configurable_and_the_retry_uses_its_own() -> None:
+def test_the_locator_role_is_configurable_and_the_retry_raises_its_effort() -> None:
     fake = FakeClaude()
-    assert locator_role() == "observer" and locator_role(quality="high") == "editor"
-    assert crop_client(transport=fake).role == "observer"
-    opus = Settings.model_validate({"editor": {"crop_locator_role": "editor"}})
-    client = crop_client(settings=opus, transport=fake)
-    assert client.role == "editor" and client.model == opus.llm.roles.editor.model
-    sonnet_retry = Settings.model_validate({"editor": {"crop_retry_role": "observer"}})
-    assert crop_client(settings=sonnet_retry, transport=fake, quality="high").role == "observer"
+    assert locator_role() == "observer" and locator_role(quality="high") == "observer"
+    standard = crop_client(transport=fake)
+    assert standard.role == "observer" and standard.effort == "medium"
+    editor = Settings.model_validate({"editor": {"crop_locator_role": "editor"}})
+    client = crop_client(settings=editor, transport=fake)
+    assert client.role == "editor" and client.model == editor.llm.roles.editor.model
+    # The retry is the same role and model at `[editor] crop_retry_effort`.
+    high = Settings.model_validate({"editor": {"crop_retry_effort": "max"}})
+    retry = crop_client(settings=high, transport=fake, quality="high")
+    assert (retry.role, retry.model, retry.effort) == ("observer", standard.model, "max")
+    assert high.llm.roles.observer.effort == "medium"
     # The retry client keeps the given client's transport (the app's own) and ledger.
     retried = retry_client(crop_client(transport=fake))
-    assert retried.role == "editor" and retried.transport is fake
+    assert retried.role == "observer" and retried.effort == "xhigh"
+    assert retried.model == standard.model and retried.transport is fake
 
 
 # -- the two passes and the check ------------------------------------------------------------------
@@ -275,7 +280,7 @@ def test_a_retry_passes_the_feedback_and_the_earlier_box_and_is_recorded(
         )
     )
 
-    assert {r.role for r in fake.requests} == {"editor"}
+    assert {(r.role, r.effort) for r in fake.requests} == {("observer", "xhigh")}
     coarse, zoomed, checked = fake.requests
     assert "the student said: le falta la flecha de la derecha" in _text(coarse)
     assert "x0=0.2300 y0=0.2300 x1=0.7700 y1=0.7700" in _text(coarse)  # the first crop's box
@@ -285,7 +290,8 @@ def test_a_retry_passes_the_feedback_and_the_earlier_box_and_is_recorded(
     assert meta["retry_of"] == first.path
     assert meta["feedback"] == "le falta la flecha de la derecha"
     assert meta["locator"] == {
-        "role": "editor",
+        "role": "observer",
+        "effort": "xhigh",
         "coarse_bbox": [0.1, 0.1, 0.9, 0.9],
         "check": "complete",
     }

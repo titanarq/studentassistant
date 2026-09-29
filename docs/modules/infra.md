@@ -122,7 +122,7 @@ other route of the phone<->backend contract lands there later.
 `~/.config/studentassistant/config.toml`, and `SA_CONFIG` points it at another file -- which is
 what the tests do, so no test ever touches `~/.config/studentassistant` or a real vault. On top of
 the file, every field is also an environment variable with the `SA_*` prefix, nesting levels
-separated by `__` (`SA_SERVER__PORT=9000`, `SA_LLM__ROLES__EDITOR__MODEL=claude-opus-5-5`). The
+separated by `__` (`SA_SERVER__PORT=9000`, `SA_LLM__ROLES__EDITOR__MODEL=claude-sonnet-5-5`). The
 environment always wins over the file.
 
 The defaults live here and nowhere else:
@@ -133,8 +133,7 @@ The defaults live here and nowhere else:
 | `server.port` | `8765` |
 | `vault.path` | `~/StudentAssistant/vault`, `~` expanded (ADR-0002) |
 | `vault.size_warning_mb` | `1024`: `doctor` warns once the vault (files + git objects) is bigger |
-| `llm.roles.observer.model`, `llm.roles.transcriber.model` | `claude-sonnet-5` (ADR-0004) |
-| `llm.roles.editor.model`, `llm.roles.generator.model` | `claude-opus-5-5` (ADR-0004) |
+| `llm.roles.<observer\|transcriber\|editor\|generator>.model` | `claude-sonnet-5-5`, the only model (ADR-0004) |
 | `llm.roles.observer.turn_timeout_seconds`, `llm.roles.observer.max_attempts` | `90` s, `2`: a hung observer / request-detection call cannot stall a live session (#409) |
 | `llm.roles.<transcriber\|editor\|generator>.turn_timeout_seconds`, `.max_attempts` | unset: the backend's turn timeout (`llm.claude_code.turn_timeout_seconds`, `600`) and `llm.max_attempts` (`4`); see `docs/modules/llm.md` |
 | `eval.path` | `~/StudentAssistant/evals`: the eval set, outside the code repo and the vault |

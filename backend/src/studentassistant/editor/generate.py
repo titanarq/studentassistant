@@ -1,4 +1,4 @@
-"""'Prepárame el tema': the `editor` role (Opus) writes the first version of a topic's notes.
+"""'Prepárame el tema': the `editor` role writes the first version of a topic's notes.
 
 `generate_notes` assembles the topic (`inputs.assemble_input`), asks the editor for the whole of
 `notes/apuntes.md` and checks the answer with the provenance validator (ADR-0005). A document that

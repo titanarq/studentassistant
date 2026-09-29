@@ -23,7 +23,7 @@ def entry(subject: str, topic: str, usd: float | None, **overrides: object) -> L
     fields: dict[str, object] = {
         "time": datetime.now(UTC),
         "role": "editor",
-        "model": "claude-opus-5-5",
+        "model": "claude-sonnet-5-5",
         "input_tokens": 1_000,
         "output_tokens": 100,
         "cache_read_tokens": 50,

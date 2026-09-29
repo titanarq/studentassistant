@@ -1,7 +1,7 @@
 """Doubts resolution: the editor settles what the sources answer and asks the student the rest.
 
 After the notes are written, the observer's pending doubts (`observer.pending`) are worked
-through with the `editor` role (Opus) in two steps:
+through with the `editor` role in two steps:
 
 - **Review** (`review_doubts`, tool `resolve_doubts`): one decision per open doubt. The editor
   *auto-resolves* a doubt only with evidence -- at least one source of the topic's catalogue (or a

@@ -5,7 +5,7 @@
 ## Responsibility
 - Notes format: parser/validator of `apuntes.md` (anchors, provenance footnotes, `[^ia]`,
   fidelity mode).
-- Generation ("prepárame el tema", role `editor`, Opus): from page transcriptions (+ images for
+- Generation ("prepárame el tema", role `editor`): from page transcriptions (+ images for
   schemes), the transcript grouped by section, other sources, pending items, digest and the
   subject style guide.
 - Edit loop: chat reply + section-level edit ops, validated, applied, committed with a summary;
@@ -156,7 +156,7 @@ Fixtures: `backend/tests/fixtures/notes/apuntes.md` (every source kind) and `amp
 `await generate_notes(vault, subject_slug, topic_slug, *, client, sync, digest=None,
 on_event=None, confirm_over_cap=False, clock=..., max_page_images=20,
 max_attachment_bytes=24 MiB) -> GenerationResult` writes the topic's notes with the `editor` role:
-`client` is `get_client("editor", ledger=LedgerBinding(vault, subject, topic))` (Opus from
+`client` is `get_client("editor", ledger=LedgerBinding(vault, subject, topic))` (the configured model from
 `[llm.roles.editor]`; tests pass `FakeClaude().client("editor")`), `sync` the vault's `GitSync`,
 `digest(vault, subject, topic) -> str | None` reads the topic digest (`state/digest.md`; the
 server passes `observer.topic_digest`), `on_event(kind, payload)` an async sink for the `notes.generated` event.
@@ -616,7 +616,7 @@ mode, and the student's message.
 ### Incorporating a few sources per request -- `incorporate.py`
 Incorporation into the document is iterative and asked in the chat (epic #311, #326): "incorpora
 la página 3", "incorpora las dos últimas". Each request is one small, separate `editor` call
-(Opus, prompt `editor_incorporate`) on the current notes plus **only** those sources -- never the
+(prompt `editor_incorporate`) on the current notes plus **only** those sources -- never the
 whole topic at once. Recognising the request and resolving which pages it means is the chat
 router's (#327); it calls the functions below (the server's `NotesGenerator.incorporate`).
 - **States**: `source_status(vault, subject, topic) -> list[SourceStatus]` (blocking, reads only;
@@ -853,7 +853,7 @@ ejemplo", "¿y eso por qué?" -- and the editor answers from what the topic alre
   esta definición") is answered "Eso se cambia en Construir: pídeselo allí al asistente." (prompt
   rule): its only tool is `report_feedback` (app feedback, `feedback.py`, #472, below), nothing
   under `notes/` is written, no notes commit or tag. The client
-  is the caller's: the server passes the role `[editor] study_chat_role` names (`editor`, Opus, by
+  is the caller's: the server passes the role `[editor] study_chat_role` names (`editor`, by
   default; `observer`, Sonnet, to compare), and the ledger records it. Each style is given only its
   own earlier turns as history (the voice tutor and the study chat are two conversations in one
   file); the `context` record carries `style`.
@@ -1037,8 +1037,8 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   fails validation and is re-asked by `structured` itself, never used raw. The prompt
   `editor_crop` asks for a **tight** box around only the requested content, excluding blank
   margins, the desk/background and fingers holding the page, and explains the zoomed second pass
-  and the student's complaint. The role is `[editor] crop_locator_role` (`observer`, Sonnet, by
-  default; `editor`, Opus, optional; `locator_role(settings, quality)`,
+  and the student's complaint. The role is `[editor] crop_locator_role` (`observer` by
+  default; `editor` optional; `locator_role(settings, quality)`,
   `crop_client(settings=..., transport=..., ledger=..., quality="standard")`; no model id here).
 - **Two passes, a check, a margin** (#520, `locate_crop(client, decoded, media_type, description,
   *, settings, feedback=None, previous=None) -> LocatedCrop`): (1) a **coarse** box on the whole
@@ -1064,8 +1064,9 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
 - **Redone after the student's complaint** (#520): `feedback` (the student's words) and `retry_of`
   (the vault-relative path of the wrong crop) are added to every call of the pipeline as
   guidance, plus the wrong crop's `bbox` on the coarse pass when it was cut from the same page;
-  without `client` the locator is `crop_client(quality="high")`, i.e. `[editor] crop_retry_role`
-  (`editor`, Opus, by default); `retry_client(client, settings=...)` builds that role over a
+  without `client` the locator is `crop_client(quality="high")`, the same locator role and
+  model at `[editor] crop_retry_effort` (`xhigh` by default: a higher effort, not another model,
+  Sonnet 5.5 being the only one, ADR-0004); `retry_client(client, settings=...)` builds it over a
   given client's transport and ledger (the app's own).
 - **Cleanup** (`clean_crop(image, media_type, box, *, min_sharpness, jpeg_quality) -> CleanCrop`,
   and `clean_crop_async`, the same in a worker thread): pure, deterministic `numpy`/`cv2` code
@@ -1149,7 +1150,7 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   image. `retry_of` must be the crop of the latest notes-changing turn (a revision or an
   incorporation), applied and not undone (`_retry_target`), else it is sent back like any
   invalid call. The crop is redone by `crop_source_image(feedback=..., retry_of=...)` with
-  `retry_client(crop_client)` (`[editor] crop_retry_role`, Opus by default, over the app's
+  `retry_client(crop_client)` (the locator role at `[editor] crop_retry_effort`, over the app's
   transport). The wrong crop is retired through the undo's own retirement
   (`_retire_crop_files`, shared with `_retire_undone_crop`: kept while the edited notes still
   cite it; identity-checked `vault.remove_source`, else an orphan sidecar) **inside the retry's
@@ -1158,10 +1159,10 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   any crop turn's. `CropRef.retry_of` names the replaced crop in the record, the event and the
   history.
 - Tests: `tests/editor/test_crop_reliable.py` (#520) covers the geometry (`pad_box` clamping,
-  `zoom_window`, `map_from_window`, `correct_box`), the configurable locator and retry roles,
+  `zoom_window`, `map_from_window`, `correct_box`), the configurable locator role and retry effort,
   the two passes with a complete check, one correction round never re-checked, no verdict, the
   single-pass settings, and a retry's feedback, earlier box and sidecar; the retry from the chat
-  (Opus locator, the feedback, the wrong crop retired in the same commit and brought back by
+  (locator at the retry effort, the feedback, the wrong crop retired in the same commit and brought back by
   undo, kept while still cited, a `retry_of` refused, the prompt) is in
   `tests/editor/test_revise_crop.py`, whose other tests and `test_crop_store.py` run the
   single-pass settings. `FakeClaude` scripts the box (valid, out of bounds and re-asked, refusal); fixture images

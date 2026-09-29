@@ -38,7 +38,7 @@ def test_declining_the_estimate_calls_nobody(evals: Path, monkeypatch: pytest.Mo
     result = CliRunner().invoke(cli, ["eval", "run"], input="n\n")
     assert result.exit_code == 1, result.output
     assert "Coste estimado" in result.output and "Total estimado:" in result.output
-    assert "observer (claude-sonnet-5)" in result.output
+    assert "observer (claude-sonnet-5-5)" in result.output
     assert "Cancelado" in result.output
     assert not (evals / "runs").exists()
 

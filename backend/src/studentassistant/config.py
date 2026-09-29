@@ -2,7 +2,7 @@
 
 The TOML file is `~/.config/studentassistant/config.toml` unless `SA_CONFIG` points somewhere else.
 Every field can also be set through an `SA_`-prefixed environment variable, nesting levels separated
-by `__` (`SA_SERVER__PORT=9000`, `SA_LLM__ROLES__EDITOR__MODEL=claude-opus-5-5`); the environment
+by `__` (`SA_SERVER__PORT=9000`, `SA_LLM__ROLES__EDITOR__MODEL=claude-sonnet-5-5`); the environment
 always wins over the file. Model ids, paths and defaults live here and nowhere else.
 """
 
@@ -39,9 +39,9 @@ DEFAULT_EVAL_PATH = Path("~/StudentAssistant/evals")
 # The API key file's name when `llm.api_key_file` is unset: next to the configuration file.
 DEFAULT_API_KEY_FILE_NAME = "secrets.env"
 
-# Claude roles: the observer reads the live session, the editor and the generators write (ADR-0004).
-FAST_MODEL = "claude-sonnet-5"
-CAPABLE_MODEL = "claude-opus-5-5"
+# Claude Sonnet 5.5 is the only model, in every role (ADR-0004, human decision 2026-09-29). The
+# observer reads the live session, the editor and the generators write; the roles differ by effort.
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 DEFAULT_MAX_CAPTURE_IMAGE_BYTES = 15 * 1024 * 1024
@@ -191,7 +191,7 @@ def check_repo_name(repo: str) -> str:
     return repo
 
 
-# Effort is always sent explicitly: Opus 5.5 would otherwise default to `medium` (ADR-0004).
+# Effort is always sent explicitly: Sonnet 5.5 would otherwise default to `high` (ADR-0004).
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 FAST_EFFORT: Effort = "medium"
 CAPABLE_EFFORT: Effort = "high"
@@ -228,7 +228,7 @@ class LlmRoleSettings(BaseModel):
 # One subclass per role, so a partial `[llm.roles.<role>]` table (or `SA_LLM__ROLES__...` variable)
 # keeps that role's defaults for the keys it does not set.
 class ObserverRoleSettings(LlmRoleSettings):
-    model: str = FAST_MODEL
+    model: str = DEFAULT_MODEL
     effort: Effort = FAST_EFFORT
     max_tokens: int = Field(default=FAST_MAX_TOKENS, gt=0)
     turn_timeout_seconds: float | None = Field(default=DEFAULT_OBSERVER_TURN_TIMEOUT_SECONDS, gt=0)
@@ -236,17 +236,17 @@ class ObserverRoleSettings(LlmRoleSettings):
 
 
 class TranscriberRoleSettings(LlmRoleSettings):
-    model: str = FAST_MODEL
+    model: str = DEFAULT_MODEL
     effort: Effort = FAST_EFFORT
     max_tokens: int = Field(default=FAST_MAX_TOKENS, gt=0)
 
 
 class EditorRoleSettings(LlmRoleSettings):
-    model: str = CAPABLE_MODEL
+    model: str = DEFAULT_MODEL
 
 
 class GeneratorRoleSettings(LlmRoleSettings):
-    model: str = CAPABLE_MODEL
+    model: str = DEFAULT_MODEL
 
 
 class LlmRolesSettings(BaseModel):
@@ -268,19 +268,13 @@ class LlmPrice(BaseModel):
     cache_read_per_mtok: float = Field(ge=0)
 
 
-# Anthropic list prices of the two default models (USD per MTok): cache writes are 1.25x input
+# Anthropic list prices of the default model (USD per MTok): cache writes are 1.25x input
 # (5-minute TTL), cache reads as published. A model missing here is recorded with no price.
 DEFAULT_LLM_PRICES: dict[str, dict[str, float]] = {
-    FAST_MODEL: {
+    DEFAULT_MODEL: {
         "input_per_mtok": 2.0,
         "output_per_mtok": 10.0,
         "cache_write_per_mtok": 2.5,
-        "cache_read_per_mtok": 0.2,
-    },
-    CAPABLE_MODEL: {
-        "input_per_mtok": 4.0,
-        "output_per_mtok": 20.0,
-        "cache_write_per_mtok": 5.0,
         "cache_read_per_mtok": 0.2,
     },
 }
@@ -290,8 +284,8 @@ def _default_prices() -> dict[str, LlmPrice]:
     return {model: LlmPrice(**price) for model, price in DEFAULT_LLM_PRICES.items()}
 
 
-# Claude's server-side web search and web fetch tools: the dynamic-filtering versions (Opus 4.6+,
-# Sonnet 4.6+), and the web search price (USD per 1,000 searches).
+# Claude's server-side web search and web fetch tools: the dynamic-filtering versions (Claude 4.6+
+# models, Sonnet 5.5 included), and the web search price (USD per 1,000 searches).
 DEFAULT_WEB_SEARCH_TOOL = "web_search_20260209"
 DEFAULT_WEB_FETCH_TOOL = "web_fetch_20260209"
 DEFAULT_WEB_SEARCH_USD_PER_THOUSAND = 10.0
@@ -466,7 +460,7 @@ DEFAULT_PDF_THUMBNAIL_QUALITY = 85
 DEFAULT_PDF_TRANSCRIPTION_LONG_EDGE = 1568
 DEFAULT_PDF_TRANSCRIPTION_QUALITY = 90
 # A capture keeps only its chosen still, downscaled to this long edge (never enlarged), and its page
-# image. Opus 5.5 / Sonnet 5 read images up to a 2576 px long edge (at most ~4784 image tokens;
+# image. Sonnet 5.5 reads images up to a 2576 px long edge (at most ~4784 image tokens;
 # tokens ~= w*h/750). 2000 px on an A4 page is ~170 dpi, enough for handwriting and small diagram
 # labels, at ~3.8k tokens and ~0.5-0.8 MB per JPEG at q85; 2576 px costs ~25 % more tokens for
 # marginal gain, 1600 px (~137 dpi) risks losing small diagram labels.
@@ -639,10 +633,10 @@ class EditorSettings(BaseModel):
     """The tutor-editor (`[editor]`, `SA_EDITOR__*`)."""
 
     # The role (`[llm.roles.<role>]`) the study screen's written question chat (#334) uses:
-    # `editor` (Opus, faithful to the notes) by default; `observer` (Sonnet) to compare.
+    # `editor` (faithful to the notes) by default; `observer` to compare.
     study_chat_role: StudyChatRole = "editor"
     # Doubts prepared for the notes viewer (#325, #516, `server/doubt_chat.py`): after each editor
-    # write the unreviewed open doubts are reviewed by the editor (an Opus call; the sources may
+    # write the unreviewed open doubts are reviewed by the editor (its own call; the sources may
     # settle them) and `doubts.marked` announced; they are marked in the notes and shown in the
     # chat only when the student opens one. Off: nothing is reviewed; the doubts API still works.
     doubts_in_chat: bool = True
@@ -660,10 +654,11 @@ class EditorSettings(BaseModel):
     # keep as a capture is too blurry to cite.
     crop_min_sharpness: float = Field(default=DEFAULT_TRIAGE_MIN_SHARPNESS, ge=0)
     # The role (`[llm.roles.<role>]`) that locates and verifies a crop's region (#520):
-    # `observer` (Sonnet) by default, `editor` (Opus) for more care at more cost.
+    # `observer` by default, `editor` for more care at more cost (same model, other effort).
     crop_locator_role: CropLocatorRole = "observer"
-    # The locator of a crop redone because the student said the previous one was wrong (#520).
-    crop_retry_role: CropLocatorRole = "editor"
+    # The locator of a crop redone because the student said the previous one was wrong (#520): the
+    # locator role's model at this higher effort (Sonnet 5.5 is the only model, ADR-0004).
+    crop_retry_effort: Effort = "xhigh"
     # Two-pass localization (#520): the coarse box plus this margin (a fraction of the page's
     # width/height on each side) is cut from the full-resolution page and the box refined on it.
     # Off: the coarse box is used as it is.

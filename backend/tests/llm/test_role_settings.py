@@ -32,10 +32,10 @@ def config_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_role_defaults(config_toml: Path) -> None:
     roles = Settings().llm.roles
 
-    assert (roles.observer.model, roles.observer.effort) == ("claude-sonnet-5", "medium")
-    assert (roles.transcriber.model, roles.transcriber.effort) == ("claude-sonnet-5", "medium")
-    assert (roles.editor.model, roles.editor.effort) == ("claude-opus-5-5", "high")
-    assert (roles.generator.model, roles.generator.effort) == ("claude-opus-5-5", "high")
+    assert (roles.observer.model, roles.observer.effort) == ("claude-sonnet-5-5", "medium")
+    assert (roles.transcriber.model, roles.transcriber.effort) == ("claude-sonnet-5-5", "medium")
+    assert (roles.editor.model, roles.editor.effort) == ("claude-sonnet-5-5", "high")
+    assert (roles.generator.model, roles.generator.effort) == ("claude-sonnet-5-5", "high")
     assert roles.observer.max_tokens == 16_000
     assert roles.editor.max_tokens == 64_000
     assert Settings().llm.max_attempts == 4
@@ -55,7 +55,7 @@ def test_a_partial_role_table_keeps_that_roles_other_defaults(config_toml: Path)
     observer = Settings().llm.roles.observer
 
     assert observer.effort == "low"
-    assert observer.model == "claude-sonnet-5"
+    assert observer.model == "claude-sonnet-5-5"
     assert observer.max_tokens == 16_000
 
 
@@ -68,7 +68,7 @@ def test_env_vars_set_effort_and_max_tokens(
     roles = Settings().llm.roles
 
     assert roles.editor.effort == "xhigh"
-    assert roles.editor.model == "claude-opus-5-5"
+    assert roles.editor.model == "claude-sonnet-5-5"
     assert roles.observer.max_tokens == 4000
 
 
@@ -105,7 +105,7 @@ def test_turn_timeout_and_attempts_from_toml(config_toml: Path) -> None:
     roles = Settings().llm.roles
 
     assert (roles.observer.turn_timeout_seconds, roles.observer.max_attempts) == (45.0, 3)
-    assert roles.observer.model == "claude-sonnet-5"
+    assert roles.observer.model == "claude-sonnet-5-5"
     assert (roles.editor.turn_timeout_seconds, roles.editor.max_attempts) == (900.0, None)
     assert roles.generator.turn_timeout_seconds is None
 

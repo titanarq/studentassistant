@@ -1,4 +1,4 @@
-"""'Prepárame el tema' (`editor.generate`): FakeClaude as Opus over the fixture topic."""
+"""'Prepárame el tema' (`editor.generate`): FakeClaude as the editor over the fixture topic."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def test_valid_notes_are_written_committed_and_tagged_v1(
     assert tagged == valid_notes(topic.session)
     assert "Apuntes v1" in _git(topic.vault, "log", "-1", "--format=%s", result.tag)
     assert events == [(NOTES_GENERATED_KIND, result.model_dump(mode="json"))]
-    assert result.model == "claude-opus-5-5"
+    assert result.model == "claude-sonnet-5-5"
 
 
 def test_the_request_uses_the_editor_role_and_the_generate_prompt(
@@ -134,7 +134,7 @@ def test_the_request_uses_the_editor_role_and_the_generate_prompt(
     _run(topic, sync, fake)
 
     [request] = fake.requests
-    assert request.role == "editor" and request.model == "claude-opus-5-5"
+    assert request.role == "editor" and request.model == "claude-sonnet-5-5"
     assert request.effort == "high" and request.max_tokens == 64000
     prompt = load_prompt("editor_generate")
     assert request.prompt_hash == prompt.hash
@@ -213,7 +213,7 @@ def test_the_conversation_is_persisted_without_the_attachments(
         NOTES_GENERATED_KIND,
     ]
     context = records[0]
-    assert context.model == "claude-opus-5-5"
+    assert context.model == "claude-sonnet-5-5"
     assert context.prompt_hash == load_prompt("editor_generate").hash
     assert context.detail is not None and context.detail["reason"] == "generate"
     assert context.detail["images"] == ["sources/notes/page-002.jpg"]
@@ -236,7 +236,7 @@ def test_every_call_is_recorded_in_the_topics_ledger(topic: GenerateTopic, sync:
     _run(topic, sync, fake, ledger=binding)
 
     entries = read_ledger(topic.vault, topic.subject, topic.topic)
-    assert [(e.role, e.model) for e in entries] == [("editor", "claude-opus-5-5")] * 2
+    assert [(e.role, e.model) for e in entries] == [("editor", "claude-sonnet-5-5")] * 2
 
 
 def test_a_reached_cost_cap_needs_confirmation_and_writes_nothing(

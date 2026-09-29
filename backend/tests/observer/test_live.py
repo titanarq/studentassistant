@@ -159,7 +159,7 @@ async def test_two_segments_send_one_batch_whose_ops_are_published(
     assert len(fake.requests) == 1
     request = fake.requests[0]
     assert request.role == "observer"
-    assert request.model == "claude-sonnet-5"
+    assert request.model == "claude-sonnet-5-5"
     assert request.tool_choice == {"type": "auto"}
     assert [tool["name"] for tool in request.tools] == [TOOL_NAME]
     assert request.tools[0]["strict"] is True

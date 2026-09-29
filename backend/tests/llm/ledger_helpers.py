@@ -8,7 +8,7 @@ from studentassistant.config import LlmPrice, Settings
 from studentassistant.llm import LedgerBinding
 from studentassistant.vault import LedgerEntry, Vault, create_subject, create_topic
 
-MODEL = "claude-sonnet-5"
+MODEL = "claude-sonnet-5-5"
 # $1 per million of every kind: 1_000_000 input tokens cost exactly $1.
 FLAT = LlmPrice(
     input_per_mtok=1.0, output_per_mtok=1.0, cache_write_per_mtok=1.0, cache_read_per_mtok=1.0
@@ -34,7 +34,7 @@ def capped_settings(
         update={
             "max_usd_per_session": per_session,
             "max_usd_per_day": per_day,
-            "prices": {**base.llm.prices, MODEL: FLAT, "claude-opus-5-5": FLAT},
+            "prices": {**base.llm.prices, MODEL: FLAT},
         }
     )
     return base.model_copy(update={"llm": llm})
