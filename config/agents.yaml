@@ -148,7 +148,9 @@ classes:
   # 2026-09-25 (evening, the human): both worker backends in use. mechanical-qwen runs on Qwen
   # again (its original ceilings) and is also the first worker class on the qwen backend, so it
   # names the model a Qwen quota fallback launches with (`agent_os.lib backend-model qwen`).
-  # complex-qwen stays on Claude Opus with Qwen as the quota fallback, like complex-claude. The
+  # 2026-09-29 (the human): every Claude class (workers, planner, validator, refiner) runs on
+  # `claude-sonnet-5-5`; Opus and older Sonnet are no longer used. Qwen classes are unchanged.
+  # complex-qwen stays on Claude with Qwen as the quota fallback, like complex-claude. The
   # class NAMES are kept because issue bodies reference them in their `<!-- budget: <class> -->`.
   mechanical-qwen:
     backend: qwen
@@ -161,7 +163,7 @@ classes:
     qwen_fallback_eligible: false
   complex-qwen:
     backend: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     max_context: 800000
     max_cost_usd: 20.0
     max_total_tokens: 150000000
@@ -174,7 +176,7 @@ classes:
   # it on Qwen (qwen_fallback_eligible), so a spent window never stalls the critical path.
   complex-claude:
     backend: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     max_context: 800000
     max_cost_usd: 20.0
     max_total_tokens: 150000000
@@ -184,7 +186,7 @@ classes:
   planner:
     role: planner
     backend: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     max_context: 40000
     max_cost_usd: 2.0
     max_total_tokens: 2000000
@@ -198,7 +200,7 @@ classes:
   validator:
     role: validator
     backend: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     max_context: 200000
     max_cost_usd: 5.0
     max_total_tokens: 10000000
@@ -212,7 +214,7 @@ classes:
   refiner:
     role: refiner
     backend: claude
-    model: claude-opus-5-5
+    model: claude-sonnet-5-5
     max_context: 200000
     max_cost_usd: 5.0
     max_total_tokens: 10000000
