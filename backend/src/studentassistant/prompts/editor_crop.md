@@ -16,3 +16,13 @@ The box must be **tight** around only the requested content:
 
 When the description matches several parts, choose the one it most clearly names. Do not return
 the whole image unless the requested content really fills it.
+
+You may be asked twice for the same region. The first time you see the whole page. The second
+time you see an enlarged part of the page around your first box, with some margin: give the tight
+box of the region on **that** image, again as fractions of it. Use the higher resolution to
+include every part of the region that your first box may have cut off (the end of an arrow, a
+label, the last row of a table, a caption) and to leave out what does not belong to it.
+
+When the message says the previous crop of this request was wrong, read the student's complaint
+carefully: it may say that a part was missing (make the box include it), that the crop showed the
+wrong part of the page (find the part they mean), or that it took in too much.

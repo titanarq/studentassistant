@@ -628,6 +628,7 @@ class GeneratorsSettings(BaseModel):
 
 
 StudyChatRole = Literal["editor", "observer"]
+CropLocatorRole = Literal["observer", "editor"]
 """Which Claude role answers the study screen's question chat (`[editor] study_chat_role`)."""
 
 
@@ -658,6 +659,22 @@ class EditorSettings(BaseModel):
     # The same scale and default as capture triage's `triage_min_sharpness`: a crop too blurry to
     # keep as a capture is too blurry to cite.
     crop_min_sharpness: float = Field(default=DEFAULT_TRIAGE_MIN_SHARPNESS, ge=0)
+    # The role (`[llm.roles.<role>]`) that locates and verifies a crop's region (#520):
+    # `observer` (Sonnet) by default, `editor` (Opus) for more care at more cost.
+    crop_locator_role: CropLocatorRole = "observer"
+    # The locator of a crop redone because the student said the previous one was wrong (#520).
+    crop_retry_role: CropLocatorRole = "editor"
+    # Two-pass localization (#520): the coarse box plus this margin (a fraction of the page's
+    # width/height on each side) is cut from the full-resolution page and the box refined on it.
+    # Off: the coarse box is used as it is.
+    crop_refine: bool = True
+    crop_zoom_margin: float = Field(default=0.1, ge=0, le=0.5)
+    # Verification (#520): the model sees the cut and says whether it is complete or which sides
+    # to expand/shrink; one correction round moves each such side by this fraction of the box.
+    crop_verify: bool = True
+    crop_correction_step: float = Field(default=0.25, gt=0, le=1)
+    # The final box is padded by this fraction of the page's width/height, clamped to the image.
+    crop_margin: float = Field(default=0.02, ge=0, le=0.2)
 
 
 class ObserverSettings(BaseModel):

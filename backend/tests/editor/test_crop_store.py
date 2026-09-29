@@ -46,6 +46,9 @@ from studentassistant.vault import (
 BOX = {"x0": 0.25, "y0": 0.25, "x1": 0.75, "y1": 0.75}
 ADDED_AT = datetime(2026, 9, 28, 10, 0, tzinfo=UTC)
 REGION = "solo el diagrama del centro"
+# The single-pass crop these tests were written for: one box, no zoom, no check, no margin
+# (the two-pass flow is covered in `test_crop_reliable.py`, #520).
+SINGLE_PASS = {"crop_refine": False, "crop_verify": False, "crop_margin": 0}
 
 
 def _diagram() -> np.ndarray:
@@ -83,6 +86,7 @@ def _crop(
             topic,
             page,
             region,
+            settings=Settings.model_validate({"editor": SINGLE_PASS}),
             client=crop_client(transport=fake),
             added_at=ADDED_AT,
         )
@@ -188,7 +192,7 @@ def test_blurry_crop_stores_nothing(tmp_vault: Vault) -> None:
 def test_threshold_comes_from_editor_settings(tmp_vault: Vault) -> None:
     subject, topic = _topic(tmp_vault)
     page = _page(tmp_vault, subject, topic, _jpeg(_diagram()))
-    settings = Settings.model_validate({"editor": {"crop_min_sharpness": 1e12}})
+    settings = Settings.model_validate({"editor": {**SINGLE_PASS, "crop_min_sharpness": 1e12}})
     fake = FakeClaude().reply_tool(TOOL_NAME, BOX)
     with pytest.raises(BlurryCropError):
         asyncio.run(

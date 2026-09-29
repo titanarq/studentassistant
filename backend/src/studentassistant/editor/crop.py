@@ -1,12 +1,22 @@
-"""Crop one region of a stored page image: Sonnet locates the region (`locate_region`).
+"""Crop one region of a stored page image: Claude locates the region (`locate_region`).
 
-The student asks for only part of a page ("solo el diagrama de la página 3"); Claude (role
-`observer`, Sonnet by default -- no model id here) receives the page as an image content block and
-the description, and answers through the strict tool `crop_region` (`llm.structured`) with a
-`BoundingBox`: four fractions of the image's width/height in `[0, 1]`, `x0 < x1`, `y0 < y1`. A box
-out of these bounds fails validation and is re-asked by `structured` itself, never used raw. The
-prompt (`prompts/editor_crop.md`) asks for a tight box that leaves out blank margins, the desk and
-fingers holding the page: that is the whole reframing step.
+The student asks for only part of a page ("solo el diagrama de la página 3"); Claude (the role
+`[editor] crop_locator_role`, `observer`/Sonnet by default -- no model id here) receives the page
+as an image content block and the description, and answers through the strict tool `crop_region`
+(`llm.structured`) with a `BoundingBox`: four fractions of the image's width/height in `[0, 1]`,
+`x0 < x1`, `y0 < y1`. A box out of these bounds fails validation and is re-asked by `structured`
+itself, never used raw. The prompt (`prompts/editor_crop.md`) asks for a tight box that leaves out
+blank margins, the desk and fingers holding the page.
+
+Reliability (#520, `locate_crop`): that first box is only coarse. The coarse box plus
+`[editor] crop_zoom_margin` is cut from the full-resolution decoded page (`zoom_window`) and the
+box asked again on that zoomed image; the refined box is mapped back to page fractions by
+deterministic code (`map_from_window`). The cut (padded by `[editor] crop_margin`, `pad_box`) is
+then shown with the request through the strict tool `check_crop` (`CropVerdict`, prompt
+`editor_crop_check`): complete, or which sides to expand or shrink; one correction round
+(`correct_box`, `[editor] crop_correction_step`) is applied, never more. A crop redone because the
+student said the previous one was wrong uses `[editor] crop_retry_role` (`editor`/Opus by
+default) with the student's words as extra guidance (`crop_source_image(feedback=...)`).
 
 The cleanup (`clean_crop`) is deterministic `numpy`/`cv2` code with no LLM call, built from
 `studentassistant.sources.captures`' building blocks: the image is cut to the box, the cut's
@@ -35,7 +45,6 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
 from typing import Any, Literal, Self
 
 import cv2
@@ -71,6 +80,7 @@ from studentassistant.vault import Vault, put_source, read_source, topic_directo
 from studentassistant.vault.sources import SIDECAR_SUFFIX
 
 PROMPT_NAME = "editor_crop"
+# The default locator role; `[editor] crop_locator_role` chooses it (`locator_role`).
 ROLE = "observer"
 TOOL_NAME = "crop_region"
 TOOL_DESCRIPTION = (
@@ -78,6 +88,12 @@ TOOL_DESCRIPTION = (
     "and height."
 )
 MAX_TOKENS = 300
+CHECK_PROMPT_NAME = "editor_crop_check"
+CHECK_TOOL_NAME = "check_crop"
+CHECK_TOOL_DESCRIPTION = (
+    "Say whether the crop shows the whole requested region and only it, or which sides to move."
+)
+CropQuality = Literal["standard", "high"]
 
 UNSUPPORTED_IMAGE_MESSAGE = "La fuente indicada no es una imagen que se pueda recortar."
 EMPTY_REGION_MESSAGE = "Indica qué parte de la página quieres recortar."
@@ -125,34 +141,140 @@ class BoundingBox(BaseModel):
         return [self.x0, self.y0, self.x1, self.y1]
 
 
+SideFix = Literal["ok", "expand", "shrink"]
+
+
+class CropVerdict(BaseModel):
+    """The `check_crop` answer: the crop is complete, or how each of its sides should move."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    complete: bool = Field(
+        description="True when the crop shows all of the requested region and nothing else of"
+        " note; false when a side cuts part of it off or takes in too much."
+    )
+    left: SideFix = Field(
+        description="`expand` when the region is cut off at the left edge, `shrink` when there"
+        " is too much unrelated content on the left, else `ok`."
+    )
+    top: SideFix = Field(description="The same for the top edge.")
+    right: SideFix = Field(description="The same for the right edge.")
+    bottom: SideFix = Field(description="The same for the bottom edge.")
+
+    @property
+    def fixes(self) -> dict[str, SideFix]:
+        """The sides to move (none when `complete`)."""
+        if self.complete:
+            return {}
+        sides = {"left": self.left, "top": self.top, "right": self.right, "bottom": self.bottom}
+        return {side: fix for side, fix in sides.items() if fix != "ok"}
+
+
+def locator_role(settings: Settings | None = None, quality: CropQuality = "standard") -> str:
+    """The role that locates a crop: `[editor] crop_locator_role`, or for a crop redone after the
+    student's complaint (`quality="high"`) `[editor] crop_retry_role`."""
+    editor = (settings or Settings()).editor
+    return editor.crop_retry_role if quality == "high" else editor.crop_locator_role
+
+
 def crop_client(
     *,
     settings: Settings | None = None,
     transport: Any | None = None,
     ledger: LedgerBinding | None = None,
+    quality: CropQuality = "standard",
 ) -> LLMClient:
-    """The client that locates regions: role `observer` from `[llm.roles.observer]`."""
-    return get_client(ROLE, settings=settings, transport=transport, ledger=ledger)
+    """The client that locates regions: role `locator_role(settings, quality)` (`observer` by
+    default, from `[llm.roles.<role>]`)."""
+    return get_client(
+        locator_role(settings, quality), settings=settings, transport=transport, ledger=ledger
+    )
 
 
-def region_request(image: bytes, media_type: str, description: str) -> list[dict[str, Any]]:
-    """The user message: the page as an image content block, then the requested region."""
+def retry_client(client: LLMClient | None, *, settings: Settings | None = None) -> LLMClient:
+    """The locator of a crop redone after the student's complaint: `[editor] crop_retry_role`
+    over `client`'s transport and ledger (the app's own), or the default ones without `client`."""
+    return crop_client(
+        settings=settings,
+        transport=None if client is None else client.transport,
+        ledger=None if client is None else client.ledger,
+        quality="high",
+    )
+
+
+def _image_block(image: bytes, media_type: str) -> dict[str, Any]:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.b64encode(image).decode("ascii"),
+        },
+    }
+
+
+def _guidance(feedback: str | None, previous: BoundingBox | None) -> str:
+    """The student's complaint about the previous crop, as extra guidance (empty without one)."""
+    text = ""
+    if feedback is not None and feedback.strip():
+        text += "\n\nThe previous crop of this request was wrong; the student said: " + " ".join(
+            feedback.split()
+        )
+    if previous is not None:
+        text += (
+            "\nThat crop covered the box x0={:.4f} y0={:.4f} x1={:.4f} y1={:.4f} of the whole"
+            " page: do not repeat its mistake."
+        ).format(*previous.as_list())
+    return text
+
+
+def region_request(
+    image: bytes,
+    media_type: str,
+    description: str,
+    *,
+    zoomed: bool = False,
+    feedback: str | None = None,
+    previous: BoundingBox | None = None,
+) -> list[dict[str, Any]]:
+    """The user message: the page (or, `zoomed`, the part of it around a first box) as an image
+    content block, then the requested region and any guidance from the student's complaint."""
+    lead = (
+        "This image is an enlarged part of the page around the requested region; give the tight"
+        " box of the region on THIS image. The region, in the student's words: "
+        if zoomed
+        else "Locate this region of the page, in the student's words: "
+    )
     return [
         {
             "role": "user",
             "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": base64.b64encode(image).decode("ascii"),
-                    },
-                },
+                _image_block(image, media_type),
                 {
                     "type": "text",
-                    "text": "Locate this region of the page, in the student's words: "
-                    + description.strip(),
+                    "text": lead
+                    + description.strip()
+                    + _guidance(feedback, None if zoomed else previous),
+                },
+            ],
+        }
+    ]
+
+
+def check_request(
+    image: bytes, media_type: str, description: str, *, feedback: str | None = None
+) -> list[dict[str, Any]]:
+    """The verification message: the crop as an image content block, then the request."""
+    return [
+        {
+            "role": "user",
+            "content": [
+                _image_block(image, media_type),
+                {
+                    "type": "text",
+                    "text": "This is the crop made for the student's request: "
+                    + description.strip()
+                    + _guidance(feedback, None),
                 },
             ],
         }
@@ -160,9 +282,18 @@ def region_request(image: bytes, media_type: str, description: str) -> list[dict
 
 
 async def locate_region(
-    client: LLMClient, image: bytes, media_type: str, description: str
+    client: LLMClient,
+    image: bytes,
+    media_type: str,
+    description: str,
+    *,
+    zoomed: bool = False,
+    feedback: str | None = None,
+    previous: BoundingBox | None = None,
 ) -> BoundingBox:
-    """The tight box Claude gives for `description` on `image`.
+    """The tight box Claude gives for `description` on `image` (`zoomed`: an enlarged part of
+    the page around a first box). `feedback`/`previous` are the student's complaint about an
+    earlier crop and that crop's box, passed as guidance.
 
     Raises:
         CropError: `media_type` is not an image Claude reads, or `description` is empty.
@@ -177,7 +308,9 @@ async def locate_region(
     try:
         result = await structured(
             client,
-            region_request(image, media_type, description),
+            region_request(
+                image, media_type, description, zoomed=zoomed, feedback=feedback, previous=previous
+            ),
             BoundingBox,
             tool_name=TOOL_NAME,
             tool_description=TOOL_DESCRIPTION,
@@ -188,6 +321,104 @@ async def locate_region(
     except (RefusalError, StructuredOutputError) as error:
         raise RegionNotFoundError(REGION_NOT_FOUND_MESSAGE) from error
     return result.value
+
+
+async def check_crop(
+    client: LLMClient,
+    image: bytes,
+    media_type: str,
+    description: str,
+    *,
+    feedback: str | None = None,
+) -> CropVerdict | None:
+    """Claude's verdict on a cut (`check_crop`), or `None` when it gave none (a refusal, no
+    valid verdict after the re-ask): the cut is then kept as it is.
+
+    Raises:
+        LLMError: any other failure of the call (a reached cap, exhausted retries).
+    """
+    prompt = load_prompt(CHECK_PROMPT_NAME)
+    try:
+        result = await structured(
+            client,
+            check_request(image, media_type, description, feedback=feedback),
+            CropVerdict,
+            tool_name=CHECK_TOOL_NAME,
+            tool_description=CHECK_TOOL_DESCRIPTION,
+            system=prompt.content,
+            max_tokens=MAX_TOKENS,
+            prompt_hash=prompt.hash,
+        )
+    except (RefusalError, StructuredOutputError):
+        return None
+    return result.value
+
+
+# -- the deterministic box geometry (#520) ---------------------------------------------------------
+
+
+def _box(x0: float, y0: float, x1: float, y1: float) -> BoundingBox:
+    """A box from edges already ordered, clamped to `[0, 1]`."""
+    return BoundingBox(
+        x0=min(max(x0, 0.0), 1.0),
+        y0=min(max(y0, 0.0), 1.0),
+        x1=min(max(x1, 0.0), 1.0),
+        y1=min(max(y1, 0.0), 1.0),
+    )
+
+
+def pad_box(box: BoundingBox, margin: float) -> BoundingBox:
+    """`box` grown by `margin` (a fraction of the image's width/height) on every side, clamped
+    to the image."""
+    return _box(box.x0 - margin, box.y0 - margin, box.x1 + margin, box.y1 + margin)
+
+
+def zoom_window(
+    box: BoundingBox, margin: float, width: int, height: int
+) -> tuple[int, int, int, int]:
+    """The pixels of a `width` x `height` page cut for the refining pass: `box` padded by
+    `margin` (`pad_box`), as `box_pixels` maps it: `(left, top, right, bottom)`."""
+    return box_pixels(pad_box(box, margin), width, height)
+
+
+def map_from_window(
+    local: BoundingBox, window: tuple[int, int, int, int], width: int, height: int
+) -> BoundingBox:
+    """A box given on the zoomed image `window` (`zoom_window`) as fractions of the whole
+    `width` x `height` page: each edge is the window's offset plus the fraction of its size,
+    divided by the page's size. Pure arithmetic, no rounding beyond the floats'."""
+    left, top, right, bottom = window
+    span_x, span_y = right - left, bottom - top
+    return _box(
+        (left + local.x0 * span_x) / width,
+        (top + local.y0 * span_y) / height,
+        (left + local.x1 * span_x) / width,
+        (top + local.y1 * span_y) / height,
+    )
+
+
+def correct_box(box: BoundingBox, verdict: CropVerdict, step: float) -> BoundingBox:
+    """`box` with each side the verdict names moved by `step` of the box's width (left, right)
+    or height (top, bottom): outwards to `expand`, inwards to `shrink`, clamped to the image. A
+    shrink that would leave no box keeps both sides of that axis as they were."""
+    fixes = verdict.fixes
+    dx, dy = (box.x1 - box.x0) * step, (box.y1 - box.y0) * step
+
+    def moved(side: str, value: float, delta: float, outwards: float) -> float:
+        fix = fixes.get(side)
+        if fix == "expand":
+            return value + outwards * delta
+        if fix == "shrink":
+            return value - outwards * delta
+        return value
+
+    x0, x1 = moved("left", box.x0, dx, -1), moved("right", box.x1, dx, 1)
+    y0, y1 = moved("top", box.y0, dy, -1), moved("bottom", box.y1, dy, 1)
+    if not min(max(x0, 0.0), 1.0) < min(max(x1, 0.0), 1.0):
+        x0, x1 = box.x0, box.x1
+    if not min(max(y0, 0.0), 1.0) < min(max(y1, 0.0), 1.0):
+        y0, y1 = box.y0, box.y1
+    return _box(x0, y0, x1, y1)
 
 
 @dataclass(frozen=True)
@@ -317,6 +548,87 @@ async def clean_crop_async(
 
 
 @dataclass(frozen=True)
+class LocatedCrop:
+    """What `locate_crop` settled on: the final box (padded), its cleaned-up crop and how."""
+
+    box: BoundingBox
+    crop: CleanCrop
+    # The first box on the whole page, and the box before the margin (refined, corrected).
+    coarse: BoundingBox
+    tight: BoundingBox
+    # `complete`, `corrected` (one correction round applied) or `unchecked` (no verdict).
+    check: Literal["complete", "corrected", "unchecked"]
+
+
+async def locate_crop(
+    client: LLMClient,
+    decoded: np.ndarray,
+    media_type: str,
+    description: str,
+    *,
+    settings: Settings,
+    feedback: str | None = None,
+    previous: BoundingBox | None = None,
+) -> LocatedCrop:
+    """Locate `description` on the decoded page and cut it out (#520).
+
+    (1) A coarse box on the whole page (`locate_region`). (2) With `[editor] crop_refine`, the
+    coarse box plus `crop_zoom_margin` is cut from the full-resolution page (`zoom_window`), the
+    box asked again on it (`zoomed=True`) and mapped back (`map_from_window`). (3) The box padded
+    by `crop_margin` (`pad_box`) is cut and cleaned up (`clean_decoded`). (4) With `crop_verify`,
+    that crop is shown with the request (`check_crop`); sides it says to move are moved once
+    (`correct_box`, `crop_correction_step`) and the crop is cut again -- one round, never
+    checked again. Everything but the Claude calls is deterministic.
+
+    Raises:
+        CropError, RegionNotFoundError: as `locate_region`, for either box.
+        BlurryCropError: a cut is too blurry to keep.
+        LLMError: any other failure of a Claude call.
+    """
+    editor = settings.editor
+    quality = settings.sources.capture_jpeg_quality
+    height, width = decoded.shape[:2]
+    shown, shown_type = await asyncio.to_thread(oriented_image, decoded, media_type, quality)
+    coarse = await locate_region(
+        client, shown, shown_type, description, feedback=feedback, previous=previous
+    )
+    tight = coarse
+    if editor.crop_refine:
+        left, top, right, bottom = zoom_window(coarse, editor.crop_zoom_margin, width, height)
+        zoomed, zoomed_type = await asyncio.to_thread(
+            oriented_image, decoded[top:bottom, left:right], media_type, quality
+        )
+        local = await locate_region(
+            client, zoomed, zoomed_type, description, zoomed=True, feedback=feedback
+        )
+        tight = map_from_window(local, (left, top, right, bottom), width, height)
+
+    def cut(box: BoundingBox) -> CleanCrop:
+        return clean_decoded(
+            decoded,
+            media_type,
+            box,
+            min_sharpness=editor.crop_min_sharpness,
+            jpeg_quality=quality,
+        )
+
+    box = pad_box(tight, editor.crop_margin)
+    crop = await asyncio.to_thread(cut, box)
+    if not editor.crop_verify:
+        return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="unchecked")
+    verdict = await check_crop(client, crop.data, crop.content_type, description, feedback=feedback)
+    if verdict is None:
+        return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="unchecked")
+    if not verdict.fixes:
+        return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="complete")
+    tight = correct_box(tight, verdict, editor.crop_correction_step)
+    corrected = pad_box(tight, editor.crop_margin)
+    if corrected != box:
+        box, crop = corrected, await asyncio.to_thread(cut, corrected)
+    return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="corrected")
+
+
+@dataclass(frozen=True)
 class CroppedImage:
     """A crop stored by `crop_source_image`, with what the notes need to cite and show it."""
 
@@ -364,13 +676,20 @@ async def crop_source_image(
     settings: Settings | None = None,
     client: LLMClient | None = None,
     added_at: datetime | None = None,
+    feedback: str | None = None,
+    retry_of: str | None = None,
 ) -> CroppedImage:
     """Crop `description` out of the stored page image at `vault_relative_path` and store it.
 
-    The page is read with `vault.read_source` and never modified; the region is located by
-    Claude (`locate_region`, `client` or `crop_client(settings=settings)`), cleaned up
-    (`clean_crop_async`, `[editor] crop_min_sharpness`, `[sources] capture_jpeg_quality`) and
-    stored as a new `images` source of the topic with a `cropped` sidecar. Nothing is committed.
+    The page is read with `vault.read_source` and never modified; the region is located, cut and
+    cleaned up by `locate_crop` (`client`, else `crop_client(settings=settings)`;
+    `[editor] crop_*`, `[sources] capture_jpeg_quality`) and stored as a new `images` source of
+    the topic with a `cropped` sidecar. Nothing is committed.
+
+    A crop redone because the student said an earlier one was wrong (#520) passes `retry_of`
+    (that crop's vault-relative path) and `feedback` (the student's words): both guide the
+    locator, the earlier crop's box too when it was cut from this same page, and without
+    `client` the locator is `crop_client(quality="high")` (`[editor] crop_retry_role`).
 
     Raises:
         SourcePathError, SourceNotFoundError: from `vault.read_source`; nothing is written.
@@ -386,27 +705,28 @@ async def crop_source_image(
         raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
     if not description.strip():
         raise CropError(EMPTY_REGION_MESSAGE)
-    jpeg_quality = settings.sources.capture_jpeg_quality
     # Decoded once, before any Claude call: a file OpenCV cannot read (a GIF) is refused here,
     # and the box is located on the same oriented pixels it is applied to.
     decoded = await asyncio.to_thread(decode_image, source.content)
     if decoded is None:
         raise CropError(UNSUPPORTED_IMAGE_MESSAGE)
-    shown, shown_type = await asyncio.to_thread(
-        oriented_image, decoded, source.media_type, jpeg_quality
+    retried = retry_of is not None
+    client = client or crop_client(settings=settings, quality="high" if retried else "standard")
+    previous = (
+        await asyncio.to_thread(_previous_box, vault, retry_of, vault_relative_path)
+        if retry_of is not None
+        else None
     )
-    client = client or crop_client(settings=settings)
-    box = await locate_region(client, shown, shown_type, description)
-    crop = await asyncio.to_thread(
-        partial(
-            clean_decoded,
-            decoded,
-            source.media_type,
-            box,
-            min_sharpness=settings.editor.crop_min_sharpness,
-            jpeg_quality=jpeg_quality,
-        )
+    located = await locate_crop(
+        client,
+        decoded,
+        source.media_type,
+        description,
+        settings=settings,
+        feedback=feedback,
+        previous=previous,
     )
+    box, crop = located.box, located.crop
     meta: dict[str, Any] = {
         "origin": CROPPED_ORIGIN,
         "cropped_from": vault_relative_path,
@@ -415,7 +735,16 @@ async def crop_source_image(
         "content_type": crop.content_type,
         "sha256": hashlib.sha256(crop.data).hexdigest(),
         "added_at": added_at or datetime.now(UTC),
+        "locator": {
+            "role": client.role,
+            "coarse_bbox": located.coarse.as_list(),
+            "check": located.check,
+        },
     }
+    if retry_of is not None:
+        meta["retry_of"] = retry_of
+        if feedback is not None and feedback.strip():
+            meta["feedback"] = " ".join(feedback.split())
     stored = await asyncio.to_thread(
         put_source,
         vault,
@@ -437,6 +766,19 @@ async def crop_source_image(
         meta=meta,
         provenance=cropped_image_provenance(number, crop.extension),
     )
+
+
+def _previous_box(vault: Vault, retry_of: str, page: str) -> BoundingBox | None:
+    """The box of the earlier crop at `retry_of` when it was cut from `page`; blocking, `None`
+    when it cannot be read or was cut from another page."""
+    try:
+        meta = read_source(vault, retry_of).meta
+        if meta.get("cropped_from") != page:
+            return None
+        x0, y0, x1, y1 = meta["bbox"]
+        return BoundingBox(x0=x0, y0=y0, x1=x1, y1=y1)
+    except Exception:
+        return None
 
 
 # -- the `crop_image` tool of the revise turn (#493) -----------------------------------------------
@@ -470,6 +812,18 @@ class CropImageRequest(BaseModel):
     section: str = Field(description="The anchor of the section, without `#`.")
     block: int = Field(description="The block number within the section, as the block map shows.")
     summary: str = Field(description="What this turn changes, one short Spanish sentence.")
+    retry_of: str | None = Field(
+        default=None,
+        description="Only to redo a crop the student just said is wrong («el recorte ha salido"
+        " mal», «le falta un trozo», «no es esa zona»): the source_id of that crop"
+        " (`sources/images/img-NNN.<ext>`, the image the previous turn cropped). The crop is"
+        " then redone with more care and the wrong one is replaced and retired. Otherwise null.",
+    )
+    feedback: str | None = Field(
+        default=None,
+        description="With `retry_of`: what the student said is wrong with the previous crop, in"
+        " their words, to guide the new one. Otherwise null.",
+    )
 
 
 class CropRef(BaseModel):
@@ -492,6 +846,9 @@ class CropRef(BaseModel):
     # `path` only while it is still this one, never a later crop that reused the number.
     sha256: str | None = None
     added_at: datetime | None = None
+    # A crop redone after the student's complaint (#520): the source_id of the crop it replaced,
+    # retired in the same commit.
+    retry_of: str | None = None
 
 
 def crop_image_tool() -> dict[str, Any]:
@@ -532,6 +889,8 @@ def placeholder_edit(request: CropImageRequest) -> EditOp:
 
 __all__ = [
     "BLURRY_CROP_MESSAGE",
+    "CHECK_PROMPT_NAME",
+    "CHECK_TOOL_NAME",
     "CROP_FAILED_PREFIX",
     "CROP_SOURCE_NOT_FOUND_MESSAGE",
     "CROP_TOOL",
@@ -544,10 +903,22 @@ __all__ = [
     "CleanCrop",
     "CropError",
     "CropImageRequest",
+    "CropQuality",
     "CropRef",
+    "CropVerdict",
+    "LocatedCrop",
     "CroppedImage",
     "RegionNotFoundError",
     "box_pixels",
+    "check_crop",
+    "check_request",
+    "correct_box",
+    "locate_crop",
+    "locator_role",
+    "map_from_window",
+    "pad_box",
+    "retry_client",
+    "zoom_window",
     "clean_crop",
     "clean_crop_async",
     "clean_decoded",

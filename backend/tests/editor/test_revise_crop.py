@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from revise_topic import ReviseTopic, make_revise_topic
+from studentassistant.config import Settings
 from studentassistant.editor import revise as revise_module
 from studentassistant.editor.crop import (
     BLURRY_CROP_MESSAGE,
@@ -54,6 +55,11 @@ CONFIRMATION = "He añadido el recorte del diagrama de la página 1 del libro."
 LINK = "![Imagen recortada 1](../sources/images/img-001.jpg)[^img001]"
 FOOTNOTE = "[^img001]: [Imagen recortada 1](../sources/images/img-001.jpg)"
 BOOK_PAGE = "sources/book/page-002.jpg"
+# One box per crop, as these tests script it: the two-pass, checked crop (#520) is covered in
+# `test_crop_reliable.py` and `test_revise_crop_retry.py`.
+SINGLE_PASS = Settings.model_validate(
+    {"editor": {"crop_refine": False, "crop_verify": False, "crop_margin": 0}}
+)
 
 
 @pytest.fixture
@@ -131,6 +137,7 @@ def _revise(
             message,
             client=fake.client("editor"),
             crop_client=fake.client("observer"),
+            settings=SINGLE_PASS,
             sync=sync,
             on_reply=replies,
             on_event=events,
@@ -678,3 +685,114 @@ def test_an_undo_repair_never_retires_a_pasted_image_that_reused_the_crop_number
     assert meta["origin"] == "pasted" and "removed" not in meta
     assert _git(topic.vault, "rev-parse", "HEAD") == head
     assert "recorte retirado" not in _git(topic.vault, "log", "-n", "1", "--format=%s")
+
+
+# -- a crop redone after the student's complaint (#520) --------------------------------------------
+
+RETRY_MESSAGE = "el recorte ha salido mal, le falta la flecha de la derecha"
+FIRST = "sources/images/img-001.jpg"
+SECOND_LINK = "![Imagen recortada 2](../sources/images/img-002.jpg)[^img002]"
+
+
+def _first_crop(topic: ReviseTopic, sync: GitSync) -> RevisionResult:
+    _book_page(topic, _diagram())
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, _crop_call(), text=CONFIRMATION)
+        .reply_tool(TOOL_NAME, BOX)
+    )
+    result = _revise(topic, sync, fake)
+    assert result.applied and result.crop is not None and result.crop.source_id == FIRST
+    return result
+
+
+def test_a_bad_crop_is_redone_by_opus_with_the_feedback_and_retired_in_the_same_commit(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    first = _first_crop(topic, sync)
+    assert first.crop is not None and first.crop.path is not None
+    retry = _crop_call(
+        op="replace_block",
+        block=3,
+        retry_of=FIRST,
+        feedback="le falta la flecha de la derecha",
+        summary="Rehago el recorte del diagrama",
+    )
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, retry, text="He rehecho el recorte con la flecha.")
+        .reply_tool(TOOL_NAME, {"x0": 0.2, "y0": 0.2, "x1": 0.9, "y1": 0.8})
+    )
+
+    result = _revise(topic, sync, fake, RETRY_MESSAGE)
+
+    # The editor saw which image the previous turn cropped, so it could name it.
+    turn_text = fake.requests[0].messages[0]["content"][-1]["text"]
+    assert f"[Imagen recortada: {FIRST}, de {BOOK_PAGE}, zona «{REGION}»]" in turn_text
+    # The crop was redone with the retry role (Opus), the student's words as guidance.
+    [_, located] = fake.requests
+    assert located.role == "editor" and located.tools[0]["name"] == TOOL_NAME
+    assert (
+        "the student said: le falta la flecha de la derecha"
+        in (located.messages[0]["content"][1]["text"])
+    )
+    assert result.applied and result.errors == [] and result.crop is not None
+    assert result.crop.retry_of == FIRST
+    assert result.crop.source_id == "sources/images/img-002.jpg"
+    notes = _notes(topic)
+    assert SECOND_LINK in notes and LINK not in notes
+    # The wrong crop is retired (out of Recursos) in the retry's own commit.
+    assert result.crop.path is not None and _images(topic) == [result.crop.path]
+    sidecar = first.crop.path.rsplit(".", 1)[0] + ".yaml"
+    assert sidecar in result.paths
+    committed = _git(topic.vault, "show", "--name-only", "--format=", result.commit or "")
+    assert sidecar in committed.split()
+    assert yaml.safe_load((topic.vault.path / sidecar).read_text())["removed"]["by"] == "student"
+    meta = read_source(topic.vault, result.crop.path).meta
+    assert meta["retry_of"] == first.crop.path and meta["locator"]["role"] == "editor"
+
+    # Undoing the retry brings the first crop back, in the notes and in Recursos.
+    _run(undo_last_revision(topic.vault, topic.subject, topic.topic, sync=sync))
+    assert LINK in _notes(topic) and SECOND_LINK not in _notes(topic)
+    assert _images(topic) == [first.crop.path]
+
+
+def test_a_retry_that_keeps_citing_the_old_crop_does_not_retire_it(
+    topic: ReviseTopic, sync: GitSync
+) -> None:
+    first = _first_crop(topic, sync)
+    assert first.crop is not None
+    retry = _crop_call(block=3, retry_of=FIRST, feedback="no es esa zona")
+    fake = (
+        FakeClaude()
+        .reply_tool(CROP_TOOL, retry, text="He añadido otro recorte.")
+        .reply_tool(TOOL_NAME, BOX)
+    )
+
+    result = _revise(topic, sync, fake, "no es esa zona")
+
+    assert result.applied and result.crop is not None and result.crop.retry_of == FIRST
+    assert LINK in _notes(topic) and SECOND_LINK in _notes(topic)
+    assert sorted(_images(topic)) == sorted([first.crop.path, result.crop.path or ""])
+
+
+def test_retry_of_must_name_the_previous_turns_crop(topic: ReviseTopic, sync: GitSync) -> None:
+    _book_page(topic, _diagram())
+    fake = FakeClaude()
+    for _ in range(revise_module.MAX_REASKS + 1):
+        fake.reply_tool(CROP_TOOL, _crop_call(retry_of=FIRST, feedback="mal"), text="Vale.")
+
+    result = _revise(topic, sync, fake, RETRY_MESSAGE)
+
+    assert not result.applied and _images(topic) == []
+    assert any("`retry_of` solo puede nombrar" in error for error in result.errors)
+    assert {request.role for request in fake.requests} == {"editor"}  # nothing located
+    reask = fake.requests[1].messages[-1]["content"]
+    assert "el turno anterior no recortó ninguna" in reask[0]["content"]
+
+
+def test_the_editor_prompt_explains_the_retry() -> None:
+    revise = load_prompt("editor_revise").content
+    for phrase in ("`retry_of`", "`feedback`", "el recorte ha salido mal", "le falta un trozo"):
+        assert phrase in revise
+    assert "no es esa zona" in revise and "replace_block" in revise

@@ -89,6 +89,18 @@ you: do not write the image link or its footnote yourself. Write your reply as t
 («He añadido el recorte del diagrama de la página 3.»); if the crop cannot be made (the region is
 not found, it comes out blurry), nothing changes and the student is told why.
 
+- `retry_of`, `feedback`: leave both null for a new crop. When the previous turn made a crop (the
+  conversation shows it as "[Imagen recortada: sources/images/img-NNN.<ext>, de <page>, zona
+  «...»]") and the student's new message says it came out wrong («el recorte ha salido mal»,
+  «le falta un trozo», «se ha cortado la flecha», «no es esa zona», «es la tabla de abajo, no la
+  de arriba»), redo it: call `crop_image` again with the same `source` (another page only if the
+  student says so), `region` (made more precise with what the student now says), `retry_of` = that
+  crop's `sources/images/img-NNN.<ext>`, `feedback` = what the student said is wrong, in their
+  words, and `op` `replace_block` on the block that holds the wrong image, so the new crop takes
+  its place. The crop is then redone with more care and the wrong one is retired; write your reply
+  as the confirmation («He rehecho el recorte incluyendo la parte que faltaba.»). Never use
+  `retry_of` for a crop other than the previous turn's, nor ask the student to confirm first.
+
 ## The `draw_diagram` tool
 
 When a figure would explain the topic better and the student asks for it («hazme un dibujo del
