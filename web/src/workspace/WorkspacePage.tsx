@@ -4,6 +4,7 @@ import { fetchTopics, topicPath } from "../desk/api";
 import { parseNotes } from "../notes/markdown";
 import SourcePanel from "../notes/SourcePanel";
 import DocumentPanel from "./DocumentPanel";
+import { readSourcesCollapsed, writeSourcesCollapsed } from "./layoutState";
 import { SourceSelectionContext, useSourceSelection } from "./resources/selection";
 import ResourcesTab, { type OpenResource } from "./ResourcesTab";
 import { useWorkspaceState, WorkspaceContext } from "./state";
@@ -17,7 +18,7 @@ export type { NarrowView } from "./WorkspaceFrame";
 
 export { EMPTY_NOTES } from "./DocumentPanel";
 
-const VIEWS: Record<NarrowView, string> = { document: "Documento", left: "Captura/Recursos", chat: "Chat" };
+const VIEWS: Record<NarrowView, string> = { document: "Documento", left: "Recursos/Captura", chat: "Chat" };
 
 /**
  * `/subjects/<subject>/topics/<topic>/workspace`, "Espacio de estudio" (#312, epic #311): one
@@ -47,7 +48,21 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
   const selection = useSourceSelection();
   const { notes } = state;
   const [topicName, setTopicName] = useState(topicId);
-  const [tab, setTab] = useState<Tab>("capture");
+  // #534: Recursos first, and the tab shown on entry.
+  const [tab, setTab] = useState<Tab>("resources");
+  // #534: the tabs panel's collapsed state. Undecided (null) it follows the notes: expanded while
+  // the document has not been started, collapsed once it has; a choice of the student (or a
+  // remembered one of this session) wins.
+  const topicKey = `${subjectId}/${topicId}`;
+  const [chosenCollapsed, setChosenCollapsed] = useState<boolean | null>(() => readSourcesCollapsed(topicKey));
+  const collapsed = chosenCollapsed ?? notes.kind === "ready";
+  const changeCollapsed = useCallback(
+    (next: boolean) => {
+      setChosenCollapsed(next);
+      writeSourcesCollapsed(topicKey, next);
+    },
+    [topicKey],
+  );
   /** Since #470: the running capture is recording (the Captura tab's red dot). */
   const [recording, setRecording] = useState(false);
   const [view, setView] = useState<NarrowView>("document");
@@ -74,10 +89,15 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
 
   const tree = useMemo(() => (notes.kind === "ready" ? parseNotes(notes.text) : null), [notes]);
 
-  const changeTab = useCallback((next: Tab) => {
-    setTab(next);
-    if (next === "resources") setResourcesShown((n) => n + 1);
-  }, []);
+  const changeTab = useCallback(
+    (next: Tab) => {
+      setTab(next);
+      if (next === "resources") setResourcesShown((n) => n + 1);
+      // Choosing a tab shows its panel: the panel is expanded again (#534).
+      if (collapsed) changeCollapsed(false);
+    },
+    [collapsed, changeCollapsed],
+  );
 
   /** Shows a source's detail over the document (#473), remembering what opened it. */
   const viewNow = useRef(view);
@@ -142,7 +162,9 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
           views={VIEWS}
           view={view}
           onView={setView}
-          leftLabel="Captura y recursos"
+          leftLabel="Recursos y captura"
+          leftCollapsed={collapsed}
+          onLeftCollapsed={changeCollapsed}
           left={
             <WorkspaceTabs<Tab>
               id="workspace"
@@ -150,6 +172,19 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
               active={tab}
               onChange={changeTab}
               tabs={[
+                {
+                  key: "resources",
+                  label: "Recursos",
+                  panel: (
+                    <ResourcesTab
+                      subjectId={subjectId}
+                      topicId={topicId}
+                      tree={tree}
+                      refreshKey={resourcesShown}
+                      onOpen={show}
+                    />
+                  ),
+                },
                 {
                   key: "capture",
                   label: (
@@ -176,19 +211,6 @@ export default function WorkspacePage({ subjectId, topicId }: { subjectId: strin
                       onRunningChange={setCapturing}
                       onRecordingChange={setRecording}
                       suspended={tab !== "capture"}
-                    />
-                  ),
-                },
-                {
-                  key: "resources",
-                  label: "Recursos",
-                  panel: (
-                    <ResourcesTab
-                      subjectId={subjectId}
-                      topicId={topicId}
-                      tree={tree}
-                      refreshKey={resourcesShown}
-                      onOpen={show}
                     />
                   ),
                 },
