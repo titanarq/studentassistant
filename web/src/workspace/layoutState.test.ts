@@ -9,14 +9,22 @@ describe("layout state", () => {
     expect(panelState({ panelCollapsed: false, chatExpanded: false })).toBe("expanded");
     expect(panelState({ panelCollapsed: true, chatExpanded: false })).toBe("collapsed");
     expect(panelState({ panelCollapsed: false, chatExpanded: true })).toBe("hidden");
-    expect(panelState({ panelCollapsed: true, chatExpanded: true })).toBe("hidden");
+    // A collapsed pill stays visible above the maximized chat.
+    expect(panelState({ panelCollapsed: true, chatExpanded: true })).toBe("collapsed");
   });
 
-  it("expanding the chat hides the card and reducing it restores the previous state", () => {
+  it("expanding the pill while the chat is maximized reduces the chat", () => {
+    expect(togglePanel({ panelCollapsed: true, chatExpanded: true })).toEqual({
+      panelCollapsed: false,
+      chatExpanded: false,
+    });
+  });
+
+  it("expanding the chat hides a full card, keeps a collapsed one, and reducing it restores the previous state", () => {
     for (const panelCollapsed of [false, true]) {
       const before = { panelCollapsed, chatExpanded: false };
       const during = toggleChat(before);
-      expect(panelState(during)).toBe("hidden");
+      expect(panelState(during)).toBe(panelCollapsed ? "collapsed" : "hidden");
       const after = toggleChat(during);
       expect(after).toEqual(before);
       expect(panelState(after)).toBe(panelCollapsed ? "collapsed" : "expanded");
@@ -27,7 +35,7 @@ describe("layout state", () => {
     const collapsed = togglePanel(start);
     expect(panelState(collapsed)).toBe("collapsed");
     expect(panelState(togglePanel(collapsed))).toBe("expanded");
-    const hidden = toggleChat(collapsed);
+    const hidden = toggleChat(start);
     expect(togglePanel(hidden)).toBe(hidden);
   });
 

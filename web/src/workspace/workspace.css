@@ -394,9 +394,10 @@
     margin: 0;
   }
 
-  /* Expanded chat: the left card (tabs and all) is hidden and the chat fills the column. Its
+  /* Expanded chat: a full left card (tabs and all) is hidden and the chat fills the column; a collapsed
+     one stays as its pill (it is `flex: none`) and the chat fills the column below it, never over it. Its
      content stays mounted, so a running capture goes on. */
-  .workspace[data-chat="expanded"] .workspace-sources {
+  .workspace[data-chat="expanded"] .workspace-sources:not([data-collapsed="true"]) {
     display: none;
   }
 
