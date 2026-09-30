@@ -617,7 +617,7 @@ it("says why a pressed answer was refused, and picks a contradiction's source by
   await waitFor(() => expect(screen.queryByText(/No se pudo aplicar tu respuesta/)).toBeNull());
 });
 
-it("shows the doubts marked in the notes as one line with «Ver la siguiente» (#516)", async () => {
+it("shows the doubts marked in the notes as one line with «Siguiente duda.» (#516)", async () => {
   const showNextDoubt = vi.fn(async () => undefined);
   const marks = (count: number) => ({
     count,
@@ -634,7 +634,7 @@ it("shows the doubts marked in the notes as one line with «Ver la siguiente» (
   setup({}, { workspace: { doubtMarks: marks(3), showNextDoubt } });
   const line = await screen.findByText("Tienes 3 dudas marcadas en los apuntes");
   expect(line.closest("[role=status]")).not.toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Ver la siguiente" }));
+  fireEvent.click(screen.getByRole("button", { name: "Siguiente duda." }));
   expect(showNextDoubt).toHaveBeenCalledTimes(1);
   cleanup();
   setup({}, { workspace: { doubtMarks: marks(1), doubtProblem: "No se pudo mostrar la duda: Esa duda ya está cerrada." } });
@@ -643,7 +643,7 @@ it("shows the doubts marked in the notes as one line with «Ver la siguiente» (
   cleanup();
   setup({}, { workspace: { doubtMarks: marks(0) } });
   await screen.findByRole("log");
-  expect(screen.queryByRole("button", { name: "Ver la siguiente" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Siguiente duda." })).toBeNull();
 });
 
 it("moves a doubt shown again to the end of the chat, and a marks event re-reads the marks", async () => {

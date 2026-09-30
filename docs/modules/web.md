@@ -438,7 +438,7 @@
       an older turn) the backend's reply («He apartado la página 9.»).
     - **Doubts** (`doubt.asked` / `doubt.resolved`, #325, #516; `doubt` turns of the history):
       the chat never asks them one after another (#516): they are marked in the notes (see the
-      document below) and one is shown when the student clicks its badge or «Ver la siguiente».
+      document below) and one is shown when the student clicks its badge or «Siguiente duda.».
       A shown doubt is a highlighted entry "Asistente · Duda" with its explanation
       (`ws-chat-explanation`, the item's `text` / the history's `doubt_text`), the question, the
       suggestions as a numbered list of buttons (`<ol>` "Sugerencias"), for a contradiction each
@@ -454,7 +454,7 @@
       below). `doubts.auto_resolved` (`doubts_resolved` in the history) is one short line.
     - **Marked doubts line** (#516): above the input, while the notes mark any open doubt, one
       line «Tienes N dudas marcadas en los apuntes» («Tienes 1 duda marcada…», `role="status"`)
-      with a button «Ver la siguiente», which shows the first marked doubt, in the order of the
+      with a link-styled button (underlined, `<button>`) «Siguiente duda.», which shows the first marked doubt, in the order of the
       notes, not asked yet (`WorkspaceState.showNextDoubt`); a refusal shows «No se pudo mostrar
       la duda: …» (`role="alert"`).
     - **"Ya está, quiero estudiar"** (a `study` request, #335, #337): "Pasando a Estudiar…"

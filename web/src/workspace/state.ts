@@ -8,7 +8,7 @@
  * Since #516 it also holds the open doubts marked in the notes (`GET .../doubts/marks`), read again
  * on every doubt event (`doubtsChanged`) and every new revision of the notes, and `showDoubt` /
  * `showNextDoubt`, which bring one doubt to the chat (`POST .../doubts/{id}/ask`, a badge clicked
- * or «Ver la siguiente»).
+ * or «Siguiente duda.»).
  */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -40,7 +40,7 @@ export interface WorkspaceState {
   doubtMarks: DoubtMarks | null;
   /** Shows that doubt in the chat; a refusal is kept in `doubtProblem`. */
   showDoubt: (pendingId: string) => Promise<void>;
-  /** «Ver la siguiente»: the first marked doubt not asked yet. */
+  /** «Siguiente duda.»: the first marked doubt not asked yet. */
   showNextDoubt: () => Promise<void>;
   /** A doubt is being brought to the chat. */
   showingDoubt: boolean;
