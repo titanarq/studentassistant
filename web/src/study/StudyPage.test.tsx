@@ -525,7 +525,33 @@ it("switches between Documento, Estudiar and Chat in one column, and an option s
   expect(root).toHaveAttribute("data-view", "left");
 }, PAGE_TEST_TIMEOUT);
 
-it("lays the screen out in the frame of Construir: the options card above the chat card, the document card on the right (#487)", async () => {
+it("inherits the layout controls of Construir: expandable chat, collapsible options card and the shared divider (#534)", async () => {
+  window.sessionStorage.clear();
+  stubApi(routes());
+  const { container } = render(<StudyPage subjectId="historia" topicId="revolucion-industrial" voiceSupported />);
+  const root = container.firstElementChild as HTMLElement;
+  const card = screen.getByRole("region", { name: "Opciones de estudio" });
+
+  // Expanded by default (there is no Recursos/Captura tab order to apply here).
+  expect(card).not.toHaveAttribute("data-collapsed");
+  fireEvent.click(screen.getByRole("button", { name: "Ocultar opciones de estudio" }));
+  expect(card).toHaveAttribute("data-collapsed", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Mostrar opciones de estudio" }));
+  expect(card).not.toHaveAttribute("data-collapsed");
+  fireEvent.click(screen.getByRole("button", { name: "Ampliar chat" }));
+  expect(root).toHaveAttribute("data-chat", "expanded");
+  fireEvent.click(screen.getByRole("button", { name: "Reducir chat" }));
+  expect(root).not.toHaveAttribute("data-chat");
+
+  // The same divider, with the width shared with Construir through sessionStorage.
+  const divider = screen.getByRole("separator", { name: "Ancho del chat" });
+  expect(divider).toHaveAttribute("aria-valuenow", "40");
+  fireEvent.keyDown(divider, { key: "ArrowRight", shiftKey: true });
+  expect(window.sessionStorage.getItem("studentassistant.workspace.sidePercent")).toBe("50");
+  await options();
+});
+
+it("lays the screen out in the frame of Construir:the options card above the chat card, the document card on the right (#487)", async () => {
   stubApi(routes());
   const { container } = render(<StudyPage subjectId="historia" topicId="revolucion-industrial" voiceSupported />);
   const root = container.firstElementChild as HTMLElement;

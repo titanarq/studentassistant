@@ -116,12 +116,23 @@
 
 .workspace-columns {
   display: grid;
-  /* #450: the chat/resources side gets 50 % at 900 px and shrinks linearly to 25 % at 1200 px
-     and beyond (never below 18rem); the document takes the rest. */
-  --workspace-side: clamp(max(18rem, 25%), calc(50% - (100vw - 56.25rem) * 0.97), 50%);
-  grid-template-columns: var(--workspace-side) minmax(0, 1fr);
-  gap: var(--space-4);
+  /* #534: the chat/resources side gets 40 % (so the document is at most 60 %) at every width,
+     unless the student dragged the divider (`WorkspaceFrame` sets `--workspace-side` inline,
+     kept in sessionStorage). The divider is the middle column, as wide as the old gap. */
+  --workspace-side: 40%;
+  grid-template-columns: var(--workspace-side) var(--space-4) minmax(0, 1fr);
+  gap: 0;
   align-items: start;
+}
+
+/* #534: the draggable divider between the chat column and the document; only on the two-column
+   layout (below it the columns are one and the switch picks a view). */
+.workspace-divider {
+  display: none;
+}
+
+.workspace-chat-tools {
+  display: none;
 }
 
 /* Explicit cells (#473): the source's detail shares the document's cell (column 2, row 1), so
@@ -136,7 +147,7 @@
 }
 
 .workspace-document {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
 }
 
@@ -304,6 +315,67 @@
     position: static;
     max-height: none;
     min-height: 0;
+  }
+
+  /* #534: the divider between the chat column and the document: a slim grip in the middle
+     column, with a wide hit area (the column itself), keyboard focusable. */
+  .workspace-divider {
+    display: block;
+    grid-column: 2;
+    grid-row: 1;
+    position: relative;
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: var(--radius-m);
+  }
+
+  .workspace-divider::before {
+    content: "";
+    position: absolute;
+    inset: var(--space-4) calc(50% - 1.5px);
+    border-radius: 2px;
+    background: var(--line);
+  }
+
+  .workspace-divider:hover::before,
+  .workspace-divider:focus-visible::before {
+    background: var(--accent);
+  }
+
+  /* The tools row above the chat: hide/show the left card, expand/reduce the chat. */
+  .workspace-chat-tools {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .workspace-tool {
+    min-height: 0;
+    margin: 0;
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--step--1);
+  }
+
+  /* Expanded chat: the left card (tabs and all) is hidden and the chat fills the column. Its
+     content stays mounted, so a running capture goes on. */
+  .workspace[data-chat="expanded"] .workspace-sources {
+    display: none;
+  }
+
+  /* Collapsed left card: only its tab list (or heading row) remains, the rest of the height goes
+     to the chat; a click on a tab shows the panel again (the host expands it). */
+  .workspace .workspace-sources[data-collapsed="true"] {
+    flex: none;
+    min-height: 0;
+  }
+
+  .workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel,
+  .workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel-capture:not([hidden]),
+  /* A left card without tabs (Estudiar's options) has no header to keep: it goes away whole. */
+  .workspace .workspace-sources[data-collapsed="true"]:not(:has(> .workspace-tabs)) {
+    display: none;
   }
 }
 
@@ -1103,7 +1175,7 @@
 /* The document's cell of the columns' grid (both pinned to column 2, row 1; the left column to
    column 1, row 1), stacked on top of it: the document underneath keeps its mount and its scroll. */
 .workspace-detail {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   align-self: stretch;
   position: sticky;

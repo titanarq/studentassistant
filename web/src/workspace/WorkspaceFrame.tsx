@@ -1,6 +1,8 @@
-import type { ReactNode } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useRef, useState } from "react";
 import { topicPath } from "../desk/api";
 import ModeSwitch, { type Mode } from "../study/ModeSwitch";
+import ColumnDivider from "./ColumnDivider";
+import { readSidePercent, writeSidePercent } from "./layoutState";
 import "./workspace.css";
 
 /** What the single column shows below 900 px: the right card, the left card(s) or the chat. */
@@ -35,6 +37,12 @@ export interface WorkspaceFrameProps {
   document: ReactNode;
   /** The detail over the right card's cell (#473): the document underneath stays mounted. */
   detail?: ReactNode;
+  /**
+   * Whether the left card is collapsed to its header (#534), when the host owns that state
+   * (Construir: its default depends on the notes). Left out, the frame keeps it itself, expanded.
+   */
+  leftCollapsed?: boolean;
+  onLeftCollapsed?: (collapsed: boolean) => void;
 }
 
 const ORDER: NarrowView[] = ["document", "left", "chat"];
@@ -67,8 +75,25 @@ export default function WorkspaceFrame({
   documentPanel = false,
   document,
   detail,
+  leftCollapsed,
+  onLeftCollapsed,
 }: WorkspaceFrameProps) {
   const base = topicPath(subjectId, topicId);
+  // #534: the chat column's width (shared by both modes, kept in sessionStorage), the chat
+  // expanded over the left card, and the left card collapsed to its header.
+  const columns = useRef<HTMLDivElement | null>(null);
+  const [side, setSide] = useState(readSidePercent);
+  const [chatExpanded, setChatExpanded] = useState(false);
+  const [ownCollapsed, setOwnCollapsed] = useState(false);
+  const collapsed = leftCollapsed ?? ownCollapsed;
+  const setCollapsed = useCallback(
+    (next: boolean) => {
+      setOwnCollapsed(next);
+      onLeftCollapsed?.(next);
+    },
+    [onLeftCollapsed],
+  );
+  const leftName = leftLabel.toLowerCase();
   const detailShown = detail !== undefined && detail !== null && detail !== false;
   return (
     <main
@@ -76,6 +101,7 @@ export default function WorkspaceFrame({
       data-mode={mode}
       data-view={view}
       data-detail={detailShown ? "open" : undefined}
+      data-chat={chatExpanded ? "expanded" : undefined}
       aria-label={label}
     >
       <header className="workspace-header">
@@ -102,15 +128,38 @@ export default function WorkspaceFrame({
           ))}
         </div>
       </header>
-      <div className="workspace-columns">
+      <div className="workspace-columns" ref={columns} style={{ "--workspace-side": `${side}%` } as CSSProperties}>
         <div className="workspace-left">
-          <section className={leftClassName === undefined ? "workspace-sources" : `workspace-sources ${leftClassName}`} aria-label={leftLabel}>
+          <section
+            id="workspace-left-card"
+            className={leftClassName === undefined ? "workspace-sources" : `workspace-sources ${leftClassName}`}
+            aria-label={leftLabel}
+            data-collapsed={collapsed && !chatExpanded ? "true" : undefined}
+          >
             {left}
           </section>
           <section className="workspace-chat" aria-label="Chat">
+            {/* #534: shown on the two-column layout only (the one-column switch picks a view). */}
+            <div className="workspace-chat-tools">
+              {!chatExpanded && (
+                <button
+                  type="button"
+                  className="workspace-tool"
+                  aria-expanded={!collapsed}
+                  aria-controls="workspace-left-card"
+                  onClick={() => setCollapsed(!collapsed)}
+                >
+                  {collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
+                </button>
+              )}
+              <button type="button" className="workspace-tool" onClick={() => setChatExpanded(!chatExpanded)}>
+                {chatExpanded ? "Reducir chat" : "Ampliar chat"}
+              </button>
+            </div>
             {chat}
           </section>
         </div>
+        <ColumnDivider value={side} columns={columns} onChange={setSide} onCommit={writeSidePercent} />
         <section
           className={documentClassName === undefined ? "workspace-document" : `workspace-document ${documentClassName}`}
           aria-label="Documento"

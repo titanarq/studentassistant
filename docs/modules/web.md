@@ -211,8 +211,37 @@
     computes the WCAG contrast of every text colour on the new backgrounds (at least 4.5:1) and of
     the band's borders and focus rings (at least 3:1) in both themes, and
     `src/workspace/layout.test.ts` pins which token each zone uses.
+  - **Layout controls (#534), shared by Construir and Estudiar** (`WorkspaceFrame`, so both screens
+    look and behave the same; `ColumnDivider.tsx`, `layoutState.ts`). Only on the two-column layout
+    (from 900 px; below it the switch picks a view and none of this shows):
+    - **Wider chat column**: the left column is 40 % of the width by default at every width
+      (`--workspace-side`, three grid columns: chat | divider | document), so the document is at
+      most 60 %.
+    - **Draggable divider** (`role="separator"`, `aria-orientation="vertical"`, "Ancho del chat",
+      focusable, `aria-valuenow` in percent): the pointer drags it (pointer capture) and the
+      arrows move it (2 points; Shift 10; Home/End the limits). The chat column is kept between 25 %
+      and 65 % (so the document keeps at least 35 %). The width is stored in `sessionStorage`
+      (`studentassistant.workspace.sidePercent`, one key shared by both screens) when the drag
+      ends or a key is pressed, read back on load, and every access is in try/catch (no storage or
+      a broken value means the 40 % default).
+    - **Tools row** at the top of the chat card (`.workspace-chat-tools`): **Ampliar chat** /
+      **Reducir chat** expands the chat over the whole column, hiding the left card (it stays
+      mounted, so a running capture goes on; root `data-chat="expanded"`), and **Ocultar
+      <left card>** / **Mostrar <left card>** (`aria-expanded`, `aria-controls`) collapses the left
+      card on its own to its tab list (root `.workspace-sources[data-collapsed]`), giving its height
+      to the chat. An Estudiar card has no tab list, so collapsed it goes away whole.
+    - **Construir's defaults**: the tab list is **Recursos** then **Captura** and **Recursos** is
+      selected on entry; the panel starts expanded while the document has not been started (notes
+      `empty`/not found) and collapsed once the notes exist, unless the student chose (the choice is
+      kept in `sessionStorage` per topic, `studentassistant.workspace.sourcesCollapsed.<s>/<t>`);
+      clicking a tab shows the panel again. The host owns the state (`WorkspaceFrame`
+      `leftCollapsed` / `onLeftCollapsed`); Estudiar leaves it to the frame, expanded by default.
+      Deliberate difference: Estudiar has no Recursos/Captura tabs, so the tab order and default
+      do not apply there.
   - Left, top: a tab list (`WorkspaceTabs`, `role="tablist"`, automatic activation, Left/Right
-    with wrap-around, Home/End) with **Captura** and **Recursos**. Both panels stay mounted and
+    with wrap-around, Home/End) with **Recursos** and **Captura** (in that order since #534; the
+    text below predates it and says "Captura" first where the order is irrelevant).
+    Both panels stay mounted and
     the inactive one is only `hidden`. Since #450 showing **Recursos** pauses a running capture
     exactly like a hidden browser tab (#425): `CapturePage`/`CaptureScreen` get `suspended`, the
     camera and the recognizer (or the audio stream) stop, the still-open socket says `button:
@@ -490,9 +519,9 @@
     - **Input on screen, log following the newest turn (#412, #450).** On a wide screen at least
       30rem tall (`workspace.css`, `min-width: 56.3125rem and min-height: 30rem`) the page is
       exactly one viewport high and never scrolls: the header on top, each column scrolling inside
-      its share. The columns' proportions are fluid (#450): the left column is 50 % at 900 px and
-      shrinks linearly to 25 % at 1200 px and wider (`clamp(max(18rem, 25%), calc(50% - (100vw -
-      56.25rem) * 0.97), 50%)`), the document takes the rest. On the left the tabs' list stays put
+      its share. The columns' proportions (#534, replacing the fluid 50 % -> 25 % split of #450):
+      the left (chat) column is 40 % of the width at every width, so the document is at most
+      60 %, unless the student dragged the divider (see "Layout controls" below). On the left the tabs' list stays put
       and only the Recursos panel scrolls (the list is also `position: sticky` outside this
       layout). The Captura panel (`.workspace-tabpanel-capture`, a `WorkspaceTab` `className`)
       never scrolls since #470: the running capture fills it, the preview's box
@@ -580,7 +609,7 @@
     the notes) shows the non-blocking "El asistente ha cambiado los apuntes. Tu texto sigue como lo
     dejaste; al guardar se comprobará." and never replaces the student's text.
   - Below 900 px (56.25rem) the columns become one and a switch **Documento** |
-    **Captura/Recursos** | **Chat** (`aria-pressed` buttons, the root's `data-view`) shows one
+    **Recursos/Captura** | **Chat** (`aria-pressed` buttons, the root's `data-view`) shows one
     part; the others are `display: none`, never unmounted. Opening a source (#473) shows its
     detail in the document view's place (the switch moves to **Documento**), and closing it goes
     back to the view it was opened from.

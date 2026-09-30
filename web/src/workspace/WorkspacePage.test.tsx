@@ -69,6 +69,7 @@ let fakes: CaptureFakes;
 const restores: Array<() => void> = [];
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   fakes = installCaptureFakes();
   restores.push(swapProperty(HTMLMediaElement.prototype, "play", () => Promise.resolve()));
   restores.push(swapProperty(URL, "createObjectURL", () => "blob:fake"));
@@ -107,8 +108,10 @@ it("shows the two columns: tabs above the chat, the notes on the right, under a 
   expect(await within(header).findByRole("heading", { level: 1, name: "La Revolución Industrial" })).toBeInTheDocument();
   expect(within(header).getByRole("navigation", { name: "Modo del tema" })).toBeInTheDocument();
   expect(within(header).getByRole("link", { name: "Mesa de estudio" })).toHaveAttribute("href", "/");
-  expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
-  expect(tab("Recursos")).toHaveAttribute("aria-selected", "false");
+  // #534: Recursos is the first tab and the one selected on entry.
+  expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Recursos", "Captura"]);
+  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
+  expect(tab("Captura")).toHaveAttribute("aria-selected", "false");
   const chatRegion = screen.getByRole("region", { name: "Chat" });
   expect(within(chatRegion).getByRole("region", { name: "Chat con el asistente" })).toBeInTheDocument();
   expect(within(chatRegion).queryByRole("heading")).toBeNull();
@@ -119,29 +122,31 @@ it("shows the two columns: tabs above the chat, the notes on the right, under a 
   expect(within(header).queryByText(/dudas pendientes|Este tema:|Esta sesión:/)).toBeNull();
   expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/pending") || String(path).includes("/cost"))).toBe(false);
   // The capture flow is preset to the topic: no subject or topic picker.
-  expect(await screen.findByRole("button", { name: "Empezar una sesión nueva" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Empezar una sesión nueva", hidden: true })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Asignatura" })).toBeNull();
 }, PAGE_TEST_TIMEOUT);
 
 it("moves between the tabs with the arrow keys", async () => {
   renderPage();
 
-  tab("Captura").focus();
-  fireEvent.keyDown(tab("Captura"), { key: "ArrowRight" });
-  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
-  expect(tab("Recursos")).toHaveFocus();
+  tab("Recursos").focus();
   fireEvent.keyDown(tab("Recursos"), { key: "ArrowRight" });
   expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
-  fireEvent.keyDown(tab("Captura"), { key: "End" });
-  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
-  fireEvent.keyDown(tab("Recursos"), { key: "Home" });
   expect(tab("Captura")).toHaveFocus();
-  await screen.findByRole("button", { name: "Empezar una sesión nueva" });
+  fireEvent.keyDown(tab("Captura"), { key: "ArrowRight" });
+  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(tab("Recursos"), { key: "End" });
+  expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(tab("Captura"), { key: "Home" });
+  expect(tab("Recursos")).toHaveFocus();
+  await screen.findByRole("button", { name: "Empezar una sesión nueva", hidden: true });
 }, PAGE_TEST_TIMEOUT);
 
 it("pauses a running capture on Recursos and resumes it back on Captura (#450)", async () => {
   renderPage();
 
+  // Recursos is the tab on entry (#534): go to Captura to start.
+  fireEvent.click(tab("Captura"));
   fireEvent.click(await screen.findByRole("button", { name: "Empezar una sesión nueva" }));
   await waitFor(() => expect(fakes.sockets).toHaveLength(1));
   const socket = fakes.sockets[0];
@@ -222,8 +227,8 @@ it("opens a footnote's source over the document, and closes it with the X or Esc
   documentBody.scrollTop = 120;
   fireEvent.click(refs[0]);
 
-  // Over the document, not in Recursos: the tabs stay where they were (Captura keeps running).
-  expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
+  // Over the document, not in Recursos: the tabs stay where they were.
+  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
   expect(within(document.getElementById("workspace-panel-resources")!).queryByRole("dialog")).toBeNull();
   const dialog = detail("Apuntes, página 2");
   expect(documentColumn).not.toContainElement(dialog);
@@ -287,6 +292,39 @@ it("lists the topic's sources in Recursos and opens one in the viewer", async ()
   fireEvent.click(within(dialog).getByRole("button", { name: "Cerrar" }));
   expect(card).toHaveFocus();
 }, PAGE_TEST_TIMEOUT);
+
+it("starts with the Recursos/Captura panel collapsed when the document has notes, and the student can toggle it (#534)", async () => {
+  renderPage();
+
+  const panel = screen.getByRole("region", { name: "Recursos y captura" });
+  await waitFor(() => expect(panel).toHaveAttribute("data-collapsed", "true"));
+  fireEvent.click(screen.getByRole("button", { name: "Mostrar recursos y captura" }));
+  expect(panel).not.toHaveAttribute("data-collapsed");
+  expect(window.sessionStorage.getItem("studentassistant.workspace.sourcesCollapsed.historia/revolucion-industrial")).toBe("0");
+  fireEvent.click(screen.getByRole("button", { name: "Ocultar recursos y captura" }));
+  expect(panel).toHaveAttribute("data-collapsed", "true");
+  // Choosing a tab shows the panel again.
+  fireEvent.click(tab("Captura"));
+  expect(panel).not.toHaveAttribute("data-collapsed");
+  expect(tab("Captura")).toHaveAttribute("aria-selected", "true");
+  await screen.findByRole("button", { name: "Empezar una sesión nueva" });
+}, PAGE_TEST_TIMEOUT);
+
+it("starts with the Recursos/Captura panel expanded while the document has not been started (#534)", async () => {
+  renderPage({ ...ROUTES, [`${BASE}/notes`]: jsonResponse({ detail: "El tema no tiene apuntes." }, 404) });
+
+  expect(await screen.findByText(EMPTY_NOTES)).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Recursos y captura" })).not.toHaveAttribute("data-collapsed");
+  expect(tab("Recursos")).toHaveAttribute("aria-selected", "true");
+});
+
+it("remembers the student's choice of the panel for this topic within the session (#534)", async () => {
+  window.sessionStorage.setItem("studentassistant.workspace.sourcesCollapsed.historia/revolucion-industrial", "0");
+  renderPage();
+
+  expect(await screen.findByRole("heading", { name: /Contexto/ })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Recursos y captura" })).not.toHaveAttribute("data-collapsed");
+});
 
 it("says there are no notes yet instead of an error", async () => {
   renderPage({ ...ROUTES, [`${BASE}/notes`]: jsonResponse({ detail: "El tema no tiene apuntes." }, 404) });
@@ -368,7 +406,7 @@ it("switches the single column between document, capture/resources and chat", as
   fireEvent.click(within(group).getByRole("button", { name: "Chat" }));
   expect(root).toHaveAttribute("data-view", "chat");
   expect(within(group).getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
-  fireEvent.click(within(group).getByRole("button", { name: "Captura/Recursos" }));
+  fireEvent.click(within(group).getByRole("button", { name: "Recursos/Captura" }));
   expect(root).toHaveAttribute("data-view", "left");
   // A footnote's source takes the document view's place (#473); the document stays mounted.
   fireEvent.click(within(group).getByRole("button", { name: "Documento" }));
@@ -383,7 +421,7 @@ it("switches the single column between document, capture/resources and chat", as
   expect(root).toHaveAttribute("data-view", "document");
 
   // Opened from Recursos, it shows in the document's place; closing it goes back to Recursos.
-  fireEvent.click(within(group).getByRole("button", { name: "Captura/Recursos" }));
+  fireEvent.click(within(group).getByRole("button", { name: "Recursos/Captura" }));
   fireEvent.click(tab("Recursos"));
   const pages = await within(document.getElementById("workspace-panel-resources")!).findByRole("list", { name: "Fuentes del tema" });
   const card = within(pages).getAllByRole("button").find((b) => b.classList.contains("resource-open"))!;

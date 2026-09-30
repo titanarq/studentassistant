@@ -129,11 +129,34 @@ describe("the source's detail over the document column (#473)", () => {
     expect(left["grid-row"]).toBe("1");
     const document = declarations(workspaceCss, ".workspace-document");
     const detail = declarations(workspaceCss, ".workspace-detail");
-    expect(document["grid-column"]).toBe("2");
+    // Column 2 is the draggable divider (#534).
+    expect(document["grid-column"]).toBe("3");
     expect(document["grid-row"]).toBe("1");
     expect(detail["grid-column"]).toBe(document["grid-column"]);
     expect(detail["grid-row"]).toBe(document["grid-row"]);
     expect(Number(detail["z-index"])).toBeGreaterThan(0);
+  });
+
+  it("gives the chat column 40 % at every width so the document is at most 60 % (#534)", () => {
+    const columns = declarations(workspaceCss, ".workspace-columns");
+    expect(columns["--workspace-side"]).toBe("40%");
+    expect(columns["grid-template-columns"]).toBe("var(--workspace-side) var(--space-4) minmax(0, 1fr)");
+    expect(workspaceCss).not.toMatch(/--workspace-side:\s*clamp/);
+  });
+
+  it("shows the divider and the chat tools only in the two-column layout, and hides what they fold (#534)", () => {
+    const always = outsideMedia(workspaceCss);
+    expect(declarations(always, ".workspace-divider")["display"]).toBe("none");
+    expect(declarations(always, ".workspace-chat-tools")["display"]).toBe("none");
+    const twoColumns = mediaBlock(workspaceCss, TWO_COLUMNS);
+    expect(declarations(twoColumns, ".workspace-divider")["display"]).toBe("block");
+    expect(declarations(twoColumns, ".workspace-divider")["grid-column"]).toBe("2");
+    expect(declarations(twoColumns, ".workspace-chat-tools")["display"]).toBe("flex");
+    expect(declarations(twoColumns, '.workspace[data-chat="expanded"] .workspace-sources')["display"]).toBe("none");
+    expect(declarations(twoColumns, '.workspace .workspace-sources[data-collapsed="true"]')["flex"]).toBe("none");
+    expect(
+      declarations(twoColumns, '.workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel')["display"],
+    ).toBe("none");
   });
 
   it("keeps a single row in the two-column layout", () => {
