@@ -543,7 +543,7 @@ it("links the notes' versions from the header, naming the current version", asyn
   expect(link).toHaveTextContent("Versiones · v2");
 });
 
-it("marks the open doubts in the notes and shows one in the chat from its badge or «Ver la siguiente» (#516)", async () => {
+it("marks the open doubts in the notes and shows one in the chat from its badge or «Siguiente duda.» (#516)", async () => {
   const marks = (asked: boolean) =>
     jsonResponse({
       subject: "historia",
@@ -584,8 +584,8 @@ it("marks the open doubts in the notes and shows one in the chat from its badge 
   await waitFor(() => expect(readsAfterAsk).toBeGreaterThan(0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  // «Ver la siguiente» goes in order, skipping the doubt already asked; a refusal is explained.
-  fireEvent.click(within(chatRegion).getByRole("button", { name: "Ver la siguiente" }));
+  // «Siguiente duda.» goes in order, skipping the doubt already asked; a refusal is explained.
+  fireEvent.click(within(chatRegion).getByRole("button", { name: "Siguiente duda." }));
   await waitFor(() => expect(posted()).toEqual([`${BASE}/doubts/d-1/ask`, `${BASE}/doubts/d-2/ask`]));
   expect(await within(chatRegion).findByRole("alert")).toHaveTextContent("No se pudo mostrar la duda: Esa duda ya está cerrada.");
 }, PAGE_TEST_TIMEOUT);

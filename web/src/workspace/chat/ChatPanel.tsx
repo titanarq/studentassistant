@@ -527,7 +527,7 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, on
  * batches; setting pages aside or restoring them is one short line; a doubt asked in the chat is
  * highlighted, and answered by pressing a suggestion or a source, typing or saying it; the doubts
  * marked in the notes are one line above the input, «Tienes N dudas marcadas en los apuntes», with
- * «Ver la siguiente» (#516; they are never asked one after another). "Ya está, quiero estudiar" (#335, #337) is
+ * «Siguiente duda.» (#516; they are never asked one after another). "Ya está, quiero estudiar" (#335, #337) is
  * answered with one line and a single **Ir a Estudiar** button to the study screen. Below, a textarea (Enter sends, Shift+Enter
  * is a new line) with, in one row, **Enviar** and the icon buttons for the microphone and "Deshacer
  * el último cambio" (#458; `ChatComposer`, shared with the study chat since #487); no heading above
@@ -733,8 +733,8 @@ export default function ChatPanel({
       {marks !== null && marks.count > 0 && (
         <div className="ws-chat-marks" role="status">
           <span>{marksLine(marks.count)}</span>
-          <button type="button" className="ws-chat-marks-next" onClick={marks.onNext} disabled={marks.busy}>
-            Ver la siguiente
+          <button type="button" className="ws-chat-link ws-chat-marks-next" onClick={marks.onNext} disabled={marks.busy}>
+            Siguiente duda.
           </button>
         </div>
       )}

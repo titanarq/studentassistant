@@ -105,7 +105,7 @@ export function pickDoubt(marks: DoubtMarks | null, ids: readonly string[]): str
   return ids.find((id) => !asked.has(id)) ?? ids[0];
 }
 
-/** «Ver la siguiente»: the first marked doubt, in the order of the notes, not asked yet. */
+/** «Siguiente duda.»: the first marked doubt, in the order of the notes, not asked yet. */
 export function nextDoubt(marks: DoubtMarks | null): string | null {
   return pickDoubt(marks, marks?.marks.map((m) => m.pendingId) ?? []);
 }

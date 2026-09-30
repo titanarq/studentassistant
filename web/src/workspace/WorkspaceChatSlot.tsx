@@ -11,7 +11,7 @@ import { useWorkspace } from "./state";
  * The chat slot of the workspace: the live chat panel (#317), fed by the topic's workspace stream;
  * every change of the notes it hears of reloads the document through `reloadNotes()`, and every
  * doubt asked, resolved or marked re-reads the doubts marked in the notes (`doubtsChanged()`, #516),
- * shown above the input as «Tienes N dudas marcadas en los apuntes» with «Ver la siguiente»; a
+ * shown above the input as «Tienes N dudas marcadas en los apuntes» with «Siguiente duda.»; a
  * doubt's buttons answer it through `POST .../doubts/{id}/answer`. The Recursos
  * selection (#432), when the page has one, shows as chips above the input and goes with each message. The page
  * only renders `<WorkspaceChatSlot onOpenSource capturing />` (the notes page keeps `EditorChat`).
