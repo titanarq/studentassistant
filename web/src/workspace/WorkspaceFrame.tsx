@@ -2,7 +2,7 @@ import { type CSSProperties, type ReactNode, useCallback, useRef, useState } fro
 import { topicPath } from "../desk/api";
 import ModeSwitch, { type Mode } from "../study/ModeSwitch";
 import ColumnDivider from "./ColumnDivider";
-import { readSidePercent, writeSidePercent } from "./layoutState";
+import { panelState, readSidePercent, toggleChat, togglePanel, writeSidePercent } from "./layoutState";
 import "./workspace.css";
 
 /** What the single column shows below 900 px: the right card, the left card(s) or the chat. */
@@ -125,6 +125,8 @@ export default function WorkspaceFrame({
     },
     [onLeftCollapsed],
   );
+  const layout = { panelCollapsed: collapsed, chatExpanded };
+  const panel = panelState(layout);
   const leftName = leftLabel.toLowerCase();
   const detailShown = detail !== undefined && detail !== null && detail !== false;
   return (
@@ -166,10 +168,10 @@ export default function WorkspaceFrame({
             id="workspace-left-card"
             className={leftClassName === undefined ? "workspace-sources" : `workspace-sources ${leftClassName}`}
             aria-label={leftLabel}
-            data-collapsed={collapsed && !chatExpanded ? "true" : undefined}
+            data-collapsed={panel === "collapsed" ? "true" : undefined}
           >
-            {/* #536: at the top-left of the card's header row; hides the card to that row. */}
-            {!chatExpanded && (
+            {/* #538: floats at the card's top-right corner (the header row's right end when collapsed). */}
+            {panel !== "hidden" && (
               <button
                 type="button"
                 className="workspace-toggle workspace-left-toggle"
@@ -177,7 +179,7 @@ export default function WorkspaceFrame({
                 aria-controls="workspace-left-card"
                 aria-label={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
                 title={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
-                onClick={() => setCollapsed(!collapsed)}
+                onClick={() => setCollapsed(togglePanel(layout).panelCollapsed)}
               >
                 <Chevrons direction={collapsed ? "down" : "up"} />
               </button>
@@ -185,19 +187,18 @@ export default function WorkspaceFrame({
             {left}
           </section>
           <section className="workspace-chat" aria-label="Chat">
-            {/* #534: shown on the two-column layout only (the one-column switch picks a view). */}
-            <div className="workspace-chat-tools">
-              <button
-                type="button"
-                className="workspace-toggle"
-                aria-expanded={chatExpanded}
-                aria-label={chatExpanded ? "Reducir chat" : "Ampliar chat"}
-                title={chatExpanded ? "Reducir chat" : "Ampliar chat"}
-                onClick={() => setChatExpanded(!chatExpanded)}
-              >
-                <Chevrons direction={chatExpanded ? "down" : "up"} />
-              </button>
-            </div>
+            {/* #538: floats at the card's top-right corner; shown on the two-column layout only
+                (the one-column switch picks a view). */}
+            <button
+              type="button"
+              className="workspace-toggle workspace-chat-toggle"
+              aria-expanded={chatExpanded}
+              aria-label={chatExpanded ? "Reducir chat" : "Ampliar chat"}
+              title={chatExpanded ? "Reducir chat" : "Ampliar chat"}
+              onClick={() => setChatExpanded(toggleChat(layout).chatExpanded)}
+            >
+              <Chevrons direction={chatExpanded ? "down" : "up"} />
+            </button>
             {chat}
           </section>
         </div>

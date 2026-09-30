@@ -53,3 +53,31 @@ export function readSourcesCollapsed(topicKey: string): boolean | null {
 export function writeSourcesCollapsed(topicKey: string, collapsed: boolean): void {
   write(`${COLLAPSED_KEY}.${topicKey}`, collapsed ? "1" : "0");
 }
+
+/**
+ * The two layout choices of the left column (#538). `panelCollapsed` is the student's own choice
+ * for the left card (Recursos/Captura, the study material) and is kept while the chat is
+ * expanded; `chatExpanded` is transient (never stored).
+ */
+export interface LayoutState {
+  panelCollapsed: boolean;
+  chatExpanded: boolean;
+}
+
+/** What the left card looks like: a full card, a one-line card, or not shown at all. */
+export type PanelState = "expanded" | "collapsed" | "hidden";
+
+/** Expanding the chat hides the card whatever its state; reducing the chat brings it back as it was. */
+export function panelState({ panelCollapsed, chatExpanded }: LayoutState): PanelState {
+  if (chatExpanded) return "hidden";
+  return panelCollapsed ? "collapsed" : "expanded";
+}
+
+export function toggleChat(state: LayoutState): LayoutState {
+  return { ...state, chatExpanded: !state.chatExpanded };
+}
+
+/** Collapsing or expanding the card gives or takes its height to the chat; no effect while it is hidden. */
+export function togglePanel(state: LayoutState): LayoutState {
+  return state.chatExpanded ? state : { ...state, panelCollapsed: !state.panelCollapsed };
+}

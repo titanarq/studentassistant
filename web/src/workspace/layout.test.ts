@@ -147,11 +147,12 @@ describe("the source's detail over the document column (#473)", () => {
   it("shows the divider and the chat tools only in the two-column layout, and hides what they fold (#534)", () => {
     const always = outsideMedia(workspaceCss);
     expect(declarations(always, ".workspace-divider")["display"]).toBe("none");
-    expect(declarations(always, ".workspace-chat-tools")["display"]).toBe("none");
+    expect(declarations(always, ".workspace-toggle")["display"]).toBe("none");
     const twoColumns = mediaBlock(workspaceCss, TWO_COLUMNS);
     expect(declarations(twoColumns, ".workspace-divider")["display"]).toBe("block");
     expect(declarations(twoColumns, ".workspace-divider")["grid-column"]).toBe("2");
-    expect(declarations(twoColumns, ".workspace-chat-tools")["display"]).toBe("flex");
+    expect(declarations(twoColumns, ".workspace-toggle")["position"]).toBe("absolute");
+    expect(declarations(twoColumns, ".workspace-toggle")["right"]).toBe("var(--space-2)");
     expect(declarations(twoColumns, '.workspace[data-chat="expanded"] .workspace-sources')["display"]).toBe("none");
     expect(declarations(twoColumns, '.workspace .workspace-sources[data-collapsed="true"]')["flex"]).toBe("none");
     expect(

@@ -52,7 +52,9 @@ it("expands the chat over the left card and reduces it again", () => {
   expect(chatToggle).toHaveAttribute("title", "Ampliar chat");
   expect(chatToggle).toHaveTextContent("");
   expect(chatToggle.querySelector("svg.workspace-chevrons")).toHaveAttribute("data-direction", "up");
-  expect(chatToggle.closest(".workspace-chat-tools")).not.toBeNull();
+  // #538: it floats over the card (a direct child of the chat card), not in a row of its own.
+  expect(chatToggle.parentElement).toHaveClass("workspace-chat");
+  expect(chatToggle.closest(".workspace-chat-tools")).toBeNull();
   fireEvent.click(chatToggle);
   expect(root).toHaveAttribute("data-chat", "expanded");
   // The card stays mounted (a running capture goes on); only the chat's controls remain.
@@ -180,10 +182,11 @@ const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "workspac
   "",
 );
 
-it("styles the collapsed left card as a single line with no box left (#536)", () => {
-  expect(css).toMatch(
-    /\.workspace-sources\[data-collapsed="true"\]\s*\{[^}]*padding-bottom:\s*0;[^}]*border-color:\s*transparent;[^}]*box-shadow:\s*none/,
-  );
+it("styles the collapsed left card as a one-line card that keeps its box (#538)", () => {
+  // It is still a card: no rule strips its border, shadow, padding or background when collapsed.
+  const rule = css.match(/\.workspace \.workspace-sources\[data-collapsed="true"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(rule).toMatch(/flex:\s*none/);
+  expect(rule).not.toMatch(/border|box-shadow|background|padding/);
   expect(css).toMatch(/\[data-collapsed="true"\] \.workspace-tablist\s*\{[^}]*margin-bottom:\s*0;[^}]*flex-wrap:\s*nowrap/);
   expect(css).toMatch(/\[data-collapsed="true"\] \.study-options > :not\(h2\)/);
 });
