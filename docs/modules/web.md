@@ -623,6 +623,15 @@
     style (`-` bullets, `---` rules and table delimiters, unpadded tables, no escapes in `{#anchor}`
     or `[[?word]]`: `tidyBlock`). Milkdown 7.22 drops title-less images (a `null` title fails the
     schema); the editor's image schema fixes that.
+  - **LaTeX** (#532, `noteEditor/math.ts`): `remark-math` plus two atomic nodes, `math_inline`
+    (`$x^2$`) and `math_block` (`$$ ... $$`), whose `value` attribute is the LaTeX source and whose
+    DOM is the formula rendered with KaTeX (`math/katex.ts`). `@milkdown/plugin-math` is not used:
+    its last release targets Milkdown 7.5 and it renders with `throwOnError`. A formula KaTeX
+    rejects shows its source (`.math-error`); the source is written back verbatim, and an
+    untouched block is written from its loaded text anyway (fixture `fixtures/matematicas.md`:
+    inline, display, malformed and a price with `$`). A formula is changed by deleting it and typing
+    `$...$` again (an input rule makes it a formula); a `$$x$$` inside a paragraph, once that
+    paragraph is edited, is written back as `$x$`.
   - **Spike** (#316; corpus `src/noteEditor/fixtures/*.md`: the example of `editor.md`, anchors
     with `_`/`-`, `[^p4]`/`[^ia]`/`[^est]` in paragraphs, list items and table cells, the final run
     of definitions of every source kind, nested lists, a table, a pasted image, `[[?soberanía]]`,
@@ -1128,6 +1137,18 @@ token):
     `lodash-es` 4.17.23 exactly (high advisories GHSA-r5fr-rjxr-66jc, GHSA-f23m-r3pf-42rh; 4.18.0
     is deprecated as a bad release), and npm's only suggested fix is a downgrade to mermaid 11.
     Drop the override once a mermaid release depends on a fixed `lodash-es`.
+  - **Math** (#532): `parseInline` reads `$...$` and `$$...$$` as `{type: "math", text, display}`
+    (the opening `$` not followed by a space, the closing one not preceded by a space nor followed
+    by a digit, so "5$ y 6$" stays text; `\$` is a literal dollar) and `parseNotes` reads `$$`
+    alone on its lines (or `$$ ... $$` on one) as a `{type: "math"}` block. `math/katex.ts` is the
+    one module that calls KaTeX (`renderMath(source, display)`, `throwOnError: true` inside a
+    `try`, `trust: false`; `null` when it does not parse) and imports `katex/dist/katex.min.css`,
+    whose fonts Vite bundles: no CDN. `math/Math.tsx`: `MathView` (a `span.math`, or
+    `span.math-error` with the source as written for a malformed formula, so the page never
+    breaks) and `MathText`, which renders the formulas of plain text. `NotesView` and the study
+    chat's `ReplyView` render the math nodes; the editor chat, the workspace chat (replies,
+    doubts, suggestions, "¿Por qué pusiste esto?" answers) and the pending cards show their text
+    through `MathText`. The study screen's document is the same `NotesView`.
   - `SourcePanel` (non-modal `dialog` named after the source): a notes/book page shows the
     flattened `page-NNN.page.jpg` (falling back to the cited file) with zoom (Alejar/Acercar/
     Tamaño original, `+`/`-`/`0` on the focused image) and its transcription (the sidecar's

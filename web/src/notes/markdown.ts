@@ -17,7 +17,9 @@ export type Block =
   | { type: "table"; header: string[]; rows: string[][] }
   | { type: "rule" }
   | { type: "code"; lang: string; text: string }
-  | { type: "quote"; blocks: Block[] };
+  | { type: "quote"; blocks: Block[] }
+  /** `$$ ... $$` on its own lines: a display formula, the LaTeX source without the delimiters. */
+  | { type: "math"; text: string };
 
 export interface FootnoteDefinition {
   label: string;
@@ -39,6 +41,8 @@ export type Inline =
   /** `![Imagen pegada 1](../sources/images/img-001.png)`: a pasted image (#316). */
   | { type: "image"; src: string; alt: string }
   | { type: "footnote"; label: string }
+  /** `$x^2$` (inline) or `$$x^2$$` (`display`): the LaTeX source without the delimiters (#532). */
+  | { type: "math"; text: string; display: boolean }
   /** `[[?word]]`: a word the page transcription was unsure of. */
   | { type: "uncertain"; text: string };
 
@@ -50,6 +54,8 @@ const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const EMPTY_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s*$/;
 const FOOTNOTE_DEF = /^\[\^([^\]\s]+)\]:\s?(.*)$/;
 const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const MATH_LINE = /^\s{0,3}\$\$(.+)\$\$\s*$/;
+const MATH_FENCE = /^\s{0,3}\$\$\s*$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
 
 const isBlank = (line: string) => line.trim() === "";
@@ -90,6 +96,8 @@ function startsBlock(line: string): boolean {
     HEADING.test(line) ||
     RULE.test(line) ||
     FENCE.test(line) ||
+    MATH_LINE.test(line) ||
+    MATH_FENCE.test(line) ||
     QUOTE.test(line) ||
     FOOTNOTE_DEF.test(line) ||
     listMarker(line) !== null
@@ -118,6 +126,36 @@ function parseBlocks(lines: string[], footnotes: FootnoteDefinition[]): Block[] 
       i++; // the closing fence (or the end of the text)
       blocks.push({ type: "code", lang: fence[2], text: body.join("\n") });
       continue;
+    }
+
+    const oneLine = MATH_LINE.exec(line);
+    if (oneLine && oneLine[1].trim() !== "") {
+      blocks.push({ type: "math", text: oneLine[1].trim() });
+      i++;
+      continue;
+    }
+    const opening = /^\s{0,3}\$\$(?!\$)(.*)$/.exec(line);
+    if (opening) {
+      // `$$` (optionally followed by the first line of the formula) up to a line ending in `$$`.
+      const body: string[] = opening[1].trim() === "" ? [] : [opening[1]];
+      let j = i + 1;
+      let closed = false;
+      while (j < lines.length && !isBlank(lines[j])) {
+        const end = /^(.*?)\$\$\s*$/.exec(lines[j]);
+        if (end) {
+          if (end[1].trim() !== "") body.push(end[1]);
+          closed = true;
+          j++;
+          break;
+        }
+        body.push(lines[j]);
+        j++;
+      }
+      if (closed && body.join("").trim() !== "") {
+        blocks.push({ type: "math", text: body.join("\n").trim() });
+        i = j;
+        continue;
+      }
     }
 
     const heading = HEADING.exec(line);
@@ -278,10 +316,24 @@ export function parseInline(text: string): Inline[] {
     const rest = text.slice(i);
     const char = text[i];
 
-    if (char === "\\" && i + 1 < text.length && /[\\`*_[\]()#|!{}.+-]/.test(text[i + 1])) {
+    if (char === "\\" && i + 1 < text.length && /[\\`*_[\]()#|!{}.+$-]/.test(text[i + 1])) {
       buffer += text[i + 1];
       i += 2;
       continue;
+    }
+
+    if (char === "$") {
+      // `$$...$$` (display) before `$...$`; the opening `$` must not be followed by a space, the
+      // closing one not preceded by one nor followed by a digit ("5$ y 6$" is not a formula).
+      const display = /^\$\$([^$]+?)\$\$/.exec(rest);
+      const inline = display ? null : /^\$(?![\s$])((?:\\.|[^$\\])+?)(?<!\s)\$(?!\d)/.exec(rest);
+      const found = display ?? inline;
+      if (found && found[1].trim() !== "") {
+        flush();
+        out.push({ type: "math", text: found[1].trim(), display: display !== null });
+        i += found[0].length;
+        continue;
+      }
     }
 
     const footnote = /^\[\^([^\]\s]+)\]/.exec(rest);

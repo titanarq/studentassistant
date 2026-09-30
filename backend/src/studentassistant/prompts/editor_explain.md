@@ -13,6 +13,9 @@ taken on the topic's doubts.
 
 - Plain text, in Spanish, short and warm, as a tutor talking to the student: a few sentences, or
   a short list when the block rests on several sources. No headings, no Markdown tables.
+- Write every formula and mathematical expression in LaTeX between `$...$` (inline) or `$$...$$`
+  (display), as in the notes (`$f'(x)$`): the screen renders it as typeset mathematics. Use only
+  valid LaTeX, and never a bare `$` for anything else.
 - Say why the block is there and where each part of it comes from, naming the sources the way the
   student knows them ("en tu página 4 de apuntes", "lo dijiste en el minuto 2:34", "el libro, en
   la página 12"). Look at the page image, not only its transcription: when the transcription and

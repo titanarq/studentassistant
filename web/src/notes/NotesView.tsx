@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import MathView from "../math/Math";
 import { type Block, footnoteRefs, IA_LABEL, type Inline, type NotesTree, parseInline } from "./markdown";
 import MermaidBlock from "./MermaidBlock";
 import { parseProvenance } from "./provenance";
@@ -183,6 +184,8 @@ export default function NotesView({
           return <em key={k}>{inline(node.children, `${k}.`)}</em>;
         case "code":
           return <code key={k}>{node.text}</code>;
+        case "math":
+          return <MathView key={k} source={node.text} display={node.display} />;
         case "uncertain":
           return (
             <span key={k} className="notes-uncertain" title="Palabra dudosa en la transcripción">
@@ -309,6 +312,8 @@ export default function NotesView({
       }
       case "rule":
         return <hr key={key} />;
+      case "math":
+        return <MathView key={key} source={b.text} display />;
       case "code":
         if (b.lang.toLowerCase() === "mermaid") return <MermaidBlock key={key} source={b.text} />;
         return (

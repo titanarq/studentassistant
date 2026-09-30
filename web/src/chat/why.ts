@@ -8,6 +8,7 @@ function blockText(block: Block): string {
     case "heading":
     case "paragraph":
     case "code":
+    case "math":
       return block.text;
     case "list":
       return block.items.map((item) => item.map(blockText).join(" ")).join("; ");

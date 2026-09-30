@@ -1,3 +1,4 @@
+import { MathText } from "../math/Math";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
 import DiffView from "./DiffView";
 import type { EditorChat as Chat, ChatEntry } from "./useEditorChat";
@@ -48,7 +49,7 @@ function Entry({ entry, onOpenSource, confirming, onConfirmRule }: EntryProps) {
       </p>
       <div className="chat-reply">
         <span className="chat-who">Editor:</span>{" "}
-        {entry.reply !== "" ? entry.reply : entry.streaming ? "El editor está pensando…" : null}
+        {entry.reply !== "" ? <MathText text={entry.reply} /> : entry.streaming ? "El editor está pensando…" : null}
       </div>
       {entry.refs.length > 0 && (
         <p className="chat-refs">

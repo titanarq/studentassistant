@@ -9,6 +9,8 @@
  * - provenance references (`[^p4]`, `[^ia]`, `[^est]`) are atomic chips: they can be moved or
  *   deleted but not typed into; `[^est]` shows as "tú";
  * - a heading's `{#anchor}` is hidden (kept in the text and the saved Markdown);
+ * - `$...$` and `$$...$$` are atomic formulas shown with KaTeX (`math.ts`, #532), their LaTeX
+ *   source kept as written;
  * - images without a title load (Milkdown 7.22 drops them otherwise) and show from the vault.
  */
 
@@ -40,6 +42,7 @@ import { Decoration, DecorationSet } from "@milkdown/prose/view";
 import type { EditorView } from "@milkdown/prose/view";
 import { $prose, callCommand, insert } from "@milkdown/utils";
 import { IA_LABEL } from "../notes/markdown";
+import { math } from "./math";
 import { assemble, buildSourceMap, type Positioned, type SourceMap } from "./preserve";
 
 export const STUDENT_LABEL = "est";
@@ -186,6 +189,7 @@ export async function createVisualEditor(
     .use(image)
     .use(gfm)
     .use(reference)
+    .use(math)
     .use(history)
     .use(changes)
     .use(anchors)

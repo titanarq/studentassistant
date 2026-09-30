@@ -1,3 +1,4 @@
+import { MathText } from "../math/Math";
 import { type FormEvent, useState } from "react";
 import {
   type ActionResult,
@@ -103,7 +104,7 @@ export default function DoubtResolver({
   return (
     <form className="doubt-resolver" aria-label="Resolver la duda" onSubmit={submit}>
       {question !== null ? (
-        <p className="doubt-question">{question.question}</p>
+        <p className="doubt-question"><MathText text={question.question} /></p>
       ) : (
         <p className="doubt-no-question">
           El editor todavía no ha preparado una pregunta para esta duda. Puedes contestar con tus palabras o
@@ -114,7 +115,7 @@ export default function DoubtResolver({
         <div role="group" aria-label="Respuestas sugeridas" className="doubt-suggestions">
           {suggestions.map((suggestion, index) => (
             <button key={index} type="button" disabled={busy} onClick={() => answer({ suggestion: index + 1 })}>
-              {suggestion}
+              <MathText text={suggestion} />
             </button>
           ))}
         </div>
