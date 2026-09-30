@@ -131,7 +131,6 @@
   display: none;
 }
 
-.workspace-chat-tools,
 .workspace-toggle {
   display: none;
 }
@@ -343,15 +342,18 @@
     background: var(--accent);
   }
 
-  /* The row above the chat: the icon that expands/reduces the chat, at its top-left (#536). */
-  .workspace-chat-tools {
-    flex: none;
-    display: flex;
-    justify-content: flex-start;
+  /* #538: the layout toggles float over their card at its top-right corner, like a window's
+     maximize/minimize button: no row of their own. Both cards are positioning contexts. */
+  .workspace-sources,
+  .workspace-chat {
+    position: relative;
   }
 
-  /* The vertical double-chevron icon buttons (chat, and the left card's header row). */
   .workspace-toggle {
+    position: absolute;
+    top: calc(var(--space-2) + (var(--target) - 1.75rem) / 2);
+    right: var(--space-2);
+    z-index: 3;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -373,22 +375,16 @@
     border-color: var(--accent);
   }
 
-  /* The left card's toggle sits at the top-left of its header row (tab list / heading), which
-     leaves room for it. */
-  .workspace-left-toggle {
-    position: absolute;
-    top: calc(var(--space-2) + (var(--target) - 1.75rem) / 2);
-    left: var(--space-3);
-    z-index: 3;
-  }
-
-  .workspace-sources {
-    position: relative;
-  }
-
+  /* Room for the toggle: the header row (tab list / heading) stops before it, and so does the
+     first line of the chat, so the icon never covers content. */
   .workspace-sources > .workspace-tabs > .workspace-tablist,
   .workspace-sources .study-options > h2 {
-    padding-left: 2.5rem;
+    padding-right: 2.75rem;
+  }
+
+  .workspace-chat > .ws-chat > :first-child:not(.ws-chat-scroll),
+  .workspace-chat .ws-chat-log > :first-child {
+    margin-right: 2.5rem;
   }
 
   .workspace-sources .study-options > h2 {
@@ -404,17 +400,13 @@
     display: none;
   }
 
-  /* Collapsed left card (#536): one line, only its header row (the tab list, or Estudiar's
-     heading); the card's own box goes away with the rest -- no border, padding or shadow -- and
-     the chat takes the freed height. A click on a tab shows the panel again (the host expands it). */
+  /* Collapsed left card (#538, refining #536): a card like the others -- same border, corners,
+     surface and shadow -- holding a single line, its header row (the tab list, or Estudiar's
+     heading) with the toggle at its right end. The body goes away and the chat takes the freed
+     height. A click on a tab shows the panel again (the host expands it). */
   .workspace .workspace-sources[data-collapsed="true"] {
     flex: none;
     min-height: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    border-color: transparent;
-    box-shadow: none;
-    background: transparent;
   }
 
   .workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel,

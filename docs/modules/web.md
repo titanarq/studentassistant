@@ -224,16 +224,31 @@
       (`studentassistant.workspace.sidePercent`, one key shared by both screens) when the drag
       ends or a key is pressed, read back on load, and every access is in try/catch (no storage or
       a broken value means the 40 % default).
-    - **Vertical double-chevron icon buttons (#536)**, inline SVG (two stacked chevrons, a `»`
-      turned; up = expand/hide upwards, down = minimize/show), replacing the earlier text buttons.
-      At the top-left of the chat card (`.workspace-chat-tools`): **Ampliar chat** / **Reducir chat**
-      (`aria-label` and tooltip) expands the chat over the whole column, hiding the left card (it
-      stays mounted, so a running capture goes on; root `data-chat="expanded"`). At the top-left of
-      the left card's header row (`.workspace-left-toggle`): **Ocultar <left card>** / **Mostrar
-      <left card>** (`aria-expanded`, `aria-controls`) collapses the card on its own
-      (`.workspace-sources[data-collapsed]`). Collapsed, the card is a single line: only its tab
-      list (Recursos/Captura) or, in Estudiar, its heading stays; its body, border, padding and
-      shadow are gone and the chat takes the freed height. The state and its persistence are those of #534.
+    - **Floating vertical double-chevron toggles (#536, #538)**, inline SVG (two stacked chevrons, a
+      `»` turned; up = expand/hide upwards, down = minimize/show). Since #538 each one floats over
+      its card at the top-right corner (`position: absolute`, like a window's maximize button; no
+      row of its own) and the content reserves room so it never covers it (the tab list / heading
+      `padding-right`, the chat's first line `margin-right`). **Ampliar chat** / **Reducir chat**
+      (`.workspace-chat-toggle`, `aria-label` and tooltip) expands the chat over the whole column,
+      hiding the left card (it stays mounted, so a running capture goes on; root
+      `data-chat="expanded"`). **Ocultar <left card>** / **Mostrar <left card>**
+      (`.workspace-left-toggle`, `aria-expanded`, `aria-controls`) collapses the left card on its
+      own (`.workspace-sources[data-collapsed]`). The logic is pure (`layoutState.ts`:
+      `panelState` -> expanded | collapsed | hidden, `toggleChat`, `togglePanel`, tested in
+      `layoutState.test.ts`): expanding the chat hides the card whatever its state, reducing the chat
+      brings it back as it was (the card's own choice is kept meanwhile, its toggle absent), and
+      collapsing/expanding the card gives/takes its height to/from the chat. Collapsed, the card is
+      still a card (same border, corners, surface and shadow) holding one line: its header row
+      (Recursos/Captura tabs, or Estudiar's «Material de estudio» heading) with the toggle at its
+      right end; only its body goes. The persistence is that of #534.
+    - **Real-browser check (#538)**: jsdom has no layout, so `web/e2e/layout-check.mjs` drives the
+      app in headless Chrome at 1024, 1280 and 1600 px for Construir and Estudiar (API mocked with
+      `page.route`; no backend or vault) and asserts every state (panel expanded / collapsed, chat
+      expanded, the toggles in sequence, reload), that no state leaves a dead area, a hidden
+      toggle or overlapping boxes, and that the cards share border/radius/shadow. It is dev-only
+      and is NOT run by `scripts/test.sh`: `cd web && npm i --no-save playwright-core && npx vite
+      --port 5199` in one shell, then `node e2e/layout-check.mjs http://127.0.0.1:5199 <shots dir>`
+      (`CHROME=` overrides `/usr/bin/google-chrome`).
     - **The chat fits its column (#536)**: at any divider position nothing in the chat card is wider
       than the card -- `min-width: 0` down the chain, long words wrap, bubbles use the column width
       (requests up to 92 %, replies 100 %, no fixed rem cap), and code, tables and formulas scroll
