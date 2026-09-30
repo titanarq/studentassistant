@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import MathView from "../../math/Math";
 import { type Block, type Inline, parseInline, parseNotes } from "../../notes/markdown";
 
 /**
@@ -51,6 +52,8 @@ export default function ReplyView({ text, renderSection, renderSource, resolveIm
           return <em key={k}>{inline(node.children, `${k}.`)}</em>;
         case "code":
           return <code key={k}>{node.text}</code>;
+        case "math":
+          return <MathView key={k} source={node.text} display={node.display} />;
         case "uncertain":
           return <span key={k}>{node.text}</span>;
         case "image": {
@@ -133,6 +136,8 @@ export default function ReplyView({ text, renderSection, renderSource, resolveIm
         );
       case "rule":
         return <hr key={key} />;
+      case "math":
+        return <MathView key={key} source={b.text} display />;
       case "code":
         return (
           <pre key={key}>

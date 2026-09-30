@@ -76,6 +76,16 @@ and the source states in `studentassistant.editor.incorporate`, the student's ow
   `cropped_image_provenance(number, extension="jpg")`, next to `IMAGE_TEXT` /
   `image_provenance`).
 
+- **Mathematics** (#532): formulas in the notes are LaTeX between `$...$` (inline) or `$$...$$`
+  (display); the web UI renders them with KaTeX (web module). The same holds for every chat
+  text the web shows: the prompts `editor_study_chat`, `editor_explain`, `editor_revise`,
+  `editor_incorporate` and `editor_doubts` tell the model to write mathematics in LaTeX and only
+  valid LaTeX, never a bare `$`. The exception is the spoken tutor (`editor_tutor`, read aloud by
+  the phone and the capture page): its prompt keeps forbidding LaTeX and asks for the formula in
+  words, since a speech synthesiser would read the symbols out; its text on the capture page is
+  therefore plain and needs no rendering. A student who wants the formula typeset asks in the
+  study chat (written style).
+
 - **Fidelity mode** (`FidelityMode`): `estricto` (default) allows no `[^ia]`; `ampliado` allows it,
   always defined and marked. Where a topic's mode is kept is not this module's business: the
   validator takes it as an argument.

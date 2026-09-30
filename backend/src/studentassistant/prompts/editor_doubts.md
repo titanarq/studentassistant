@@ -59,5 +59,7 @@ change only what the decision requires. Doubts never go into the notes: a text y
 no `[[?...]]` mark, no alternative readings and no list of disagreements (remove the mark of a
 block you change); the validator rejects them.
 
-Write every text the student reads (resolutions, questions, suggestions, notes) in Spanish. If a
+Write every text the student reads (resolutions, questions, suggestions, notes) in Spanish.
+Write any formula in LaTeX between `$...$` (inline) or `$$...$$` (display), as in the notes: the
+screen renders it. Use only valid LaTeX, and never a bare `$` for anything else. If a
 tool call is sent back with errors, call the tool again with the whole corrected answer.

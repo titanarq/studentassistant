@@ -12,6 +12,7 @@ const EDITS: Record<string, string> = {
   "fuentes-finales.md": "profesor",
   "imagen.md": "resume",
   "listas-anidadas.md": "ferrocarril",
+  "matematicas.md": "sumatorio",
   "mermaid.md": "resume",
   "referencias.md": "situación",
   "regla.md": "después",
@@ -73,6 +74,42 @@ it("an edited heading keeps its anchor as written", async () => {
   expect(editor.getMarkdown()).toBe(text.replace("## 2. Funciones", "## 2. Las funciones"));
   await editor.destroy();
   root.remove();
+});
+
+describe("LaTeX (#532)", () => {
+  const text = corpus["./fixtures/matematicas.md"];
+
+  it("shows formulas as KaTeX nodes", async () => {
+    const [editor, root] = await load(text);
+    expect(root.querySelectorAll(".note-math .katex").length).toBeGreaterThanOrEqual(5);
+    expect(root.querySelector(".note-math-block .katex-display")).not.toBeNull();
+    await editor.destroy();
+    root.remove();
+  });
+
+  it("shows a malformed formula as its source", async () => {
+    const [editor, root] = await load(text);
+    expect(root.querySelector(".note-math.math-error")?.textContent).toBe("$\\frac{1}{$");
+    await editor.destroy();
+    root.remove();
+  });
+
+  it("an edit next to a formula leaves the LaTeX source byte for byte", async () => {
+    const [editor, root] = await load(text);
+    typeOver(editor, "Regla de la cadena", "Cadena");
+    expect(editor.getMarkdown()).toBe(text.replace("Regla de la cadena", "Cadena"));
+    await editor.destroy();
+    root.remove();
+  });
+
+  it("an edit in a paragraph with formulas writes their source as it was", async () => {
+    const [editor, root] = await load(text);
+    expect(editor.getMarkdown()).toBe(text);
+    typeOver(editor, "se lee", "se dice");
+    expect(editor.getMarkdown()).toBe(text.replace("se lee", "se dice"));
+    await editor.destroy();
+    root.remove();
+  });
 });
 
 describe("tidyBlock", () => {

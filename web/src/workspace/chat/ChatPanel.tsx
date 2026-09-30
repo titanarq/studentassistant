@@ -1,3 +1,4 @@
+import { MathText } from "../../math/Math";
 import { type ReactNode, useId, useRef, useState } from "react";
 import DiffView from "../../chat/DiffView";
 import FeedbackChip from "../../chat/FeedbackChip";
@@ -298,8 +299,8 @@ function DoubtEntry({
       <p className="ws-chat-who">
         Asistente <span className="ws-chat-badge">{DOUBT_BADGE[doubt.status] ?? "Duda"}</span>
       </p>
-      {doubt.text !== "" && doubt.text !== doubt.question && <p className="ws-chat-explanation">{doubt.text}</p>}
-      <p className="ws-chat-text">{doubt.question}</p>
+      {doubt.text !== "" && doubt.text !== doubt.question && <p className="ws-chat-explanation"><MathText text={doubt.text} /></p>}
+      <p className="ws-chat-text"><MathText text={doubt.question} /></p>
       {doubt.suggestions.length > 0 && (
         <ol className="ws-chat-suggestions" aria-label="Sugerencias">
           {doubt.suggestions.map((suggestion, index) => (
@@ -311,7 +312,7 @@ function DoubtEntry({
                 aria-pressed={chosen === suggestion ? "true" : undefined}
                 onClick={() => void choose(suggestion, { suggestion: index + 1 })}
               >
-                {suggestion}
+                <MathText text={suggestion} />
               </button>
             </li>
           ))}
@@ -386,7 +387,7 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, on
   const text = entry.reply !== "" ? entry.reply : placeholder;
   if (entry.kind === "doubt" && entry.doubt !== null)
     return <DoubtEntry doubt={entry.doubt} onOpenSource={onOpenSource} onAnswer={onAnswer} capturing={capturing} />;
-  if (entry.kind === "doubts_resolved") return <p className="ws-chat-line">{entry.reply}</p>;
+  if (entry.kind === "doubts_resolved") return <p className="ws-chat-line"><MathText text={entry.reply} /></p>;
   if (entry.kind === "triage" && entry.status === "done" && entry.decision === "set_aside" && entry.targets.some((t) => t.reasons.length > 0)) {
     return <TriageLines targets={entry.targets} onOpenSource={onOpenSource} />;
   }
@@ -415,7 +416,7 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, on
           {!batch && <p className="ws-chat-who">Asistente</p>}
           <p className={entry.reply === "" ? "ws-chat-text ws-chat-waiting" : "ws-chat-text"}>
             {onItsWay(entry) && entry.reply === "" && <Spinner />}
-            {text}
+            {text === null ? null : <MathText text={text} />}
           </p>
         </>
       )}

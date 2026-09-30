@@ -1,3 +1,4 @@
+import { MathText } from "../math/Math";
 import type { ReactNode } from "react";
 import { kindLabel, type PendingItem, statusLabel } from "./api";
 
@@ -44,7 +45,7 @@ export default function PendingCard({ item, children }: { item: PendingItem; chi
         <span className="pending-status">{statusLabel(item.status)}</span>
       </header>
       {open && KIND_HINTS[item.kind] && <p className="pending-hint">{KIND_HINTS[item.kind]}</p>}
-      <p className="pending-text">{item.text}</p>
+      <p className="pending-text"><MathText text={item.text} /></p>
       {refs !== null && <p className="pending-refs">Sobre: {refs}</p>}
       {item.merged_ids.length > 0 && (
         <p className="pending-merged">

@@ -1,0 +1,13 @@
+/* Formulas (#532): KaTeX's own stylesheet does the typesetting; these are the page's parts. */
+.math-display {
+  display: block;
+  margin: var(--space-3, 0.75rem) 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* A formula KaTeX could not parse: its source, as written. */
+.math-error {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
