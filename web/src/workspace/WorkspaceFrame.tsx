@@ -47,6 +47,38 @@ export interface WorkspaceFrameProps {
 
 const ORDER: NarrowView[] = ["document", "left", "chat"];
 
+/** A vertical double chevron (a `»` turned up or down): the toggles of the chat and the left card. */
+function Chevrons({ direction }: { direction: "up" | "down" }) {
+  return (
+    <svg
+      className="workspace-chevrons"
+      data-direction={direction}
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {direction === "up" ? (
+        <>
+          <path d="M3.5 7.5 8 3l4.5 4.5" />
+          <path d="M3.5 13 8 8.5 12.5 13" />
+        </>
+      ) : (
+        <>
+          <path d="M3.5 3 8 7.5 12.5 3" />
+          <path d="M3.5 8.5 8 13l4.5-4.5" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 /**
  * The frame shared by **Construir** and **Estudiar** (#487): the desk under the header band (the
  * switch Construir · Estudiar, the topic's name, the links on the right), and two columns -- on the
@@ -136,24 +168,34 @@ export default function WorkspaceFrame({
             aria-label={leftLabel}
             data-collapsed={collapsed && !chatExpanded ? "true" : undefined}
           >
+            {/* #536: at the top-left of the card's header row; hides the card to that row. */}
+            {!chatExpanded && (
+              <button
+                type="button"
+                className="workspace-toggle workspace-left-toggle"
+                aria-expanded={!collapsed}
+                aria-controls="workspace-left-card"
+                aria-label={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
+                title={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
+                onClick={() => setCollapsed(!collapsed)}
+              >
+                <Chevrons direction={collapsed ? "down" : "up"} />
+              </button>
+            )}
             {left}
           </section>
           <section className="workspace-chat" aria-label="Chat">
             {/* #534: shown on the two-column layout only (the one-column switch picks a view). */}
             <div className="workspace-chat-tools">
-              {!chatExpanded && (
-                <button
-                  type="button"
-                  className="workspace-tool"
-                  aria-expanded={!collapsed}
-                  aria-controls="workspace-left-card"
-                  onClick={() => setCollapsed(!collapsed)}
-                >
-                  {collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
-                </button>
-              )}
-              <button type="button" className="workspace-tool" onClick={() => setChatExpanded(!chatExpanded)}>
-                {chatExpanded ? "Reducir chat" : "Ampliar chat"}
+              <button
+                type="button"
+                className="workspace-toggle"
+                aria-expanded={chatExpanded}
+                aria-label={chatExpanded ? "Reducir chat" : "Ampliar chat"}
+                title={chatExpanded ? "Reducir chat" : "Ampliar chat"}
+                onClick={() => setChatExpanded(!chatExpanded)}
+              >
+                <Chevrons direction={chatExpanded ? "down" : "up"} />
               </button>
             </div>
             {chat}

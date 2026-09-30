@@ -298,7 +298,11 @@ it("starts with the Recursos/Captura panel collapsed when the document has notes
 
   const panel = screen.getByRole("region", { name: "Recursos y captura" });
   await waitFor(() => expect(panel).toHaveAttribute("data-collapsed", "true"));
-  fireEvent.click(screen.getByRole("button", { name: "Mostrar recursos y captura" }));
+  // The toggle is an icon at the start of the card, before the tab list.
+  const toggle = screen.getByRole("button", { name: "Mostrar recursos y captura" });
+  expect(panel.firstElementChild).toBe(toggle);
+  expect(toggle).toHaveTextContent("");
+  fireEvent.click(toggle);
   expect(panel).not.toHaveAttribute("data-collapsed");
   expect(window.sessionStorage.getItem("studentassistant.workspace.sourcesCollapsed.historia/revolucion-industrial")).toBe("0");
   fireEvent.click(screen.getByRole("button", { name: "Ocultar recursos y captura" }));

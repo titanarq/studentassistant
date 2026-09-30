@@ -224,12 +224,20 @@
       (`studentassistant.workspace.sidePercent`, one key shared by both screens) when the drag
       ends or a key is pressed, read back on load, and every access is in try/catch (no storage or
       a broken value means the 40 % default).
-    - **Tools row** at the top of the chat card (`.workspace-chat-tools`): **Ampliar chat** /
-      **Reducir chat** expands the chat over the whole column, hiding the left card (it stays
-      mounted, so a running capture goes on; root `data-chat="expanded"`), and **Ocultar
-      <left card>** / **Mostrar <left card>** (`aria-expanded`, `aria-controls`) collapses the left
-      card on its own to its tab list (root `.workspace-sources[data-collapsed]`), giving its height
-      to the chat. An Estudiar card has no tab list, so collapsed it goes away whole.
+    - **Vertical double-chevron icon buttons (#536)**, inline SVG (two stacked chevrons, a `»`
+      turned; up = expand/hide upwards, down = minimize/show), replacing the earlier text buttons.
+      At the top-left of the chat card (`.workspace-chat-tools`): **Ampliar chat** / **Reducir chat**
+      (`aria-label` and tooltip) expands the chat over the whole column, hiding the left card (it
+      stays mounted, so a running capture goes on; root `data-chat="expanded"`). At the top-left of
+      the left card's header row (`.workspace-left-toggle`): **Ocultar <left card>** / **Mostrar
+      <left card>** (`aria-expanded`, `aria-controls`) collapses the card on its own
+      (`.workspace-sources[data-collapsed]`). Collapsed, the card is a single line: only its tab
+      list (Recursos/Captura) or, in Estudiar, its heading stays; its body, border, padding and
+      shadow are gone and the chat takes the freed height. The state and its persistence are those of #534.
+    - **The chat fits its column (#536)**: at any divider position nothing in the chat card is wider
+      than the card -- `min-width: 0` down the chain, long words wrap, bubbles use the column width
+      (requests up to 92 %, replies 100 %, no fixed rem cap), and code, tables and formulas scroll
+      inside their own box (`workspace.css`, end of file).
     - **Construir's defaults**: the tab list is **Recursos** then **Captura** and **Recursos** is
       selected on entry; the panel starts expanded while the document has not been started (notes
       `empty`/not found) and collapsed once the notes exist, unless the student chose (the choice is
