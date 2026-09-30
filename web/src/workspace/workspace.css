@@ -131,7 +131,8 @@
   display: none;
 }
 
-.workspace-chat-tools {
+.workspace-chat-tools,
+.workspace-toggle {
   display: none;
 }
 
@@ -342,20 +343,59 @@
     background: var(--accent);
   }
 
-  /* The tools row above the chat: hide/show the left card, expand/reduce the chat. */
+  /* The row above the chat: the icon that expands/reduces the chat, at its top-left (#536). */
   .workspace-chat-tools {
     flex: none;
     display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: var(--space-2);
+    justify-content: flex-start;
   }
 
-  .workspace-tool {
+  /* The vertical double-chevron icon buttons (chat, and the left card's header row). */
+  .workspace-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    min-width: 2rem;
+    height: 1.75rem;
     min-height: 0;
     margin: 0;
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--step--1);
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    color: var(--ink-muted);
+    cursor: pointer;
+  }
+
+  .workspace-toggle:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* The left card's toggle sits at the top-left of its header row (tab list / heading), which
+     leaves room for it. */
+  .workspace-left-toggle {
+    position: absolute;
+    top: calc(var(--space-2) + (var(--target) - 1.75rem) / 2);
+    left: var(--space-3);
+    z-index: 3;
+  }
+
+  .workspace-sources {
+    position: relative;
+  }
+
+  .workspace-sources > .workspace-tabs > .workspace-tablist,
+  .workspace-sources .study-options > h2 {
+    padding-left: 2.5rem;
+  }
+
+  .workspace-sources .study-options > h2 {
+    display: flex;
+    align-items: center;
+    min-height: var(--target);
+    margin: 0;
   }
 
   /* Expanded chat: the left card (tabs and all) is hidden and the chat fills the column. Its
@@ -364,18 +404,37 @@
     display: none;
   }
 
-  /* Collapsed left card: only its tab list (or heading row) remains, the rest of the height goes
-     to the chat; a click on a tab shows the panel again (the host expands it). */
+  /* Collapsed left card (#536): one line, only its header row (the tab list, or Estudiar's
+     heading); the card's own box goes away with the rest -- no border, padding or shadow -- and
+     the chat takes the freed height. A click on a tab shows the panel again (the host expands it). */
   .workspace .workspace-sources[data-collapsed="true"] {
     flex: none;
     min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
+    box-shadow: none;
+    background: transparent;
   }
 
   .workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel,
   .workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel-capture:not([hidden]),
-  /* A left card without tabs (Estudiar's options) has no header to keep: it goes away whole. */
-  .workspace .workspace-sources[data-collapsed="true"]:not(:has(> .workspace-tabs)) {
+  .workspace .workspace-sources[data-collapsed="true"] .study-options > :not(h2) {
     display: none;
+  }
+
+  .workspace .workspace-sources[data-collapsed="true"] .workspace-tablist {
+    margin-bottom: 0;
+    border-bottom-color: transparent;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .workspace .workspace-sources[data-collapsed="true"] .study-options > h2 {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }
 
@@ -1291,4 +1350,63 @@
   .workspace-detail .source-image-frame {
     max-height: 60vh;
   }
+}
+
+/* #536: the chat fits its column at any divider position: nothing in it is wider than the card
+   (long words wrap, code/tables/formulas scroll inside their own box, media shrinks). */
+.workspace-chat,
+.workspace-chat .ws-chat,
+.workspace-chat .ws-chat-scroll,
+.workspace-chat .ws-chat-log,
+.workspace-chat .ws-chat-entry,
+.workspace-chat .chat-entry,
+.workspace-chat .ws-chat-form {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.workspace-chat .ws-chat-log {
+  overflow-x: hidden;
+}
+
+.workspace-chat .ws-chat-request,
+.workspace-chat .ws-chat-reply,
+.workspace-chat .chat-message,
+.workspace-chat .chat-reply {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.workspace-chat .ws-chat-request {
+  max-width: 92%;
+}
+
+.workspace-chat .ws-chat-reply {
+  max-width: 100%;
+}
+
+.workspace-chat :is(pre, code, table, .katex-display, .math-display, .katex) {
+  max-width: 100%;
+}
+
+.workspace-chat :is(pre, .katex-display, .math-display, .katex) {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.workspace-chat table {
+  display: block;
+  overflow-x: auto;
+}
+
+.workspace-chat :is(img, svg, video, canvas) {
+  max-width: 100%;
+  height: auto;
+}
+
+.workspace-chat .ws-chat-chips,
+.workspace-chat .ws-chat-actions {
+  min-width: 0;
 }
