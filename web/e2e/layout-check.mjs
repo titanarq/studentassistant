@@ -132,7 +132,13 @@ for (const mode of ["construir", "estudiar"]) {
     await shot("3-collapsed");
 
     await click(page, "Ampliar chat");
-    coherent(`${tag} chat expanded (panel was collapsed)`, await state(page), "hidden");
+    coherent(`${tag} chat expanded (panel was collapsed)`, await state(page), "collapsed");
+    {
+      // The maximized chat fills the column below the pill: no overlap, bottom flush with the column.
+      const m = await state(page);
+      check(m.chat.y >= m.src.b, `${tag} maximized chat starts below the pill`);
+      check(Math.abs(m.chat.b - m.left.b) < 2, `${tag} maximized chat reaches the column bottom`);
+    }
     await shot("4-chat-expanded");
     await click(page, "Reducir chat");
     coherent(`${tag} chat reduced -> panel back to collapsed`, await state(page), "collapsed");
@@ -155,7 +161,7 @@ for (const mode of ["construir", "estudiar"]) {
     await page.waitForSelector(".workspace-chat");
     await page.waitForTimeout(300);
     const afterReload = await state(page);
-    coherent(`${tag} reload with the chat expanded`, afterReload, afterReload.src === null ? "hidden" : "expanded");
+    coherent(`${tag} reload with the chat expanded`, afterReload, afterReload.src === null ? "hidden" : afterReload.src.h < 80 ? "collapsed" : "expanded");
     await shot("5-reload");
     await context.close();
   }

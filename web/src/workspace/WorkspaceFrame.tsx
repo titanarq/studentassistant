@@ -179,7 +179,11 @@ export default function WorkspaceFrame({
                 aria-controls="workspace-left-card"
                 aria-label={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
                 title={collapsed ? `Mostrar ${leftName}` : `Ocultar ${leftName}`}
-                onClick={() => setCollapsed(togglePanel(layout).panelCollapsed)}
+                onClick={() => {
+                  const next = togglePanel(layout);
+                  setChatExpanded(next.chatExpanded);
+                  setCollapsed(next.panelCollapsed);
+                }}
               >
                 <Chevrons direction={collapsed ? "down" : "up"} />
               </button>

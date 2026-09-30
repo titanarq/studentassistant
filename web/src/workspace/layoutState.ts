@@ -67,17 +67,25 @@ export interface LayoutState {
 /** What the left card looks like: a full card, a one-line card, or not shown at all. */
 export type PanelState = "expanded" | "collapsed" | "hidden";
 
-/** Expanding the chat hides the card whatever its state; reducing the chat brings it back as it was. */
+/**
+ * Expanding the chat hides a full card, but a collapsed one stays as its one-line pill and the
+ * chat fills the column below it (no overlap); reducing the chat brings everything back as it was.
+ */
 export function panelState({ panelCollapsed, chatExpanded }: LayoutState): PanelState {
-  if (chatExpanded) return "hidden";
-  return panelCollapsed ? "collapsed" : "expanded";
+  if (panelCollapsed) return "collapsed";
+  return chatExpanded ? "hidden" : "expanded";
 }
 
 export function toggleChat(state: LayoutState): LayoutState {
   return { ...state, chatExpanded: !state.chatExpanded };
 }
 
-/** Collapsing or expanding the card gives or takes its height to the chat; no effect while it is hidden. */
+/**
+ * Collapsing or expanding the card gives or takes its height to the chat; no effect while it is
+ * hidden. Expanding the pill while the chat is expanded also reduces the chat (the card needs room).
+ */
 export function togglePanel(state: LayoutState): LayoutState {
-  return state.chatExpanded ? state : { ...state, panelCollapsed: !state.panelCollapsed };
+  if (state.chatExpanded && !state.panelCollapsed) return state;
+  if (state.chatExpanded) return { panelCollapsed: false, chatExpanded: false };
+  return { ...state, panelCollapsed: !state.panelCollapsed };
 }

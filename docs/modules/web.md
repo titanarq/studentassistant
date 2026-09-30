@@ -230,12 +230,12 @@
       row of its own) and the content reserves room so it never covers it (the tab list / heading
       `padding-right`, the chat's first line `margin-right`). **Ampliar chat** / **Reducir chat**
       (`.workspace-chat-toggle`, `aria-label` and tooltip) expands the chat over the whole column,
-      hiding the left card (it stays mounted, so a running capture goes on; root
+      hiding a full left card (a collapsed one stays as its pill and the chat fills the column below it, never over it; it stays mounted, so a running capture goes on; root
       `data-chat="expanded"`). **Ocultar <left card>** / **Mostrar <left card>**
       (`.workspace-left-toggle`, `aria-expanded`, `aria-controls`) collapses the left card on its
       own (`.workspace-sources[data-collapsed]`). The logic is pure (`layoutState.ts`:
       `panelState` -> expanded | collapsed | hidden, `toggleChat`, `togglePanel`, tested in
-      `layoutState.test.ts`): expanding the chat hides the card whatever its state, reducing the chat
+      `layoutState.test.ts`): expanding the chat hides a full card but keeps a collapsed one as a pill above it (expanding that pill reduces the chat), reducing the chat
       brings it back as it was (the card's own choice is kept meanwhile, its toggle absent), and
       collapsing/expanding the card gives/takes its height to/from the chat. Collapsed, the card is
       still a card (same border, corners, surface and shadow) holding one line: its header row

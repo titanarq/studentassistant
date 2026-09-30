@@ -153,7 +153,7 @@ describe("the source's detail over the document column (#473)", () => {
     expect(declarations(twoColumns, ".workspace-divider")["grid-column"]).toBe("2");
     expect(declarations(twoColumns, ".workspace-toggle")["position"]).toBe("absolute");
     expect(declarations(twoColumns, ".workspace-toggle")["right"]).toBe("var(--space-2)");
-    expect(declarations(twoColumns, '.workspace[data-chat="expanded"] .workspace-sources')["display"]).toBe("none");
+    expect(declarations(twoColumns, '.workspace[data-chat="expanded"] .workspace-sources:not([data-collapsed="true"])')["display"]).toBe("none");
     expect(declarations(twoColumns, '.workspace .workspace-sources[data-collapsed="true"]')["flex"]).toBe("none");
     expect(
       declarations(twoColumns, '.workspace .workspace-sources[data-collapsed="true"] .workspace-tabpanel')["display"],
