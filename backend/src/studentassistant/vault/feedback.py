@@ -6,7 +6,11 @@ item into an issue of the code repository by hand -- the backend never calls Git
 repository is public, the vault is the student's private content).
 
 The inbox is `feedback/inbox.jsonl` at the vault root, append-only JSONL like every other log
-(`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`). Two kinds of line:
+(`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`). It is about the app, not
+about one student's content, so there is one for the whole repository and every function here reads
+and writes it at `vault.root` whichever handle it is given; what a user's handle adds is who
+reported the item, recorded in its context (`user`) so the maintainer can ask that student and so a
+report of one student is not read as another's. Two kinds of line:
 
 - `{"record": "item", ...}` -- a new item: `id` (below), `created_at`, `kind` (`bug` |
   `mejora`), `title`, `body`, `context`;
@@ -24,9 +28,9 @@ status change with that id applies to all of them (nothing tells which PC's item
 
 Reading folds the lines in file order: an item's status is its last change (`nuevo` without one).
 Every write -- allocating the id and appending, or checking the id and appending a change -- runs
-under the cross-process vault lock `feedback` (`locking.py`), so the server and the CLI of one PC
-never give two items one id. Nothing here runs git: the caller commits (the sync loop, or a
-checkpoint).
+under the cross-process vault lock `feedback` (`locking.py`), taken on the repository so that a
+user's handle and the root hold one and the same lock and the server and the CLI of one PC never
+give two items one id. Nothing here runs git: the caller commits (the sync loop, or a checkpoint).
 """
 
 from __future__ import annotations
@@ -104,6 +108,8 @@ def _aware(time: datetime) -> datetime:
 class FeedbackContext(VaultFileModel):
     """Where the student was when they reported it: enough for the maintainer to reproduce it."""
 
+    user: str | None = None
+    """The id of the student who reported it; `None` in a line written before a vault had users."""
     subject: str | None = None
     topic: str | None = None
     route: str | None = Field(default=None, max_length=200)
@@ -174,8 +180,12 @@ class FeedbackItem(VaultFileModel):
 
 
 def feedback_path(vault: Vault) -> Path:
-    """`feedback/inbox.jsonl` of the vault, whether or not anything was reported yet."""
-    return vault.path / FEEDBACK_DIRNAME / INBOX_FILENAME
+    """`feedback/inbox.jsonl` of the vault, whether or not anything was reported yet.
+
+    The repository's inbox, at `vault.root`: a user's handle has no inbox of its own, so every
+    student's reports land in the one file the maintainer reads.
+    """
+    return vault.root / FEEDBACK_DIRNAME / INBOX_FILENAME
 
 
 def _lines(vault: Vault) -> list[FeedbackEntry | FeedbackStatusChange]:
@@ -218,6 +228,13 @@ def _new_id(taken: set[str]) -> str:
 
 def _normalized(feedback_id: str) -> str:
     return feedback_id.strip().lower()
+
+
+def _with_user(context: FeedbackContext, user_id: str | None) -> FeedbackContext:
+    """`context` naming the user the handle is one for, when it does not already name one."""
+    if user_id is None or context.user is not None:
+        return context
+    return context.model_copy(update={"user": user_id})
 
 
 def list_feedback(vault: Vault, status: FeedbackStatus | None = None) -> list[FeedbackItem]:
@@ -264,6 +281,10 @@ def add_feedback(
 ) -> FeedbackItem:
     """Append a new item (status `nuevo`) and return it, creating `feedback/` on first use.
 
+    An item reported through a user's handle records that user in its context, unless the caller's
+    context already names one: who reported it is what the maintainer needs to ask about it, and
+    the caller that has the handle is the one that knows.
+
     Raises:
         ValidationError: an empty or too long title/body, an unknown kind.
         VaultBusyError: another process held the inbox lock past its timeout; nothing written.
@@ -271,14 +292,14 @@ def add_feedback(
     """
     now = (clock or (lambda: datetime.now(UTC)))()
     path = feedback_path(vault)
-    with vault_lock(vault.path, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
+    with vault_lock(vault.root, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
         entry = FeedbackEntry(
             id=_new_id(set(_fold(_lines(vault)))),
             created_at=now,
             kind=kind,
             title=title,
             body=body.strip(),
-            context=context or FeedbackContext(),
+            context=_with_user(context or FeedbackContext(), vault.user_id),
         )
         path.parent.mkdir(exist_ok=True)
         append_jsonl(path, entry)
@@ -308,7 +329,7 @@ def set_feedback_status(
     if not _ID.fullmatch(feedback_id):
         raise FeedbackNotFoundError(f"{feedback_id!r} is not a feedback id")
     now = (clock or (lambda: datetime.now(UTC)))()
-    with vault_lock(vault.path, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
+    with vault_lock(vault.root, FEEDBACK_LOCK_NAME).hold(FEEDBACK_LOCK_TIMEOUT_SECONDS):
         item = _single(_fold(_lines(vault)), feedback_id)
         change = FeedbackStatusChange(
             id=feedback_id,

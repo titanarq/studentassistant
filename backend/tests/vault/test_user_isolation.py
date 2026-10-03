@@ -39,6 +39,7 @@ from studentassistant.vault import (
     write_pending_review,
     write_topic_digest,
 )
+from studentassistant.vault.locking import LOCKS_DIRNAME
 from studentassistant.vault.models import VaultFileModel
 from studentassistant.vault.study import append_study_record, write_study_file
 
@@ -177,8 +178,19 @@ def test_every_writer_of_a_user_handle_writes_inside_that_users_folder(
 
     added = set(everything_under(tmp_vault.root)) - before
     assert added, "the writers wrote nothing at all, so this test would pass on its own"
-    outside = sorted(path for path in added if path.parts[:2] != ("users", "ana-garcia"))
+    # `.git/` is the repository's own and no content: the locks a writer takes live in it, and
+    # they are the repository's whatever handle asked for them, so they are not "outside" (#547).
+    outside = sorted(
+        path
+        for path in added
+        if path.parts[:2] != ("users", "ana-garcia") and path.parts[0] != ".git"
+    )
     assert outside == [], "a writer given a user handle put something outside users/ana-garcia/"
+    taken = sorted(path for path in added if path.parts[0] == ".git")
+    assert taken, "no writer took a lock, so this test would pass on its own"
+    assert all(path.parts[1] == LOCKS_DIRNAME for path in taken), (
+        "the locks of a user handle's writers are the repository's, under its own .git/"
+    )
     assert all(path.is_relative_to(ana.path) for path in paths)
     assert _relative(ana, paths[0]) == (
         "subjects/matematicas-ii/topics/derivadas/sources/notes/page-001.jpg"

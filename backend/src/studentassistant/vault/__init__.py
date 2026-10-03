@@ -153,7 +153,9 @@ from studentassistant.vault.sync import (
     SyncResult,
     SyncStatus,
     SystemClock,
+    UserGitSync,
     notes_tag_name,
+    notes_tag_prefix,
 )
 from studentassistant.vault.topics import (
     StoredTopic,
@@ -279,6 +281,7 @@ __all__ = [
     "UnknownSourceKindError",
     "UserError",
     "UserFileError",
+    "UserGitSync",
     "UserNotFoundError",
     "UserProfile",
     "UserProfileError",
@@ -317,6 +320,7 @@ __all__ = [
     "notes_draft_path",
     "notes_path",
     "notes_tag_name",
+    "notes_tag_prefix",
     "pending_review_path",
     "topic_digest_path",
     "put_page_transcription",

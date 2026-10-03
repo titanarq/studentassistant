@@ -8,6 +8,13 @@ last update; `VaultIndex.open()` rebuilds on its own when the index was built fo
 by another schema, or at another git HEAD than the vault's (a clone, a pull), and otherwise
 updates.
 
+An index is built over the handle it is given, so a vault with users has one database per user,
+each next to the configured path (`user_index_path(index_path, user_id)`, i.e.
+`index-<user-id>.sqlite3`) and each built over that user's handle: what a search answers with is
+one student's own notes, and never another's. A vault with no `users/` folder keeps the single
+database at the path itself, and `rebuild_index` on a root handle of one that has users rebuilds
+every user's, in `list_users` order, and reports each of them.
+
 What is indexed is grouped in *units*, each a small set of vault files read together:
 
 - `subjects/<s>/subject.yaml` -- a subject;
@@ -21,13 +28,17 @@ What is indexed is grouped in *units*, each a small set of vault files read toge
 The index remembers a fingerprint (mtime, size, inode) of every file it read; `update()` scans
 the tree, and each unit one of whose files appeared, disappeared or changed is deleted from the
 index and read again. A file this backend cannot read does not fail the index: its unit is left
-out and reported (`IndexReport.skipped`). Notes versions come from the git tags
-`<subject-slug>/<topic-slug>/apuntes-vN` and are re-listed on every update.
+out and reported (`IndexReport.skipped`). Notes versions come from the git tags of the handle's
+own content -- `<subject-slug>/<topic-slug>/apuntes-vN` for the repository's,
+`<user-id>/<subject-slug>/<topic-slug>/apuntes-vN` for a user's -- and are re-listed on every
+update.
 
 Search is FTS5 with the `unicode61` tokenizer removing diacritics, so `fotosintesis` finds
 `fotosíntesis`. Every hit names the vault-relative file it came from (and, for a transcript, the
-segment's `seq`), which is what the web opens. Nothing here writes a vault file; git is run
-read-only (`rev-parse`, `tag --list`) through `GitRunner`.
+segment's `seq`), which is what the web opens; on a user's index that path is relative to their
+own folder, as every id the web and the phone use is. Nothing here writes a vault file; git is run
+read-only (`rev-parse`, `tag --list`) through `GitRunner`, in the repository's `root` whatever
+handle the index was given, because the history and the tags are the repository's.
 """
 
 from __future__ import annotations
@@ -46,7 +57,7 @@ from typing import Any
 from pydantic import ValidationError
 from yaml import YAMLError, safe_load
 
-from studentassistant.vault.errors import VaultError
+from studentassistant.vault.errors import UserNotFoundError, VaultError
 from studentassistant.vault.files import read_yaml
 from studentassistant.vault.git import GitIdentity, GitRunner
 from studentassistant.vault.jsonl import read_jsonl
@@ -70,8 +81,9 @@ from studentassistant.vault.sources import (
     is_removed,
 )
 from studentassistant.vault.subjects import SUBJECT_FILE_NAME, SUBJECTS_DIRNAME
-from studentassistant.vault.sync import NOTES_TAG_SUFFIX
+from studentassistant.vault.sync import NOTES_TAG_SUFFIX, notes_tag_prefix
 from studentassistant.vault.topics import TOPIC_FILE_NAME, TOPICS_DIRNAME
+from studentassistant.vault.users import list_users
 from studentassistant.vault.vault import Vault
 
 logger = logging.getLogger(__name__)
@@ -104,10 +116,25 @@ _PAGE_TRANSCRIPTION = re.compile(r"^page-(\d{3,})\.md$")
 _PDF_PAGE_TEXT = re.compile(r"^(page-\d{3,})\.p(\d+)\.txt$")
 _QUERY_TERM = re.compile(r"\w+")
 _SLUG_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
-_NOTES_TAG = re.compile(rf"^({_SLUG_PATTERN})/({_SLUG_PATTERN})/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$")
 # The identity `GitRunner` wants; the index only reads, so it never authors anything.
 _READER = GitIdentity(name="studentassistant index", email="index@studentassistant.invalid")
 _GIT_TIMEOUT_SECONDS = 30.0
+
+
+def _notes_tag_pattern(user_id: str | None) -> re.Pattern[str]:
+    """Which tags are notes versions of this handle's content, and which subject and topic they
+    name.
+
+    A user's tags carry their id first (`vault/sync.py` writes them), so a user's index lists only
+    their own versions and the repository's index only the tags of content that is nobody's folder:
+    two users' `apuntes-v1` of the same subject and topic are two different notes, and neither of
+    them sees the other's.
+    """
+    prefix = "" if user_id is None else f"{re.escape(user_id)}/"
+    return re.compile(
+        rf"^{prefix}({_SLUG_PATTERN})/({_SLUG_PATTERN})/{NOTES_TAG_SUFFIX}([1-9][0-9]*)$"
+    )
+
 
 _SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -209,7 +236,12 @@ class PendingItem:
 
 @dataclass(frozen=True)
 class NoteVersion:
-    """One notes version tag `<subject-slug>/<topic-slug>/apuntes-v<version>`."""
+    """One notes version tag `<subject-slug>/<topic-slug>/apuntes-v<version>`.
+
+    `name` is the tag as git holds it, so it carries the user's id first on a user's index;
+    `subject`, `topic` and `version` are the parts the index read out of it, which are the same
+    two slugs and the same counting a user's own notes have always had.
+    """
 
     subject: str
     topic: str
@@ -242,13 +274,20 @@ class SearchHit:
 
 @dataclass(frozen=True)
 class IndexReport:
-    """What a `rebuild()` or `update()` did: units re-read, and those left out with the reason."""
+    """What a `rebuild()` or `update()` did: units re-read, and those left out with the reason.
+
+    `users` is empty except on the report `rebuild_index` returns for a vault with users, where it
+    holds one `(user id, that user's own report)` per database rebuilt, in `list_users` order, and
+    the counts above are the sum of every user's. A unit one of those reports left out is named
+    here as `<user-id>/<unit>`, because two users' units are the same names.
+    """
 
     rebuilt: bool
     units_indexed: int
     units_removed: int
     documents: int
     skipped: tuple[tuple[str, str], ...] = ()
+    users: tuple[tuple[str, IndexReport], ...] = ()
 
 
 @dataclass
@@ -271,7 +310,11 @@ class VaultIndex:
         self.path = path
         self._connection = connection
         self._lock = threading.RLock()
-        self._git = GitRunner(vault.path, _READER, timeout=_GIT_TIMEOUT_SECONDS)
+        # Git runs in the repository's root, never in a user's folder: the history, the HEAD a
+        # rebuild is keyed to and the tags are the repository's, whichever handle is indexed.
+        self._git = GitRunner(vault.root, _READER, timeout=_GIT_TIMEOUT_SECONDS)
+        self._notes_tag = _notes_tag_pattern(vault.user_id)
+        self._notes_tag_glob = f"{notes_tag_prefix('*', '*', vault.user_id)}*"
 
     # -- opening ---------------------------------------------------------------------------------
 
@@ -281,6 +324,11 @@ class VaultIndex:
 
         It is rebuilt from scratch when it is new, unreadable as SQLite, of another schema, built
         for another vault or at another HEAD than the vault's; otherwise it is updated.
+
+        What is indexed is the handle's content, so a user's index is a database of its own (at
+        `user_index_path`, which is what the caller passes as `path`): it reads only that user's
+        `subjects/` and only their notes tags, while the HEAD that says whether it is current is
+        the repository's, since a pull that moved it may have moved their tags with it.
 
         Raises:
             VaultIndexError: when the database cannot be created at `path`.
@@ -309,7 +357,7 @@ class VaultIndex:
     # -- keeping it current ----------------------------------------------------------------------
 
     def is_current(self) -> bool:
-        """Whether the index was built by this schema, for this vault, at the vault's HEAD."""
+        """Whether the index was built by this schema, for this handle, at the repository's HEAD."""
         with self._lock:
             meta = self._meta()
         return (
@@ -463,13 +511,13 @@ class VaultIndex:
         result = self._git.run(
             "tag",
             "--list",
-            f"*/*/{NOTES_TAG_SUFFIX}*",
+            self._notes_tag_glob,
             "--format=%(refname:short)%09%(*objectname)%09%(objectname)",
         )
         tags = []
         for line in result.stdout.splitlines() if result.ok else []:
             name, peeled, target = (line.split("\t") + ["", ""])[:3]
-            match = _NOTES_TAG.match(name)
+            match = self._notes_tag.match(name)
             if match:
                 tags.append(
                     NoteVersion(
@@ -655,9 +703,62 @@ class VaultIndex:
         ]
 
 
+def user_index_path(index_path: Path, user_id: str) -> Path:
+    """Where `user_id`'s index database lives: `<dir>/<stem>-<user_id><suffix>` of `index_path`.
+
+    Beside the configured path of the vault's own and, like it, never inside the vault, so one
+    directory holds the whole cache and can be thrown away with it:
+    `~/.cache/studentassistant/index.sqlite3` gives `index-ana.sqlite3`. The id is checked before
+    any path is built out of it, so a value that came from a URL cannot name a database somewhere
+    else.
+
+    Raises:
+        UserNotFoundError: when `user_id` is not a slug.
+    """
+    if not is_slug(user_id):
+        raise UserNotFoundError(f"{user_id!r} is not a user id")
+    return index_path.with_name(f"{index_path.stem}-{user_id}{index_path.suffix}")
+
+
 def rebuild_index(vault: Vault, path: Path) -> IndexReport:
-    """Recreate the index at `path` from `vault` alone (what `studentassistant index rebuild`
-    runs); a file at `path` that is not a usable database is replaced."""
+    """Recreate the index from `vault` alone (what `studentassistant index rebuild` runs); a file
+    at `path` that is not a usable database is replaced.
+
+    A user handle rebuilds that user's one database at `path`, which is what their caller got from
+    `user_index_path`. A root handle of a vault with users has nothing of anybody's at the root to
+    index, so it rebuilds one database per user instead, each at `user_index_path(path, user_id)`
+    over that user's own handle, in `list_users` order, and leaves `path` itself alone; the report
+    then carries every user's under `users` and counts the sum of them. A vault with no `users/`
+    folder keeps today's single database at `path`.
+
+    Raises:
+        VaultIndexError: when a database cannot be created.
+        UserFileError: when a folder under `users/` has no `profile.json` this backend can read
+            back, so there is no list of users to rebuild an index for.
+    """
+    users = list_users(vault) if vault.user_id is None else []
+    if not users:
+        return _rebuild_one(vault, path)
+    reports = [
+        (profile.id, _rebuild_one(vault.for_user(profile.id), user_index_path(path, profile.id)))
+        for profile in users
+    ]
+    return IndexReport(
+        rebuilt=True,
+        units_indexed=sum(report.units_indexed for _, report in reports),
+        units_removed=sum(report.units_removed for _, report in reports),
+        documents=sum(report.documents for _, report in reports),
+        skipped=tuple(
+            (f"{user_id}/{unit}", reason)
+            for user_id, report in reports
+            for unit, reason in report.skipped
+        ),
+        users=tuple(reports),
+    )
+
+
+def _rebuild_one(vault: Vault, path: Path) -> IndexReport:
+    """One database, from scratch, at `path`."""
     try:
         index = VaultIndex(vault, path, _connect(path))
         with index:
@@ -944,4 +1045,5 @@ __all__ = [
     "VaultIndex",
     "VaultIndexError",
     "rebuild_index",
+    "user_index_path",
 ]

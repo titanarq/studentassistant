@@ -13,6 +13,13 @@ names the same lock file shares one `VaultLock` object, which a thread may take 
 holds it (only the outermost hold touches the file). Waiting is always bounded: a lock not
 obtained within its timeout raises `VaultBusyError`, never hangs.
 
+The locks are the repository's, not one folder's. A vault holds one folder per user
+(`users/<user-id>/`, epic #544) and a caller works either through the repository root or through
+one of those folders, so `repository_root` turns the path a caller has into the directory holding
+`.git/` before anything is named after it: two processes on one vault then share one lock file
+whichever handle each of them works through, and a directory's lock is the same lock -- and a real
+one, not the in-process fallback of a folder without a `.git/` -- for both.
+
 The operating system drops an `flock` when its process dies, so a crashed process never leaves the
 vault locked; the lock files themselves are left in place (they are empty and harmless).
 """
@@ -29,7 +36,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from studentassistant.vault.errors import VaultError
+from studentassistant.vault.vault import USERS_DIRNAME
 
+GIT_DIRNAME = ".git"
 LOCKS_DIRNAME = "studentassistant-locks"
 GIT_LOCK_NAME = "git"
 _POLL_SECONDS = 0.02
@@ -105,11 +114,32 @@ def _lock_file(path: Path, deadline: float, name: str, timeout: float) -> int:
         raise
 
 
+def repository_root(path: Path) -> Path:
+    """The vault repository `path` is inside, resolved: where `.git/`, and so every lock, lives.
+
+    `path` is what the caller has, which is the repository root itself (`Vault.open`) or one
+    user's folder of it (`Vault.for_user`); anything else -- a vault with no `.git/` yet, a
+    directory that is not part of one -- is returned as it is, and gets the in-process lock only.
+    """
+    resolved = path.resolve()
+    if (resolved / GIT_DIRNAME).is_dir():
+        return resolved
+    users = resolved.parent
+    if users.name == USERS_DIRNAME and (users.parent / GIT_DIRNAME).is_dir():
+        return users.parent
+    return resolved
+
+
 def vault_lock(vault_root: Path, name: str) -> VaultLock:
-    """The lock `name` of the vault at `vault_root`, shared by every thread of the process."""
-    git_dir = vault_root.resolve() / ".git"
+    """The lock `name` of the vault at `vault_root`, shared by every thread of the process.
+
+    `vault_root` may be the repository or one of its user folders: the lock is the repository's
+    either way, so both name one and the same `VaultLock`.
+    """
+    root = repository_root(vault_root)
+    git_dir = root / GIT_DIRNAME
     path = git_dir / LOCKS_DIRNAME / f"{name}.lock" if git_dir.is_dir() else None
-    key = path if path is not None else vault_root.resolve() / f"<{name}>"
+    key = path if path is not None else root / f"<{name}>"
     with _REGISTRY_GUARD:
         lock = _REGISTRY.get(key)
         if lock is None:
@@ -123,10 +153,15 @@ def git_lock(vault_root: Path) -> VaultLock:
 
 
 def directory_lock(vault_root: Path, directory: Path) -> VaultLock:
-    """The lock of one directory of the vault (a `sources/<kind>/`), whether or not it exists."""
-    relative = directory.resolve().relative_to(vault_root.resolve()).as_posix()
+    """The lock of one directory of the vault (a `sources/<kind>/`), whether or not it exists.
+
+    Named by the directory's path relative to the repository, so a user handle and the root give
+    one and the same directory one and the same lock.
+    """
+    root = repository_root(vault_root)
+    relative = directory.resolve().relative_to(root).as_posix()
     digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:16]
-    return vault_lock(vault_root, f"dir-{digest}")
+    return vault_lock(root, f"dir-{digest}")
 
 
 __all__ = [
@@ -136,5 +171,6 @@ __all__ = [
     "VaultBusyError",
     "directory_lock",
     "git_lock",
+    "repository_root",
     "vault_lock",
 ]

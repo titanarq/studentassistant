@@ -8,6 +8,12 @@ the images, PDFs and other files under a topic's `sources/`, its `sessions/`, `c
 files, and reads the size of git's object store (packs plus loose objects) straight from the
 filesystem, so no git command runs and nothing in the repository changes.
 
+A vault holds one folder per user (`users/<user-id>/`, epic #544) and the report says whose bytes
+they are: on a root handle, `users` gives each user's own subjects and topics, because two students
+may well study a subject of the same name and one number for both would be nobody's. What is the
+repository's rather than one student's is measured there too -- git's object store is read at
+`vault.root`, so a user's handle reports the history its own content is part of.
+
 The numbers are what the open question "images in plain git or Git LFS" (VISION §10) is decided
 with, and what `studentassistant doctor` compares against `[vault] size_warning_mb`.
 """
@@ -23,7 +29,9 @@ from typing import Literal
 
 from pydantic import BaseModel, computed_field
 
-from studentassistant.vault.vault import Vault
+from studentassistant.vault.subjects import SUBJECTS_DIRNAME
+from studentassistant.vault.topics import TOPICS_DIRNAME
+from studentassistant.vault.vault import USERS_DIRNAME, Vault
 
 Category = Literal[
     "source_images",
@@ -97,8 +105,17 @@ class SubjectSize(BaseModel):
     topics: list[TopicSize]
 
 
+class UserSize(BaseModel):
+    """One user's folder: their profile and photo, and each of their subjects and topics."""
+
+    id: str
+    bytes: int
+    files: int
+    subjects: list[SubjectSize]
+
+
 class FileSize(BaseModel):
-    path: str  # vault-relative, `/`-separated
+    path: str  # relative to the handle's path, `/`-separated: `users/<id>/...` on a root handle
     bytes: int
     category: Category
 
@@ -121,7 +138,8 @@ class VaultStats(BaseModel):
     working_tree_bytes: int
     working_tree_files: int
     categories: list[CategorySize]  # every category, in `CATEGORIES` order
-    subjects: list[SubjectSize]  # largest first
+    subjects: list[SubjectSize]  # largest first; the ones directly under the handle's path
+    users: list[UserSize] = []  # largest first; a root handle's users, empty on a user's handle
     largest_files: list[FileSize]  # largest first
     git: GitStoreSize | None  # `None` when the vault has no `.git` directory
 
@@ -146,8 +164,19 @@ class VaultStats(BaseModel):
 
 
 def categorize(relative: tuple[str, ...]) -> Category:
-    """The category of the vault-relative path given as its parts."""
-    if len(relative) >= 6 and relative[0] == "subjects" and relative[2] == "topics":
+    """The category of the vault-relative path given as its parts.
+
+    A user's path categorizes as the same path inside their folder -- `users/ana/subjects/...` is a
+    topic's exactly as `subjects/...` is, because a topic's layout is the same under whichever user
+    it lives -- and what no topic area covers is `other`, their `profile.json` and `photo.jpg`
+    included.
+    """
+    return _categorize(_split_user(relative)[1])
+
+
+def _categorize(relative: tuple[str, ...]) -> Category:
+    """The category of a path inside one user's folder (or the root's own content)."""
+    if len(relative) >= 6 and relative[0] == SUBJECTS_DIRNAME and relative[2] == TOPICS_DIRNAME:
         area = relative[4]
         if area == "sources":
             suffix = Path(relative[-1]).suffix.lower()
@@ -159,6 +188,17 @@ def categorize(relative: tuple[str, ...]) -> Category:
         if area in _TOPIC_DIRECTORIES:
             return _TOPIC_DIRECTORIES[area]
     return "other"
+
+
+def _split_user(parts: tuple[str, ...]) -> tuple[str | None, tuple[str, ...]]:
+    """The user a path belongs to and the path inside their folder: `users/<id>/x` -> `(<id>, x)`.
+
+    `None` for a path of the repository's own content, and for every path a user's handle walks,
+    which starts inside that user's folder already and so never carries the `users/` prefix.
+    """
+    if len(parts) >= 2 and parts[0] == USERS_DIRNAME:
+        return parts[1], parts[2:]
+    return None, parts
 
 
 def _regular_files(root: Path, skip_git: bool) -> list[tuple[tuple[str, ...], int]]:
@@ -180,8 +220,12 @@ def _regular_files(root: Path, skip_git: bool) -> list[tuple[tuple[str, ...], in
 
 
 def git_store_size(vault: Vault) -> GitStoreSize | None:
-    """The size of `.git/objects`, read from the filesystem (no git command runs)."""
-    objects = vault.path / ".git" / "objects"
+    """The size of `.git/objects`, read from the filesystem (no git command runs).
+
+    The object store is the repository's, so it is read at `vault.root`: a user's handle reports
+    the history its own content is committed into, and there is no `.git/` inside their folder.
+    """
+    objects = vault.root / ".git" / "objects"
     if not objects.is_dir():
         return None
     pack_bytes = packs = loose_bytes = loose_objects = 0
@@ -197,48 +241,84 @@ def git_store_size(vault: Vault) -> GitStoreSize | None:
     )
 
 
+class _Totals:
+    """Bytes and file counts of one walk, per subject and per topic: what a report is built from.
+
+    One instance totals the whole of what a handle walks and one each user's folder of it, so a
+    root handle gives every user their own subjects without walking the tree twice.
+    """
+
+    def __init__(self) -> None:
+        self.bytes = 0
+        self.files = 0
+        self._subjects: dict[str, list[int]] = {}
+        self._topics: dict[tuple[str, str], list[int]] = {}
+
+    def add(self, parts: tuple[str, ...], size: int) -> None:
+        """Count one file, `parts` being its path relative to what this instance totals up."""
+        self.bytes += size
+        self.files += 1
+        if len(parts) >= 3 and parts[0] == SUBJECTS_DIRNAME:
+            subject = self._subjects.setdefault(parts[1], [0, 0])
+            subject[0] += size
+            subject[1] += 1
+            if len(parts) >= 5 and parts[2] == TOPICS_DIRNAME:
+                topic = self._topics.setdefault((parts[1], parts[3]), [0, 0])
+                topic[0] += size
+                topic[1] += 1
+
+    def subjects(self) -> list[SubjectSize]:
+        """Each subject with each of its topics, the largest first and ties by slug."""
+        return sorted(
+            (
+                SubjectSize(
+                    slug=slug,
+                    bytes=size,
+                    files=count,
+                    topics=sorted(
+                        (
+                            TopicSize(slug=topic_slug, bytes=topic_size, files=topic_count)
+                            for (subject_slug, topic_slug), (
+                                topic_size,
+                                topic_count,
+                            ) in self._topics.items()
+                            if subject_slug == slug
+                        ),
+                        key=lambda topic: (-topic.bytes, topic.slug),
+                    ),
+                )
+                for slug, (size, count) in self._subjects.items()
+            ),
+            key=lambda subject: (-subject.bytes, subject.slug),
+        )
+
+
 def vault_stats(vault: Vault, top: int = DEFAULT_TOP_FILES) -> VaultStats:
-    """Measure the vault: categories, subjects and topics, the `top` largest files, git's store."""
+    """Measure the vault: categories, subjects and topics per user, the largest files, git's store.
+
+    `users` is what a root handle adds for a vault that has them: one entry per user folder with
+    that user's own subjects and topics, `subjects` then holding only what sits directly under the
+    root -- nothing in that layout, because a student's content is inside their folder and two of
+    them may well have a subject of the same slug. On a user's handle the walk starts inside their
+    folder, so `subjects` is that student's and `users` is empty.
+    """
     by_category: dict[Category, list[int]] = {category: [0, 0] for category in CATEGORIES}
-    by_subject: dict[str, list[int]] = {}
-    by_topic: dict[tuple[str, str], list[int]] = {}
+    whole = _Totals()
+    per_user: dict[str, _Totals] = {}
     files: list[FileSize] = []
-    total = 0
     entries = _regular_files(vault.path, skip_git=True)
     for parts, size in entries:
         category = categorize(parts)
         by_category[category][0] += size
         by_category[category][1] += 1
-        total += size
-        if len(parts) >= 3 and parts[0] == "subjects":
-            subject = by_subject.setdefault(parts[1], [0, 0])
-            subject[0] += size
-            subject[1] += 1
-            if len(parts) >= 5 and parts[2] == "topics":
-                topic = by_topic.setdefault((parts[1], parts[3]), [0, 0])
-                topic[0] += size
-                topic[1] += 1
+        whole.add(parts, size)
+        user_id, inside = _split_user(parts)
+        if user_id is not None:
+            per_user.setdefault(user_id, _Totals()).add(inside, size)
         files.append(FileSize(path="/".join(parts), bytes=size, category=category))
-    subjects = [
-        SubjectSize(
-            slug=slug,
-            bytes=size,
-            files=count,
-            topics=sorted(
-                (
-                    TopicSize(slug=topic_slug, bytes=topic_size, files=topic_count)
-                    for (subject_slug, topic_slug), (topic_size, topic_count) in by_topic.items()
-                    if subject_slug == slug
-                ),
-                key=lambda topic: (-topic.bytes, topic.slug),
-            ),
-        )
-        for slug, (size, count) in by_subject.items()
-    ]
-    subjects.sort(key=lambda subject: (-subject.bytes, subject.slug))
     largest = heapq.nsmallest(max(top, 0), files, key=lambda file: (-file.bytes, file.path))
     return VaultStats(
-        working_tree_bytes=total,
+        working_tree_bytes=whole.bytes,
         working_tree_files=len(entries),
         categories=[
             CategorySize(
@@ -249,7 +329,19 @@ def vault_stats(vault: Vault, top: int = DEFAULT_TOP_FILES) -> VaultStats:
             )
             for category in CATEGORIES
         ],
-        subjects=subjects,
+        subjects=whole.subjects(),
+        users=sorted(
+            (
+                UserSize(
+                    id=user_id,
+                    bytes=totals.bytes,
+                    files=totals.files,
+                    subjects=totals.subjects(),
+                )
+                for user_id, totals in per_user.items()
+            ),
+            key=lambda user: (-user.bytes, user.id),
+        ),
         largest_files=largest,
         git=git_store_size(vault),
     )

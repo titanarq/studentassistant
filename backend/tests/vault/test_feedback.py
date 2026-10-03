@@ -1,4 +1,5 @@
-"""The feedback inbox (`vault.feedback`, #472, #476): append, ids, fold-on-read of changes."""
+"""The feedback inbox (`vault.feedback`, #472, #476, #547): append, ids, fold-on-read of changes,
+and which student reported each item."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from secret_samples import ANTHROPIC_KEY
+from user_helpers import add_user
 
 from studentassistant.vault import (
     FeedbackAmbiguousError,
@@ -245,3 +247,67 @@ def test_bad_writes_leave_the_inbox_as_it_was(tmp_vault: Vault) -> None:
     with pytest.raises(SecretRefused):
         add_feedback(tmp_vault, "bug", "Clave", ANTHROPIC_KEY)
     assert list_feedback(tmp_vault) == []
+
+
+# -- several students, one inbox (#547) ----------------------------------------------------------
+
+
+def test_the_inbox_is_the_repositorys_and_each_item_says_who_reported_it(
+    tmp_vault: Vault,
+) -> None:
+    ana = add_user(tmp_vault, "ana", "Ana")
+    bia = add_user(tmp_vault, "bia", "Bia")
+
+    first = add_feedback(ana, "bug", "No guarda", "Se pierde al salir.", clock=_clock(0))
+    second = add_feedback(bia, "mejora", "Modo oscuro", "Quiero un modo oscuro.", clock=_clock(1))
+
+    assert feedback_path(ana) == feedback_path(bia) == tmp_vault.root / "feedback/inbox.jsonl"
+    assert not (ana.path / "feedback").exists()  # a user's folder holds no inbox of its own
+    assert (first.context.user, second.context.user) == ("ana", "bia")
+    assert [item.context.user for item in list_feedback(tmp_vault)] == ["ana", "bia"]
+    assert [line["context"]["user"] for line in _lines(tmp_vault)] == ["ana", "bia"]
+
+
+def test_a_status_change_reaches_an_item_whichever_handle_marks_it(tmp_vault: Vault) -> None:
+    ana = add_user(tmp_vault, "ana", "Ana")
+    bia = add_user(tmp_vault, "bia", "Bia")
+    item = add_feedback(ana, "bug", "No guarda", "Se pierde al salir.", clock=_clock(0))
+
+    marked = set_feedback_status(bia, item.id, "triado", 812, clock=_clock(5))
+
+    assert (marked.status, marked.issue, marked.context.user) == ("triado", 812, "ana")
+    assert get_feedback(tmp_vault, item.id).status == "triado"
+
+
+def test_a_context_that_already_names_a_user_keeps_it(tmp_vault: Vault) -> None:
+    ana = add_user(tmp_vault, "ana", "Ana")
+
+    item = add_feedback(
+        ana,
+        "bug",
+        "Título",
+        "Cuerpo.",
+        FeedbackContext(user="bia", subject="mates"),
+        clock=_clock(0),
+    )
+
+    assert (item.context.user, item.context.subject) == ("bia", "mates")
+
+
+def test_a_line_from_before_there_were_users_still_reads_and_folds(tmp_vault: Vault) -> None:
+    ana = add_user(tmp_vault, "ana", "Ana")
+    _union(
+        tmp_vault,
+        _item_line("fb-3qx7km", "De antes de los usuarios"),
+        _status_line("fb-3qx7km", "triado", 2, 900),
+    )
+
+    [old] = list_feedback(tmp_vault)
+
+    assert old.context.user is None
+    assert (old.status, old.issue) == ("triado", 900)
+
+    added = add_feedback(ana, "bug", "Nuevo", "Cuerpo.", clock=_clock(3))
+
+    assert added.context.user == "ana"
+    assert [line["record"] for line in _lines(tmp_vault)] == ["item", "status", "item"]

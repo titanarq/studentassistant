@@ -18,8 +18,18 @@ and the conflicting paths are reported for the student to decide (ADR-0002: neve
 by discarding). Both sides of such a divergence are kept: the local commit and the remote one are
 pinned under `refs/studentassistant/divergence/{local,remote}` and described by the `Divergence`
 in the status, and `divergent_versions(path)` returns each side's content, until a later sync
-succeeds. Notes versions are annotated tags `<subject-slug>/<topic-slug>/apuntes-vN`,
-pushed with the branch.
+succeeds. Notes versions are annotated tags, pushed with the branch:
+`<subject-slug>/<topic-slug>/apuntes-vN`, or `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`
+for the content of one user.
+
+One vault holds the content of every student who uses it, one folder per user (`users/<user-id>/`,
+epic #544), and one `GitSync` per repository: git runs in `vault.root` and the repository's lock is
+the one held, whichever handle the sync was given, so a batch commits and a push carries every
+user's content. `for_user(user_id)` gives a `UserGitSync`, the view the editor, the generators and
+the server hand a student's code: the same state, loop, commits and push schedule as the parent,
+with the paths of `read_file_at`, `revert_paths` and `divergent_versions` relative to that user's
+folder and that user's id prefixed to every notes tag, so two users' versions of one topic are two
+sequences.
 
 Time is read from an injectable `Clock`, and nothing here sleeps or starts a thread: `run_due()`
 does whatever is due now, and `run()` is the asyncio loop that calls it in a worker thread, so git
@@ -43,11 +53,18 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
+import yaml
+
 from studentassistant.config import VaultGitSettings
 from studentassistant.vault.errors import VaultError
 from studentassistant.vault.git import GitCommandError, GitIdentity, GitResult, GitRunner
 from studentassistant.vault.locking import VaultBusyError, git_lock
-from studentassistant.vault.vault import ACTIVE_HOST_MERGE_DRIVER, MAIN_BRANCH, Vault
+from studentassistant.vault.vault import (
+    ACTIVE_HOST_MERGE_DRIVER,
+    MAIN_BRANCH,
+    VAULT_META_NAME,
+    Vault,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +164,11 @@ class SyncStatus:
 
 @dataclass(frozen=True)
 class NotesTag:
-    """One notes version: `<subject-slug>/<topic-slug>/apuntes-v<version>` on `commit`."""
+    """One notes version: `<subject-slug>/<topic-slug>/apuntes-v<version>` on `commit`.
+
+    `name` is the tag as git holds it, so it carries the user's id first for the notes of a user
+    (`UserGitSync`); `version` counts within one user's subject and topic.
+    """
 
     name: str
     version: int
@@ -157,9 +178,21 @@ class NotesTag:
     message: str = ""
 
 
-def notes_tag_name(subject_slug: str, topic_slug: str, version: int) -> str:
-    """A notes version's tag, keyed by subject and topic (topic slugs repeat across subjects)."""
-    return f"{subject_slug}/{topic_slug}/{NOTES_TAG_SUFFIX}{version}"
+def notes_tag_prefix(subject_slug: str, topic_slug: str, user_id: str | None = None) -> str:
+    """What every notes version tag of one topic starts with, `user_id`'s own when given.
+
+    Keyed by subject as well as topic because topic slugs repeat across subjects (#143), and by
+    user because two users' subjects are separate content: `ana/fisica/cinematica/apuntes-v`.
+    """
+    segments = [segment for segment in (user_id, subject_slug, topic_slug) if segment]
+    return "/".join([*segments, NOTES_TAG_SUFFIX])
+
+
+def notes_tag_name(
+    subject_slug: str, topic_slug: str, version: int, user_id: str | None = None
+) -> str:
+    """A notes version's tag; `user_id` gives the form a user's handle writes and lists."""
+    return f"{notes_tag_prefix(subject_slug, topic_slug, user_id)}{version}"
 
 
 def _plural(count: int, singular: str, plural: str) -> str:
@@ -247,7 +280,13 @@ def _classify(result: GitResult) -> FailureKind:
 
 
 class GitSync:
-    """Commits, pushes and pulls one vault. Thread-safe; one per vault per process."""
+    """Commits, pushes and pulls one vault repository. Thread-safe; one per repository per process.
+
+    `vault` may be a root handle or a user's: git runs in `vault.root` and the lock held is the
+    repository's either way, and a batch commits whatever changed under it, so every user's content
+    of the repository travels in the same commits and the same pushes. `for_user` is what scopes
+    paths and notes tags to one user.
+    """
 
     def __init__(
         self,
@@ -262,16 +301,28 @@ class GitSync:
             name=self.settings.author_name or vault.meta.student,
             email=self.settings.author_email,
         )
-        self.git = GitRunner(vault.path, self.identity, timeout=self.settings.timeout_seconds)
+        self.git = GitRunner(vault.root, self.identity, timeout=self.settings.timeout_seconds)
         # `_git_lock` serialises git, across threads and processes (`locked()`); `_state_lock`
         # guards the fields below and is never held while git runs, so `note_change()` and
         # `status()` never wait for a push.
-        self._git_lock = git_lock(vault.path)
+        self._git_lock = git_lock(vault.root)
         self._state_lock = threading.Lock()
         self._first_change_at: float | None = None
         self._last_change_at: float | None = None
         self._push_due_at: float | None = None
         self._status = SyncStatus()
+
+    def for_user(self, user_id: str) -> UserGitSync:
+        """This repository's sync as `user_id` sees it: their paths and their notes version tags.
+
+        The view shares this sync's state, git lock, commits, push schedule and background loop --
+        keep calling `run()` on this one, the view has no loop of its own -- and translates the
+        methods that name content.
+
+        Raises:
+            UserNotFoundError: `user_id` is not a slug, or this vault has no such user.
+        """
+        return UserGitSync(self, user_id)
 
     # -- state ---------------------------------------------------------------------------------
 
@@ -609,7 +660,7 @@ class GitSync:
     def _rebase_in_progress(self) -> bool:
         for name in ("rebase-merge", "rebase-apply"):
             result = self.git.run("rev-parse", "--git-path", name)
-            if result.ok and (self.vault.path / result.stdout.strip()).exists():
+            if result.ok and (self.vault.root / result.stdout.strip()).exists():
                 return True
         return False
 
@@ -618,15 +669,26 @@ class GitSync:
     def list_notes_tags(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
         """Every `<subject-slug>/<topic-slug>/apuntes-vN` tag, oldest version first.
 
+        The repository's own tags: a user's are `<user-id>/...` and are listed by their
+        `UserGitSync`, which never shows another user's.
+
         Raises:
             GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
         """
+        return self._list_notes_tags(None, subject_slug, topic_slug)
+
+    def _list_notes_tags(
+        self, user_id: str | None, subject_slug: str, topic_slug: str
+    ) -> list[NotesTag]:
+        """`list_notes_tags` for one user's tags (`user_id`) or the repository's own (`None`)."""
         _check_slugs(subject_slug, topic_slug)
         with self._git_locked_or_raise():
-            return self._list_tags_locked(subject_slug, topic_slug)
+            return self._list_tags_locked(user_id, subject_slug, topic_slug)
 
-    def _list_tags_locked(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
-        prefix = f"{subject_slug}/{topic_slug}/{NOTES_TAG_SUFFIX}"
+    def _list_tags_locked(
+        self, user_id: str | None, subject_slug: str, topic_slug: str
+    ) -> list[NotesTag]:
+        prefix = notes_tag_prefix(subject_slug, topic_slug, user_id)
         result = self.git.run(
             "tag",
             "--list",
@@ -656,14 +718,15 @@ class GitSync:
         committed (not redacted: it is the vault's own content), or `None` when that revision has
         no such file or is not one of the vault's.
 
+        `path` is relative to the repository, as git holds it: a user's content is read through
+        `for_user`, whose `path` is relative to that user's folder.
+
         Raises:
             ValueError: `path` is not vault-relative.
             GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
         """
-        if not path or path.startswith("/") or ".." in path.split("/"):
-            raise ValueError(f"{path!r} is not a vault-relative path")
-        if revision.startswith("-"):
-            raise ValueError(f"{revision!r} is not a revision")
+        _check_relative_path(path)
+        _check_revision(revision)
         with self._git_locked_or_raise():
             data = self.git.read_blob(f"{revision}:{path}")
         return None if data is None else data.decode("utf-8", errors="replace")
@@ -680,17 +743,31 @@ class GitSync:
             GitCommandError: when git refuses the tag (this is not the capture path), or another
                 process kept git on the vault busy past `timeout_seconds`.
         """
+        return self._create_notes_tag(None, subject_slug, topic_slug, message)
+
+    def _create_notes_tag(
+        self,
+        user_id: str | None,
+        subject_slug: str,
+        topic_slug: str,
+        message: str | None,
+    ) -> NotesTag:
+        """`create_notes_tag` for one user's tags (`user_id`) or the repository's own (`None`)."""
         _check_slugs(subject_slug, topic_slug)
         with self._git_locked_or_raise():
             self._commit(None)
-            existing = self._list_tags_locked(subject_slug, topic_slug)
+            existing = self._list_tags_locked(user_id, subject_slug, topic_slug)
             version = (existing[-1].version if existing else 0) + 1
-            name = notes_tag_name(subject_slug, topic_slug, version)
+            name = notes_tag_name(subject_slug, topic_slug, version, user_id)
             self.git.check(
                 "tag", "--annotate", name, "--message", message or f"apuntes v{version}", "HEAD"
             )
             commit = self.git.check("rev-parse", "HEAD").stdout.strip()
-            listed = [t for t in self._list_tags_locked(subject_slug, topic_slug) if t.name == name]
+            listed = [
+                tag
+                for tag in self._list_tags_locked(user_id, subject_slug, topic_slug)
+                if tag.name == name
+            ]
         self._schedule_push(self.settings.push_debounce_seconds)
         return listed[0] if listed else NotesTag(name=name, version=version, commit=commit)
 
@@ -714,8 +791,7 @@ class GitSync:
         """
         relative = list(dict.fromkeys(paths))
         for path in relative:
-            if path.startswith("/") or ".." in path.split("/") or not path:
-                raise ValueError(f"{path!r} is not a vault-relative path")
+            _check_relative_path(path)
         with self._git_locked_or_raise():
             if not self.git.run("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}").ok:
                 raise ValueError(f"{commit!r} is not a commit of the vault")
@@ -747,6 +823,158 @@ class GitSync:
         while True:
             await asyncio.to_thread(self.run_due)
             await asyncio.sleep(interval)
+
+
+class UserGitSync:
+    """One user's view of a repository's `GitSync`; `GitSync.for_user` gives it.
+
+    Everything that names no content is the parent's and is delegated as it stands: the state, the
+    background loop (there is no `run()` here, so a view cannot start a second one), the git lock,
+    the commits and the push schedule -- one repository, one commit and one push for all its users.
+    The state a `status()` returns is that repository's too, down to the paths of the divergence it
+    lists, which are the ones git holds. What a view translates is what does name content: a path,
+    relative to `users/<user-id>/` like every id the vault's readers and writers return for that
+    user, and a notes version tag, which carries the user's id first so that two users' versions of
+    one subject and topic are two sequences.
+    """
+
+    def __init__(self, parent: GitSync, user_id: str) -> None:
+        self.parent = parent
+        self.vault = _root_handle(parent.vault).for_user(user_id)
+        self.user_id = user_id
+        # `users/<user-id>/`, what every path this view is given is relative to.
+        self.prefix = self.vault.path.relative_to(self.vault.root).as_posix() + "/"
+
+    @property
+    def settings(self) -> VaultGitSettings:
+        """The repository's git settings: one sync, one configuration."""
+        return self.parent.settings
+
+    @property
+    def identity(self) -> GitIdentity:
+        """Who a vault commit or tag is authored as; the repository's."""
+        return self.parent.identity
+
+    @property
+    def git(self) -> GitRunner:
+        """The repository's git runner. It runs in `vault.root` and its pathspecs are the
+        repository's, not this user's: a caller that has this user's paths prefixes them."""
+        return self.parent.git
+
+    # -- the parent's, unchanged -----------------------------------------------------------------
+
+    def status(self) -> SyncStatus:
+        return self.parent.status()
+
+    def note_change(self) -> None:
+        self.parent.note_change()
+
+    def checkpoint(self, message: str) -> str | None:
+        return self.parent.checkpoint(message)
+
+    def flush(self) -> SyncStatus:
+        return self.parent.flush()
+
+    def push_now(self) -> bool:
+        return self.parent.push_now()
+
+    def request_push(self) -> None:
+        self.parent.request_push()
+
+    def sync(self) -> SyncResult:
+        return self.parent.sync()
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """The repository's git lock, which is the parent's: one user's git is every user's."""
+        with self.parent.locked():
+            yield
+
+    # -- this user's paths and notes versions ----------------------------------------------------
+
+    def read_file_at(self, revision: str, path: str) -> str | None:
+        """The content of this user's `path` at `revision`, or `None` when they have no such file.
+
+        `path` is relative to `users/<user-id>/`, like the ids the vault's readers give a caller.
+        A revision from before that folder existed -- a notes version of the vault's first user,
+        committed while their content was still the repository's own -- is read at the root
+        instead when `vault.yaml`'s `legacy_root_user` names this user; without that, there is
+        simply no such file at that revision.
+
+        Raises:
+            ValueError: `path` is not vault-relative, or `revision` is not a revision.
+            GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
+        """
+        _check_relative_path(path)
+        content = self.parent.read_file_at(revision, self.prefix + path)
+        if content is None and self.user_id == self._legacy_root_user():
+            return self.parent.read_file_at(revision, path)
+        return content
+
+    def revert_paths(self, commit: str, paths: Sequence[str], message: str) -> str | None:
+        """`GitSync.revert_paths` on this user's paths: what `commit` did to them, undone.
+
+        Raises:
+            RevertConflictError: a path is not, at HEAD, what `commit` left; `path` is this
+                user's, as the caller gave it.
+            ValueError: `commit` is not a commit of the vault, or a path is outside this user.
+            GitCommandError: git failed, or another process kept git busy past `timeout_seconds`.
+        """
+        relative = list(dict.fromkeys(paths))
+        for path in relative:
+            _check_relative_path(path)
+        prefixed = [self.prefix + path for path in relative]
+        try:
+            return self.parent.revert_paths(commit, prefixed, message)
+        except RevertConflictError as conflict:
+            raise RevertConflictError(self._user_relative(conflict.path)) from conflict
+
+    def divergent_versions(self, path: str) -> DivergentVersions | None:
+        """Both sides of one of this user's paths of the repository's current divergence."""
+        _check_relative_path(path)
+        versions = self.parent.divergent_versions(self.prefix + path)
+        return None if versions is None else replace(versions, path=path)
+
+    def list_notes_tags(self, subject_slug: str, topic_slug: str) -> list[NotesTag]:
+        """Every `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN` tag, oldest version first.
+
+        This user's tags only: another user's versions of the same subject and topic are another
+        sequence, and the repository's own unprefixed tags are not part of either.
+
+        Raises:
+            GitCommandError: another process kept git on the vault busy past `timeout_seconds`.
+        """
+        return self.parent._list_notes_tags(self.user_id, subject_slug, topic_slug)
+
+    def create_notes_tag(
+        self, subject_slug: str, topic_slug: str, message: str | None = None
+    ) -> NotesTag:
+        """Commit what is pending and tag HEAD as this user's next notes version of the topic.
+
+        Raises:
+            ValueError: when `subject_slug` or `topic_slug` is not a slug.
+            GitCommandError: when git refuses the tag, or another process kept git on the vault
+                busy past `timeout_seconds`.
+        """
+        return self.parent._create_notes_tag(self.user_id, subject_slug, topic_slug, message)
+
+    def _user_relative(self, path: str) -> str:
+        """A repository path of this user's folder as the caller gave it: `users/<id>/x` -> `x`."""
+        return path.removeprefix(self.prefix)
+
+    def _legacy_root_user(self) -> str | None:
+        """The user `vault.yaml` names as the one whose content was the repository's own.
+
+        Read from the file and not from `vault.meta`: `VaultMeta` declares `legacy_root_user` from
+        format 2 on (#548), and the notes versions committed before the move have to stay readable
+        until then. `None` when the file names nobody, or cannot be read.
+        """
+        try:
+            meta = yaml.safe_load((self.vault.root / VAULT_META_NAME).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            return None
+        named = meta.get("legacy_root_user") if isinstance(meta, dict) else None
+        return named if isinstance(named, str) else None
 
 
 class RevertConflictError(VaultError):
@@ -781,6 +1009,22 @@ def _check_slugs(subject_slug: str, topic_slug: str) -> None:
             raise ValueError(f"{slug!r} is not a {kind} slug")
 
 
+def _check_relative_path(path: str) -> None:
+    """Refuse a path that is not inside the vault (or, on a user's view, inside their folder)."""
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        raise ValueError(f"{path!r} is not a vault-relative path")
+
+
+def _check_revision(revision: str) -> None:
+    if revision.startswith("-"):
+        raise ValueError(f"{revision!r} is not a revision")
+
+
+def _root_handle(vault: Vault) -> Vault:
+    """The root handle of `vault`: `for_user` needs one, and a sync may have been given either."""
+    return vault if vault.user_id is None else replace(vault, path=vault.root, user_id=None)
+
+
 __all__ = [
     "Clock",
     "Divergence",
@@ -792,6 +1036,8 @@ __all__ = [
     "SyncResult",
     "SyncStatus",
     "SystemClock",
+    "UserGitSync",
     "notes_tag_name",
+    "notes_tag_prefix",
     "summarize_changes",
 ]
