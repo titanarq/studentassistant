@@ -11,6 +11,9 @@ The only writer of the vault and the only module that runs git on it.
 vault.yaml                                   format_version, created_at, student display name
 .gitattributes                               *.jsonl merge=union, .sa/active.yaml merge=sa-active
 .sa/active.yaml                              active-host record: host, session, claimed/released
+users/<user-id>/profile.json                 id, name, email, photo, created_at (users.py, #546)
+users/<user-id>/photo.jpg                    the profile photo: a downscaled JPEG, quality 85 (optional)
+users/<user-id>/subjects/                    that student's content: the subjects/ tree below, inside it
 subjects/<subject-slug>/subject.yaml         name, style_guide (editor preferences)
 subjects/<subject-slug>/topics/<topic-slug>/
   topic.yaml                                 title, fidelity_mode, created_at, sessions list
@@ -45,25 +48,132 @@ subjects/<subject-slug>/topics/<topic-slug>/
 feedback/inbox.jsonl                         app bugs/improvements reported in a chat (editor, #472)
 ```
 
+Everything from `subjects/` down is written where the handle the writer was given points ("The
+vault -- `vault.py`" below): a root handle puts it at the vault root, which is what `Vault.init`
+creates and what format version 1 means; a user handle puts the same tree inside
+`users/<user-id>/`, with the same inner layout and the same vault-relative ids, now relative to
+that folder. `create_user` (`users.py`, #546) is what makes the folder, with its `profile.json` and
+an empty `subjects/` that survives a clone; nothing else does, and `Vault.init` creates no user.
+`FORMAT_VERSION` is still 1: #546 writes `users/` without changing it, and a vault with a `users/`
+folder opens exactly as one without. Format version 2 -- the user folder as the only place content
+lives, and `Vault.open` refusing a format-1 vault until `studentassistant vault migrate-users` has
+moved its root `subjects/` into its first user's in one commit -- is #548 and is not written yet:
+until then a vault holds its content at the root, under a `users/<user-id>/`, or both.
+
 Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents stripped); ids
-of sessions are `YYYYMMDD-HHMMSS`.
+of sessions are `YYYYMMDD-HHMMSS`. A user's id is `slugify(name)` with the first free numeric
+suffix when another user already has it (the rule a subject's slug follows), and never changes when
+the name is edited, because every subject, session and notes tag under it is named after the path
+it lives at.
 
 ## Public surface
-What exists today, after issues #19, #20, #21, #22, #135 and #23: the vault itself, its subjects and its topics,
-their sessions with the two append-only logs, their sources, the secret guard, the helpers all of
-them are written with, the read-only functions the web read API uses, the git sync that commits, pushes and pulls them, and the `setup` that
-creates or clones the vault from GitHub, and the derived SQLite index. The layout above is the target, not the state -- see "Not written
+What exists today, after issues #19, #20, #21, #22, #135, #23 and #546: the vault itself and the
+two handles on it (the repository root and one user's folder), its users and their profiles,
+its subjects and its topics, their sessions with the two append-only logs, their sources, the
+secret guard, the helpers all of them are written with, the read-only functions the web read API
+uses, the git sync that commits, pushes and pulls them, and the `setup` that creates or clones the
+vault from GitHub, and the derived SQLite index. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
 `Vault.init(path, student)` creates the directory (parents included), writes `vault.yaml` and
 `.gitattributes` and runs `git init -b main`; it refuses a `path` that already exists, so a typo
 cannot turn a directory that already holds something into a vault. `Vault.open(path)` reads one
-back without writing to it. An open vault is a frozen dataclass of `path` and `meta`. Every refusal
-is a `VaultError`: `VaultNotFoundError` (no such directory), `VaultMetaError` (`vault.yaml` missing
-or not readable as a `VaultMeta`) and, under that one, `VaultFormatError` (a `format_version` other
-than the single one this backend reads and writes, which is what a vault written by a newer backend
-looks like).
+back without writing to it. An open vault is a frozen dataclass of `path`, `meta`, `root` and
+`user_id`. Every refusal is a `VaultError`: `VaultNotFoundError` (no such directory),
+`VaultMetaError` (`vault.yaml` missing or not readable as a `VaultMeta`) and, under that one,
+`VaultFormatError` (a `format_version` other than the single one this backend reads and writes,
+which is what a vault written by a newer backend looks like).
+
+**Two handles on one vault** (#546, ADR-0002, epic #544). A handle knows two directories: `root`,
+the git repository (`.git`, `vault.yaml`, `.gitattributes`, `.sa/`, the locks), and `path`, where
+content is written. `Vault.init` and `Vault.open` return a ROOT handle -- `root == path` and
+`user_id is None` -- and `vault.for_user(user_id)` returns a USER handle: a frozen copy with the
+same `root` and the same `meta`, `path == root / "users" / user_id` and that `user_id`. Every reader
+and writer of this package builds its paths from `vault.path`, so the handle it is given is what
+decides whose content it touches, and the vault-relative ids it returns
+(`subjects/<s>/topics/<t>/sources/...`) stay relative to it: nothing else about them changes, and
+the ids the web and the phone already use mean the same thing inside a user's folder. `for_user`
+writes nothing and reads nothing but the check that `users/<user-id>/profile.json` is there -- no
+profile, no user. It raises `UserNotFoundError` for a missing profile and for an id that is not a
+slug, the second without touching the disk, and `ValueError` when called on a user handle, since a
+user's folder holds no `users/` of its own. `UserNotFoundError` and its parent `UserError` are
+declared in `errors.py`, because `vault.py` raises them and so does `users.py`, which imports it.
+
+Not moved to `root` yet, and #547's job: the git sync (`GitSync` runs git in `vault.path`), the
+cross-process locks (`directory_lock`, `git_lock` and the feedback lock are all passed `vault.path`,
+which has no `.git`, so on a user handle they keep their in-process half and lose the
+cross-process one, writing no lock file anywhere), `.sa/active.yaml`, the feedback inbox and the
+derived index. Handing one of those a user handle today makes it work inside `users/<user-id>/`
+instead of on the repository.
+
+### Users -- `users.py` (#546)
+The users of the vault: one folder each under `users/`, and the profile that says who they are.
+Names are imported from `studentassistant.vault.users` and re-exported by `studentassistant.vault`.
+
+`UserProfile` (a `VaultFileModel`, so a key this backend does not declare means a newer one wrote
+the file) is the whole of `users/<id>/profile.json`: `id` (the folder's name, which an edit never
+changes), `name`, `email` and `photo`, both `None` until the student gives one, and `created_at`.
+`photo` is the name of the file beside the profile (`photo.jpg`), never a path or a URL.
+
+- `create_user(vault, name, email=None)` adds somebody to the vault, and is the root handle's alone
+  -- on a user handle it is a `ValueError`, because adding somebody is a decision about the whole
+  repository. The id is `slugify(name)` with the first free numeric suffix, so two students called
+  "Ana García" are two folders and neither one's notes are written over the other's. It writes
+  `users/<id>/profile.json` with `write_json_atomic` and `users/<id>/subjects/.gitkeep`: git tracks
+  no empty directory, so a profile on its own would arrive from a clone as a folder with nowhere to
+  put a first subject. A refusal writes nothing and creates no folder, and a `FileExistsError` says
+  the id picked is taken already -- the same user created twice at once -- without overwriting it.
+- `list_users(vault)` reads every profile and sorts by `name` case-insensitively and then by id, so
+  a listing never depends on the order the file system gives. An accented vowel therefore sorts by
+  its code point, after every plain letter: this backend has no collation table, and a screen that
+  wants one re-sorts what it is given. A vault with no user yet has no `users/` directory either,
+  and lists as empty.
+- `get_user(vault, user_id)` reads one profile. `update_user(vault, user_id, *, name=None,
+  email=None)` edits the name and the email, keeping the id, the photo and `created_at`: a field
+  left at `None` is kept as it is, an `email` of `""` (or of nothing but whitespace) clears it,
+  which is how the profile screen says "no address", and a profile that comes out the same is not
+  rewritten. The user is looked up first, so an id that is not there is `UserNotFoundError` whatever
+  comes with it.
+- `set_user_photo`, `remove_user_photo` and `read_user_photo` are the photo, below.
+- `user_ids(vault)` lists the sorted directory names under `users/` reading no `profile.json`,
+  a broken one included: it is still a user somebody may recover, and a new one taking its id would
+  write over them. A caller that must survive a profile it cannot read -- the selection screen, the
+  migration -- lists these and reads each one itself.
+
+**Validation.** A `name` is trimmed and between 1 and `MAX_USER_NAME_CHARACTERS` (80) characters;
+an `email` is trimmed, at most `MAX_USER_EMAIL_CHARACTERS` (254, the longest address the RFCs
+allow) and `^[^@\s]+@[^@\s]+\.[^@\s]+$`. Anything else is a `UserProfileError` -- a `UserError` and
+a `ValueError` -- with a Spanish message, because that message is what the «Editar perfil» screen
+shows the student (#553, #555), and nothing is written. `UserNotFoundError` is an id with no
+readable `profile.json`, or one that is not a slug at all; `UserFileError` is a `profile.json` that
+is there and cannot be read back as a `UserProfile`, which says the vault's own content is damaged
+and is the student's to recover, not a wrong id to retry. All three are `UserError`s, and a
+`UserError` is a `VaultError`.
+
+**The photo.** `set_user_photo(vault, user_id, content, content_type)` takes the bytes a client
+uploaded with the media type it declares: one of `USER_PHOTO_CONTENT_TYPES` (`image/jpeg`,
+`image/png`, `image/webp`, the three `sources.py` accepts for a pasted image), at most
+`MAX_USER_PHOTO_BYTES` (5 MiB) and decodable by OpenCV, else a `UserProfileError`. What is stored is
+not what arrived: the image is shrunk so its long edge is at most `USER_PHOTO_LONG_EDGE_PX` (512)
+-- averaged with `INTER_AREA`, never enlarged, so a smaller one keeps its size -- and re-encoded as
+a JPEG of `USER_PHOTO_JPEG_QUALITY` (85) through the secret guard and `write_bytes_atomic`. One
+format under one name, in the user's own folder, is what keeps `profile.photo` a file name, and
+what turns a 12-megapixel phone selfie into a few tens of kilobytes in a repository every PC clones
+and pushes. The image is written before the profile that names it, so a write that fails halfway
+leaves a profile with no photo rather than a photo no profile mentions, and a client that follows
+the profile never asks for a file that is not there. `remove_user_photo(vault, user_id)` deletes the
+file and sets `photo` to `None`; removing what is not there is not an error, so a repeated «Quitar
+foto» gets the same answer instead of a `404` nobody can act on. `read_user_photo(vault, user_id)`
+gives the stored bytes or `None` -- `None` for a profile that names no photo, for one that names a
+file this module never writes (so a hand-edited profile cannot point a route at another path in the
+vault), and for one whose photo the folder has lost. Decoding, shrinking and encoding are CPU-bound
+and the atomic writers fsync, so the photo calls block in the way the capture processing does: a
+server caller runs them in a worker thread (`asyncio.to_thread`).
+
+This module builds its paths from `vault.root`, not from `vault.path`: users belong to the
+repository, not to one user's content, so a user handle lists and edits profiles exactly as a root
+one does. Nothing here runs git; the sync commits what these writers leave behind.
 
 ### Subjects -- `subjects.py`
 `create_subject(vault, name, style_guide=None)` writes `subjects/<slug>/subject.yaml`, the slug
@@ -384,6 +494,9 @@ Every reader above (`list_sources`, `read_session_transcript`, `read_notes`, `li
 goes through `require_topic(vault, subject_slug, topic_slug)` (`topics.py`): a value that is not a
 slug (`slugs.is_slug`: `[a-z0-9]` runs joined by single hyphens) is a `SubjectNotFoundError` or a
 `TopicNotFoundError` without touching the disk, so an id from a URL cannot walk out of its topic.
+A user id is guarded the same way and by the same `is_slug` (`Vault.for_user`, `get_user`): an id
+that is not a slug is a `UserNotFoundError` before any path is built, so it cannot name a directory
+outside `users/` either.
 
 ### Cross-process locks -- `locking.py`
 Decision (#165): two processes on one PC (the server and a CLI command, or two CLI commands) are
@@ -406,7 +519,9 @@ message naming the lock) -- no wait is unbounded. Three locks exist:
   `GitCommandError`, `rewrite_history` a `PurgeError`.
 - `vault_lock(root, "feedback")` -- around each write of the feedback inbox (`feedback.py`, #472):
   the id allocation and its append, or the id check and a status change's append.
-A vault without a `.git/` directory only gets the in-process part. The batch commit stages
+A vault without a `.git/` directory only gets the in-process part, and no lock file is written
+anywhere: which is what a user handle gives every one of these locks today, because the callers
+pass `vault.path` and #547 is what moves them to `vault.root`. The batch commit stages
 `git add --all -- . ':(exclude,glob)**/.*.tmp'`: a writer's temporary file (`files.py`) is never
 staged, so a commit while another thread or process is mid-write neither fails on the file
 vanishing nor commits half of it. Not locked: the other writers (sessions, JSONL, notes, state)
@@ -493,7 +608,10 @@ thread:
   subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
   `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
   before this format (the editor, which will, is not written yet), so no vault holds one. ADR-0002
-  still shows the topic-only form.
+  already shows the user-prefixed form, `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`, which
+  no code writes yet: the prefix, the `sync.for_user(user_id)` view whose paths and tags are
+  user-relative, and one `GitSync` per repository running git in `root` are #547's, and re-creating
+  a migrated vault's tags under the prefix is #548's.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`,
@@ -835,8 +953,26 @@ its remote (a failed push is retried by the next sync).
 
 ## Boundaries
 - Pure storage: no LLM, no HTTP. Refuses files that look like secrets.
+- Several users, one vault (ADR-0002): separation of data, not security. There is no password, no
+  role and no permission, and anyone who can reach the backend or the repository sees every user's
+  folder. What a user handle guarantees is that a writer given one writes inside it, not that
+  another user cannot be handed one.
+- The profile photo is the only image work in this module: `users.py` decodes, downscales and
+  re-encodes it with OpenCV, written there again rather than reused from `sources/captures.py`
+  because the dependency runs the other way (`sources` imports `vault`, never the reverse).
 
 ## Tests
 Against `tmp_vault` fixtures with a local bare repo as "remote"; never GitHub. Setup tests use
 `tests/github_fakes.py`: a `LocalHost` over bare repositories under `tmp_path`, a fake `gh` script
 put first on `PATH`, `file://` remote bases, and `SA_CONFIG` inside `tmp_path`.
+
+The users of #546 are `tests/vault/test_users.py` (profiles, ids, validation),
+`test_user_photo.py` (uploads, downscale, removal), `test_user_handles.py` (`for_user` and the two
+handles) and `test_user_isolation.py` (every writer through a user handle), and they share
+`user_helpers.py`: `add_user`, which writes a `profile.json` straight to disk for the tests of the
+handle itself, and `everything_under`, a before/after of the whole tree. No photo is a committed
+fixture -- each one is generated in the test with OpenCV and NumPy, so the repository carries no
+image file for them. The isolation test writes the whole layout twice, through two handles whose
+subject and topic slugs are the same, and asserts that every path added landed under its own
+`users/<id>/`, that the ids handed back are relative to that folder and read back, and that one id
+gives each of the two users their own file.
