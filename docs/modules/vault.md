@@ -966,7 +966,7 @@ Against `tmp_vault` fixtures with a local bare repo as "remote"; never GitHub. S
 `tests/github_fakes.py`: a `LocalHost` over bare repositories under `tmp_path`, a fake `gh` script
 put first on `PATH`, `file://` remote bases, and `SA_CONFIG` inside `tmp_path`.
 
-The users of #546 are `tests/vault/test_users.py` (profiles, ids, validation),
+The users of #546 are `tests/vault/test_vault_users.py` (profiles, ids, validation),
 `test_user_photo.py` (uploads, downscale, removal), `test_user_handles.py` (`for_user` and the two
 handles) and `test_user_isolation.py` (every writer through a user handle), and they share
 `user_helpers.py`: `add_user`, which writes a `profile.json` straight to disk for the tests of the
