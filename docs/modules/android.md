@@ -7,11 +7,14 @@ Thin capture client (ADR-0001), Spanish UI:
 - Pairing: scan the backend's QR (URL + one-time code), exchange for a token, store it in
   DataStore; several backends allowed; connection test.
 - Home: subjects/topics from the backend, create topic, start or continue a session.
-- Capture screen: CameraX preview, transcription with SpeechRecognizer (Google) sent as
-  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), buttons (Capturar, Importante, Libro/Apuntes, Terminar captura), live transcript,
-  pending-doubts counter, screen kept on.
-- Still capture: burst of 3 full-resolution photos on button or `capture_now`; haptic + shutter
-  sound; upload with retries; thumbnail strip (see "Still capture (#46)").
+- Capture screen: a large CameraX preview, transcription with SpeechRecognizer (Google) sent as
+  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), the session buttons
+  (Capturar first and largest, Importante, Libro/Apuntes, Terminar captura), the thumbnail strip,
+  pending-doubts counter, screen kept on. Since #556 there is no transcript box on screen: the
+  transcription keeps being sent, only the box went.
+- Still capture: burst of 3 full-resolution photos on «Capturar» only (#556: the server's
+  `capture_now` command is ignored); haptic + shutter sound; upload with retries; thumbnail strip
+  (see "Still capture (#46)").
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
 - Study desk (#83, #414): a topic's «Construir» (workspace) and «Estudiar» (study) screens, the
@@ -263,20 +266,32 @@ topic's notes and sources; the app only carries the question and shows / reads t
 
 ## Capture screen (#42)
 
-Package `capture`. The screen for one open session: CameraX preview, microphone in the STT mode
-the backend picks (ADR-0008), live transcript, pending-doubts counter and the session buttons.
+Package `capture`. The screen for one open session, in three bands (#556): the header with the
+pending-doubts counter and the status lines, a CameraX preview as large as the space the other two
+bands leave, and the bottom area -- the thumbnail strip and the session buttons. The microphone
+runs in the STT mode the backend picks (ADR-0008) and its transcription is sent, but no box on
+screen shows it.
 
 - **`CaptureScreen(viewModel, onLeave, onEnded)`**: asks for `CAMERA` and `RECORD_AUDIO` at runtime
   (Spanish rationale; the session starts once the microphone is granted, the preview once the
-  camera is), keeps the screen on (`View.keepScreenOn`) while shown, shows the back camera's
-  CameraX `Preview`, the transcript (partials grey, finals black, auto-scrolled), the connection
-  state (with "Reintentar" after a failure), "N dudas pendientes" from the last `notice`, in
-  server STT mode the backend recognizer's warning while degraded (protocol 1.5 `stt.status`,
-  #222: its Spanish `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), and the
-  buttons **Capturar**, **Importante**, **Libro/Apuntes** (shows what the camera looks at) and
-  **Terminar captura** (`capture_button_end`, the counterpart of «Iniciar captura»; one
-  confirmation saying the session ends and the notes are built later from «Construir» through the
-  chat). Back ("Salir") leaves the session open: the home screen offers "Continuar".
+  camera is), keeps the screen on (`View.keepScreenOn`) while shown, and lays the session out in
+  three bands (#556, human correction 2026-10-03):
+  - the header -- the connection state (with "Reintentar" after a failure) and "N dudas pendientes"
+    from the last `notice` -- and, under it, the status lines (`StatusLines`): in server STT mode
+    the backend recognizer's warning while degraded (protocol 1.5 `stt.status`, #222: its Spanish
+    `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), the microphone's pause
+    and problems, the spool near its cap and an end failure;
+  - the back camera's CameraX `Preview`, the screen's only weighted child, so it takes all the
+    vertical space left between the two other bands;
+  - the bottom area, top to bottom: the thumbnail strip (while there are shots) and the buttons --
+    **Capturar** first, full width and taller than the rest since it is the only capture trigger,
+    then **Importante** and **Libro/Apuntes** (shows what the camera looks at) side by side, then
+    **Terminar captura** (`capture_button_end`, the counterpart of «Iniciar captura»; one
+    confirmation saying the session ends and the notes are built later from «Construir» through the
+    chat).
+  The live-transcript box is gone and with it the `capture_transcript_empty` string: the
+  transcription itself keeps running and being sent in both STT modes (#556). Back ("Salir") leaves
+  the session open: the home screen offers "Continuar".
 - **Ending only ends the capture** (#431, human decision 2026-09-27: nothing anywhere builds the
   topic's document automatically). `CaptureViewModel.end()` sends `button end_session` and
   `POST /api/sessions/{id}/end` **without `prepare_notes`** (optional since protocol 1.6, so valid
@@ -295,17 +310,22 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
   (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
   `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
-  `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so both STT
-  modes show the backend's normalised text --, `pendingCount`, `source`, `micProblem`,
-  `endFailure`, `sttWarning`: the last degraded `SttStatus`, cleared by an `ok` one and by every
+  `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so the
+  state holds the backend's normalised text in both STT modes, though since #556 nothing draws it
+  --, `pendingCount`, `source`, `micProblem`, `endFailure`, `sttWarning`: the last degraded
+  `SttStatus`, cleared by an `ok` one and by every
   new `hello.ack`, after which the backend repeats a status that still holds). `start()` opens the socket; when `hello.ack` names the mode it starts the
   `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
   `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
   `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops
   socket and mic. Buttons: `important()` -> `button important`; `toggleSource()` -> `button
   switch_source` with `book`/`notes` (starts on `notes`); `capture()` calls `StillCapture` with
-  `trigger: button`; a server `command capture_now` calls it with `trigger: command` and its
-  `command_id`, then answers `ack`. `end()` sends `button end_session`, then `POST
+  `trigger: button` and is the app's only capture trigger (#556): a server `command capture_now`
+  -- the voice command the backend's `stt` still publishes -- is deliberately neither acted on nor
+  `ack`ed (nothing was done, so nothing is acknowledged), and every other server event is handled
+  as before. The protocol is unchanged: `CaptureTrigger.COMMAND`, `Command`/`CommandName` and
+  `ClientAck` stay in the protocol package and the web capture page still obeys `capture_now`
+  (docs/modules/web.md). `end()` sends `button end_session`, then `POST
   /api/sessions/{id}/end` (`reason: button`); success, 404 or 409 clear the `SessionHolder` and end
   the screen, any other failure keeps the session running with `endFailure` shown.
 - **`StillCapture`** (`shots: Flow<List<CaptureShot>>`, `capture(trigger, commandId)`,
@@ -372,11 +392,13 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
 ## Still capture (#46)
 
 - **`BurstStillCapture(backend, sessionId, camera, feedback, uploads, clock, scope)`**, built per
-  session by `AppContainer.captureViewModelFactory`: on "Capturar" or `capture_now` it calls
-  `CaptureFeedback.shutter()` and adds a `CaptureShot` (fresh lowercase UUID `capture_id`, the
-  phone time of the trigger, status `CAPTURING`) to the strip at once, then takes a burst of
-  `BURST_SIZE` (3) stills with the `StillCamera` and hands it to the `CaptureUploadQueue`. A
-  camera that takes nothing marks the shot `CAMERA_FAILED`.
+  session by `AppContainer.captureViewModelFactory`: on "Capturar" -- the app's only trigger since
+  #556; `capture(trigger, commandId)` still takes the protocol's `CaptureTrigger.COMMAND` and its
+  `command_id`, which only the tests pass now -- it calls `CaptureFeedback.shutter()` and adds a
+  `CaptureShot` (fresh lowercase UUID `capture_id`, the phone time of the trigger, status
+  `CAPTURING`) to the strip at once, then takes a burst of `BURST_SIZE` (3) stills with the
+  `StillCamera` and hands it to the `CaptureUploadQueue`. A camera that takes nothing marks the
+  shot `CAMERA_FAILED`.
 - **`StillCamera`** (`suspend takeBurst(count): Burst`; `Burst(stills, thumbnail)`, `Still(bytes,
   contentType, widthPx, heightPx, clientTimeMs)`, `StillCameraException`) and **`CaptureFeedback`**
   are the seams; `NoStillCamera` / `NoCaptureFeedback` are the container defaults.
@@ -397,9 +419,9 @@ the backend picks (ADR-0008), live transcript, pending-doubts counter and the se
   session may be resuming) are retried after 1/2/5/10/30 s (30 s repeats); any other refusal is
   `FAILED`, and a tap on its thumbnail retries it. Statuses: `CAPTURING`, `PENDING`, `UPLOADING`,
   `UPLOADED`, `FAILED`, `CAMERA_FAILED`; full-size stills are dropped once uploaded.
-- **Thumbnail strip** (`CaptureScreen`): a row above the transcript, one 64 dp tile per capture
-  with a badge (spinner while capturing/uploading, «↑» pending, «✓» sent, «!» failed) and a Spanish
-  content description.
+- **Thumbnail strip** (`CaptureScreen`): a row between the preview and the session buttons (#556),
+  one 64 dp tile per capture with a badge (spinner while capturing/uploading, «↑» pending, «✓»
+  sent, «!» failed) and a Spanish content description.
 - In the app the queue spools every burst to disk before its first upload (see "Offline spool
   (#53)"); a WebSocket `ack`'s `capture_ids` and a resume's `received_capture_ids` mark captures
   uploaded without sending them again.

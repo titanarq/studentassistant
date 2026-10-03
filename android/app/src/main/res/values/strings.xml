@@ -129,7 +129,6 @@
     <string name="capture_stt_unavailable">La transcripción del servidor no está disponible; lo que digas no se transcribe</string>
     <string name="capture_spool_near_cap">Queda poco espacio para guardar sin conexión: si no vuelve la conexión se perderá el audio más antiguo</string>
     <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
-    <string name="capture_transcript_empty">Habla y aquí aparecerá la transcripción.</string>
     <string name="capture_button_capture">Capturar</string>
     <string name="capture_shot_capturing">Haciendo fotos…</string>
     <string name="capture_shot_pending">Foto pendiente de enviar</string>
