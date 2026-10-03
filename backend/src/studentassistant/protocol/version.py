@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-PROTOCOL_VERSION = "1.7"
+PROTOCOL_VERSION = "1.8"
 
 VERSION_PATTERN = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 _VERSION_RE = re.compile(VERSION_PATTERN)

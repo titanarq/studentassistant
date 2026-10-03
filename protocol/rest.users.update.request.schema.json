@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.users.update.request.schema.json",
+  "title": "rest.users.update.request",
+  "description": "PATCH /api/users/{user_id} body: at least one of the two fields, each absent meaning keep what the user has; an email of the empty string clears it (protocol 1.8).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^\\S(?:.*\\S)?$",
+      "description": "The student's name as they write it, trimmed: 1 to 80 characters, not blank."
+    },
+    "email": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 254,
+          "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+        },
+        {
+          "const": ""
+        }
+      ],
+      "description": "The new email; the empty string clears it and absent keeps the current one."
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "required": [
+        "email"
+      ]
+    }
+  ]
+}

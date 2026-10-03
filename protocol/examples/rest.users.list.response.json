@@ -1,0 +1,14 @@
+{
+  "users": [
+    {
+      "id": "laura-mendez",
+      "name": "Laura Méndez",
+      "email": "laura.mendez@example.com",
+      "photo_url": "/api/users/laura-mendez/photo"
+    },
+    {
+      "id": "diego-soler",
+      "name": "Diego Soler"
+    }
+  ]
+}

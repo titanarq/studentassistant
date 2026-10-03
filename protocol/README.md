@@ -5,7 +5,7 @@ backend (ADR-0001, ADR-0006, ADR-0008). This directory is the source of truth: e
 has a JSON Schema and one example, and the Python (`studentassistant.protocol`), TypeScript and
 Kotlin bindings each parse and re-serialise every example in their test suites.
 
-Current version: **`protocol_version` 1.7**.
+Current version: **`protocol_version` 1.8**.
 
 | version | change |
 |---|---|
@@ -18,6 +18,7 @@ Current version: **`protocol_version` 1.7**.
 | 1.6 | `rest.sessions.end.request` gains the optional `prepare_notes`, `rest.sessions.end.response` the optional `notes_generation`; new `GET .../notes/generation` (see "Notes generation") |
 | 1.6 (#440) | no bump, nothing a client reads is added: `prepare_notes` is accepted but ignored, `notes_generation` is no longer sent (it was optional) and `GET .../notes/generation` and `rest.topics.notes.generation.response` are removed (see "Notes generation") |
 | 1.7 (#454) | `client.button` gains the optional `reason` (`hidden` \| `student`), only with `pause` (see "Pause reason") |
+| 1.8 (#545) | users: the five `rest.users.*` bodies, the `X-SA-User` / `sa_user` active-user rule and the `user_required` / `user_not_found` codes (see "Users (1.8)") |
 
 Adding an optional field is a MINOR bump. Unknown fields stay refused, so a peer sends a field
 only when the negotiated version has it: REST requests carry no version, so the backend shapes
@@ -44,9 +45,9 @@ Conventions shared by every message:
   Unix epoch ms on the **client's** clock; `server_time_ms` and every `*_at_ms` are Unix epoch ms
   on the **backend's** clock; `session_start_ms` / `session_end_ms` count ms since the session's
   `started_at_ms` (session time, ADR-0008).
-- Ids (`subject_id`, `topic_id`, `session_id`, `device_id`, `segment_id`, `command_id`) are opaque
-  strings matching `^[A-Za-z0-9][A-Za-z0-9_-]*$`. A `capture_id` is a client-generated lowercase
-  hyphenated UUID.
+- Ids (`subject_id`, `topic_id`, `session_id`, `device_id`, `segment_id`, `command_id`, `user_id`)
+  are opaque strings matching `^[A-Za-z0-9][A-Za-z0-9_-]*$`. A `capture_id` is a client-generated
+  lowercase hyphenated UUID.
 - Student-facing text inside messages (names, transcript text, marker labels) is Spanish.
 
 ## Version negotiation
@@ -56,7 +57,7 @@ Conventions shared by every message:
 versions, e.g.
 
 ```text
-incompatible protocol_version 2.0: this side speaks 1.7; update the older side so both share MAJOR version 1
+incompatible protocol_version 2.0: this side speaks 1.8; update the older side so both share MAJOR version 1
 ```
 
 It is exchanged in four places:
@@ -74,9 +75,10 @@ In Python: `PROTOCOL_VERSION`, `parse_version`, `check_compatible` (raises
 
 ## REST
 
-All endpoints live under `/api` and exchange JSON, except the captures upload (multipart). Every
-endpoint except `GET /api/health` and `POST /api/pair` needs `Authorization: Bearer <token>`,
-the token returned by pairing (never logged by either side).
+All endpoints live under `/api` and exchange JSON, except the captures upload (multipart) and the
+profile photo (raw image bytes, see "Users (1.8)"). Every endpoint except `GET /api/health` and
+`POST /api/pair` needs `Authorization: Bearer <token>`, the token returned by pairing (never
+logged by either side).
 
 | endpoint | request | response |
 |---|---|---|
@@ -92,6 +94,12 @@ the token returned by pairing (never logged by either side).
 | `POST /api/sessions/{id}/captures` | `rest.sessions.captures.request` (multipart `metadata` part) | `rest.sessions.captures.response` |
 | `GET /api/search?q=&subject=&topic=&kinds=&limit=` | -- | `rest.search.response` |
 | `POST /api/subjects/{subject_id}/topics/{topic_id}/web-pages` | `rest.topics.web_pages.create.request` | `rest.topics.web_pages.create.response` |
+| `GET /api/users` | -- | `rest.users.list.response` |
+| `POST /api/users` | `rest.users.create.request` | `rest.users.create.response` |
+| `PATCH /api/users/{user_id}` | `rest.users.update.request` | `rest.users.update.response` |
+| `GET /api/users/{user_id}/photo` | -- | the photo, `image/jpeg` |
+| `PUT /api/users/{user_id}/photo` | the raw image, one of `USER_PHOTO_CONTENT_TYPES` | `rest.users.update.response` |
+| `DELETE /api/users/{user_id}/photo` | -- | `rest.users.update.response` |
 
 A new endpoint is not a version bump: its messages are new types, never new fields of an old
 one, and a backend that predates it answers 404, which a client reports as "update the server".
@@ -109,6 +117,8 @@ refusals a client branches on also carry `code`, so no client matches the Spanis
 | `session_open` | 409 | an unended session is in the way: another session when starting or resuming one (its id also in the `X-Open-Session-Id` header), or the topic's own session when resolving its doubts |
 | `notes_changed` | 409 | a student save of the notes (`PUT .../notes`) named a `base_revision` that is no longer the notes' revision; the body also carries the current `text` and `revision` |
 | `notes_busy` | 409 | "prepárame el tema", a restore or another rewrite holds the topic's notes; save again once it ends |
+| `user_required` | 400 | the request does not say which user it acts for and the vault holds more than one (since 1.8, see "Users (1.8)") |
+| `user_not_found` | 404 | this vault has no user with the id the request named (since 1.8) |
 
 `code` is optional: other errors have none, a client must treat a missing or unknown code as "no
 code" (and fall back on the status), and new codes may be added in later MINOR versions. Like
@@ -116,13 +126,86 @@ every field newer than 1.0 it is sent only to a client whose negotiated version 
 paired as a 1.0 or 1.1 client gets the plain `{"detail": ...}` body. Error bodies have no schema
 under `protocol/`: every client reads them leniently -- the Android app decodes no error
 body at all and goes by the HTTP status only; the web reads `detail` and `code` and ignores
-anything else. In Python: `ErrorCode`, `ERROR_CODE_SINCE`; in TypeScript: `ErrorCode`,
-`ERROR_CODES`, `errorCode(body)`.
+anything else. In Python: `ErrorCode`, `ERROR_CODE_SINCE` (1.2), `USER_ERROR_CODES_SINCE` (1.8)
+and `ERROR_CODES_SINCE` (each code -> the version that added it); in TypeScript: `ErrorCode`,
+`ERROR_CODES`, `isErrorCode`, `errorCode(body)` and the same three since maps; in Kotlin:
+`ErrorCode` (its `wire` is the string on the wire), `isErrorCode`, `errorCode(body)` and the same
+three since maps.
 
 The web-only editor chat stream (`POST .../notes/chat`, Server-Sent Events,
 `docs/modules/server.md`) reports a failure after the stream started as an `error` event
 `{"status", "detail", "code"?}` that carries the same `code` (e.g. `cost_cap_reached`), sent under
 the same version rule.
+
+### Users (1.8)
+
+Since 1.8 (#545, epic #544) one backend and one vault serve several students, each with their own
+`users/<user-id>/` folder in it (`docs/modules/vault.md`). The protocol carries who they are and
+which one a request acts for; the routes are the server module's (#549) and the screens that use
+them are #552-#555.
+
+The endpoints, also in the REST table above:
+
+- `GET /api/users` answers `rest.users.list.response`, `{"users": [User]}`: every user of this
+  vault, so a client can offer the choice.
+- `POST /api/users` takes `rest.users.create.request`, `{name, email?}`, and answers
+  `rest.users.create.response`, the created `User`.
+- `PATCH /api/users/{user_id}` takes `rest.users.update.request`, `{name?, email?}`, and answers
+  `rest.users.update.response`, the `User` after the change.
+- `GET /api/users/{user_id}/photo` answers the photo itself as `image/jpeg`.
+  `PUT /api/users/{user_id}/photo` takes the raw image of one of `USER_PHOTO_CONTENT_TYPES`
+  (`image/jpeg`, `image/png`, `image/webp`) and `DELETE /api/users/{user_id}/photo` removes it;
+  both answer with `rest.users.update.response`, the `User` they left behind, so a client refreshes
+  the profile from either. The photo is the one body that is not JSON: the backend stores it as a
+  downscaled `photo.jpg` and refuses an image over its size cap (a server setting, not a protocol
+  constant).
+
+A `User` is `{id, name, email?, photo_url?}`, strict like every message (an unknown field is
+refused) and with the optional fields absent, never `null`:
+
+- `id`: the slug of the name given at creation, with a numeric suffix when that slug is taken (the
+  subjects' rule); a later rename never changes it. It matches the id pattern above.
+- `name`: 1 to `USER_NAME_MAX_CHARS` (80) characters, not blank. A name travels trimmed --
+  whitespace at either end is refused -- so a form trims it before sending it (#553, #555).
+- `email`: at most `USER_EMAIL_MAX_CHARS` (254) characters, matching
+  `^[^@\s]+@[^@\s]+\.[^@\s]+$`. The empty string is a valid email in one place only,
+  `rest.users.update.request`, where it clears the user's email; anywhere else it is refused.
+- `photo_url`: a path starting with `/api/users/`, absent while the user has no photo.
+
+In `rest.users.update.request` an absent field means "keep what the user has", so at least one of
+the two must be present: `{}` is refused.
+
+**The active user of a request.** Every content route acts for one user, read off the request
+itself, in this order:
+
+1. the `USER_HEADER` header, `X-SA-User: <user-id>` (what the native Android app sends);
+2. else the `USER_COOKIE` cookie, `sa_user=<user-id>` (what the web page and the Android WebView
+   set).
+
+A present header wins over a cookie. With neither, a vault holding exactly one user acts for that
+one, so a client that knows nothing about users keeps working on a single-user vault; with neither
+and more than one user the answer is `400` with code `user_required`. An id this vault does not
+have is `404` with code `user_not_found`. The WebSocket handshake of `/ws/sessions/{id}` follows
+the same rule, on the header and the cookie of the upgrade request.
+
+Not user-scoped, because they are about the device or about the users themselves: `/api/health`,
+`/api/pair*` and `/api/users*`. Everything else is -- `/api/subjects`, `/api/sessions`,
+`/api/search` and the other content routes -- and answers only what belongs to the active user.
+The users routes still need the pairing bearer token like every route except health and pairing:
+the selection rides on top of that trust, it does not replace it.
+
+**The selection is not authentication.** It carries no password, token, role or permission and it
+is no security boundary: anyone who can reach the backend, or the vault's GitHub repository, can
+name any user of it and read their content (#544). The bearer/loopback trust of ADR-0001 is
+unchanged, and a device pairs with the backend, never with a user.
+
+In Python: `User`, `UsersListResponse`, `UserCreateRequest`, `UserUpdateRequest` and the constants
+`USER_HEADER`, `USER_COOKIE`, `USER_NAME_MAX_CHARS`, `USER_EMAIL_MAX_CHARS`,
+`USER_PHOTO_CONTENT_TYPES`; in TypeScript the same names with the decoders `decodeUser`,
+`decodeUsersListResponse`, `decodeUserCreateRequest` and `decodeUserUpdateRequest`; in Kotlin the
+same names as `@Serializable` classes going through `ProtocolJson` (`photo_url` is `photoUrl`
+there). `MODELS` / `DECODERS` / `MESSAGE_CODECS` register the five message names, and both
+`rest.users.create.response` and `rest.users.update.response` map to the one `User`.
 
 ### Pairing and health
 
@@ -222,7 +305,8 @@ as a prefix, accents and case ignored), optional `subject` and `topic` ids (`top
 ## WebSocket `/ws/sessions/{id}`
 
 Opened on the `ws_path` a session start/resume returned (how the socket carries the bearer
-token is the server module's to define). Text messages are JSON objects discriminated by `type`; binary messages are audio frames
+token is the server module's to define; which user it acts for comes from the upgrade request's
+`X-SA-User` header or `sa_user` cookie, see "Users (1.8)"). Text messages are JSON objects discriminated by `type`; binary messages are audio frames
 (server STT mode only). A message with an unknown or missing `type` is rejected, never ignored.
 
 ### Flow

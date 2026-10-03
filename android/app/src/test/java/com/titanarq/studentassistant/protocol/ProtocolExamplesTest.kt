@@ -52,7 +52,10 @@ class ProtocolExamplesTest {
     @Test
     fun `hello and hello ack decode their fields`() {
         val hello = decodeClientEvent(SharedExamples.read("client.hello")) as Hello
-        assertEquals(PROTOCOL_VERSION, hello.protocolVersion)
+        // The shared example speaks an earlier MINOR than this side does; negotiating down to the
+        // peer is what lets 1.8 talk to it, so neither value is pinned to our own version.
+        assertTrue(parseVersion(hello.protocolVersion) <= parseVersion(PROTOCOL_VERSION))
+        assertEquals(hello.protocolVersion, negotiate(hello.protocolVersion))
         assertEquals(SttMode.CLIENT, hello.capabilities.stt)
         assertEquals(AudioFormat(AudioEncoding.PCM16, 16000, 1), hello.capabilities.audioFormat)
         assertEquals(1790251200000L, hello.clientTimeMs)

@@ -15,7 +15,15 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   `notes_generation`, and the polling route and its `rest.topics.notes.generation.response`
   schema are removed (`protocol/README.md` "Notes generation"). Protocol 1.7 (#454) added
   the optional `reason` (`hidden` | `student`) of a `button` `pause` (`protocol/README.md`
-  "Pause reason"): a `student` pause keeps the backend's idle auto-end away.
+  "Pause reason"): a `student` pause keeps the backend's idle auto-end away. Protocol 1.8 (#545,
+  epic #544) added the users of a shared vault: `GET|POST /api/users`,
+  `PATCH /api/users/{user_id}` and `GET|PUT|DELETE /api/users/{user_id}/photo` (a raw image, the
+  one body that is not JSON), the active user every other route acts for (`X-SA-User` header, else
+  `sa_user` cookie, a present header wins; neither and exactly one user in the vault -> that user;
+  neither otherwise -> `400 user_required`; an unknown id -> `404 user_not_found`; the WebSocket
+  handshake follows the same rule) and the constants that fix them (`protocol/README.md`
+  "Users (1.8)"). Selecting a user is not authenticating one: the pairing trust of ADR-0001 is
+  unchanged. The routes themselves are the server module's (#549).
 - WebSocket `/ws/sessions/{id}`: JSON client events (`hello` with capabilities and clock sync,
   `transcript.client.partial/final`, `button`, `marker`, `ack`), optional binary audio frames in
   server STT mode (header: `seq`, client time in ms, then PCM16 16 kHz mono), JSON server events (`transcript.partial`, `transcript.final`, `command` e.g.
@@ -24,7 +32,8 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
   "Vocabulary hints"); since 1.5 the server message `stt.status` reports the server-side STT
   provider's state (`protocol/README.md` "STT status", #222).
 - REST error bodies `{"detail", "code"?}` (`code` since 1.2: `cost_cap_reached`,
-  `doubt_closed`, `session_open`; `protocol/README.md` "REST errors"). Not a schema'd message:
+  `doubt_closed`, `session_open`, `notes_changed`, `notes_busy`; since 1.8 `user_required` and
+  `user_not_found`; `protocol/README.md` "REST errors"). Not a schema'd message:
   clients read error bodies leniently.
 - A `protocol_version`; both sides refuse an incompatible major version with a clear message.
   Peers speak the lower MINOR: REST requests carry no version, so the backend answers a device's
@@ -38,7 +47,7 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 
 ## Public surface (`studentassistant.protocol`)
 Everything below is re-exported from the package root; other modules import only from there.
-- Version: `PROTOCOL_VERSION` (`"1.7"`), `parse_version`, `check_compatible` (raises
+- Version: `PROTOCOL_VERSION` (`"1.8"`), `parse_version`, `check_compatible` (raises
   `IncompatibleProtocolVersionError`, a `ValueError` naming both versions), `negotiate` (shared
   MAJOR, lower MINOR).
 - Base: `ProtocolModel`, the strict (`extra="forbid"`) and frozen Pydantic v2 base of every message.
@@ -62,9 +71,22 @@ Everything below is re-exported from the package root; other modules import only
   `NotesGenerationStart` are removed (#440).
   `Topic` carries the optional `last_session_at_ms`,
   `pending_count` (1.1) and `digest_excerpt` (1.3, at most `DIGEST_EXCERPT_MAX` = 400 chars).
+- Users (1.8, #545): `User`, `UsersListResponse`, `UserCreateRequest`, `UserUpdateRequest` --
+  `rest.users.create.response` and `rest.users.update.response` are both a `User` -- and the
+  constants `USER_HEADER` (`"X-SA-User"`), `USER_COOKIE` (`"sa_user"`), `USER_NAME_MAX_CHARS`
+  (80), `USER_EMAIL_MAX_CHARS` (254) and `USER_PHOTO_CONTENT_TYPES` (`image/jpeg`, `image/png`,
+  `image/webp`). `User.email` and `User.photo_url` are absent rather than `null` on the wire, an
+  update carries at least one of `name` / `email` (a `model_validator`), and `"email": ""` --
+  valid in that request only -- clears it. The field rules are the schemas' own and stay inside
+  `protocol/users.py`, which is why they are not re-exported: `USER_NAME_PATTERN` (a name travels
+  trimmed, so a blank or untrimmed one is refused), `USER_EMAIL_PATTERN`,
+  `USER_PHOTO_URL_PATTERN` (the `/api/users/` prefix) and the annotated `UserName` / `UserEmail` /
+  `UserPhotoUrl` built on them.
 - REST error codes: `ErrorCode` (a `StrEnum`: `COST_CAP_REACHED`, `DOUBT_CLOSED`,
-  `SESSION_OPEN`) and `ERROR_CODE_SINCE` (`(1, 2)`); the server's `server.errors` puts them in
-  error bodies.
+  `SESSION_OPEN`, `NOTES_CHANGED`, `NOTES_BUSY` and, since 1.8, `USER_REQUIRED`,
+  `USER_NOT_FOUND`), `ERROR_CODE_SINCE` (`(1, 2)`), `USER_ERROR_CODES_SINCE` (`(1, 8)`) and
+  `ERROR_CODES_SINCE` (each code -> the version that added it); the server's `server.errors` puts
+  them in error bodies.
 - Registry: `MODELS`, mapping each `protocol/<name>.schema.json` name to its model, and
   `model_for(name)` (`KeyError` for an unregistered name).
 - Audio frames: `AudioFrame`, `encode_frame`, `decode_frame`, `HEADER_SIZE`, `MAGIC`, and the
@@ -75,7 +97,8 @@ Everything below is re-exported from `web/src/protocol/index.ts`; the capture pa
 from there. Types mirror the Python models field for field; decoders are dependency-free and as
 strict as the schemas (unknown fields refused, optional fields absent rather than `null`) and
 throw `ProtocolDecodeError` naming the offending field.
-- Version: `PROTOCOL_VERSION` (`"1.7"`: 1.7 the pause `reason`, #454, sent by `SessionSocket.sendPause` only on a connection that negotiated it; 1.6 the end request's `prepare_notes`, #258, never
+- Version: `PROTOCOL_VERSION` (`"1.8"`: 1.8 the users bodies, the `sa_user` cookie and the two
+  user error codes (#545), which this page does not send yet (#552, #553); 1.7 the pause `reason`, #454, sent by `SessionSocket.sendPause` only on a connection that negotiated it; 1.6 the end request's `prepare_notes`, #258, never
   sent and ignored by the backend since #440, whose notes generation status types are removed; since 1.5 the capture page shows the server-side STT status, #222;
   since 1.4 it biases the browser recognizer towards the vocabulary hints, #227), `parseVersion`, `checkCompatible` (throws
   `IncompatibleProtocolVersionError` with the same message as the backend), `negotiate`.
@@ -89,8 +112,19 @@ throw `ProtocolDecodeError` naming the offending field.
   `vocabulary_hints` (bounded by `VOCABULARY_HINTS_MAX_ITEMS` / `VOCABULARY_HINT_MAX_CHARS`).
 - REST bodies: the same names as the Python list above (`PairRequest` ... `CaptureUploadResponse`),
   each with a `decode<Name>` decoder.
+- Users (1.8, #545): `User`, `UsersListResponse`, `UserCreateRequest`, `UserUpdateRequest` with
+  `decodeUser`, `decodeUsersListResponse`, `decodeUserCreateRequest` and `decodeUserUpdateRequest`
+  (a `refine` over the two optional fields, so an update of `{}` is refused and `"email": ""`
+  reads as "clear it"); the constants `USER_HEADER`, `USER_COOKIE`, `USER_NAME_MAX_CHARS`,
+  `USER_EMAIL_MAX_CHARS`, `USER_PHOTO_CONTENT_TYPES` and the `UserPhotoContentType` union of its
+  three strings; and the patterns `USER_NAME_PATTERN`, `USER_EMAIL_PATTERN` and
+  `USER_PHOTO_URL_PATTERN`, which the decoders apply through the unexported field decoders
+  `userName` / `userEmail` / `userPhotoUrl` / `emailOrCleared`.
 - REST error codes: `ErrorCode`, `ERROR_CODES`, `isErrorCode` and `errorCode(body)` (the known
-  `code` of an error body, `null` when missing or unknown).
+  `code` of an error body, `null` when missing or unknown). `ErrorCode` is the union of
+  `ERROR_CODES`' strings, since 1.8 also `user_required` and `user_not_found`; `ERROR_CODE_SINCE`
+  (`[1, 2]`), `USER_ERROR_CODES_SINCE` (`[1, 8]`) and `ERROR_CODES_SINCE` say which version added
+  each code.
 - Registry: `DECODERS` (schema name -> decoder), `MessageTypes`, `MessageName`, `isMessageName`,
   `parseMessage(name, data)`.
 
@@ -98,7 +132,7 @@ throw `ProtocolDecodeError` naming the offending field.
 Package `com.titanarq.studentassistant.protocol` in `android/app/src/main/java/`, on
 kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 `android/gradle/libs.versions.toml`):
-- Version: `PROTOCOL_VERSION` (`"1.7"`; 1.7 adds `Button.reason` / `PauseReason`, #454, never sent by this app; 1.6 was for `SessionEndRequest.prepareNotes`, #258,
+- Version: `PROTOCOL_VERSION` (`"1.8"`; 1.8 adds the users bodies and `USER_HEADER`, which this app will send on its REST calls and its WebSocket handshake (#554, #555); 1.7 adds `Button.reason` / `PauseReason`, #454, never sent by this app; 1.6 was for `SessionEndRequest.prepareNotes`, #258,
   never sent and ignored by the backend since #440, which removed `NotesGenerationStatus`; 1.5 for the server-side STT status `SttStatus`, #222; the
   1.2 error `code` needs nothing from the app, which decodes no error body, only the HTTP status;
   the 1.4 `vocabulary_hints`, decoded as `HelloAck.vocabularyHints` /
@@ -116,6 +150,21 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
 - REST bodies: the same names as the Python models (`PairRequest`, `PairResponse`, ...,
   `CaptureUploadRequest`, `CaptureUploadResponse`); literal-valued
   fields are Kotlin enums (`SessionEndReason`, `SttState`, ...).
+- Users (1.8, #545): `User` (the wire `photo_url` is `photoUrl`), `UsersListResponse`,
+  `UserCreateRequest`, `UserUpdateRequest`; the constants `USER_HEADER`, `USER_COOKIE`,
+  `USER_NAME_MAX_CHARS`, `USER_EMAIL_MAX_CHARS` and `USER_PHOTO_CONTENT_TYPES` (a `List<String>`);
+  and the patterns `ID_PATTERN` (declared here, in `Users.kt`), `USER_NAME_PATTERN`,
+  `USER_EMAIL_PATTERN` and `USER_PHOTO_URL_PATTERN`. The `internal` `requireUserId` /
+  `requireUserName` / `requireUserEmail` / `requireUserPhotoUrl` apply them from each class's
+  `init` block, so a body that breaks a field rule is refused while decoding with an
+  `IllegalArgumentException`, where an unknown field still fails with a `SerializationException`.
+  `USER_PHOTO_URL_PATTERN` anchors a prefix, so `requireUserPhotoUrl` searches it with
+  `containsMatchIn` instead of matching whole.
+- Error codes: `ErrorCode`, an `enum class` whose `wire` is the string that travels (`toString()`
+  returns it), since 1.8 also `USER_REQUIRED` and `USER_NOT_FOUND`; `isErrorCode(wire)`,
+  `errorCode(body)` over a `JsonObject`, and `ERROR_CODE_SINCE` (`ProtocolVersion(1, 2)`),
+  `USER_ERROR_CODES_SINCE` (`ProtocolVersion(1, 8)`) and `ERROR_CODES_SINCE`. The app itself still
+  decodes no error body and goes by the HTTP status.
 - `ProtocolJson`, the codec every class goes through: unknown fields rejected, absent optionals
   decoded as `null` and omitted on encode.
 - Registry: `MESSAGE_CODECS`, mapping each `protocol/<name>.schema.json` name to a `MessageCodec`
@@ -131,14 +180,29 @@ kotlinx.serialization (plugin + `kotlinx-serialization-json`, both from
   round-trips through the model without loss.
 - `backend/tests/protocol/test_audio_frame.py` round-trips a frame and rejects a wrong magic and an
   incompatible MAJOR.
+- `backend/tests/protocol/test_version.py` pins `PROTOCOL_VERSION` and checks that a 1.8 side
+  still negotiates with every older 1.x peer.
+- `backend/tests/protocol/test_users.py` (1.8) runs every users body through both its JSON Schema
+  and its model: an unknown field, a blank or untrimmed `name`, the 80 and 254 bounds, a malformed
+  email, an update of `{}`, a `photo_url` off `/api/users/` and a non-slug id are refused, while
+  `"email": ""` is accepted in the update request only; the optionals serialise absent rather than
+  `null`; the five constants are pinned; and the two user codes carry `(1, 8)` while every older
+  code keeps `(1, 2)`.
 - `web/src/protocol/protocol.test.ts` (vitest, Node environment) reads the repository's own
   `protocol/examples/` through `web/src/test/protocolExamples.ts`: every example needs a
   registered decoder, every decoder an example, and each example round-trips to the same JSON
   value. `npm test` runs `tsc` first, so the `never` checks over `switch (event.type)` fail the
-  suite when a union member and its `case` drift apart.
+  suite when a union member and its `case` drift apart. Its `users (1.8)` block mirrors
+  `test_users.py` through `parseMessage` and the user decoders, and refuses an explicit `null`
+  where the Python and Kotlin bindings read it as "absent".
 - `android/app/src/test/.../protocol/ProtocolExamplesTest.kt` decodes every shared example through
   `MESSAGE_CODECS`, checks the declared class and that re-encoding gives the same JSON value; an
   example with no codec (or a codec with no example) fails it. The examples are not copied: the
   `:app` test source set adds the repository's `protocol/` as a resources directory
   (`sourceSets.test.resources.srcDir(rootProject.file("../protocol"))`), so they are read from the
-  classpath as `examples/<name>.json`.
+  classpath as `examples/<name>.json`. `UsersTest.kt` mirrors `test_users.py` through
+  `codecFor(name).decode` -- its `refused()` helper takes either exception a broken body raises,
+  `SerializationException` for an unknown field and `IllegalArgumentException` for a broken field
+  rule -- and round-trips an absent optional, which an explicit `null` also reads as
+  (`ProtocolJson`'s `explicitNulls = false`). `ErrorsTest.kt` pins the seven wire strings, their
+  order and the version that added each.

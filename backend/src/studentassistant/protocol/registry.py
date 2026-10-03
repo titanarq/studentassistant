@@ -41,6 +41,12 @@ from studentassistant.protocol.server import (
     TranscriptFinal,
     TranscriptPartial,
 )
+from studentassistant.protocol.users import (
+    User,
+    UserCreateRequest,
+    UsersListResponse,
+    UserUpdateRequest,
+)
 
 MODELS: dict[str, type[BaseModel]] = {
     "client.hello": ClientHello,
@@ -75,6 +81,11 @@ MODELS: dict[str, type[BaseModel]] = {
     "rest.search.response": SearchResponse,
     "rest.topics.web_pages.create.request": WebPageAddRequest,
     "rest.topics.web_pages.create.response": WebPageAddResponse,
+    "rest.users.list.response": UsersListResponse,
+    "rest.users.create.request": UserCreateRequest,
+    "rest.users.create.response": User,
+    "rest.users.update.request": UserUpdateRequest,
+    "rest.users.update.response": User,
 }
 
 

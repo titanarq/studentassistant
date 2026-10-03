@@ -12,7 +12,8 @@ class AudioFrameTest {
             .encode()
         val expected = byteArrayOf(
             'S'.code.toByte(), 'A'.code.toByte(), 'A'.code.toByte(), 'F'.code.toByte(),
-            1, 7, // protocol_version 1.7
+            // The frame carries this side's own protocol_version unless told another one.
+            parseVersion(PROTOCOL_VERSION).major.toByte(), parseVersion(PROTOCOL_VERSION).minor.toByte(),
             1, 2, 3, 4, // seq
             0, 0, 1, 0x90.toByte(), 0, 0, 0, 0xFF.toByte(), // client time ms
             1, 0, // 1
@@ -30,7 +31,7 @@ class AudioFrameTest {
         assertEquals(frame.seq, decoded.seq)
         assertEquals(frame.clientTimeMs, decoded.clientTimeMs)
         assertEquals(frame.samples.toList(), decoded.samples.toList())
-        assertEquals("1.7", decoded.protocolVersion)
+        assertEquals(PROTOCOL_VERSION, decoded.protocolVersion)
     }
 
     @Test
