@@ -6,4 +6,5 @@ export * from "./errors";
 export * from "./registry";
 export * from "./rest";
 export * from "./server";
+export * from "./users";
 export * from "./version";

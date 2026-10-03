@@ -245,15 +245,16 @@ describe("the handshake", () => {
     expect(harness.socket.clockOffsetMs).toBeNull();
     expect(harness.socket.protocolVersion).toBeNull();
 
+    // The example is of an earlier minor, so the connection speaks that one, not our own.
     expect(await answerHello(harness)).toEqual({
       kind: "ok",
       ack,
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: ack.protocol_version,
     });
     expect(harness.socket.sttMode).toBe("client");
     expect(harness.socket.clockOffsetMs).toBe(ack.clock_offset_ms);
     expect(harness.socket.audioFormat).toBeNull();
-    expect(harness.socket.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(harness.socket.protocolVersion).toBe(ack.protocol_version);
     // The negotiation is the promise's answer, not an event of the session.
     expect(harness.events).toEqual([]);
   });
@@ -269,7 +270,7 @@ describe("the handshake", () => {
     expect(await answerHello(harness, ack)).toEqual({
       kind: "ok",
       ack,
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: ack.protocol_version,
     });
     expect(harness.socket.sttMode).toBe("server");
     expect(harness.socket.audioFormat).toEqual({
