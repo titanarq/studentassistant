@@ -10,9 +10,7 @@ import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
 import com.titanarq.studentassistant.protocol.CaptureTrigger
-import com.titanarq.studentassistant.protocol.ClientAck
 import com.titanarq.studentassistant.protocol.Command
-import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
 import com.titanarq.studentassistant.protocol.ServerAck
@@ -442,12 +440,10 @@ class CaptureViewModel(
             is HelloAck -> _state.update { it.copy(sttWarning = null) }
             is SttStatus -> _state.update { it.copy(sttWarning = event.takeIf { e -> e.state != SttState.OK }) }
             is ServerAck -> event.captureIds?.let(stillCapture::confirmReceived)
-            is Command -> when (event.command) {
-                CommandName.CAPTURE_NOW -> {
-                    stillCapture.capture(CaptureTrigger.COMMAND, event.commandId)
-                    connection?.send(ClientAck(event.commandId, clock.nowMillis()))
-                }
-            }
+            // #556: a capture is taken only by «Capturar». The backend still publishes
+            // `capture_now` (the voice command, the web capture page obeys it), so the command
+            // arrives here: it is deliberately neither acted on nor acknowledged.
+            is Command -> Unit
             else -> Unit
         }
     }

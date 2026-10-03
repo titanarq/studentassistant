@@ -171,13 +171,31 @@ class CaptureViewModelTest {
     }
 
     @Test
-    fun `capture_now asks still capture and is acknowledged`() = runTest(main.dispatcher) {
+    fun `a capture_now command captures nothing and is not acknowledged`() = runTest(main.dispatcher) {
         val viewModel = viewModel()
         connect(viewModel)
-        sockets.last.receive(Command("cmd-1", CommandName.CAPTURE_NOW, 5))
+        val socket = sockets.last
+        socket.receive(Command("cmd-1", CommandName.CAPTURE_NOW, 5))
         runCurrent()
-        assertEquals(listOf(CaptureTrigger.COMMAND to "cmd-1"), captures)
-        assertEquals(ClientAck("cmd-1", clock.now), sockets.last.sent.last())
+        assertTrue(captures.isEmpty())
+        assertTrue(socket.sent.none { it is ClientAck })
+
+        // The session goes on as if no command had arrived: the microphone keeps transcribing and
+        // the other server events keep being handled.
+        transcriber.emit(ClientTranscript.Final("and-x-0", 10, 30, "El feudalismo", 0.8))
+        socket.receive(Notice(pendingCount = 3, serverTimeMs = 6))
+        runCurrent()
+        assertEquals(3, viewModel.state.value.pendingCount)
+        assertEquals(
+            TranscriptClientFinal("and-x-0", 10, 30, "El feudalismo", "android-speech", "es-ES", 0.8),
+            socket.sent.last(),
+        )
+
+        // «Capturar» is the only capture the app takes.
+        viewModel.capture()
+        runCurrent()
+        assertEquals(listOf(CaptureTrigger.BUTTON to null), captures)
+        assertTrue(socket.sent.none { it is ClientAck })
         viewModel.leave()
     }
 
