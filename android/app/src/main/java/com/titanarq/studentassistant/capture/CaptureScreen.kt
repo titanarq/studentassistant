@@ -23,9 +23,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -73,11 +73,14 @@ import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.ui.backendFailureMessage
 
 /**
- * The session screen: camera preview, live transcript, pending-doubts counter and the session
- * buttons. Asks for the camera and microphone at runtime; the session starts once the microphone
- * is granted. Keeps the screen on. [onLeave] (back) leaves the session open. [imageCapture] (the
- * still camera's use case) is bound next to the preview; the thumbnail strip shows each capture's
- * upload state (a tap on a failed one retries it).
+ * The session screen, in three bands (#556): the header with its status lines, the camera preview
+ * taking all the vertical space left between them, and the bottom area -- the thumbnail strip and
+ * the session buttons, «Capturar» first and largest because it is the only way to take a capture.
+ * The transcription keeps running and being sent, but no box shows it; the server's `capture_now`
+ * command is ignored. Asks for the camera and microphone at runtime; the session starts once the
+ * microphone is granted. Keeps the screen on. [onLeave] (back) leaves the session open.
+ * [imageCapture] (the still camera's use case) is bound next to the preview; the thumbnail strip
+ * shows each capture's upload state (a tap on a failed one retries it).
  *
  * After «Terminar captura» the screen shows «Sesión terminada» instead ([EndedPanel]):
  * [onOpenWorkspace] opens the topic's «Construir» screen (its workspace) in the study desk, where
@@ -144,6 +147,7 @@ fun CaptureScreen(
             if (!cameraGranted || !micGranted) {
                 PermissionRationale(cameraGranted, micGranted, denied = asked, onAsk = askPermissions)
             }
+            StatusLines(state)
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (cameraGranted) {
                     SessionCameraPreview(imageCapture, modifier = Modifier.fillMaxSize())
@@ -151,36 +155,7 @@ fun CaptureScreen(
                     Text(stringResource(R.string.capture_no_camera), modifier = Modifier.align(Alignment.Center))
                 }
             }
-            if (state.spoolNearCap) {
-                Text(stringResource(R.string.capture_spool_near_cap), color = MaterialTheme.colorScheme.error)
-            }
-            state.sttWarning?.let {
-                Text(
-                    it.detail ?: stringResource(
-                        if (it.state == SttState.RECONNECTING) R.string.capture_stt_reconnecting else R.string.capture_stt_unavailable,
-                    ),
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            if (state.micPaused) {
-                Text(stringResource(R.string.capture_mic_paused), color = MaterialTheme.colorScheme.primary)
-            }
-            state.micProblem?.let {
-                Text(
-                    stringResource(
-                        if (it == MicProblem.PERMISSION_DENIED) R.string.capture_mic_denied else R.string.capture_mic_unavailable,
-                    ),
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            state.endFailure?.let {
-                Text(
-                    stringResource(R.string.capture_end_failed, backendFailureMessage(it)),
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
             if (shots.isNotEmpty()) ThumbnailStrip(shots, onRetry = viewModel::retryShot)
-            Transcript(state.transcript, modifier = Modifier.fillMaxWidth().weight(1f))
             SessionButtons(
                 state = state,
                 onCapture = viewModel::capture,
@@ -323,27 +298,42 @@ private fun PermissionRationale(camera: Boolean, mic: Boolean, denied: Boolean, 
     }
 }
 
+/** The session's own warnings, under the header; nothing is drawn while all is well. */
 @Composable
-private fun Transcript(lines: List<TranscriptLine>, modifier: Modifier = Modifier) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(lines.size, lines.lastOrNull()?.text) {
-        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.lastIndex)
-    }
-    Surface(modifier = modifier, color = Color.White, shape = MaterialTheme.shapes.medium) {
-        if (lines.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                Text(stringResource(R.string.capture_transcript_empty), color = Color.Gray)
-            }
-        } else {
-            LazyColumn(state = listState, modifier = Modifier.padding(12.dp)) {
-                items(lines, key = { it.segmentId }) { line ->
-                    Text(line.text, color = if (line.final) Color.Black else Color.Gray)
-                }
-            }
+private fun StatusLines(state: CaptureUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (state.spoolNearCap) {
+            Text(stringResource(R.string.capture_spool_near_cap), color = MaterialTheme.colorScheme.error)
+        }
+        state.sttWarning?.let {
+            Text(
+                it.detail ?: stringResource(
+                    if (it.state == SttState.RECONNECTING) R.string.capture_stt_reconnecting else R.string.capture_stt_unavailable,
+                ),
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        if (state.micPaused) {
+            Text(stringResource(R.string.capture_mic_paused), color = MaterialTheme.colorScheme.primary)
+        }
+        state.micProblem?.let {
+            Text(
+                stringResource(
+                    if (it == MicProblem.PERMISSION_DENIED) R.string.capture_mic_denied else R.string.capture_mic_unavailable,
+                ),
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        state.endFailure?.let {
+            Text(
+                stringResource(R.string.capture_end_failed, backendFailureMessage(it)),
+                color = MaterialTheme.colorScheme.error,
+            )
         }
     }
 }
 
+/** The bottom area's buttons: «Capturar» first and largest, since it is the only capture trigger (#556). */
 @Composable
 private fun SessionButtons(
     state: CaptureUiState,
@@ -353,16 +343,22 @@ private fun SessionButtons(
     onEnd: () -> Unit,
 ) {
     val enabled = state.phase == CapturePhase.RUNNING
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onCapture, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text(stringResource(R.string.capture_button_capture))
-            }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Button(
+            onClick = onCapture,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth().height(72.dp),
+        ) {
+            Text(stringResource(R.string.capture_button_capture), style = MaterialTheme.typography.titleMedium)
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilledTonalButton(onClick = onImportant, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text(stringResource(R.string.capture_button_important))
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedButton(onClick = onToggleSource, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text(
                     stringResource(
@@ -370,13 +366,13 @@ private fun SessionButtons(
                     ),
                 )
             }
-            OutlinedButton(onClick = onEnd, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text(
-                    stringResource(
-                        if (state.phase == CapturePhase.ENDING) R.string.capture_ending else R.string.capture_button_end,
-                    ),
-                )
-            }
+        }
+        OutlinedButton(onClick = onEnd, enabled = enabled) {
+            Text(
+                stringResource(
+                    if (state.phase == CapturePhase.ENDING) R.string.capture_ending else R.string.capture_button_end,
+                ),
+            )
         }
     }
 }

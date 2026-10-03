@@ -13,8 +13,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Takes a burst of stills and uploads them (ADR-0001). The capture screen calls [capture] on
- * "Capturar" ([CaptureTrigger.BUTTON]) and on a `capture_now` command ([CaptureTrigger.COMMAND]
- * with its `command_id`); [shots] feeds the thumbnail strip.
+ * "Capturar" ([CaptureTrigger.BUTTON]) and nowhere else: since #556 a server `capture_now` is
+ * ignored, so nothing in the app passes [CaptureTrigger.COMMAND], which the protocol still
+ * defines. [shots] feeds the thumbnail strip.
  */
 interface StillCapture {
     /** This session's captures, oldest first. */
