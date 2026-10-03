@@ -20,8 +20,9 @@ Never a candidate: the transcripts, `session.yaml`, the notes and their history,
 than burst originals, and anything the current `notes/apuntes.md` names by path (a footnote link
 such as `../sources/notes/page-004.jpg`); such a candidate is listed as `protected` instead. A
 topic is only planned when every session has ended, it has notes and -- unless
-`require_notes_tag` is off -- a notes version tag `<subject-slug>/<topic-slug>/apuntes-vN` says
-they were accepted; otherwise the plan says why it was skipped.
+`require_notes_tag` is off -- a notes version tag (`<subject-slug>/<topic-slug>/apuntes-vN`, with
+the user's id in front of it for a user's view) says they were accepted; otherwise the plan says
+why it was skipped.
 
 `plan_topic_purge` only reads (it is what `--dry-run` prints). `apply_purge` is the soft purge:
 the files are removed or rewritten in the working tree and committed (`purga: ...`), so all of it
@@ -33,6 +34,17 @@ tag another PC pushed meanwhile is refused instead of overwritten. Every other c
 then holds a history the
 remote no longer has: it must be cloned again (or reset to the remote once nothing of it is
 unpushed), because a pull or push from it would bring the purged files back.
+
+A purge is planned and applied through the handle its sync has, so a user's view of the sync
+(`GitSync.for_user`) purges one student's topic and nothing of anybody else's: the topic is looked
+for under their folder, the paths a plan reports are theirs (relative to `users/<id>/`, like every
+id the vault's readers give a caller), and the notes version that says the notes were accepted is
+one of their tags, so a topic of another user with the same two slugs is a different topic that
+stays skipped and untouched. What git is asked is the repository's, because git runs at
+`vault.root`: every pathspec a purge hands it carries the `users/<id>/` prefix, and a `--hard`
+rewrite rewrites the one history all the users share -- it drops only the paths it was given, but
+it re-creates every tag on the new commits, another user's notes tags included, and force-pushes
+them under the leases it read.
 """
 
 from __future__ import annotations
@@ -57,9 +69,9 @@ from studentassistant.vault.secrets import guard
 from studentassistant.vault.session_models import Event, Origin, SessionMeta
 from studentassistant.vault.sessions import EVENTS_FILE_NAME, list_sessions, sessions_directory
 from studentassistant.vault.sources import SOURCE_KINDS, sources_directory
-from studentassistant.vault.sync import GitSync
+from studentassistant.vault.sync import GitSync, UserGitSync, notes_tag_prefix
 from studentassistant.vault.topics import require_topic, topic_directory
-from studentassistant.vault.vault import MAIN_BRANCH
+from studentassistant.vault.vault import MAIN_BRANCH, Vault
 
 PurgeReason = Literal["burst-original", "observer-conversation", "folded-events", "old-generated"]
 
@@ -125,8 +137,9 @@ class PurgeItem:
 class TopicPurgePlan:
     """What a purge would do to one topic; `skipped` (Spanish) says why it would do nothing.
 
-    `path`s are vault-relative POSIX paths. `protected` lists the candidates kept because the
-    current notes cite them.
+    `path`s are the handle's POSIX paths, so relative to `users/<id>/` for a user's view and the
+    ones a caller of that view can open. `protected` lists the candidates kept because the current
+    notes cite them.
     """
 
     subject_slug: str
@@ -147,7 +160,10 @@ class TopicPurgePlan:
 
 @dataclass(frozen=True)
 class HistoryRewrite:
-    """What `--hard` did: the paths dropped from history and the pack size before and after."""
+    """What `--hard` did: the paths dropped from history and the pack size before and after.
+
+    `paths` are the handle's, as they were given, so they read like the plan items they came from.
+    """
 
     paths: tuple[str, ...]
     size_before: int
@@ -191,8 +207,29 @@ def cited_paths(vault_relative_topic: str, notes: str) -> set[str]:
     return {f"{vault_relative_topic}/{match}" for match in _CITED.findall(notes)}
 
 
+def _prefix(vault: Vault) -> str:
+    """What a handle's paths need in front of them to be the repository's: `` for the root."""
+    relative = vault.path.relative_to(vault.root).as_posix()
+    return "" if relative == "." else f"{relative}/"
+
+
+def _repository_path(vault: Vault, relative: str) -> str:
+    """A path of the handle's as git holds it: `users/<id>/x` for a user's `x`.
+
+    Git runs at the repository root whichever handle the sync was given, so every pathspec a purge
+    hands it -- a `git log` after a file's last commit, the paths a history rewrite drops -- is a
+    repository path, while what a plan reports stays the handle's, which is what its caller opens.
+    """
+    return _prefix(vault) + relative
+
+
+def _handle_path(vault: Vault, repository_path: str) -> str:
+    """The inverse of `_repository_path`: a path git gave back as the handle's caller reads it."""
+    return repository_path.removeprefix(_prefix(vault))
+
+
 def plan_topic_purge(
-    sync: GitSync,
+    sync: GitSync | UserGitSync,
     subject_slug: str,
     topic_slug: str,
     policy: VaultPurgeSettings | None = None,
@@ -200,6 +237,9 @@ def plan_topic_purge(
     now: datetime | None = None,
 ) -> TopicPurgePlan:
     """What the retention `policy` removes from one topic now. Reads files and git; writes nothing.
+
+    `sync` may be a user's view, and then this plans inside that user's folder only: their topic,
+    their notes tag and their paths (see the module docstring).
 
     `compaction` is where the folded events end (`None`: no event is touched); `now` is the time
     generated material is aged against.
@@ -227,8 +267,8 @@ def plan_topic_purge(
         return skipped("aún no tiene apuntes")
     if policy.require_notes_tag and not sync.list_notes_tags(subject_slug, topic_slug):
         return skipped(
-            "sus apuntes aún no están aceptados"
-            f" (no hay etiqueta {subject_slug}/{topic_slug}/apuntes-vN)"
+            "sus apuntes aún no están aceptados (no hay etiqueta"
+            f" {notes_tag_prefix(subject_slug, topic_slug, vault.user_id)}N)"
         )
     cited = cited_paths(topic_rel, notes)
 
@@ -257,7 +297,7 @@ def plan_topic_purge(
         moment = now or datetime.now(UTC)
         limit = policy.generated_max_age_days * _SECONDS_PER_DAY
         for path_text in list_generated(vault, subject_slug, topic_slug):
-            committed = _last_commit_time(sync.git, path_text)
+            committed = _last_commit_time(sync.git, _repository_path(vault, path_text))
             if committed is not None and moment.timestamp() - committed > limit:
                 size = (vault.path / path_text).stat().st_size
                 candidates.append(PurgeItem(path_text, "old-generated", size))
@@ -287,7 +327,10 @@ def _files(directory: Path) -> list[Path]:
 
 
 def _last_commit_time(git: GitRunner, path: str) -> int | None:
-    """The Unix time of the last commit touching `path`; `None` when it was never committed."""
+    """The Unix time of the last commit touching `path`; `None` when it was never committed.
+
+    `path` is the repository's, as git holds it, so a caller with a user's handle prefixes it.
+    """
     result = git.run("log", "-1", "--format=%ct", "--", path)
     text = result.stdout.strip()
     return int(text) if result.ok and text.isdigit() else None
@@ -370,7 +413,7 @@ def purge_commit_subject(items: Sequence[PurgeItem]) -> str:
 
 
 def apply_purge(
-    sync: GitSync,
+    sync: GitSync | UserGitSync,
     plans: Sequence[TopicPurgePlan],
     *,
     hard: bool = False,
@@ -387,6 +430,9 @@ def apply_purge(
     purge commit ever deleted in the planned topics (skipped ones excepted), the old objects are
     pruned and, when the vault has its remote, `main` and the tags are force-pushed (see the
     module docstring for what that means for the other clones).
+
+    `plans` are read as the handle `sync` has, so a user's view writes and removes inside that
+    user's folder only; the commit and the push are the repository's, as every sync's are.
 
     Raises:
         PurgeError: the commit, the history rewrite or the forced push failed.
@@ -428,12 +474,21 @@ def apply_purge(
     return PurgeResult(commit=commit, items=items, history=history)
 
 
-def purged_history_paths(sync: GitSync, topic_roots: Sequence[Path]) -> tuple[str, ...]:
-    """Every path under `topic_roots` a purge commit deleted and that is not back in the tree."""
+def purged_history_paths(
+    sync: GitSync | UserGitSync, topic_roots: Sequence[Path]
+) -> tuple[str, ...]:
+    """Every path under `topic_roots` a purge commit deleted and that is not back in the tree.
+
+    `topic_roots` are the directories the handle gives (`topic_directory`) and what comes back is
+    that handle's paths, like a plan item's; what git is asked and what it answers with is the
+    repository's, `users/<id>/...` for a user's topic.
+    """
     if not topic_roots:
         return ()
     vault = sync.vault
-    relative = [root.relative_to(vault.path).as_posix() for root in topic_roots]
+    relative = [
+        _repository_path(vault, root.relative_to(vault.path).as_posix()) for root in topic_roots
+    ]
     result = sync.git.run(
         "log",
         "--format=",
@@ -448,7 +503,9 @@ def purged_history_paths(sync: GitSync, topic_roots: Sequence[Path]) -> tuple[st
     if not result.ok:
         raise PurgeError(f"no se puede leer el historial: {result.describe()}")
     paths = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    return tuple(sorted(path for path in paths if not (vault.path / path).exists()))
+    return tuple(
+        sorted(_handle_path(vault, path) for path in paths if not (vault.root / path).exists())
+    )
 
 
 def _pack_size(git: GitRunner) -> int:
@@ -479,8 +536,11 @@ def _remote_exists(git: GitRunner, remote: str) -> bool:
     return git.run("remote", "get-url", remote).ok
 
 
-def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
+def rewrite_history(sync: GitSync | UserGitSync, paths: Sequence[str]) -> HistoryRewrite:
     """Drop `paths` from every commit of `main` and the tags, prune, force-push. The `--hard` part.
+
+    `paths` are the handle's, like a plan item's; git is asked for the repository's, and the
+    history it rewrites is the one every user of the vault shares.
 
     Runs under the vault's git lock (`GitSync.locked`), so no other process commits meanwhile.
 
@@ -500,11 +560,13 @@ def rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
         raise PurgeError(str(busy)) from busy
 
 
-def _rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
+def _rewrite_history(sync: GitSync | UserGitSync, paths: Sequence[str]) -> HistoryRewrite:
     """The body of `rewrite_history`; the caller holds the vault's git lock."""
     vault = sync.vault
+    # Git runs where the repository is, which is `vault.root` for a user's handle too: the history
+    # rewritten is the whole repository's, and so are the pathspecs the filter is given.
     git = GitRunner(
-        vault.path,
+        vault.root,
         sync.identity,
         timeout=sync.settings.timeout_seconds,
         environment=_FILTER_BRANCH_ENVIRONMENT,
@@ -524,7 +586,9 @@ def _rewrite_history(sync: GitSync, paths: Sequence[str]) -> HistoryRewrite:
     remote_tags = _remote_tags(git, remote) if has_remote else {}
     git_dir = Path(must("rev-parse", "--absolute-git-dir").strip())
     paths_file = git_dir / _PATHS_FILE_NAME
-    paths_file.write_bytes(b"\0".join(path.encode("utf-8") for path in paths) + b"\0")
+    paths_file.write_bytes(
+        b"\0".join(_repository_path(vault, path).encode("utf-8") for path in paths) + b"\0"
+    )
     try:
         index_filter = (
             "git rm -r --cached --ignore-unmatch --quiet"

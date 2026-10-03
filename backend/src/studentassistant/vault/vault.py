@@ -18,7 +18,8 @@ and writer of this package builds its paths from `vault.path`, so handing it a u
 keeps one student's subjects, sessions, sources and notes inside that student's folder, and the
 vault-relative ids they return stay relative to it. What belongs to the repository as a whole
 rather than to one user -- git itself, the locks, `.sa/active.yaml`, the feedback inbox -- is
-`root`'s business, and still reaches for `path` until #547 moves it.
+`root`'s business, and every module that reads or writes one of them does it there, whichever of
+the two handles it was given (#547).
 """
 
 from __future__ import annotations

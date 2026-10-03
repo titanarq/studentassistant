@@ -176,3 +176,103 @@ def test_json_dump_carries_the_totals(tmp_vault: Vault) -> None:
 
     assert dumped["total_bytes"] == dumped["working_tree_bytes"] + dumped["git_bytes"]
     assert "bytes" in dumped["git"]
+
+
+# -- several students, one vault (#547) ----------------------------------------------------------
+
+# Both users have a `mates/derivadas` on purpose: the same two slugs in two folders are two
+# subjects, and one total for them would be nobody's.
+USER_FILES: dict[str, int] = {
+    "users/ana/profile.json": 120,
+    "users/ana/photo.jpg": 4000,
+    "users/ana/subjects/mates/subject.yaml": 30,
+    "users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg": 9000,
+    "users/ana/subjects/mates/topics/derivadas/notes/apuntes.md": 700,
+    "users/bia/profile.json": 110,
+    "users/bia/subjects/mates/topics/derivadas/sources/pdf/tema.pdf": 6000,
+    "users/bia/subjects/mates/topics/integrales/notes/apuntes.md": 500,
+}
+ANA_BYTES = sum(size for path, size in USER_FILES.items() if path.startswith("users/ana/"))
+BIA_BYTES = sum(size for path, size in USER_FILES.items() if path.startswith("users/bia/"))
+
+
+def write_users(vault: Vault) -> None:
+    """Give the vault two users and their content, as a migrated vault holds it."""
+    for relative, size in USER_FILES.items():
+        path = vault.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+
+
+def own_bytes(vault: Vault) -> int:
+    """What the vault's own two files weigh: every root total here carries them as `other`."""
+    return sum((vault.root / name).stat().st_size for name in ("vault.yaml", ".gitattributes"))
+
+
+def test_categorize_reads_a_users_path_as_the_same_path_inside_their_folder() -> None:
+    user = ("users", "ana")
+    assert categorize((*user, "subjects", "s", "topics", "t", "sources", "x.pdf")) == "pdfs"
+    assert (
+        categorize((*user, "subjects", "s", "topics", "t", "sources", "p.JPG")) == "source_images"
+    )
+    assert categorize((*user, "subjects", "s", "topics", "t", "sources", "p.md")) == "other_sources"
+    assert categorize((*user, "subjects", "s", "topics", "t", "notes", "apuntes.md")) == "notes"
+    assert categorize((*user, "subjects", "s", "topics", "t", "generated", "q.yaml")) == "generated"
+    assert categorize((*user, "subjects", "s", "topics", "t", "topic.yaml")) == "other"
+    assert categorize((*user, "subjects", "s", "subject.yaml")) == "other"
+    assert categorize((*user, "profile.json")) == "other"
+    assert categorize((*user, "photo.jpg")) == "other"
+
+
+def test_a_root_handle_reports_each_user_with_their_own_subjects(tmp_vault: Vault) -> None:
+    write_users(tmp_vault)
+
+    stats = vault_stats(tmp_vault)
+
+    assert [(user.id, user.bytes, user.files) for user in stats.users] == [
+        ("ana", ANA_BYTES, 5),
+        ("bia", BIA_BYTES, 3),
+    ]
+    ana, bia = stats.users
+    assert [(subject.slug, subject.bytes) for subject in ana.subjects] == [
+        ("mates", 9000 + 700 + 30)
+    ]
+    assert [(topic.slug, topic.bytes, topic.files) for topic in ana.subjects[0].topics] == [
+        ("derivadas", 9700, 2)
+    ]
+    assert [(subject.slug, subject.bytes) for subject in bia.subjects] == [("mates", 6500)]
+    assert [(topic.slug, topic.bytes) for topic in bia.subjects[0].topics] == [
+        ("derivadas", 6000),
+        ("integrales", 500),
+    ]
+    # The root has no subject of its own here, and the categories are the whole vault's.
+    assert stats.subjects == []
+    assert by_category(tmp_vault)["source_images"] == 9000
+    assert by_category(tmp_vault)["pdfs"] == 6000
+    assert by_category(tmp_vault)["notes"] == 700 + 500
+    assert by_category(tmp_vault)["other"] == 120 + 4000 + 30 + 110 + own_bytes(tmp_vault)
+    assert stats.working_tree_bytes == sum(USER_FILES.values()) + own_bytes(tmp_vault)
+    assert stats.working_tree_files == len(USER_FILES) + 2
+    assert [file.path for file in vault_stats(tmp_vault, top=1).largest_files] == [
+        "users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg"
+    ]
+
+
+def test_a_user_handle_measures_their_folder_and_the_repositorys_store(tmp_vault: Vault) -> None:
+    write_users(tmp_vault)
+    ana = tmp_vault.for_user("ana")
+    objects = tmp_vault.root / ".git" / "objects" / "ab"
+    objects.mkdir(exist_ok=True)
+    (objects / "cdef").write_bytes(b"l" * 123)
+
+    stats = vault_stats(ana)
+
+    assert stats.users == []  # the walk starts inside one user's folder: there is nobody else
+    assert [(subject.slug, subject.bytes) for subject in stats.subjects] == [("mates", 9730)]
+    assert (stats.working_tree_bytes, stats.working_tree_files) == (ANA_BYTES, 5)
+    assert [file.path for file in vault_stats(ana, top=1).largest_files] == [
+        "subjects/mates/topics/derivadas/sources/notes/page-001.jpg"
+    ]
+    # Git's store is the repository's: a user's handle reads it at the root, not under their folder.
+    assert stats.git is not None and stats.git.loose_bytes == 123
+    assert stats.git.bytes == git_store_size(tmp_vault).bytes
