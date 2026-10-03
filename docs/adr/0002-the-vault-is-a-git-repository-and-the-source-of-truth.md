@@ -11,28 +11,34 @@ installing the app and configuring GitHub.
 - All content lives in **the vault**: a git repository separate from this code repository,
   hosted as a **private** GitHub repository the student owns. Default local path
   `~/StudentAssistant/vault`, configurable.
-- Layout (normative details in `docs/modules/vault.md`):
-  `vault.yaml` (format version) / `subjects/<subject>/subject.yaml` /
-  `subjects/<subject>/topics/<topic>/` with `topic.yaml`, `sources/{notes,book,pdf,web,images}/`,
-  `sessions/<session-id>/{session.yaml,transcript.jsonl,events.jsonl}`, `notes/apuntes.md`,
-  `review/pending.yaml`, `conversations/*.jsonl`, `state/` (observer snapshots, topic digest),
-  `generated/`, `study/`, `ledger.jsonl` (LLM usage and cost).
+- Layout (normative details in `docs/modules/vault.md`, format version 2): `vault.yaml` (format
+  version) / `.sa/active.yaml` / `feedback/inbox.jsonl` at the root, and one folder per user,
+  `users/<user-id>/`, holding `profile.json` (name, email, photo), the optional `photo.jpg` and
+  `subjects/<subject>/subject.yaml` / `subjects/<subject>/topics/<topic>/` with `topic.yaml`,
+  `sources/{notes,book,pdf,web,images}/`, `sessions/<session-id>/{session.yaml,transcript.jsonl,events.jsonl}`,
+  `notes/apuntes.md`, `review/pending.yaml`, `conversations/*.jsonl`, `state/` (observer
+  snapshots, topic digest), `generated/`, `study/`, `ledger.jsonl` (LLM usage and cost).
+- **Several users, one vault.** Each user's content lives only under `users/<user-id>/`; the
+  backend creates that folder (and its `profile.json`) when a user is added. This is data
+  separation, not security: there is no password, role or permission, and anyone with access to
+  the backend or the repository sees every user's data. Vault-relative ids used by the notes, the
+  web and the phone are relative to the user's folder.
 - Only `studentassistant.vault` writes the vault or runs git on it.
 - Commits are batched (debounced) with meaningful messages and forced at checkpoints (capture
   stored, session end, each editor change). Push is debounced and retried; a failed push never
   loses a local commit. Pull (`--rebase`) happens at startup and at session start.
 - `*.jsonl` files are append-only and merged with `merge=union` (`.gitattributes`).
-- Notes versions are git tags (`<subject-slug>/<topic-slug>/apuntes-vN`); no `v1/v2` copies of
+- Notes versions are git tags (`<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`); no `v1/v2` copies of
   files.
 - The SQLite database (search, listings) is a **derived cache** under `~/.cache/studentassistant/`,
-  rebuildable from the vault at any time (`studentassistant index rebuild`). It is never the only
+  one database per user, rebuildable from the vault at any time (`studentassistant index rebuild`). It is never the only
   copy of anything.
 - Secrets (API keys, tokens) never enter the vault; the vault writer refuses files matching
   secret patterns.
 - Images are stored in plain git, downscaled (long edge <= 2400 px, JPEG q85) plus the cropped
   page; audio is NOT stored in the vault by default (transcript only). Git LFS for images/audio is
   an opt-in to be decided once the vault size is measured.
-- One active writer at a time (one student, possibly several PCs): the session start pulls and
+- One active writer at a time (possibly several students and several PCs): the session start pulls and
   records the active host; divergence that union merge cannot resolve is surfaced to the user,
   never auto-resolved by discarding.
 
@@ -44,3 +50,8 @@ installing the app and configuring GitHub.
   sidecar `removed` and every listing leaves it out, while its files and git history stay, so a
   citation of it keeps resolving. Only the purge (ADR-0003) deletes source files (burst
   originals). (#451)
+- A vault of format 1 (content at the root) is migrated once with
+  `studentassistant vault migrate-users`: its content becomes the first user's in a single commit
+  that keeps the history, and its notes tags are re-created under the user prefix. A backend of
+  format 2 refuses a format-1 vault until it is migrated, and an older backend refuses a migrated
+  vault.
