@@ -38,7 +38,7 @@
 }
 
 .chat-reply {
-  white-space: pre-wrap;
+  white-space: normal;
   line-height: 1.55;
 }
 
@@ -163,4 +163,53 @@
 
 .chat-rules ul {
   padding-left: 1rem;
+}
+
+/* A reply in light Markdown (ChatMarkdown): compact blocks, no first/last margins. */
+.chat-md {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-md > :first-child {
+  margin-top: 0;
+}
+
+.chat-md > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-md p,
+.chat-md ul,
+.chat-md ol,
+.chat-md blockquote {
+  margin: 0 0 var(--space-2);
+}
+
+.chat-md ul,
+.chat-md ol {
+  padding-left: 1.4em;
+}
+
+.chat-md li + li {
+  margin-top: var(--space-1);
+}
+
+.chat-md code {
+  padding: 0 0.3em;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  font-family: ui-monospace, monospace;
+  font-size: 0.92em;
+}
+
+.chat-md blockquote {
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--accent-line);
+  color: var(--ink-muted);
+}
+
+.chat-md .chat-fnref {
+  color: var(--ink-muted);
+  font-size: var(--step--1);
 }

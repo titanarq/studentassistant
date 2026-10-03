@@ -1227,3 +1227,13 @@ drawing, the graph of a function) the editor draws as SVG from the workspace cha
   footnote, commit, history and undo; an invalid SVG re-asked; a bad anchor; the tool together with
   `apply_edits`/`crop_image`; a diagram retired when not applied; a student save; the prompt).
 
+
+### Reply format of the chats
+Every reply shown in a chat (`editor_revise`, `editor_incorporate`, `editor_explain`,
+`editor_study_chat`) is Spanish **light Markdown**: short paragraphs, `**bold**`, `*italic*`,
+`- ` / `1. ` lists, `` `code` ``, `>` blockquotes; no headings, tables, raw HTML, images or code
+fences; footnote references (`[^p4]`) stay exactly as the notes write them. The prompt loader has
+no includes, so each of those prompts repeats the same short rule
+(`tests/editor/test_prompt_reply_format.py` pins it). The spoken tutor (`editor_tutor`, style
+`spoken`) is the deliberate exception: plain text made to be read aloud (lists as sentences, no
+addresses, formulas in words). The clients' `spokenText` is only a safety net over it.

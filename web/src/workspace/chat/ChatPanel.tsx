@@ -1,5 +1,6 @@
 import { MathText } from "../../math/Math";
 import { type ReactNode, useId, useRef, useState } from "react";
+import ChatMarkdown from "../../chat/ChatMarkdown";
 import DiffView from "../../chat/DiffView";
 import FeedbackChip from "../../chat/FeedbackChip";
 import type { OpenSource } from "../../chat/EditorChat";
@@ -414,10 +415,16 @@ function Reply({ entry, versionsPath, onOpenSource, onRetry, idle, capturing, on
       {(text !== null || entry.status !== "failed") && !(batch && text === null) && (
         <>
           {!batch && <p className="ws-chat-who">Asistente</p>}
-          <p className={entry.reply === "" ? "ws-chat-text ws-chat-waiting" : "ws-chat-text"}>
-            {onItsWay(entry) && entry.reply === "" && <Spinner />}
-            {text === null ? null : <MathText text={text} />}
-          </p>
+          {entry.reply !== "" ? (
+            <div className="ws-chat-text">
+              <ChatMarkdown text={entry.reply} />
+            </div>
+          ) : (
+            <p className="ws-chat-text ws-chat-waiting">
+              {onItsWay(entry) && <Spinner />}
+              {text}
+            </p>
+          )}
         </>
       )}
       {entry.refs.length > 0 && (
