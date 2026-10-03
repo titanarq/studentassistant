@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.users.create.request.schema.json",
+  "title": "rest.users.create.request",
+  "description": "POST /api/users body: the name of the new user and, optionally, their email (protocol 1.8).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^\\S(?:.*\\S)?$",
+      "description": "The student's name as they write it, trimmed: 1 to 80 characters, not blank."
+    },
+    "email": {
+      "type": "string",
+      "maxLength": 254,
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "description": "The new user's email; absent when they have none."
+    }
+  }
+}

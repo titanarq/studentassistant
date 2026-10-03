@@ -24,7 +24,12 @@ from studentassistant.protocol.client import (
     TranscriptClientPartial,
     parse_client_event,
 )
-from studentassistant.protocol.errors import ERROR_CODE_SINCE, ErrorCode
+from studentassistant.protocol.errors import (
+    ERROR_CODE_SINCE,
+    ERROR_CODES_SINCE,
+    USER_ERROR_CODES_SINCE,
+    ErrorCode,
+)
 from studentassistant.protocol.registry import MODELS, model_for
 from studentassistant.protocol.rest import (
     DIGEST_EXCERPT_MAX,
@@ -66,6 +71,17 @@ from studentassistant.protocol.server import (
     TranscriptPartial,
     parse_server_event,
 )
+from studentassistant.protocol.users import (
+    USER_COOKIE,
+    USER_EMAIL_MAX_CHARS,
+    USER_HEADER,
+    USER_NAME_MAX_CHARS,
+    USER_PHOTO_CONTENT_TYPES,
+    User,
+    UserCreateRequest,
+    UsersListResponse,
+    UserUpdateRequest,
+)
 from studentassistant.protocol.version import (
     PROTOCOL_VERSION,
     IncompatibleProtocolVersionError,
@@ -78,6 +94,7 @@ __all__ = [
     "CLIENT_EVENT_ADAPTER",
     "DIGEST_EXCERPT_MAX",
     "ERROR_CODE_SINCE",
+    "ERROR_CODES_SINCE",
     "HEADER_SIZE",
     "MAGIC",
     "MODELS",
@@ -85,6 +102,12 @@ __all__ = [
     "SERVER_EVENT_ADAPTER",
     "STT_STATUS_DETAIL_MAX_CHARS",
     "STT_STATUS_SINCE",
+    "USER_COOKIE",
+    "USER_EMAIL_MAX_CHARS",
+    "USER_ERROR_CODES_SINCE",
+    "USER_HEADER",
+    "USER_NAME_MAX_CHARS",
+    "USER_PHOTO_CONTENT_TYPES",
     "VOCABULARY_HINTS_MAX_ITEMS",
     "VOCABULARY_HINTS_SINCE",
     "VOCABULARY_HINT_MAX_CHARS",
@@ -125,6 +148,10 @@ __all__ = [
     "Topic",
     "TopicCreateRequest",
     "TopicsListResponse",
+    "User",
+    "UserCreateRequest",
+    "UsersListResponse",
+    "UserUpdateRequest",
     "WebPageAddRequest",
     "WebPageAddResponse",
     "TranscriptClientFinal",
