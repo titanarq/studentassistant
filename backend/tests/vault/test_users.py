@@ -425,6 +425,9 @@ def test_the_package_re_exports_the_users_surface() -> None:
         "create_user",
         "get_user",
         "list_users",
+        "read_user_photo",
+        "remove_user_photo",
+        "set_user_photo",
         "update_user",
         "user_ids",
     }
