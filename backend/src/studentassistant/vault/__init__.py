@@ -17,6 +17,7 @@ from studentassistant.vault.conversations import (
     conversations_directory,
     read_conversation,
 )
+from studentassistant.vault.errors import UserError, UserNotFoundError
 from studentassistant.vault.feedback import (
     FEEDBACK_KINDS,
     FEEDBACK_STATUSES,
@@ -263,6 +264,8 @@ __all__ = [
     "TranscriptSegment",
     "TranscriptWord",
     "UnknownSourceKindError",
+    "UserError",
+    "UserNotFoundError",
     "Vault",
     "VaultError",
     "VaultFormatError",
