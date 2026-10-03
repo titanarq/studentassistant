@@ -9,25 +9,43 @@ the GitHub remote and every later commit expect, and already holds what says whi
 Deciding whether a directory IS a vault is `Vault.open`'s job, and it refuses a doubtful one with an
 error that names the reason: the vault is the only place this backend writes content, and opening
 the wrong directory would mean writing a student's notes on top of somebody else's files.
+
+An open vault is a handle on two directories (ADR-0002, epic #544): `root`, the git repository, and
+`path`, where content is written. `Vault.init` and `Vault.open` give a ROOT handle, whose two
+directories are the one it was given; `for_user` gives a USER handle, whose `path` is
+`users/<user-id>/` of the same repository while `root` stays the repository itself. Every reader
+and writer of this package builds its paths from `vault.path`, so handing it a user handle is what
+keeps one student's subjects, sessions, sources and notes inside that student's folder, and the
+vault-relative ids they return stay relative to it. What belongs to the repository as a whole
+rather than to one user -- git itself, the locks, `.sa/active.yaml`, the feedback inbox -- is
+`root`'s business, and still reaches for `path` until #547 moves it.
 """
 
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 from yaml import YAMLError
 
-from studentassistant.vault.errors import VaultError
+from studentassistant.vault.errors import UserNotFoundError, VaultError
 from studentassistant.vault.files import read_yaml, write_text_atomic, write_yaml_atomic
 from studentassistant.vault.models import FORMAT_VERSION, VaultMeta
+from studentassistant.vault.slugs import is_slug
 
 VAULT_META_NAME = "vault.yaml"
 GITATTRIBUTES_NAME = ".gitattributes"
 MAIN_BRANCH = "main"
+
+# One folder per user, under the repository root: `users/<user-id>/` holds that user's profile and
+# every subject, topic, session and note of theirs (`docs/modules/vault.md`, "Layout").
+USERS_DIRNAME = "users"
+# The file that says a user exists, and whose fields `vault/users.py` owns; `for_user` only checks
+# that it is there, because a folder without it is not a user this backend may write into.
+USER_PROFILE_NAME = "profile.json"
 
 ACTIVE_HOST_NAME = ".sa/active.yaml"
 # The merge driver of `.sa/active.yaml`: `true` keeps the upstream side of a rebase, i.e. the
@@ -57,10 +75,20 @@ class VaultFormatError(VaultMetaError):
 
 @dataclass(frozen=True)
 class Vault:
-    """An open vault: the directory it lives in and the `vault.yaml` that says what it is."""
+    """An open vault: the directory its content lives in, the repository holding it, and the
+    `vault.yaml` that says what it is.
+
+    A ROOT handle (`Vault.init`, `Vault.open`) has `path == root` and `user_id is None`: its
+    content is the repository's own. A USER handle (`for_user`) has the same `root` and `meta` but
+    a `path` of `root / "users" / user_id`, and every path a writer of this package builds from
+    `vault.path` -- and every vault-relative id it returns -- is then inside that one user's
+    folder.
+    """
 
     path: Path
     meta: VaultMeta
+    root: Path
+    user_id: str | None = None
 
     @classmethod
     def init(cls, path: Path, student: str) -> Vault:
@@ -70,6 +98,9 @@ class Vault:
         call the student by; nothing else here depends on it. The caller decides where the vault
         lives (`studentassistant.config` holds the default), and this makes the directory itself,
         parents included, so a first run does not need one to exist already.
+
+        The handle returned is a root one: it creates no user, so it writes nothing under
+        `users/`.
 
         Raises:
             FileExistsError: when `path` already exists, so that a typo cannot turn a directory
@@ -82,14 +113,15 @@ class Vault:
         write_yaml_atomic(path / VAULT_META_NAME, meta)
         write_text_atomic(path / GITATTRIBUTES_NAME, GITATTRIBUTES_CONTENT)
         _run_git(path, "init", "-b", MAIN_BRANCH)
-        return cls(path=path, meta=meta)
+        return cls(path=path, meta=meta, root=path)
 
     @classmethod
     def open(cls, path: Path) -> Vault:
         """Read the vault at `path`, and refuse anything that is not one.
 
         Opens it read-only: nothing here writes, so a vault this backend cannot fully understand is
-        left exactly as it was found.
+        left exactly as it was found. The handle returned is a root one; `for_user` narrows it to
+        the folder of one user.
 
         Raises:
             VaultNotFoundError: when `path` is not an existing directory.
@@ -100,7 +132,36 @@ class Vault:
         """
         if not path.is_dir():
             raise VaultNotFoundError(f"{path} is not a vault: there is no such directory")
-        return cls(path=path, meta=_read_meta(path / VAULT_META_NAME))
+        return cls(path=path, meta=_read_meta(path / VAULT_META_NAME), root=path)
+
+    def for_user(self, user_id: str) -> Vault:
+        """The handle on one user's content: this same vault, scoped to `users/<user_id>/`.
+
+        Nothing is read but the check that the user exists, and nothing is written: the handle is
+        what the callers pass to the readers and writers, which do the rest inside it.
+
+        Raises:
+            ValueError: when this is already a user handle. A user's folder holds no `users/` of
+                its own, so a handle two users deep would name a directory that is nobody's
+                content, and reading one back would be silent about it.
+            UserNotFoundError: when `user_id` is not a slug -- refused before any path is built or
+                looked at, so an id that came from a URL cannot name a directory outside `users/`
+                -- or when `users/<user_id>/profile.json` is not there.
+        """
+        if self.user_id is not None:
+            raise ValueError(
+                f"this handle is already the one of user {self.user_id!r}: for_user needs a root"
+                " handle, the one Vault.open returns"
+            )
+        if not is_slug(user_id):
+            raise UserNotFoundError(f"{user_id!r} is not a user id")
+        user_path = self.root / USERS_DIRNAME / user_id
+        if not (user_path / USER_PROFILE_NAME).is_file():
+            raise UserNotFoundError(
+                f"there is no user {user_id!r} in this vault: {user_path / USER_PROFILE_NAME} is"
+                " not there"
+            )
+        return replace(self, path=user_path, user_id=user_id)
 
 
 def _read_meta(meta_path: Path) -> VaultMeta:
