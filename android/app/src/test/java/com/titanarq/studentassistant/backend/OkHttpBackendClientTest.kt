@@ -95,7 +95,7 @@ class OkHttpBackendClientTest {
 
     @Test
     fun `a newer MINOR of the same MAJOR is accepted`() = runTest {
-        enqueue("""{"device_id":"d1","token":"sa_new","protocol_version":"1.7"}""")
+        enqueue("""{"device_id":"d1","token":"sa_new","protocol_version":"1.9"}""")
 
         value(client.pair(baseUrl, PairRequest("C", "Pixel", ClientKind.ANDROID, "1.0")))
     }

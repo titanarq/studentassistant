@@ -8,9 +8,9 @@ import org.junit.Test
 
 class VersionTest {
     @Test
-    fun `the current version is 1_7`() {
-        assertEquals("1.7", PROTOCOL_VERSION)
-        assertEquals(ProtocolVersion(1, 7), parseVersion(PROTOCOL_VERSION))
+    fun `the current version is 1_8`() {
+        assertEquals("1.8", PROTOCOL_VERSION)
+        assertEquals(ProtocolVersion(1, 8), parseVersion(PROTOCOL_VERSION))
     }
 
     @Test
@@ -24,9 +24,11 @@ class VersionTest {
     fun `same major is compatible and negotiates the lower minor`() {
         assertTrue(isCompatible("1.8"))
         checkCompatible("1.8")
-        assertEquals("1.7", negotiate("1.8"))
+        assertEquals("1.8", negotiate("1.8"))
         assertEquals("1.1", negotiate("1.1"))
         assertEquals("1.2", negotiate("1.2", ours = "1.10"))
+        // 1.8 talks to every 1.x peer: the users bodies need nothing from a client of an older one.
+        for (peer in listOf("1.0", "1.3", "1.7", "1.8")) assertEquals(peer, negotiate(peer))
     }
 
     @Test
@@ -34,7 +36,7 @@ class VersionTest {
         assertFalse(isCompatible("2.0"))
         val e = assertThrows(IncompatibleProtocolVersionException::class.java) { checkCompatible("2.0") }
         assertEquals(
-            "incompatible protocol_version 2.0: this side speaks 1.7; " +
+            "incompatible protocol_version 2.0: this side speaks 1.8; " +
                 "update the older side so both share MAJOR version 1",
             e.message,
         )

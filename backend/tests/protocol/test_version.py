@@ -14,7 +14,14 @@ from studentassistant.protocol import (
 
 
 def test_own_version_is_major_minor() -> None:
-    assert parse_version(PROTOCOL_VERSION) == (1, 7)
+    assert parse_version(PROTOCOL_VERSION) == (1, 8)
+
+
+def test_1_8_still_talks_to_every_older_1_x_peer() -> None:
+    """1.8 only adds bodies, codes and constants, so it negotiates down to any 1.0-1.7 peer."""
+    for minor in range(8):
+        assert check_compatible(f"1.{minor}") is None
+        assert negotiate(f"1.{minor}") == f"1.{minor}"
 
 
 @pytest.mark.parametrize("bad", ["1", "1.0.0", "v1.0", "01.0", "1.x", ""])

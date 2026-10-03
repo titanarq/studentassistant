@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/titanarq/studentassistant/protocol/rest.users.list.response.schema.json",
+  "title": "rest.users.list.response",
+  "description": "GET /api/users response: every user of this vault (protocol 1.8).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "users"
+  ],
+  "properties": {
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "description": "The user's id: the slug of the name given at creation, with a numeric suffix when that slug is taken; a later rename never changes it."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "description": "The student's name as they write it, trimmed: 1 to 80 characters, not blank."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+            "description": "Contact email; absent when the user has none."
+          },
+          "photo_url": {
+            "type": "string",
+            "pattern": "^/api/users/",
+            "description": "Path of the profile photo, served by GET /api/users/{user_id}/photo; absent when the user has none."
+          }
+        }
+      }
+    }
+  }
+}

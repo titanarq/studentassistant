@@ -5,6 +5,7 @@ import * as client from "./client";
 import type { Decoder } from "./decode";
 import * as rest from "./rest";
 import * as server from "./server";
+import * as users from "./users";
 
 export interface MessageTypes {
   "client.hello": client.ClientHello;
@@ -39,6 +40,11 @@ export interface MessageTypes {
   "rest.search.response": rest.SearchResponse;
   "rest.topics.web_pages.create.request": rest.WebPageAddRequest;
   "rest.topics.web_pages.create.response": rest.WebPageAddResponse;
+  "rest.users.list.response": users.UsersListResponse;
+  "rest.users.create.request": users.UserCreateRequest;
+  "rest.users.create.response": users.User;
+  "rest.users.update.request": users.UserUpdateRequest;
+  "rest.users.update.response": users.User;
 }
 
 export type MessageName = keyof MessageTypes;
@@ -76,6 +82,11 @@ export const DECODERS: { [N in MessageName]: Decoder<MessageTypes[N]> } = {
   "rest.search.response": rest.decodeSearchResponse,
   "rest.topics.web_pages.create.request": rest.decodeWebPageAddRequest,
   "rest.topics.web_pages.create.response": rest.decodeWebPageAddResponse,
+  "rest.users.list.response": users.decodeUsersListResponse,
+  "rest.users.create.request": users.decodeUserCreateRequest,
+  "rest.users.create.response": users.decodeUser,
+  "rest.users.update.request": users.decodeUserUpdateRequest,
+  "rest.users.update.response": users.decodeUser,
 };
 
 export function isMessageName(name: string): name is MessageName {
