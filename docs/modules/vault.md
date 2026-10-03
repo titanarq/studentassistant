@@ -10,7 +10,7 @@ The only writer of the vault and the only module that runs git on it.
 ```text
 vault.yaml                                   format_version, created_at, student display name
 .gitattributes                               *.jsonl merge=union, .sa/active.yaml merge=sa-active
-.sa/active.yaml                              active-host record: host, session, claimed/released
+.sa/active.yaml                              active-host record: host, user, session, claimed/released
 users/<user-id>/profile.json                 id, name, email, photo, created_at (users.py, #546)
 users/<user-id>/photo.jpg                    the profile photo: a downscaled JPEG, quality 85 (optional)
 users/<user-id>/subjects/                    that student's content: the subjects/ tree below, inside it
@@ -45,7 +45,8 @@ subjects/<subject-slug>/topics/<topic-slug>/
   study/quiz-results.jsonl                   every quiz attempt, graded (generators, #75)
   study/version.yaml                         the "versión de estudio" label + history (editor, #335)
   ledger.jsonl                               LLM usage and cost per call
-feedback/inbox.jsonl                         app bugs/improvements reported in a chat (editor, #472)
+feedback/inbox.jsonl                         app bugs/improvements reported in a chat (editor, #472); one for the
+                                             whole vault, each item's context naming the user who reported it
 ```
 
 Everything from `subjects/` down is written where the handle the writer was given points ("The
@@ -67,12 +68,13 @@ the name is edited, because every subject, session and notes tag under it is nam
 it lives at.
 
 ## Public surface
-What exists today, after issues #19, #20, #21, #22, #135, #23 and #546: the vault itself and the
+What exists today, after issues #19, #20, #21, #22, #135, #23, #546 and #547: the vault itself and the
 two handles on it (the repository root and one user's folder), its users and their profiles,
 its subjects and its topics, their sessions with the two append-only logs, their sources, the
 secret guard, the helpers all of them are written with, the read-only functions the web read API
-uses, the git sync that commits, pushes and pulls them, and the `setup` that creates or clones the
-vault from GitHub, and the derived SQLite index. The layout above is the target, not the state -- see "Not written
+uses, the git sync that commits, pushes and pulls them -- one per repository, with a view per
+user -- and the `setup` that creates or clones the
+vault from GitHub, and the derived SQLite index, one database per user. The layout above is the target, not the state -- see "Not written
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
@@ -100,12 +102,20 @@ slug, the second without touching the disk, and `ValueError` when called on a us
 user's folder holds no `users/` of its own. `UserNotFoundError` and its parent `UserError` are
 declared in `errors.py`, because `vault.py` raises them and so does `users.py`, which imports it.
 
-Not moved to `root` yet, and #547's job: the git sync (`GitSync` runs git in `vault.path`), the
-cross-process locks (`directory_lock`, `git_lock` and the feedback lock are all passed `vault.path`,
-which has no `.git`, so on a user handle they keep their in-process half and lose the
-cross-process one, writing no lock file anywhere), `.sa/active.yaml`, the feedback inbox and the
-derived index. Handing one of those a user handle today makes it work inside `users/<user-id>/`
-instead of on the repository.
+**What the repository owns** (#547). Git, the cross-process locks, `.sa/active.yaml` and the
+feedback inbox are the repository's rather than one student's, so every module here that reads or
+writes one of them does it at `vault.root`, whichever of the two handles it was given: git runs in
+`root` and every pathspec it is handed carries the `users/<user-id>/` prefix when the content is a
+user's; a lock taken through a user handle is the same `VaultLock`, and the same file under
+`<root>/.git/studentassistant-locks/`, as one taken through the root (`repository_root`); the
+active-host record and the `.gitattributes` line that gives it its merge driver are written at
+`root`; and so is `feedback/inbox.jsonl`. What a handle still decides is what is *somebody's*: the
+paths and the notes version tags a sync translates for one user (`GitSync.for_user`), the one index
+database per user (`user_index_path`), the per-user breakdown of the size report (`VaultStats.users`)
+and the topic a purge plans and rewrites inside. All of it keeps today's behaviour on a root handle
+of a vault with no `users/` folder, which is what every vault is until #548 migrates one: the
+unprefixed notes tags, the single index database at the configured path and an empty `users` list
+are that case, not a special one.
 
 ### Users -- `users.py` (#546)
 The users of the vault: one folder each under `users/`, and the profile that says who they are.
@@ -423,16 +433,23 @@ reads it (None when absent); `study_file_path`. The editor's study label is `stu
 `get_topic`. Nothing here runs git. Imported from
 `studentassistant.vault.study` (not re-exported by the package).
 
-### Feedback inbox -- `feedback.py` (#472, #476)
-`feedback/inbox.jsonl` at the vault root (not under a topic): the bugs and improvements of the
-app itself the student reported in the workspace chat or the study chat (`editor.feedback`). The
+### Feedback inbox -- `feedback.py` (#472, #476, #547)
+`feedback/inbox.jsonl` at the vault root (not under a topic, and not under a user's either): the
+bugs and improvements of the app itself the student reported in the workspace chat or the study
+chat (`editor.feedback`). It is about the app, which every student of the vault uses, so there is
+one inbox for the whole repository and every function here reads and writes it at `vault.root`,
+whichever handle it is given -- a user's folder holds no `feedback/` of its own. What a user's
+handle adds is who reported the item: its id goes into the item's `context.user`, so the maintainer
+knows which student to ask and one student's report is not read as another's. The
 maintainer triages it by hand with the CLI (`studentassistant feedback list|mark`,
 `docs/modules/server.md`); nothing here or anywhere in the backend calls GitHub. Append-only JSONL
 (`append_jsonl`: secret guard, fsynced; `*.jsonl` merges with `union`), two kinds of line:
 - `{"record": "item", "id", "created_at", "kind", "title", "body", "context"}` -- a new item:
   `id` (below), `kind` `bug` | `mejora`, `title` (≤ `MAX_TITLE_CHARS` = 140 characters, counted
-  after runs of whitespace are collapsed; `collapse_title`), `body` (≤ 4000), `context` (`FeedbackContext`: `subject`,
-  `topic`, `route`, `session_id`, `mode` `construir` | `estudiar`, `excerpt` ≤ 1200 characters).
+  after runs of whitespace are collapsed; `collapse_title`), `body` (≤ 4000), `context` (`FeedbackContext`: `user`,
+  `subject`, `topic`, `route`, `session_id`, `mode` `construir` | `estudiar`, `excerpt` ≤ 1200 characters).
+  Every field of `FeedbackContext` is optional and `user` is the newest of them: a line written
+  before a vault had users has none, reads back with `user=None` and folds exactly as it did.
 - `{"record": "status", "id", "time", "status", "issue"}` -- a later change: `status` `nuevo` |
   `triado` | `descartado`, `issue` the triage reference (an issue number of the code repository,
   or `null`).
@@ -454,13 +471,18 @@ item line before it (nothing records which PC's item it meant), and `get_feedbac
 every item) and write nothing -- the CLI prints them and exits 1; the maintainer renames one of
 the ids in the file by hand.
 - `add_feedback(vault, kind, title, body, context=None, *, clock=None) -> FeedbackItem` -- allocates
-  the id and appends under the `feedback` lock (`VaultBusyError` after 30 s, nothing written),
-  creating `feedback/` on first use; `SecretRefused` or a `ValidationError` write nothing.
+  the id and appends under the `feedback` lock, taken on the repository so a user's handle and the
+  root hold one and the same lock and the server and the CLI of one PC never give two items one id
+  (`VaultBusyError` after 30 s, nothing written), creating the root's `feedback/` on first use;
+  `SecretRefused` or a `ValidationError` write nothing. An item reported through a user's handle
+  records that user in its context, unless the `context` the caller passed already names one.
 - `set_feedback_status(vault, id, status, issue=None, *, clock=None) -> FeedbackItem` -- appends a
   change under the same lock; `issue=None` keeps the item's current reference.
   `FeedbackNotFoundError` (a `FeedbackError`, a `VaultError`) for a malformed or unknown id.
 - `list_feedback(vault, status=None)` (oldest first by `created_at`, file order among equal
-  times; filtered by status), `get_feedback(vault, id)`, `feedback_path(vault)`; a line that is not a feedback line raises `JsonlError`.
+  times; filtered by status), `get_feedback(vault, id)`, `feedback_path(vault)` -- the repository's
+  inbox, so a status change the maintainer marks from the root reaches an item a student reported
+  through their handle; a line that is not a feedback line raises `JsonlError`.
 - The models (`FeedbackContext`, `FeedbackItem`, `FeedbackKind`, `FeedbackStatus`, `FeedbackMode`,
   `FEEDBACK_KINDS`, `FEEDBACK_STATUSES`), the functions and errors (`FeedbackNotFoundError`,
   `FeedbackAmbiguousError`) are re-exported by the package. `MAX_TITLE_CHARS` and
@@ -507,9 +529,26 @@ crash never leaves the vault locked. `vault_lock(root, name)` returns the proces
 `VaultLock` of that name (one object per lock file, shared by the threads of the process;
 re-entrant per thread, only the outermost hold touches the file); `lock.hold(timeout)` is the
 context manager, and a lock not obtained in time raises `VaultBusyError` (a `VaultError`, Spanish
-message naming the lock) -- no wait is unbounded. Three locks exist:
-- `directory_lock(root, directory)` -- one per `sources/<kind>/` (named by a hash of its
-  vault-relative path), around number allocation and the writes under it (`sources.py`).
+message naming the lock) -- no wait is unbounded.
+
+**The locks are the repository's** (#547). A vault holds one folder per user and a caller works
+either through the repository root or through one of those folders, so `repository_root(path)`
+turns the path a caller has into the directory holding `.git/` before anything is named after it:
+`path` itself when it has a `.git/`, `path.parent.parent` when `path` is a `users/<user-id>/` whose
+parent's parent has one, and `path` unchanged otherwise. Only that one shape is recognised: a
+directory deeper inside a user's folder (`users/<id>/subjects/...`) comes back as it is and, having
+no `.git/` of its own, would get the in-process lock alone -- so a caller passes a handle's `path`,
+never a directory under it, which is why `directory_lock`'s first argument is the handle and its
+second the directory to lock. Every lock function takes either handle
+and gives the repository's lock, so two processes on one vault share one lock file whichever handle
+each of them works through, and a directory's lock is the same lock -- and a real cross-process
+one, not the in-process fallback -- for both. A `sources/<kind>/` of one user is therefore a
+different lock from the same-named one of another, and the root and that user's handle agree on
+which lock a directory has.
+
+Three locks exist:
+- `directory_lock(root, directory)` -- one per `sources/<kind>/` (named by a hash of its path
+  relative to the repository), around number allocation and the writes under it (`sources.py`).
 - `git_lock(root)` -- around every git command `GitSync` runs, held for a whole operation (the
   `add`/`diff`/`commit` of a batch, a push, a `pull --rebase` with its abort and refs, a tag, a
   revert) and by `rewrite_history` for the whole purge rewrite (`GitSync.locked()`). The wait is
@@ -519,9 +558,9 @@ message naming the lock) -- no wait is unbounded. Three locks exist:
   `GitCommandError`, `rewrite_history` a `PurgeError`.
 - `vault_lock(root, "feedback")` -- around each write of the feedback inbox (`feedback.py`, #472):
   the id allocation and its append, or the id check and a status change's append.
-A vault without a `.git/` directory only gets the in-process part, and no lock file is written
-anywhere: which is what a user handle gives every one of these locks today, because the callers
-pass `vault.path` and #547 is what moves them to `vault.root`. The batch commit stages
+A directory no repository holds -- one with no `.git/` and not a `users/<user-id>/` of a vault that
+has one -- only gets the in-process part, and no lock file is written anywhere; a user's folder of a
+vault is not such a directory, and gets the repository's real lock like the root does. The batch commit stages
 `git add --all -- . ':(exclude,glob)**/.*.tmp'`: a writer's temporary file (`files.py`) is never
 staged, so a commit while another thread or process is mid-write neither fails on the file
 vanishing nor commits half of it. Not locked: the other writers (sessions, JSONL, notes, state)
@@ -560,10 +599,19 @@ is how a GitHub credential reaches git during `setup`/`doctor` (see "GitHub and 
 URL; `GitSync` passes none and relies on the credential helper `setup` wrote to the vault's own
 `.git/config` (a command, never a secret; "Credential helper" below).
 
-`GitSync(vault, settings=None, clock=None)` drives one vault; `settings` is a `VaultGitSettings`
+That `root` is the repository's -- the directory holding `.git/`, a `Vault`'s `root`, and never one
+user's folder of it (#547): a vault is one repository with one HEAD, one index and one set of tags
+whichever user's content a command is about, and a path given to a command is relative to that
+root. A caller that has one user's paths prefixes them (`UserGitSync`, below).
+
+`GitSync(vault, settings=None, clock=None)` drives one vault repository; `settings` is a `VaultGitSettings`
 (`studentassistant.config`, `[vault.git]` / `SA_VAULT__GIT__*`), `clock` any object with
-`monotonic()` (`SystemClock` by default; tests inject a manual one). It never sleeps and starts no
-thread:
+`monotonic()` (`SystemClock` by default; tests inject a manual one). `vault` may be a root handle
+or a user's and it makes no difference to what git does: the runner and the lock it holds are
+`vault.root`'s either way, and a batch stages the whole repository (`git add --all -- .` from
+`root`), so every user's content travels in the same commits and the same pushes -- one `GitSync`
+per repository per process, and `for_user` is what scopes paths and notes tags to one student.
+It never sleeps and starts no thread:
 - `note_change()` -- called after a vault write; cheap, runs no git. The batch is committed by
   `run_due()` once nothing changed for `commit_quiet_seconds` (default 30) or at the latest
   `commit_max_delay_seconds` (default 300) after its first change, with an aggregated Spanish
@@ -591,27 +639,33 @@ thread:
 - `read_file_at(revision, path) -> str | None`: a vault-relative file as committed at a commit
   or tag (`git cat-file blob`, bytes as stored -- not redacted, it is the vault's own content --
   decoded as UTF-8), `None` when that revision has no such file or is unknown; `ValueError` for a
-  path outside the vault. The editor's notes versions read old `apuntes.md` with it.
+  path outside the vault. `path` is relative to the repository, as git holds it: one user's file is
+  read through `for_user`, whose `path` is relative to that user's folder. The editor's notes
+  versions read old `apuntes.md` with it.
 - `revert_paths(commit, paths, message) -> str | None`: a `git revert` of `commit` restricted to
   the vault-relative `paths` -- each goes back to its content in `commit^` (removed if `commit`
   created it), the other files of `commit` are kept -- committed under `message` after committing
   what is pending; `None` when nothing differs. `RevertConflictError` (`path`) when a path is not,
   at HEAD, what `commit` left (a later change would be lost), `ValueError` for an unknown commit
-  or a path outside the vault. The editor's undo of a revision turn.
+  or a path outside the vault. The paths are the repository's here too, and a user's undo goes
+  through the view, which prefixes them and gives the conflict back as the caller named it. The
+  editor's undo of a revision turn.
 - `create_notes_tag(subject_slug, topic_slug, message=None)` commits what is pending and puts the
   annotated tag `<subject-slug>/<topic-slug>/apuntes-vN` on HEAD, N one past the highest existing
-  for that subject and topic (`notes_tag_name`), pushed by the next push;
+  for that subject and topic (`notes_tag_name(subject_slug, topic_slug, version, user_id=None)`,
+  whose prefix `notes_tag_prefix(subject_slug, topic_slug, user_id=None)` builds), pushed by the next push;
   `list_notes_tags(subject_slug, topic_slug)` returns the `NotesTag`s (`name`, `version`,
   `commit`, `tagged_at`, `message` -- the first line of the tag's message) oldest first;
   `create_notes_tag` returns the new tag as listed. A non-slug subject or topic raises `ValueError`. Tags are keyed by
   subject as well as topic because topic slugs are unique only within a subject (#143): two
   subjects' `introduccion` topics keep separate version sequences. The earlier topic-only form
   `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
-  before this format (the editor, which will, is not written yet), so no vault holds one. ADR-0002
-  already shows the user-prefixed form, `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`, which
-  no code writes yet: the prefix, the `sync.for_user(user_id)` view whose paths and tags are
-  user-relative, and one `GitSync` per repository running git in `root` are #547's, and re-creating
-  a migrated vault's tags under the prefix is #548's.
+  before this format (the editor, which will, is not written yet), so no vault holds one. On a
+  `GitSync` these are the repository's own unprefixed tags, which is what the content at the root
+  of a vault that has not been migrated to format 2 has; one user's notes are tagged by their view,
+  which prefixes the tag with their id and lists nothing else (ADR-0002's
+  `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`). Re-creating a migrated vault's existing tags
+  under that prefix, on the migration's own commit, is #548's.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`,
@@ -619,7 +673,9 @@ thread:
 - Divergence: a `conflict` sync keeps both sides -- the local HEAD (still checked out) and the
   fetched remote commit are pinned under `refs/studentassistant/divergence/local` and `/remote`
   (`DIVERGENCE_LOCAL_REF`, `DIVERGENCE_REMOTE_REF`) and described by `status().divergence`, a
-  `Divergence` (`paths`, `local_commit`, `remote_commit`, `detected_at`).
+  `Divergence` (`paths`, `local_commit`, `remote_commit`, `detected_at`). The refs are the
+  repository's, in `root`'s `.git`, whichever handle the sync was given, and so are the `paths`
+  listed, which are the ones git holds.
   `divergent_versions(path)` returns a `DivergentVersions` (`path`, `local`, `remote`: each
   side's text, `None` where that side has no file), or `None` for a path not diverging. A failed
   sync for another reason keeps the divergence; the next successful sync clears it and deletes
@@ -631,6 +687,41 @@ thread:
 - `run(interval=1.0)` -- the asyncio loop: `run_due()` in a worker thread every `interval`, until
   cancelled. Every other method blocks on git; async callers use `asyncio.to_thread`.
 
+**One user's view: `sync.for_user(user_id) -> UserGitSync`** (#547, epic #544, ADR-0002). What the
+editor, the generators and the server hand a student's code: the same repository's sync, with the
+two things that name content translated to that student. It shares the parent's state, git lock,
+commits, push schedule and background loop -- a view has neither `run()` nor `run_due()`, so it
+cannot start a second loop or drive one, and the parent's `run()` is the one that keeps going -- and
+delegates as they stand: `note_change()`, `checkpoint(message)`, `flush()`, `push_now()`,
+`request_push()`, `sync()`, `status()` and `locked()`, with `settings`, `identity` and `git` as
+properties of the parent's. A `status()` is therefore the repository's snapshot down to the
+divergence it lists, whose paths are the ones git holds, not this user's.
+- `vault` is that user's handle and `prefix` their `users/<user-id>/`, so a purge or an editor
+  given a view plans and writes inside that folder (`purge.py`, below).
+- `read_file_at(revision, path)`, `revert_paths(commit, paths, message)` and
+  `divergent_versions(path)` take -- and give back, in `RevertConflictError.path` and
+  `DivergentVersions.path` -- paths relative to `users/<user-id>/`, like every id the vault's
+  readers and writers return for that user; the view prefixes them before git sees them. An empty
+  or absolute path, or one carrying `..`, is a `ValueError` here exactly as on the parent.
+- `read_file_at` also reaches a revision from *before* the user's folder existed: when the
+  user-prefixed path is not in that revision and `vault.yaml`'s `legacy_root_user` names this user,
+  the root path is read instead, and without that field there is simply no such file. That is what
+  keeps the notes versions of the vault's first user -- committed while their content was still the
+  repository's own -- readable after the migration moves it (#548 writes the field). The field is
+  read from `vault.yaml` and not from `vault.meta`, because `VaultMeta` declares it only from
+  format 2 on, and a file that cannot be read names nobody. It is re-read on every such miss rather
+  than cached, so a caller that loops over revisions a user's folder is not in pays a `vault.yaml`
+  read per revision.
+- `create_notes_tag(subject_slug, topic_slug, message=None)` and
+  `list_notes_tags(subject_slug, topic_slug)` use and list only
+  `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`: two users with the same subject and topic
+  slugs keep two version sequences, and neither one's view shows the other's tags or the
+  repository's unprefixed ones. `NotesTag` keeps its fields; its `name` is the tag as git holds it,
+  so it carries the user's id first, while `version` counts within that user's subject and topic.
+- `for_user` raises `UserNotFoundError` for an id that is not a slug or is not a user of this
+  vault, and takes the repository's root handle first, so a sync that was itself given a user
+  handle still gives every user's view.
+
 Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yaml`),
 `author_email` (default `estudiante@studentassistant.invalid`), `remote` (`origin`),
 `commit_quiet_seconds`, `commit_max_delay_seconds`, `push_debounce_seconds`,
@@ -638,18 +729,34 @@ Config keys (`[vault.git]`): `author_name` (default: the `student` of `vault.yam
 command), `active_host_stale_seconds` (21600: an active-host claim older than this is ignored).
 
 ### Active host -- `active.py`
-One active writer between PCs (ADR-0002). `.sa/active.yaml` is an `ActiveHost` (`host`,
-`session_id?`, `subject?`, `topic?`, `claimed_at`, `released_at?`; `released`).
+One active writer between PCs (ADR-0002). `.sa/active.yaml` is an `ActiveHost` (`host`, `user?`,
+`session_id?`, `subject?`, `topic?`, `claimed_at`, `released_at?`; `released`). The record is
+metadata about the sync, not content, and it is the repository's rather than one student's: one PC
+captures at a time whatever user it captures as, so there is one record for the whole vault and
+every function here reads and writes it at `vault.root`, whichever handle it is given -- a user's
+folder holds no `.sa/` of its own (`active_host_path(vault)` is the root's, and so is the
+`.gitattributes` that gives the record its merge driver). What the handle does say is *who* is
+capturing: `user` is the id of that student.
 `claim_active_host(vault, host, session_id=None, subject_slug=None, topic_slug=None,
-claimed_at=None)` writes a fresh claim (and appends the `sa-active` line to an older vault's
-`.gitattributes`, `ensure_active_host_attribute`); `release_active_host(vault, host,
+claimed_at=None, *, user_id=None)` writes a fresh claim (and appends the `sa-active` line to an
+older vault's `.gitattributes`, `ensure_active_host_attribute`), recording as `user` the `user_id`
+it was given or, without one, the id of the handle it was given when that handle is a user's -- so
+a session start that already works through a user's handle says who it is for without being told,
+and a claim on the root handle records no user unless one is passed.
+`release_active_host(vault, host,
 session_id=None, released_at=None)` sets `released_at` only when the record is still that host's
 unreleased claim of that session (a newer claim is never overwritten), else returns `None`;
-`read_active_host(vault)` returns the record or `None` (missing, or unreadable: logged).
+`read_active_host(vault)` returns the record or `None` (missing, or unreadable: logged). A record
+written before a vault held several users has no `user` and still reads, warning included: it
+simply does not say who it was.
 `active_host_warning(record, host, stale_after, now=None)` / `check_active_host(vault, host,
 stale_after, now=None)` return an `ActiveHostWarning` (`record`, Spanish `message`: that PC has a
 session open and may have unpushed changes) only for another host's unreleased claim younger
-than `stale_after` seconds (`is_stale`). A warning, never a refusal. These write files only;
+than `stale_after` seconds (`is_stale`). The message names the student that PC is capturing as when
+the record says who it is -- `El equipo «<host>», con el usuario «<user>», tiene abierta ...`
+against `El equipo «<host>» tiene abierta ...` -- because on a vault several students share
+"another PC is capturing" is only half of what the student needs to decide whether to wait.
+A warning, never a refusal. These write files only;
 committing and pushing is the caller's (`server`: claimed, checkpointed and `request_push()`ed at
 session start after the pull and check; released before the end's checkpoint and push; the
 warning from the pulls at vault open and session start is `SessionService.host_warning`, shown by
@@ -774,28 +881,58 @@ A SQLite database at `vault.index_path` (`VaultSettings.index_path`, `SA_VAULT__
 default `~/.cache/studentassistant/index.sqlite3`): a cache (ADR-0002), never inside the vault,
 every row read from vault files, so it can be deleted at any time.
 
+An index is built over the handle it is given (#547), so a vault with users has **one database per
+user**, each beside the configured path -- `user_index_path(index_path, user_id)` is
+`<dir>/<stem>-<user_id><suffix>`, i.e. `index-ana.sqlite3` next to `index.sqlite3`, and never
+inside the vault either, so one directory holds the whole cache and can be thrown away with it --
+and each built over that user's handle: what a search answers with is one student's own notes, and
+never another's. A vault with no `users/` folder keeps the single database at the path itself.
+`user_index_path` checks the id with `is_slug` before any path is built out of it, so a value that
+came from a URL cannot name a database somewhere else, and raises `UserNotFoundError` for one that
+is not a slug. Nothing derives it for a caller: `VaultIndex.open` indexes the handle it is given
+into whatever `path` it is handed, so passing it the shared `index.sqlite3` with a user's handle
+fills the repository's own database with that one student's content -- and, since `is_current()` is
+keyed to the handle's resolved path, one file shared by two handles is rebuilt from scratch on every
+switch between them.
+
 `VaultIndex.open(vault, path)` creates the file (and its parents) when missing and makes it
 current: it is rebuilt from scratch when it is new, not a usable SQLite file, of another
-`INDEX_SCHEMA_VERSION`, built for another vault (resolved path) or at another git HEAD than the
-vault's (a clone, a pull); otherwise it is updated. `is_current()` says whether schema, vault and
+`INDEX_SCHEMA_VERSION`, built for another handle (the resolved `vault.path` it records, so one
+user's database is not another's) or at another git HEAD than the
+repository's (a clone, a pull); otherwise it is updated. The HEAD is the repository's because git
+runs in `vault.root` whichever handle is indexed -- the history and the tags are the
+repository's -- and a pull that moved it may have moved that user's tags with it. `is_current()` says whether schema, handle and
 HEAD match; `refresh()` is `rebuild()` when not current and `update()` otherwise. `rebuild()`
-drops every table and indexes the whole vault; `update()` is incremental: it walks `subjects/`
+drops every table and indexes the whole of the handle's content; `update()` is incremental: it walks the handle's `subjects/`
 (symlinks never followed), compares each file's fingerprint (mtime ns, size, inode) with the one
 recorded, and re-reads only the *units* one of whose files appeared, changed or disappeared. A
 unit is `subject.yaml`; `topic.yaml`; a session's `session.yaml` + `transcript.jsonl`
 (`events.jsonl` is not indexed); one `sources/<kind>/` directory; `notes/apuntes.md`;
 `review/pending.yaml` (a removed source, #451, is neither listed nor searched: its row and the
 texts of its page -- transcriptions, PDF page texts -- are left out). Both return an `IndexReport` (`rebuilt`, `units_indexed`, `units_removed`,
-`documents`, `skipped`): a unit whose files this backend cannot read is left out and listed in
+`documents`, `skipped`, `users`): a unit whose files this backend cannot read is left out and listed in
 `skipped` as `(unit, reason)`, never failing the rest, and is retried when its files change. The
-notes version tags (`<subject-slug>/<topic-slug>/apuntes-vN`; the old topic-only form is not a
-notes version) are re-listed on every update, and the HEAD the index reflects
+notes version tags are the handle's own content's -- `<subject-slug>/<topic-slug>/apuntes-vN` for
+the repository's, `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN` for a user's, the old
+topic-only form being no notes version -- listed with the `tag --list` glob that prefix gives, so
+a user's index holds only their own versions; they are re-listed on every update, and the HEAD the index reflects
 is recorded. `run(interval=5.0)` is an asyncio loop calling `update()` in a worker thread until
 cancelled (how a running backend keeps it current after vault writes); every other method
 blocks. One lock serialises a `VaultIndex`, so threads may share it; `close()` it, or use it as a
-context manager. `rebuild_index(vault, path)` is what `studentassistant index rebuild` runs:
-open, rebuild, close (a corrupt file is replaced). A database that cannot be created is a
-`VaultIndexError`.
+context manager.
+
+`rebuild_index(vault, path)` is what `studentassistant index rebuild` runs: open, rebuild, close (a
+corrupt file is replaced). A user handle rebuilds that user's one database at `path`, which is what
+their caller got from `user_index_path`. A root handle of a vault with users has nothing of
+anybody's at the root to index, so it rebuilds one database per user instead -- each at
+`user_index_path(path, that user's id)` over that user's own handle, in `list_users` order -- and
+leaves `path` itself alone, not even removing a database that was there: the report then carries
+every user's own under `users` (`IndexReport.users`, otherwise empty) as `(user id, report)` pairs,
+counts the sum of them in the fields above, and names a unit one of them left out as
+`<user-id>/<unit>`, because two users' units are the same names. A root handle of a vault with no
+`users/` folder rebuilds the one database at `path`, as before. A folder under `users/` whose
+`profile.json` this backend cannot read back is a `UserFileError`: there is then no list of users
+to rebuild an index for. A database that cannot be created is a `VaultIndexError`.
 
 Listings (frozen dataclasses, deterministic order, dates as ISO 8601 strings): `subjects()` ->
 `IndexedSubject(slug, name)`; `topics(subject=None)` -> `IndexedTopic(subject, slug, title,
@@ -806,7 +943,10 @@ topic, id, started_at, ended_at, host)`; `sources(subject=None, topic=None)` ->
 position, item)`, the entries of `review/pending.yaml` as the file holds them (a top-level list,
 or the `items` list of a mapping; their schema is the observer's); `note_versions(subject=None,
 topic=None)` -> `NoteVersion(subject, topic, version, name, commit)`, keyed by subject and topic as
-the tags are (so two subjects' `introduccion` never share a sequence).
+the tags are (so two subjects' `introduccion` never share a sequence) and, on a user's index, by
+that user: only their own versions are listed, `name` is the tag as git holds it and so carries
+their id first, while `subject`, `topic` and `version` are the parts the index read out of it --
+the same two slugs and the same counting their notes have always had.
 
 `search(query, subject=None, topic=None, kinds=None, limit=20)` -> `SearchHit`s over FTS5
 (`unicode61`, diacritics removed: `fotosintesis` finds `fotosíntesis`). `query` is plain text,
@@ -819,7 +959,9 @@ transcription `page-NNN.pKKK.md` instead when that is stored and not empty -- sa
 same `sources/pdf/` unit, so a transcription written after the import is picked up by `update()`
 as well as by `rebuild()`), `web` (`sources/web/NNN-<slug>.md`) and `transcript` (one final
 segment). Ranked by BM25, ties by path then `seq`, so the same vault always gives the
-same list. A hit has `kind`, `path` (the vault-relative file), `source` (for a page, its original
+same list. A hit has `kind`, `path` (the file's path relative to the handle, so relative to their
+own folder on a user's index -- the path the web opens and every id the web and the phone already
+use), `source` (for a page, its original
 `page-NNN.<ext>`, which the web opens; for a PDF page, `sources/pdf/page-NNN.pdf#page=K` as
 provenance cites it; for web, the page itself; `None` for notes and
 transcripts), `subject`, `topic`, and for a transcript `session`, `seq` and `t_start`; `snippet`
@@ -828,11 +970,14 @@ characters no vault text holds, so the web can highlight without trusting any ma
 kind or a `limit` below 1 is a `ValueError`.
 
 The command: `studentassistant index rebuild` rebuilds the configured vault's index and prints the
-number of searchable documents and any unit left out; `setup` rebuilds it right after a clone
+number of searchable documents and any unit left out -- on a root handle of a vault with users that
+is every user's database, the documents the sum of theirs and a unit left out named
+`<user-id>/<unit>`; `setup` rebuilds it right after a clone
 (ADR-0002: install -> setup -> clone -> index rebuild).
 
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
-ledger, notes, git sync (with `Divergence`, `DivergentVersions`), active-host (`ActiveHost`,
+ledger, notes, git sync (with `Divergence`, `DivergentVersions`, `UserGitSync`, `notes_tag_prefix`),
+active-host (`ActiveHost`,
 `ActiveHostWarning`, `claim_active_host`, `release_active_host`, `read_active_host`,
 `check_active_host`, `active_host_warning`) and secret-guard names of this section; the YAML models, the slug helpers, the
 file writers, `redact`, `summarize_changes` and the GitHub, setup and index names are imported
@@ -849,26 +994,51 @@ As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code read
 `vault_stats(vault, top=10) -> VaultStats` measures the vault with pure reads (no git command, no
 write; links are not followed), so the open question "images in plain git or Git LFS" (VISION §10)
 can be decided with real numbers (#284). Names are imported from `studentassistant.vault.stats`.
+The walk starts at the handle's `path`, so a root handle measures the whole repository and a user's
+handle their folder, and the report says whose bytes they are (#547): a vault holds one folder per
+user and two students may well study a subject of the same slug, so one number for both would be
+nobody's.
 - **Categories** (`categorize(parts)`, `CATEGORIES`, Spanish `CATEGORY_LABELS`): every regular file
-  of the working tree (the vault root minus `.git`) by where the layout puts it -- under a topic's
+  of the working tree (the handle's directory minus `.git`) by where the layout puts it -- under a topic's
   `sources/`: `source_images` (`.jpg .jpeg .png .webp .heic .heif .gif .bmp`, any case), `pdfs`,
   `other_sources` (transcriptions, sidecars, web pages...); a topic's `sessions/`,
   `conversations/`, `notes/`, `generated/`, `study/`; and `other` for everything else
   (`vault.yaml`, `topic.yaml`, `state/`, `review/`, ledgers, `subject.yaml`...).
+  A user's path categorizes as the same path inside their folder -- `users/ana/subjects/...` is a
+  topic's exactly as `subjects/...` is, because a topic's layout is the same under whichever user it
+  lives -- and what no topic area covers is `other`, their `profile.json` and `photo.jpg` included.
   `VaultStats.categories` lists every category in that order (`CategorySize`: bytes, files);
   `largest_categories(n)` ranks the non-empty ones.
 - **Subjects and topics**: `subjects` (`SubjectSize`, the whole `subjects/<slug>/` directory, each
-  with its `topics` as `TopicSize`), largest first.
-- **Largest files**: `largest_files`, the `top` biggest (`FileSize`: vault-relative path, bytes,
-  category), largest first.
+  with its `topics` as `TopicSize`), largest first -- the subjects directly under the handle's
+  `path`, which on a root handle of a vault with users is nothing, because a student's content is
+  inside their folder.
+- **Per user** (a root handle only): `users` (`UserSize(id, bytes, files, subjects)`: that user's
+  whole folder, profile and photo included, with their own subjects and topics as above), largest
+  first and ties by id; empty on a user's handle, whose `subjects` are that student's. One walk of
+  the tree totals both the whole and each user's folder, so the per-user numbers are not a second
+  read of the same files -- but they do not add up to `working_tree_bytes`, because what belongs to
+  the repository itself (`vault.yaml`, `.gitattributes`, `feedback/inbox.jsonl`) is in the total and
+  in the categories and in no user's entry.
+- **Largest files**: `largest_files`, the `top` biggest (`FileSize`: path, bytes,
+  category), largest first. The path is relative to the handle's `path`, so on a root handle it
+  carries the `users/<id>/` prefix that says whose file it is, and on a user's handle it does not.
 - **Git store**: `git` (`GitStoreSize`, from `git_store_size(vault)`), read from `.git/objects` on
   the filesystem: `pack_bytes`/`packs` (`objects/pack/*`, counting `.pack` files) and
-  `loose_bytes`/`loose_objects` (`objects/xx/*`); `None` without a `.git` directory.
+  `loose_bytes`/`loose_objects` (`objects/xx/*`); `None` without a `.git` directory. The object
+  store is the repository's, so it is read at `vault.root` and a user's handle reports the history
+  its own content is committed into -- there is no `.git/` inside their folder, and every user's
+  report therefore carries the same store, which is why the store is the repository's to decide
+  about and not one student's.
 - `working_tree_bytes`, `working_tree_files`, and the computed `git_bytes` and `total_bytes`
   (working tree + git store; what `doctor` compares with `[vault] size_warning_mb`, default 1024).
 
 `studentassistant vault stats [--top N] [--json]` prints it as a Spanish table (total, per
-category, per subject and topic, the N largest files) or, with `--json`, as the model's JSON.
+category, per subject and topic, the N largest files) or, with `--json`, as the model's JSON, which
+carries `users` since #547. The table reads `subjects`, which a root handle of a vault whose content
+is inside user folders has none of, so its per-subject section is skipped and the largest files are
+listed with the `users/<id>/...` paths that say whose they are; the per-user breakdown reaches the
+table when the CLI is handed the user handles (#549 and later).
 `studentassistant doctor`'s `Tamaño del vault` line is `ok` under the threshold and `aviso` over it,
 naming the three categories that weigh most and pointing at `studentassistant purge` and the Git
 LFS question (`install.doctor.check_vault_size`).
@@ -878,16 +1048,32 @@ LFS question (`install.doctor.check_vault_size`).
 per-topic retention policy (ADR-0003, issue #31) so the vault does not grow forever. Names are
 imported from `studentassistant.vault.purge`.
 
+A purge is planned and applied through the handle its sync has (#547), so a user's view of the sync
+(`GitSync.for_user`) purges one student's topic and nothing of anybody else's: the topic is looked
+for under their folder (`require_topic` on their handle), the notes version that says the notes were
+accepted is one of *their* tags -- so a topic of another user with the same two slugs is a different
+topic that stays skipped and untouched -- and the paths a plan reports are theirs, relative to
+`users/<id>/` like every id the vault's readers give a caller, which are the paths that caller can
+open. What git is asked is the repository's, because git runs at `vault.root`: every pathspec a
+purge hands it -- a `git log` after a file's last commit, the paths a history rewrite drops --
+carries the `users/<id>/` prefix, and what git answers with is turned back into the handle's paths
+before a plan or a report shows it.
+
 **Policy** -- `VaultPurgeSettings` (`studentassistant.config`, `[vault.purge]` /
 `SA_VAULT__PURGE__*`):
 
 | key | default | candidate |
 |---|---|---|
-| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<subject-slug>/<topic-slug>/apuntes-vN` |
+| `require_notes_tag` | `true` | (eligibility) the topic has a notes tag `<subject-slug>/<topic-slug>/apuntes-vN` (`<user-id>/`-prefixed on a user's view) |
 | `burst_originals` | `true` | `sources/<kind>/page-NNN.burst<K>.<ext>`, any kind: other stills |
 | `observer_conversations` | `true` | `conversations/observer-<session-id>.jsonl` of an ended session |
 | `folded_events` | `true` | the events the observer snapshot folded, replaced by that snapshot |
 | `generated_max_age_days` | unset (keep) | files under `generated/` last committed longer ago |
+
+Eligibility is per student: a user's view asks their own tags, so a topic whose notes another user
+accepted under the same two slugs stays skipped for this one, and the Spanish skip reason names the
+tag form it looked for
+(`sus apuntes aún no están aceptados (no hay etiqueta <user-id>/<subject-slug>/<topic-slug>/apuntes-vN)`).
 
 Burst originals come from capture processing as it was before #426 (`sources.store_capture`,
 #44): it stored the stills it did not keep as derived files `burst<K>.<ext>` of the page, in
@@ -915,26 +1101,41 @@ the newest `observer.ack` stay in the log. A compaction naming a session the top
 `PurgeError`. The events replaced are then only in git history: a later observer version cannot
 refold them from the working tree.
 
-**API**: `plan_topic_purge(sync, subject_slug, topic_slug, policy=None, compaction=None,
-now=None) -> TopicPurgePlan` (`items`: `PurgeItem(path, reason, size_before, size_after)` --
-`size_after` `None` for a removal --, `protected`, `skipped`, `saved_bytes`) reads only.
-`apply_purge(sync, plans, hard=False, before_commit=None) -> PurgeResult` removes and rewrites
+**API**: `plan_topic_purge(sync: GitSync | UserGitSync, subject_slug, topic_slug, policy=None,
+compaction=None, now=None) -> TopicPurgePlan` (`items`: `PurgeItem(path, reason, size_before,
+size_after)` -- `size_after` `None` for a removal --, `protected`, `skipped`, `saved_bytes`) reads
+only; its `path`s are the handle's, so a user's view plans inside that user's folder only and
+reports the paths their caller opens.
+`apply_purge(sync: GitSync | UserGitSync, plans, hard=False, before_commit=None) -> PurgeResult`
+removes and rewrites
 the files (the secret guard runs on every rewrite before anything is touched), calls
 `before_commit(plan)` (the CLI refreshes the observer snapshot there) and commits everything as
 one commit `purga: N archivos borrados, M registros compactados (size)`
-(`PURGE_COMMIT_PREFIX`); no items, no commit. That is the soft purge: all of it is recoverable
+(`PURGE_COMMIT_PREFIX`); no items, no commit. The `plans` are read as the handle `sync` has, so a
+user's view writes and removes inside that user's folder only, while the commit and the push are
+the repository's, as every sync's are. That is the soft purge: all of it is recoverable
 from git history.
 
 **`--hard`** (confirmed by typing `reescribir`, or `--yes`): after the soft commit,
-`rewrite_history(sync, paths)` drops from every commit of `main` and from every tag
+`rewrite_history(sync: GitSync | UserGitSync, paths)` drops from every commit of `main` and from every tag
 (`git filter-branch --index-filter ... --tag-name-filter cat`) every path a purge commit ever
-deleted in the planned topics (`purged_history_paths`, so earlier soft purges are reclaimed too),
+deleted in the planned topics (`purged_history_paths(sync, topic_roots)`, which takes the
+directories the handle gives and returns that handle's paths, so earlier soft purges are reclaimed
+too),
 deletes `refs/original/`, force-pushes `main` with `--force-with-lease` against the
 remote-tracking branch and then every local tag with `--force-with-lease=refs/tags/<t>:<sha>`,
 `<sha>` being what `git ls-remote --tags` gave before the rewrite (empty: the tag must still be
 absent), so a tag another PC created or moved meanwhile makes the push fail instead of being
 overwritten; a tag only the remote has is left as it is. Then it expires the reflog and runs
-`gc --prune=now`; `HistoryRewrite` reports the object store size before and after. The CLI first
+`gc --prune=now`; `HistoryRewrite` reports the object store size before and after, and its `paths`
+are the handle's, so they read like the plan items they came from. The `paths` given are the
+handle's and the pathspecs the filter is written with are the repository's (`users/<id>/...` for a
+user's topic), because **the history a `--hard` purge rewrites is the one every user of the vault
+shares**: it drops only the paths it was given, but it re-creates every tag on the new commits --
+another user's notes tags included -- and force-pushes them under the leases it read. A user's
+`--hard` purge is therefore a repository-wide operation, and the "stop the backend and tell every
+other PC" consequence below is one for every student of the vault, not only for the one whose topic
+was purged. The CLI first
 commits pending changes and `sync()`s with the remote, refusing to rewrite when that fails; a
 remote that still moved on makes the lease refuse the push, which is a `PurgeError` (the local
 history is rewritten by then; the message says how to push it). Rewritten `events.jsonl` keep
@@ -975,4 +1176,37 @@ fixture -- each one is generated in the test with OpenCV and NumPy, so the repos
 image file for them. The isolation test writes the whole layout twice, through two handles whose
 subject and topic slugs are the same, and asserts that every path added landed under its own
 `users/<id>/`, that the ids handed back are relative to that folder and read back, and that one id
-gives each of the two users their own file.
+gives each of the two users their own file. Since #547 it also asserts that the only thing a user
+handle's writers add outside their folder is inside the repository's own `.git/`, and that all of
+it is lock files under `studentassistant-locks/`: the locks are the repository's, so they are not
+"a writer that escaped", and a test that counted them as one would pass on its own.
+
+The repository-wide operations of #547 are three new files and four extended ones.
+`test_sync_user_view.py`: that git runs in the repository root whichever handle the sync was given,
+that a divergence of a user handle's sync is kept in the root's refs, that two users' versions of
+one subject and topic count apart, that a view requires slugs too, that `read_file_at` reads a
+user's file by its own path and reaches the content of before their folder (the `legacy_root_user`
+#548 adds, written by hand here), that `revert_paths` undoes only the paths of the user that asks
+and names a refused one as that user gave it, that a view shares the state, commits, push and loop
+of its parent, that a sync given a user handle still gives every user's view, that a view needs a
+user of the vault, and that the git lock a view holds is the repository's.
+`test_index_user_view.py`: that a search over one user's index never answers with another user's
+notes (the same word in both), that `user_index_path` names a database beside the configured one and
+refuses an id that is not a user id, that a user's index lists only their own notes versions and is
+keyed to the repository's HEAD, that a root handle rebuilds one database per user in `list_users`
+order while a user handle rebuilds only the one it is given, that a unit a user's index cannot read
+is named as theirs in the combined report, and that a vault with no users keeps the one database at
+the path. `test_purge_user_view.py`: that a plan reports the paths of the user it was planned for,
+that a topic is planned only when its own user accepted its notes, that a soft purge removes one
+user's files and commits them as theirs, that generated material is aged by its last commit under a
+user, and that a hard purge drops one user's files from the history they share -- reclaiming an
+earlier soft purge of the same user. Extended: `test_cross_process_locks.py` (a user handle and the
+root name one and the same lock, and a directory lock taken on the root bounds a user handle's
+writer, both looking at the same lock file), `test_active_host.py` (a user's claim written at the
+root and saying who it is, a claim on the root naming the user it is given, the warning naming the
+student the other PC is capturing as, and a record from before there were users still reading and
+warning), `test_feedback.py` (the inbox is the repository's and each item says who reported it, a
+status change reaches an item whichever handle marks it, a context that already names a user keeps
+it, and a line from before there were users still reads and folds) and `test_stats.py` (`categorize`
+reads a user's path as the same path inside their folder, a root handle reports each user with their
+own subjects, and a user handle measures their folder and the repository's store).
