@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from user_helpers import add_user
 
 from studentassistant.config import VaultGitSettings
 from studentassistant.vault import (
@@ -26,9 +27,11 @@ from studentassistant.vault import (
     put_source,
 )
 from studentassistant.vault.locking import (
+    GIT_LOCK_NAME,
     LOCKS_DIRNAME,
     directory_lock,
     git_lock,
+    vault_lock,
 )
 from studentassistant.vault.sources import sources_directory
 
@@ -191,6 +194,61 @@ def test_a_directory_lock_held_elsewhere_bounds_put_source(
         release.set()
         holder.join(5)
     assert list_sources(tmp_vault, subject, topic_slug) == []
+
+
+def test_a_user_handle_and_the_root_name_one_and_the_same_lock(
+    tmp_vault: Vault, topic: tuple[str, str]
+) -> None:
+    """Every lock of a vault is the repository's, whichever handle a caller works through (#547).
+
+    A user's folder has no `.git/` to put a lock file in, and a lock with no file to live in only
+    binds the threads of the process that took it: the server on a user's handle and a CLI command
+    on the root would then both write the one vault at the same time.
+    """
+    subject, topic_slug = topic
+    ana = add_user(tmp_vault, "ana", "Ana García")
+    directory = sources_directory(ana, subject, topic_slug, "notes")
+    locks = tmp_vault.root.resolve() / ".git" / LOCKS_DIRNAME
+
+    through_user = directory_lock(ana.path, directory)
+
+    assert through_user is directory_lock(tmp_vault.path, directory)
+    assert through_user.path is not None
+    assert through_user.path.parent == locks
+    assert git_lock(ana.path) is git_lock(tmp_vault.path)
+    assert git_lock(ana.path).path == locks / f"{GIT_LOCK_NAME}.lock"
+    assert vault_lock(ana.path, "feedback") is vault_lock(tmp_vault.path, "feedback")
+    assert vault_lock(ana.path, "feedback").path == locks / "feedback.lock"
+
+
+def test_a_directory_lock_taken_on_the_root_bounds_a_user_handles_writer(
+    tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ana = add_user(tmp_vault, "ana", "Ana García")
+    subject = create_subject(ana, "Química").slug
+    topic_slug = create_topic(ana, subject, "Enlace químico").slug
+    monkeypatch.setattr("studentassistant.vault.sources.SOURCE_LOCK_TIMEOUT_SECONDS", 0.1)
+    directory = sources_directory(ana, subject, topic_slug, "notes")
+    lock = directory_lock(tmp_vault.path, directory)  # taken on the repository's root handle
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with lock.hold(5):
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(5)
+        with pytest.raises(VaultBusyError, match="otro proceso"):
+            put_source(ana, subject, topic_slug, "notes", "a.jpg", b"a", {})
+    finally:
+        release.set()
+        holder.join(5)
+    assert list_sources(ana, subject, topic_slug) == []
+    assert lock.path is not None and lock.path.is_file()
 
 
 def test_the_lock_is_reentrant_within_one_thread(tmp_vault: Vault) -> None:

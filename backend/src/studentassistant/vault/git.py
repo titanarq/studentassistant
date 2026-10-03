@@ -72,7 +72,13 @@ class GitCommandError(VaultError):
 
 
 class GitRunner:
-    """Runs git in one vault root as one identity."""
+    """Runs git in one vault repository root as one identity.
+
+    `root` is the repository -- the directory holding `.git/`, a `Vault`'s `root` -- and never one
+    user's folder of it (`vault.py`, epic #544): a vault is one repository with one HEAD, one
+    index and one set of tags, whichever user's content a command is about, and a path given to a
+    command is relative to that root.
+    """
 
     def __init__(
         self,
