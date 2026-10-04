@@ -1,5 +1,6 @@
 package com.titanarq.studentassistant.pairing
 
+import com.titanarq.studentassistant.users.UserHolder
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.titanarq.studentassistant.backend.BackendClient
@@ -60,6 +61,7 @@ class PairingViewModel(
     private val store: BackendStore,
     private val deviceName: String,
     private val ourVersion: String = PROTOCOL_VERSION,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
     val state: StateFlow<PairingUiState> = _state.asStateFlow()
@@ -123,6 +125,8 @@ class PairingViewModel(
                                 displayName = displayNameOf(payload.url),
                             )
                             store.save(backend)
+                            // The new backend is the active one: its users are asked afresh.
+                            users.clear()
                             PairingUiState.Paired(backend.displayName)
                         }
                     }

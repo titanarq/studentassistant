@@ -2,6 +2,7 @@ package com.titanarq.studentassistant.backend
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.titanarq.studentassistant.users.UserHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +42,7 @@ data class ConnectionTestUiState(
 class ConnectionTestViewModel(
     private val client: BackendClient,
     private val store: BackendStore,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow(ConnectionTestUiState())
     val state: StateFlow<ConnectionTestUiState> = _state.asStateFlow()
@@ -63,7 +65,7 @@ class ConnectionTestViewModel(
             )
             val health = client.health(backend.baseUrl).toCheck { it.protocolVersion }
             _state.update { it.copy(health = health) }
-            val subjects = client.listSubjects(backend.credentials).toCheck { it.subjects.size.toString() }
+            val subjects = client.listSubjects(backend.credentials.forUser(users.current.value?.id)).toCheck { it.subjects.size.toString() }
             _state.update { it.copy(subjects = subjects) }
         }
     }

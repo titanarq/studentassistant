@@ -60,7 +60,9 @@ class ShareViewModelTest {
         scope.cancel()
     }
 
-    private fun viewModel(text: String? = "La Bastilla\n$url") = ShareViewModel(text, null, client, store)
+    private val users = com.titanarq.studentassistant.users.UserHolder()
+
+    private fun viewModel(text: String? = "La Bastilla\n$url") = ShareViewModel(text, null, client, store, users)
 
     private fun ShareViewModel.until(predicate: (ShareUiState) -> Boolean): ShareUiState = runBlocking {
         withTimeout(5_000) { state.first(predicate) }
@@ -86,6 +88,19 @@ class ShareViewModelTest {
         assertEquals("192.168.1.20:8000", state.backendName)
         assertEquals(Loadable.Loaded(listOf(revolucion, feudalismo)), state.topics)
         assertEquals(listOf("listSubjects http://192.168.1.20:8000", "listTopics http://192.168.1.20:8000 historia"), client.calls)
+    }
+
+    @Test
+    fun `the shared page is saved as the selected user`() {
+        users.select(com.titanarq.studentassistant.protocol.User("laura-mendez", "Laura Méndez"))
+        val model = viewModel()
+        model.showHistoria()
+        client.addWebPageResult = BackendResult.Success(added)
+
+        model.save(revolucion)
+        model.until { it.outcome != null }
+
+        assertEquals(listOf("laura-mendez", "laura-mendez", "laura-mendez"), client.userIds)
     }
 
     @Test

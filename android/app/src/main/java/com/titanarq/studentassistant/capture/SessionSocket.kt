@@ -1,6 +1,7 @@
 package com.titanarq.studentassistant.capture
 
 import com.titanarq.studentassistant.backend.defaultOkHttpClient
+import com.titanarq.studentassistant.protocol.USER_HEADER
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -36,9 +37,12 @@ interface SessionSocketListener {
     fun onFailure(reason: String)
 }
 
-/** Opens the session WebSocket at [url] (http(s) or ws(s)) with the bearer [token]. */
+/**
+ * Opens the session WebSocket at [url] (http(s) or ws(s)) with the bearer [token] and, when
+ * [userId] is not null, the `X-SA-User` header of the handshake (protocol 1.8).
+ */
 fun interface SessionSocketFactory {
-    fun open(url: String, token: String, listener: SessionSocketListener): SessionSocket
+    fun open(url: String, token: String, userId: String?, listener: SessionSocketListener): SessionSocket
 }
 
 /** How often a session socket pings; a missing pong fails the socket (OkHttp). */
@@ -55,10 +59,11 @@ fun sessionSocketHttpClient(): OkHttpClient =
 class OkHttpSessionSocketFactory(
     private val http: OkHttpClient = sessionSocketHttpClient(),
 ) : SessionSocketFactory {
-    override fun open(url: String, token: String, listener: SessionSocketListener): SessionSocket {
+    override fun open(url: String, token: String, userId: String?, listener: SessionSocketListener): SessionSocket {
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $token")
+            .apply { if (userId != null) header(USER_HEADER, userId) }
             .build()
         val socket = http.newWebSocket(request, Listener(listener))
         return object : SessionSocket {

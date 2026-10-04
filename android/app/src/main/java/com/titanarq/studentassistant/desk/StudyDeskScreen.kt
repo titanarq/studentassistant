@@ -196,7 +196,7 @@ private fun DeskWebView(
         }
     }
 
-    // The token goes into the WebView's cookie jar only while this screen is shown.
+    // The token and the user cookie go into the WebView's cookie jar only while this screen is shown.
     DisposableEffect(webView) {
         onDispose {
             answerChooser(emptyList())
@@ -212,6 +212,7 @@ private fun DeskWebView(
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setCookie(ready.page.cookieUrl, ready.page.cookie)
+            ready.page.userCookie?.let { setCookie(ready.page.cookieUrl, it) }
             flush()
         }
         if (ready.reload == 0 || webView.url == null) webView.loadUrl(ready.page.url) else webView.reload()

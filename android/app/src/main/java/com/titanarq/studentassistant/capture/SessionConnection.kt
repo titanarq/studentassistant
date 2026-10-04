@@ -122,6 +122,8 @@ class SessionConnection(
     private val finalGraceMs: Long = FINAL_GRACE_MS,
     private val maxSocketQueueBytes: Long = MAX_SOCKET_QUEUE_BYTES,
     private val protocolVersion: String = PROTOCOL_VERSION,
+    /** The user the session acts for: the `X-SA-User` of every handshake; null sends none. */
+    private val userId: String? = null,
 ) {
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Connecting)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
@@ -256,6 +258,7 @@ class SessionConnection(
         socket = socketFactory.open(
             url,
             token,
+            userId,
             object : SessionSocketListener {
                 override fun onOpen() {
                     inputs.trySend(Input.Opened(current))

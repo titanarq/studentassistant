@@ -30,10 +30,14 @@ import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.tutor.TutorScreen
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.tutor.TutorViewModel
+import com.titanarq.studentassistant.ui.ComingSoonScreen
 import com.titanarq.studentassistant.ui.PlaceholderScreen
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.StudentAssistantTheme
+import com.titanarq.studentassistant.ui.routeFor
 import com.titanarq.studentassistant.ui.startRoute
+import com.titanarq.studentassistant.users.UserSelectionScreen
+import com.titanarq.studentassistant.users.UsersViewModel
 
 class MainActivity : ComponentActivity() {
     /** The single app-wide container; screens get their dependencies from it. */
@@ -61,17 +65,24 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
     // The topic Route.TUTOR asks about, kept the same way.
     var tutorTopic by rememberSaveable { mutableStateOf<List<String>?>(null) }
 
+    // The selected user lives in memory only: it is empty at every process start.
+    val user by container.userHolder.current.collectAsStateWithLifecycle()
+
     val current = stored
     LaunchedEffect(current == null) {
-        if (current != null && route == null) route = startRoute(current)
+        if (current != null && route == null) route = startRoute(current, user)
     }
     // The last backend was removed: nothing left to show but pairing.
     LaunchedEffect(current?.backends?.isEmpty()) {
         if (current != null && current.backends.isEmpty()) route = Route.PAIRING
     }
     val hasBackends = current?.backends?.isNotEmpty() == true
+    // No user selected (sign-out, switched backend, a refused user): «¿Quién eres?» before any screen that needs one.
+    LaunchedEffect(route, hasBackends, user) {
+        route?.let { shown -> routeFor(shown, hasBackends, user).let { if (it != shown) route = it } }
+    }
     // Back from the connection test returns to the backends; from anywhere else, to the home.
-    BackHandler(enabled = route != null && route != Route.HOME && hasBackends) {
+    BackHandler(enabled = route != null && route != Route.HOME && route != Route.USERS && hasBackends) {
         route = if (route == Route.CONNECTION_TEST) Route.BACKENDS else Route.HOME
     }
 
@@ -86,6 +97,8 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
             viewModel = viewModel<HomeViewModel>(factory = container.homeViewModelFactory),
             onSessionOpened = { route = Route.CAPTURE },
             onBackends = { route = Route.BACKENDS },
+            photos = container.userPhotos,
+            onEditProfile = { route = Route.PROFILE },
             onOpenDesk = { topic ->
                 deskTopic = listOf(topic.subjectId, topic.topicId, topic.topicName, topic.view.name)
                 route = Route.DESK
@@ -95,6 +108,14 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
                 route = Route.TUTOR
             },
         )
+        Route.USERS -> UserSelectionScreen(
+            viewModel = viewModel<UsersViewModel>(factory = container.usersViewModelFactory),
+            photos = container.userPhotos,
+            onSelected = { route = Route.HOME },
+            onBackends = { route = Route.BACKENDS },
+        )
+        // Owned by #555 (the profile editor); until it lands, a placeholder.
+        Route.PROFILE -> ComingSoonScreen(onBack = { route = Route.HOME })
         Route.TUTOR -> {
             val topic = tutorTopic?.takeIf { it.size == 3 }?.let { TutorTopic(it[0], it[1], it[2]) }
             if (topic == null) {

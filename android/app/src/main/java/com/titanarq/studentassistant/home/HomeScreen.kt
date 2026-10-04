@@ -3,6 +3,7 @@ package com.titanarq.studentassistant.home
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +14,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -28,6 +32,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,6 +45,8 @@ import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.ui.backendFailureMessage
+import com.titanarq.studentassistant.users.UserAvatar
+import com.titanarq.studentassistant.users.UserPhotos
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -54,10 +62,15 @@ fun HomeScreen(
     onSessionOpened: () -> Unit,
     onBackends: () -> Unit,
     onOpenDesk: (DeskTopic) -> Unit,
+    photos: UserPhotos,
+    onEditProfile: () -> Unit,
     modifier: Modifier = Modifier,
     onAskTutor: (TutorTopic) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val user by viewModel.user.collectAsStateWithLifecycle()
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var confirmSignOut by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { viewModel.load() }
     LaunchedEffect(state.openedSession) {
         if (state.openedSession != null) {
@@ -77,6 +90,33 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = onBackends) { Text(stringResource(R.string.home_backends)) }
+                user?.let { current ->
+                    Box {
+                        val menuDescription = stringResource(R.string.users_menu_description, current.name)
+                        IconButton(
+                            onClick = { menuOpen = true },
+                            modifier = Modifier.semantics { contentDescription = menuDescription },
+                        ) {
+                            UserAvatar(current, photos, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.users_edit_profile)) },
+                                onClick = {
+                                    menuOpen = false
+                                    onEditProfile()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.users_sign_out)) },
+                                onClick = {
+                                    menuOpen = false
+                                    confirmSignOut = true
+                                },
+                            )
+                        }
+                    }
+                }
             }
             state.backendName?.let {
                 Text(stringResource(R.string.home_backend, it), style = MaterialTheme.typography.bodySmall)
@@ -101,6 +141,25 @@ fun HomeScreen(
                 Button(onClick = viewModel::openCreateTopic) { Text(stringResource(R.string.home_new_topic)) }
             }
         }
+    }
+
+    val signingOut = user
+    if (confirmSignOut && signingOut != null) {
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            text = { Text(stringResource(R.string.users_sign_out_confirm, signingOut.name)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmSignOut = false
+                        viewModel.signOut()
+                    },
+                ) { Text(stringResource(R.string.users_sign_out)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSignOut = false }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
     }
 
     state.createTopic?.let { dialog ->

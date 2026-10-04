@@ -190,6 +190,7 @@ class CaptureViewModel(
             socketFactory = socketFactory,
             url = SessionConnection.socketUrl(open.backend.baseUrl, open.session.wsPath),
             token = open.backend.token,
+            userId = open.backend.userId,
             clock = clock,
             capabilities = SessionConnection.CAPTURE_CAPABILITIES,
             resume = {
@@ -380,7 +381,7 @@ class CaptureViewModel(
         leave()
         spooling.finisher.finish(
             open.backend,
-            PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON),
+            PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON, userId = open.backend.userId),
         )
         _state.update { it.copy(phase = CapturePhase.ENDED) }
     }

@@ -2,6 +2,7 @@ package com.titanarq.studentassistant.backend
 
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
+import com.titanarq.studentassistant.protocol.ErrorCode
 import com.titanarq.studentassistant.protocol.HealthResponse
 import com.titanarq.studentassistant.protocol.PairRequest
 import com.titanarq.studentassistant.protocol.PairResponse
@@ -15,15 +16,22 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
 
 /**
  * Where and as whom to call a paired backend: its base URL (`http://host:port`, no trailing
- * slash) and the bearer token pairing returned. The token never appears in [toString].
+ * slash), the bearer token pairing returned and, for the user-scoped calls, the id of the user the
+ * calls act for (sent as `X-SA-User`, protocol 1.8; null sends no header, which the backend
+ * answers with its single-user fallback). The token never appears in [toString].
  */
-data class BackendCredentials(val baseUrl: String, val token: String) {
-    override fun toString(): String = "BackendCredentials(baseUrl=$baseUrl, token=<redacted>)"
+data class BackendCredentials(val baseUrl: String, val token: String, val userId: String? = null) {
+    /** The same backend, acting for [userId] (null: for nobody in particular). */
+    fun forUser(userId: String?): BackendCredentials = copy(userId = userId)
+
+    override fun toString(): String =
+        "BackendCredentials(baseUrl=$baseUrl, token=<redacted>, userId=$userId)"
 }
 
 /** The bytes of one image of a capture burst; its part name and type come from the metadata. */
@@ -40,8 +48,16 @@ sealed interface BackendResult<out T> {
 
     sealed interface Failure : BackendResult<Nothing>
 
-    /** The backend answered with a non-2xx status. */
-    data class HttpError(val status: Int) : Failure
+    /**
+     * The backend answered with a non-2xx status. [code] is read from the error body only for the
+     * two user codes ([ErrorCode.USER_REQUIRED], [ErrorCode.USER_NOT_FOUND]); null otherwise.
+     */
+    data class HttpError(val status: Int, val code: ErrorCode? = null) : Failure {
+        /** The backend does not know which user this is: the student must say who they are again. */
+        val userRejected: Boolean
+            get() = (status == 400 && code == ErrorCode.USER_REQUIRED) ||
+                (status == 404 && code == ErrorCode.USER_NOT_FOUND)
+    }
 
     /** No answer: bad address, connection refused, timeout, the phone is not on the LAN, ... */
     data class Unreachable(val reason: String) : Failure
@@ -66,6 +82,15 @@ interface BackendClient {
 
     /** `GET /api/health`: reachability and the backend's protocol version. */
     suspend fun health(baseUrl: String): BackendResult<HealthResponse>
+
+    /** `GET /api/users`: every user of the backend's vault (sends no `X-SA-User`, whatever [backend] holds). */
+    suspend fun listUsers(backend: BackendCredentials): BackendResult<UsersListResponse>
+
+    /**
+     * `GET <photoUrl>` (a user's `photo_url`, a path of the users API) with the bearer token: the
+     * image's bytes. Sends no `X-SA-User`.
+     */
+    suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray>
 
     /** `GET /api/subjects`. */
     suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse>

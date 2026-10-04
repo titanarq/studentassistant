@@ -6,6 +6,17 @@
     <string name="back">Volver</string>
     <string name="cancel">Cancelar</string>
 
+    <!-- Users (#554) -->
+    <string name="users_title">¿Quién eres?</string>
+    <string name="users_empty">No hay usuarios en este ordenador.</string>
+    <string name="users_no_backend">No hay ningún ordenador activo. Empareja uno primero.</string>
+    <string name="users_photo_description">Foto de %1$s</string>
+    <string name="users_menu_description">Menú de %1$s</string>
+    <string name="users_edit_profile">Editar perfil</string>
+    <string name="users_sign_out">Cerrar sesión</string>
+    <string name="users_sign_out_confirm">¿Cerrar la sesión de %1$s?</string>
+    <string name="users_coming_soon">Próximamente</string>
+
     <!-- Pairing -->
     <string name="pairing_title">Emparejar con el ordenador</string>
     <string name="pairing_scan_hint">Apunta la cámara al código QR que muestra el ordenador (la página «Emparejar» o la orden studentassistant pair).</string>

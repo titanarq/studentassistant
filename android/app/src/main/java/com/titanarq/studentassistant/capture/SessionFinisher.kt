@@ -114,7 +114,7 @@ class SessionFinisher(
                 } else if (wasRunning) {
                     // The resume failed: the end the student asked for goes on.
                     val end = spools.ends().firstOrNull { it.sessionId == sessionId }
-                    val credentials = backend ?: end?.let { credentials(it.baseUrl) }
+                    val credentials = backend ?: end?.let { credentials(it.baseUrl)?.forUser(it.userId) }
                     if (end != null && credentials != null) launch(credentials, end)
                 }
             }
@@ -124,7 +124,8 @@ class SessionFinisher(
     /** Resumes every pending end left by an earlier run (its backend looked up by base URL). */
     suspend fun restore() {
         for (end in spools.ends()) {
-            val backend = credentials(end.baseUrl) ?: continue
+            // Each end goes out as the user it belongs to, not the one selected now.
+            val backend = credentials(end.baseUrl)?.forUser(end.userId) ?: continue
             launch(backend, end)
         }
     }
@@ -217,6 +218,7 @@ class SessionFinisher(
             socketFactory = socketFactory,
             url = SessionConnection.socketUrl(backend.baseUrl, session.wsPath),
             token = backend.token,
+            userId = backend.userId,
             clock = clock,
             capabilities = SessionConnection.CAPTURE_CAPABILITIES,
             resume = { client.resumeSession(backend, session.sessionId) is BackendResult.Success },

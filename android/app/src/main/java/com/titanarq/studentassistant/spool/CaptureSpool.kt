@@ -11,7 +11,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * What is kept of a capture burst until the backend confirms it: the upload's `metadata` part,
- * the session and backend it belongs to (the backend by base URL only; its token is looked up in
+ * the session, backend and user it belongs to (the backend by base URL only; its token is looked up in
  * the paired backends when the upload is resumed) and whether a thumbnail was stored.
  */
 @Serializable
@@ -20,6 +20,8 @@ data class SpooledCaptureMeta(
     @SerialName("base_url") val baseUrl: String,
     val request: CaptureUploadRequest,
     @SerialName("has_thumbnail") val hasThumbnail: Boolean = false,
+    /** The user who took the burst (it is uploaded as them); absent in a file an older version wrote. */
+    @SerialName("user_id") val userId: String? = null,
 ) {
     val captureId: String get() = request.captureId
 }

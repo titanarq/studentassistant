@@ -11,6 +11,7 @@ import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageVia
+import com.titanarq.studentassistant.users.UserHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,7 @@ class ShareViewModel(
     sharedSubject: String?,
     private val client: BackendClient,
     private val store: BackendStore,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow(ShareUiState(url = extractSharedUrl(sharedText, sharedSubject)))
     val state: StateFlow<ShareUiState> = _state.asStateFlow()
@@ -72,9 +74,10 @@ class ShareViewModel(
                 _state.update { it.copy(noBackend = true) }
                 return@launch
             }
-            backend = active.credentials
+            val credentials = active.credentials.forUser(users.current.value?.id)
+            backend = credentials
             _state.update { it.copy(backendName = active.displayName, noBackend = false, subjects = Loadable.Loading) }
-            val subjects = when (val result = client.listSubjects(active.credentials)) {
+            val subjects = when (val result = client.listSubjects(credentials)) {
                 is BackendResult.Success -> Loadable.Loaded(result.value.subjects)
                 is BackendResult.Failure -> Loadable.Failed(result)
             }
