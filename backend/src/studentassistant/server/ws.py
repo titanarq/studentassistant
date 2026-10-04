@@ -19,6 +19,17 @@ protocol v1 flow:
    forwarded to the client as the matching server messages, and each persisted `capture.stored`
    (the capture upload stored a burst) as an `ack` with its `capture_ids`.
 
+**Whose session it is** (protocol 1.8, #550) is settled before any of that, on the upgrade request
+and by the same rule the REST routes follow: the `X-SA-User` header, else the `sa_user` cookie, else
+-- on a vault holding exactly one user -- that one (`server.user_scope.resolve_websocket_user`).
+The session is then looked up as that user's, so a socket opened on a session of another student is
+refused with 4404 exactly like one opened on an id nobody ever wrote: another student's session is
+never served and its id is never confirmed. A handshake that names no user on a vault holding
+several, or one that names a user this vault does not have, closes as a policy violation whose
+reason starts with the protocol's own code for it (`user_required:` / `user_not_found:`), because a
+socket has no HTTP status to carry an error code in and the client has to be told to go and pick a
+user; a vault that cannot be opened at all is the internal error it is anywhere else on the socket.
+
 Every text message is validated with the backend protocol models; an invalid one, one with an
 unknown or missing `type`, or a message the current mode does not allow closes the socket with a
 reason (never silently ignored).
@@ -39,7 +50,8 @@ oldest notices (partials) first and never a persisted event; out-of-order audio 
 `MAX_PENDING_FRAMES` frames, past which the socket is closed so the client resends from its ack.
 
 Vocabulary hints (#54): at the handshake the gateway reads the topic's terms (subject and topic
-names, the concepts the observer has extracted, `server.vocabulary`) and builds the session's hints
+names, the concepts the observer has extracted, `server.vocabulary`) through the handle of the user
+the session belongs to, and builds the session's hints
 (`stt.vocabulary_hints_from_settings`, capped by `[stt]`). A server-mode provider gets them through
 `set_vocabulary`; a client that negotiated 1.4 or higher gets them in `hello.ack.vocabulary_hints`.
 The socket also follows the session's `observer.state_op` events: an `add_concept` that changes the
@@ -112,7 +124,12 @@ from studentassistant.server.auth import WS_POLICY_VIOLATION, authenticate_webso
 from studentassistant.server.bus import SessionBus, SessionNotAttachedError, Subscription
 from studentassistant.server.capture_liveness import IDLE_CLOSE_MARK, CaptureLiveness
 from studentassistant.server.recorder import SessionRecorder
-from studentassistant.server.sessions import OpenSession, SessionService
+from studentassistant.server.sessions import OpenSession, SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import (
+    UnknownUserError,
+    UserRequiredError,
+    resolve_websocket_user,
+)
 from studentassistant.server.vocabulary import SessionVocabulary, TopicTerms, load_topic_terms
 from studentassistant.stt import (
     AudioChunk,
@@ -124,7 +141,7 @@ from studentassistant.stt import (
     TranscriptSink,
     provider_from_settings,
 )
-from studentassistant.vault import SecretRefused
+from studentassistant.vault import SecretRefused, Vault
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +163,19 @@ FORWARDED_KINDS = frozenset(
 SUBSCRIBED_KINDS = FORWARDED_KINDS | {STATE_OP_EVENT_KIND}
 
 CLOSE_UNKNOWN_SESSION = 4404
-"""Close code for a `session_id` that is not the active session (unknown, ended, not resumed)."""
+"""Close code for a `session_id` that is not the active session (unknown, ended, not resumed) --
+which, since #550, is also the answer for a session that is another user's."""
 CLOSE_PROTOCOL_VIOLATION = WS_POLICY_VIOLATION
 """Close code for a message protocol v1 does not allow here (and an incompatible version)."""
 CLOSE_INTERNAL_ERROR = 1011
 """Close code when the backend cannot serve the socket (e.g. the STT provider cannot be built)."""
+
+USER_REQUIRED_CLOSE_REASON = "user_required: the handshake names no user of this vault"
+"""Close reason of a handshake that does not say who it is, on a vault holding more than one user.
+
+The protocol's error code leads it, because that -- not the close code, which a socket shares with
+every other policy violation -- is what tells a client to show the user selection again.
+"""
 
 MAX_PENDING_FRAMES = 512
 """Out-of-order audio frames buffered per session while waiting for the missing `seq`."""
@@ -186,6 +211,16 @@ def _default_sink(settings: SttSettings, clock_offset: float) -> TranscriptSink:
 
 def _now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def _terms_of(vault: Vault, session: OpenSession) -> TopicTerms:
+    """The terms of a session's topic, read through the handle of the user the session is theirs.
+
+    `vault` is the repository's handle, the one `SessionService.open_vault()` gives; the topic and
+    the observer state the hints are built from live in `users/<id>/`, so narrowing first is what
+    makes them readable at all (#550). Blocking, like `load_topic_terms`: the caller threads it.
+    """
+    return load_topic_terms(vault.for_user(session.user_id), session.subject_id, session.topic_id)
 
 
 class _RefusedError(Exception):
@@ -243,7 +278,7 @@ class SessionGateway:
     `recorder`, when given, records every session's client inputs (`serve --record`).
     `liveness`, when given, is told which sockets are connected and paused (#425).
     `terms_loader` reads a session's topic terms for its vocabulary hints (default: the vault
-    through `sessions`).
+    through `sessions`, narrowed to the user the session belongs to).
 
     It registers `end_session` on `sessions` as a before-`session.ended` hook.
     """
@@ -305,9 +340,7 @@ class SessionGateway:
     async def _load_terms(self, session: OpenSession) -> TopicTerms:
         try:
             vault = await self.sessions.open_vault()
-            return await asyncio.to_thread(
-                load_topic_terms, vault, session.subject_id, session.topic_id
-            )
+            return await asyncio.to_thread(_terms_of, vault, session)
         except Exception:
             logger.exception("vocabulary hints of session %s: terms unreadable", session.session_id)
             return TopicTerms()
@@ -499,8 +532,32 @@ class _Connection:
 
     # -- flow ----------------------------------------------------------------------------------
 
+    async def _active_user(self) -> str | None:
+        """The user this handshake acts for: the REST rule, on the upgrade request (#550).
+
+        A refusal travels as a close code and a reason, because a socket that is being served has
+        no HTTP status left to carry an error code in. The user is resolved before the session is
+        looked up, so a handshake naming nobody is told that rather than being told -- as it would
+        be with no user to look the session up as -- that the session is unknown.
+        """
+        try:
+            vault = await self.gateway.sessions.open_vault()
+        except VaultUnavailableError as error:
+            raise _RefusedError(
+                f"the vault cannot be opened: {error}", CLOSE_INTERNAL_ERROR
+            ) from None
+        try:
+            return await asyncio.to_thread(resolve_websocket_user, self.websocket, vault)
+        except UserRequiredError:
+            raise _RefusedError(USER_REQUIRED_CLOSE_REASON) from None
+        except UnknownUserError as error:
+            raise _RefusedError(
+                f"user_not_found: this vault has no user {error.user_id!r}"
+            ) from None
+
     async def run(self) -> None:
-        session = await self.gateway.sessions.get_active(None, self.session_id)
+        user_id = await self._active_user()
+        session = await self.gateway.sessions.get_active(user_id, self.session_id)
         if (
             session is None
             or not self.bus.is_attached(self.session_id)
@@ -946,6 +1003,7 @@ __all__ = [
     "SUBSCRIBED_KINDS",
     "TRANSCRIPT_FINAL",
     "TRANSCRIPT_PARTIAL",
+    "USER_REQUIRED_CLOSE_REASON",
     "ReceiveState",
     "SessionGateway",
     "ws_router",

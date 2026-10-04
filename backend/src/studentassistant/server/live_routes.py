@@ -1,7 +1,11 @@
 """The web's live session view: `GET /api/live`, a read-only Server-Sent Events stream.
 
 While a session runs, the PC browser follows its transcript, its captured pages and the outline
-the observer is building (#57). The stream follows the **active** session:
+the observer is building (#57). The stream follows the **active session of the user asking for it**
+(the active user of the request, `server.user_scope.active_user_vault`, protocol 1.8): a student
+another one is capturing on the same backend gets the same empty snapshot and the same end of
+stream as a student nobody is capturing for, so nothing of a session that is not theirs -- not its
+id, not a segment, not a page -- ever reaches the browser (#550):
 
 - first a `snapshot` of it (`session` is `null` when none is active, and the stream then ends:
   the browser's `EventSource` reconnects after `retry` milliseconds and asks again);
@@ -42,6 +46,7 @@ from studentassistant.server.sessions import (
     OpenSession,
     SessionService,
 )
+from studentassistant.server.user_scope import UserScope
 from studentassistant.vault import Session
 
 logger = logging.getLogger(__name__)
@@ -253,11 +258,21 @@ async def live_events(
     service: SessionService,
     bus: SessionBus,
     *,
+    user_id: str | None,
     keepalive: float = KEEPALIVE_SECONDS,
 ) -> AsyncIterator[bytes]:
-    """The live view's stream (see the module doc) of the session active when it is called."""
+    """The live view's stream (see the module doc) of the session active when it is called.
+
+    Only `user_id`'s session is streamed: another student capturing on this backend is, for this
+    browser, no session at all, and the answer is the empty snapshot and the end of the stream --
+    byte for byte what a backend that is capturing nothing answers (#550). The browser then
+    reconnects and asks again, so a session it may not see keeps it polling and never leaks a
+    segment, a capture or an outline of it.
+    """
     yield f"retry: {RETRY_MS}\n\n".encode()
     active: OpenSession | None = service.active
+    if active is not None and active.user_id != user_id:
+        active = None
     session = None if active is None else bus.attached(active.session_id)
     if active is None or session is None:
         yield _event("snapshot", _empty_snapshot())
@@ -345,10 +360,14 @@ def live_router() -> APIRouter:
     router = APIRouter(prefix="/api")
 
     @router.get("/live", response_class=StreamingResponse)
-    async def live(request: Request) -> StreamingResponse:
+    async def live(request: Request, scope: UserScope) -> StreamingResponse:
         return StreamingResponse(
             until_shutdown(
-                live_events(request.app.state.sessions, request.app.state.bus),
+                live_events(
+                    request.app.state.sessions,
+                    request.app.state.bus,
+                    user_id=scope[0].user_id,
+                ),
                 request.app.state.shutdown,
             ),
             media_type="text/event-stream",

@@ -9,7 +9,11 @@ names that is absent, a part it does not name, or a part whose `Content-Type` is
 declares is 422. Every refusal (`{"detail": "..."}`, Spanish) stores and publishes nothing.
 
 The session must be the active one: unknown is 404, ended or not resumed is 409, a vault that
-cannot be opened is 503. The burst is processed and stored by `sources.store_capture` in a worker
+cannot be opened is 503. Whose it is is settled first, by the active user of the request
+(`server.user_scope.active_user_vault`, protocol 1.8): a burst sent to a session of another student
+is 404, exactly like one sent to an id nobody ever wrote, and the handle the store writes through
+is that student's own, so a capture can only land in the folder of the session it belongs to.
+The burst is processed and stored by `sources.store_capture` in a worker
 thread (the sharpest still downscaled as `page-NNN.jpg`, its cropped page `page-NNN.page.jpg` and
 the sidecar with the transcript window; the other stills are not kept in the vault), under the
 session's current source context (`current_source_context`: the `source` of its latest
@@ -62,6 +66,7 @@ from studentassistant.server.sessions import (
     VaultUnavailableError,
     stored_captures,
 )
+from studentassistant.server.user_scope import UserScope
 from studentassistant.sources import (
     BurstStill,
     CaptureImageError,
@@ -345,11 +350,14 @@ def captures_router() -> APIRouter:
         response_model_exclude_none=True,
         responses={200: {"model": protocol.CaptureUploadResponse, "description": "Duplicate"}},
     )
-    async def upload_capture(request: Request, session_id: SessionId) -> JSONResponse:
+    async def upload_capture(
+        request: Request, session_id: SessionId, scope: UserScope
+    ) -> JSONResponse:
         service: SessionService = request.app.state.sessions
         server: ServerSettings = request.app.state.server
+        user_id = scope[0].user_id
         try:
-            session = await service.require_active(None, session_id)
+            session = await service.require_active(user_id, session_id)
         except UnknownSessionError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
         except SessionConflictError as error:
@@ -423,7 +431,7 @@ def captures_router() -> APIRouter:
             await _publish_triage(request, session, metadata.capture_id, stored_capture)
             recorder: SessionRecorder | None = request.app.state.recorder
             if recorder is not None:
-                await _record(request, recorder, session.id, metadata, parts)
+                await _record(request, recorder, session.id, user_id, metadata, parts)
             body = _response(metadata, session.id, "stored", len(metadata.images))
             return JSONResponse(body.model_dump(exclude_none=True), status.HTTP_201_CREATED)
 
@@ -523,10 +531,11 @@ async def _record(
     request: Request,
     recorder: SessionRecorder,
     session_id: str,
+    user_id: str | None,
     metadata: protocol.CaptureUploadRequest,
     parts: Mapping[str, _Part],
 ) -> None:
-    open_session = await request.app.state.sessions.get_active(None, session_id)
+    open_session = await request.app.state.sessions.get_active(user_id, session_id)
     if open_session is None:
         return
     gateway = request.app.state.gateway
