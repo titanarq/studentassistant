@@ -328,6 +328,9 @@ def users_router() -> APIRouter:
         try:
             updated = await asyncio.to_thread(_photo_set, vault, user_id, content, content_type)
         except UserProfileError as error:
+            # No image, an empty body, or one over `vault.users.MAX_USER_PHOTO_BYTES`: that ceiling
+            # is the vault's own, so a `[server] max_user_photo_bytes` raised past it lets the bytes
+            # by the 413 above and the student gets this Spanish 422 naming the vault's 5 MiB.
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
         except SecretRefused as error:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SECRET_DETAIL) from error
