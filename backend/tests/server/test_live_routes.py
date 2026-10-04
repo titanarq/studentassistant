@@ -116,7 +116,8 @@ async def test_a_session_of_another_user_is_not_streamed(
 
     # The session is untouched by being looked at as somebody else: still active, still the owner's.
     active = service.active
-    assert active is not None and (active.session_id, active.user_id) == (session_id, student_user_id)
+    assert active is not None
+    assert (active.session_id, active.user_id) == (session_id, student_user_id)
 
 
 async def test_the_stream_follows_the_active_session_until_it_ends(
