@@ -1,9 +1,11 @@
 """The web's search route: `GET /api/search` over the vault's derived SQLite index.
 
-Read-only and thin, like `read_routes.py`: the vault is the one `SessionService.open_vault()`
-opened (and pulled), and the index is the `VaultIndex` the service opened next to it
-(`SessionService.index`, kept current by its background loop). The query runs in a worker thread
-through `VaultIndex.search`, the only reader of the index; nothing here reads a vault file.
+Read-only and thin, like `read_routes.py`: the route is scoped to the active user
+(`server.user_scope.active_user_vault`, #549) and searches that user's OWN index -- the
+`VaultIndex` the service opens lazily at `user_index_path` (`SessionService.index_of`, kept current
+by its background loop) -- so a student's search can only find their own content (#566). The query
+runs in a worker thread through `VaultIndex.search`, the only reader of the index; nothing here
+reads a vault file.
 
 The body is protocol `rest.search.response`. Errors, as `{"detail": "..."}` with a Spanish
 `detail`: an unknown kind, a `topic` without its `subject`, an id outside the protocol's id
@@ -21,8 +23,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from studentassistant.protocol import SearchHit, SearchResponse
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.read_routes import VAULT_UNAVAILABLE_DETAIL
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import UserScope
 from studentassistant.vault.index import DOC_KINDS
 from studentassistant.vault.index import SearchHit as IndexHit
 
@@ -75,10 +77,11 @@ def search_router() -> APIRouter:
     @router.get(
         "/search",
         response_model_exclude_none=True,
-        responses={503: {"description": "The vault or its search index cannot be opened."}},
+        responses={503: {"description": "The vault or the user's search index cannot be opened."}},
     )
     async def search(
         request: Request,
+        scope: UserScope,
         q: Annotated[
             str,
             Query(
@@ -106,13 +109,7 @@ def search_router() -> APIRouter:
                 UNKNOWN_KIND_DETAIL.format(kinds=error, known=", ".join(DOC_KINDS)),
             ) from error
         service: SessionService = request.app.state.sessions
-        try:
-            await service.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
-        index = service.index
+        index = await service.index_of(scope[0].user_id)
         if index is None:
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, INDEX_UNAVAILABLE_DETAIL)
         hits = await asyncio.to_thread(

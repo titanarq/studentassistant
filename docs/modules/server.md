@@ -236,7 +236,8 @@ Routes registered today:
   path; 404 for a path not diverging. A vault that cannot be opened is 503.
 - Session start/end and the active host (ADR-0002, `vault/active.py`): after the start's pull,
   `SessionService` checks `.sa/active.yaml` into `host_warning` (logged, never refused), claims it
-  for its host once the session exists, checkpoints (`sesión <id> iniciada en <host>`) and calls
+  for its host and for the session's user (`claim_active_host(..., user_id=...)`) once the session
+  exists, checkpoints (`sesión <id> iniciada en <host>`) and calls
   `GitSync.request_push()`; the end releases the claim before its checkpoint and push.
 - `GET /api/sessions/{id}/health` (`server/session_routes.py` + `server/session_health.py`, #262,
   web-only, not phone protocol) -> `SessionHealthResponse` `{session_id, ok, observer,
@@ -445,8 +446,10 @@ Routes registered today:
   cost_cap_reached`); a body that is not an http(s) `url` 422.
 - `GET /api/search?q=..&subject=..&topic=..&kinds=..&limit=..` (`server/search_routes.py`,
   `search_router()`) -> protocol `rest.search.response` (`query`, `hits`), through the
-  `VaultIndex` the session service opened (`SessionService.index`), `VaultIndex.search` in a
-  worker thread; optional hit fields are left out, never `null`. `q` is plain text (at most 500
+  ACTIVE USER's own `VaultIndex` (#566: the route declares `active_user_vault`, so a missing user
+  with several users is `400 user_required` and an unknown one `404 user_not_found`; the service
+  opens one database per user at `user_index_path`, lazily, `SessionService.index_of`),
+  `VaultIndex.search` in a worker thread, so a student never finds another's content; optional hit fields are left out, never `null`. `q` is plain text (at most 500
   characters; every word must appear, as a prefix, accents and case ignored; no word, no hits).
   `subject` and `topic` filter by slug (protocol id pattern; `topic` needs `subject`, else 422);
   an unknown one matches nothing. `kinds` is a comma-separated subset of `notes`, `page`, `pdf`,
@@ -736,9 +739,10 @@ Routes registered today:
   `session.ended` on the bus writes it, in a new review session, for the ended session's
   requests still queued or running (a `study` request ending its own session included). A
   `turn.finished` (which now always carries the request's `session_id`) whose session is no
-  longer attached is written in a review session. Once the vault is open (`catch_up_vault`, a
-  `SessionService.add_on_open` hook, so after the restarted backend's first request that opens
-  it), every readable topic's `outstanding_requests(vault, subject, topic)` -- each named request
+  longer attached is written in a review session of the request's student. Once the vault is open
+  (`catch_up_vault`, a `SessionService.add_on_open` hook called once per user with that user's
+  handle -- and once with the root handle, for what the routes not user-scoped yet wrote there --
+  so after the restarted backend's first request that opens it), every readable topic's `outstanding_requests(vault, subject, topic)` -- each named request
   with no `turn.finished` of that session's request anywhere in the topic and no voice chat turn
   of it -- is submitted again through `submit`, oldest first, announced and streamed as usual,
   and answered exactly once (the `turn.finished` is written before `turn.result`). This reads
@@ -788,7 +792,9 @@ Routes registered today:
   (`Cache-Control: no-cache`), read with `fetch` like the chat streams. It starts with a
   `: connected` comment and sends a `: keep-alive` comment every 15 s without events; it ends when
   the client goes away or the app shuts down. It works with or without an active session and
-  without `llm_transport`. Fed by an in-memory per-topic hub (`app.state.workspace`) that voice
+  without `llm_transport`. Fed by an in-memory per-user, per-topic hub (`app.state.workspace`, keyed by the student too: two
+  students with the same slugs never see each other's events; a caller naming no user is the
+  vault's only one, #566) that voice
   turns, typed turns, student saves, generations, restores and undos publish to; nothing is
   persisted or replayed (a reconnecting client reloads `GET .../notes/chat` and `GET .../notes`).
   Each event is `event: <name>` plus one line of JSON (the list is open; later tasks add kinds):
@@ -1208,12 +1214,12 @@ is redacted in the logs.
 **What is scoped today:** the rule, the handshake helper and the dependency, and the session side
 (#550): `session_routes` (`/api/subjects*`, `/api/sessions*`), `captures`, `ws`, `live_routes`,
 `vault_status` and `session_health`, which work on the active user's handle or hand its id to
-`SessionService`. Every other route still works on the handle `SessionService.open_vault()` gives,
-which is the root one. `/api/health`, `/api/pair*` and `/api/users*` stay that way by design
-(protocol 1.8 names them as not user-scoped); the rest change in #566 (search, the session
-consumers and the per-user index) and #551 (every other content route: notes, sources, study,
-generated material, ...), each declaring `active_user_vault` and working on the two handles it
-returns.
+`SessionService`, and, since #566, `GET /api/search` (the user's own index) and every session-driven
+background consumer ("Session consumers per user" below). The other content routes still work on
+the handle `SessionService.open_vault()` gives, which is the root one. `/api/health`, `/api/pair*`
+and `/api/users*` stay that way by design (protocol 1.8 names them as not user-scoped); the rest
+change in #551 (every other content route: notes, sources, study, generated material, ...), each
+declaring `active_user_vault` and working on the two handles it returns.
 
 ### Session lifecycle -- `server/sessions.py`
 
@@ -1257,15 +1263,17 @@ fallback (the vault's only user, else `NoUserError`; an id the vault lacks is `U
 - `startup()` / `shutdown()` (the app's lifespan): between them an open vault has the background
   `GitSync.run(sync_interval)` task (`sync_running` says whether it runs); `shutdown()` cancels
   it and flushes (`GitSync.flush()` in a worker thread). No git call runs on the event loop.
-- The derived search index (ADR-0002, `vault.index.VaultIndex`): right after the vault's first
-  pull and scan, `VaultIndex.open(vault, vault_settings.index_path)` runs in a worker thread
-  (rebuilding the index when it was built for another HEAD, e.g. after that pull); `index` is it,
-  or `None` before the vault opens or when it cannot be opened (logged; the vault still works and
-  search answers 503). While serving, `VaultIndex.run(index_interval)` runs next to the sync loop
-  (`index_running`), updating the index in a worker thread. After the pull of every session start
-  (unless it conflicted) a `refresh()` is scheduled in a worker thread, without delaying the start
-  (`await wait_index_refreshed()` waits for it). `shutdown()` cancels the loop, waits for a
-  running refresh and closes the index (in a worker thread) after the flush.
+- The derived search index (ADR-0002, `vault.index.VaultIndex`) is one database PER USER (#566):
+  `await index_of(user_id)` opens `VaultIndex.open(user_handle, user_index_path(index_path,
+  user_id))` in a worker thread the first time a user is asked for (their first search, or their
+  session start), rebuilding it when it was built for another HEAD, and gives that index again
+  afterwards (`indexes` lists the opened ones by user id; `None` when it cannot be opened: logged,
+  the vault still works and that user's search answers 503). While serving, one loop
+  (`index_running`) updates every opened index in a worker thread each `index_interval`. After the
+  pull of every session start (unless it conflicted) the starting user's index is opened or
+  refreshed in a worker thread, without delaying the start (`await wait_index_refreshed()` waits
+  for it). `shutdown()` cancels the loop, waits for a running refresh and closes every index (in a
+  worker thread) after the flush.
 - `resume` continues the session's logs: the next event's `seq` is one past the last in its
   `events.jsonl` (the vault's `resume_session`).
 - Lifecycle events are published on the bus as persisted events with origin `user`:
@@ -1294,9 +1302,16 @@ fallback (the vault's only user, else `NoUserError`; an id the vault lacks is `U
 - Every vault write it makes, and every persisted bus event, calls `GitSync.note_change()`.
 - `await open_vault()` -> the `Vault`, opened (pulled and scanned) on first use like every other
   call, or `VaultUnavailableError`: what the read routes read through.
-- `add_on_open(hook)`: `hook(vault)` is called (synchronously, on the event loop; it must only
-  schedule work) once the vault is first opened, pulled and scanned. The app registers the page
-  transcriber's `catch_up_vault` there (server-start catch-up, #181, `docs/modules/sources.md`).
+- `add_on_open(hook)`: `hook(handle)` is called (synchronously, on the event loop; it must only
+  schedule work) once the vault is first opened, pulled and scanned, ONCE PER USER with that
+  user's handle (and once with the root handle, for what the routes not user-scoped yet wrote
+  there). The app registers the page transcriber's, the PDF transcriber's and the assistant
+  requests' `catch_up_vault` there (server-start catch-ups, #181, #257, #423), so each runs once per
+  user and reads and writes that student's folder.
+- `await user_handles(user_id)` -> `(user_id, vault, UserGitSync)`, `await consumer_scope(user_id)`
+  -> `(vault, sync)` (a named user's handle and sync view; `None` keeps the root handle and sync
+  for a caller not user-scoped yet, #551) and `only_user_id()`: what the session consumers work
+  through, see "Session consumers per user".
 - `add_on_attached(hook)` (#425): `hook(session_id)` is called synchronously, under the lifecycle
   lock, whenever `start` or `resume` makes a session the active one (before `session.started` /
   `session.resumed` is published); a failure is logged. The capture liveness watchdog starts the
@@ -1317,6 +1332,39 @@ fallback (the vault's only user, else `NoUserError`; an id the vault lacks is `U
   `ActiveSessionExistsError`, `SessionAlreadyEndedError` and `VaultSyncConflictError` under it) and
   `VaultUnavailableError`; an unknown subject or topic is the vault's `SubjectNotFoundError` /
   `TopicNotFoundError`.
+
+### Session consumers per user (#566)
+
+Every consumer driven by a session works for the student the session belongs to
+(`OpenSession.user_id`), never for the root or another student's folder:
+
+- **Through the session's handle.** The observer loop, the transcript pipeline, `DigestOnEnd`, the
+  page transcriber, the request detector and the web searcher read the session handle the bus has
+  attached (`bus.attached(id)`), which `SessionService` builds from `vault.for_user(user_id)`, so
+  what they write -- logs, `transcript.jsonl`, the observer snapshot and conversation, the digest,
+  the ledger, stored pages -- is under `users/<id>/`. The vocabulary hints read the topic through
+  `for_user(session.user_id)` too.
+- **The consumers that outlive the session's handle** (`assistant_requests.AssistantRequestConsumer`,
+  `doubt_chat.DoubtChat`, `NotesGenerator`) take the user: a queued request carries `user_id`
+  (the session's, found from the bus or remembered), its queue, running turn, stopped-at-the-cap
+  list and notes lock are keyed `(user_id, subject, topic)`, and each turn reads and writes through
+  `SessionService.consumer_scope(user_id)` -- the student's `Vault` and `UserGitSync` -- including its
+  review sessions, ledger binding, triage writes and `switch_to_study`. A `user_id` of `None` is a
+  caller that is not user-scoped yet (the content routes until #551) and keeps the root handle.
+- **The workspace hub** (`WorkspaceHub`, `TurnBroadcast`) is keyed by user and topic. A caller
+  that names no user is the vault's only one (`SessionService.only_user_id`), which is what keeps
+  the unscoped workspace stream receiving the events of a one-user vault.
+- **The `add_on_open` catch-ups** (page transcriber, scanned PDFs, assistant requests) run once per
+  user with that user's handle, plus once with the root handle for what is still written there.
+- **The active-host claim** records the user: `claim_active_host(..., user_id=...)`.
+- **The index loop** keeps one `VaultIndex` per user, opened lazily on that user's first search or
+  session start, updated by one background loop and all closed at shutdown; `GET /api/search`
+  searches the requesting user's own database through `active_user_vault`.
+- **Isolation test** (`tests/server/test_sessions_users.py`): two users with the same subject and
+  topic slugs on one vault; the first captures (a page, WebSocket finals, `FakeClaude` as the
+  observer) and every file written is under `users/<first>/`, nothing under the root `subjects/`
+  or the second user's folder, whose topic list shows no open session and whose search finds
+  nothing of the first's.
 
 ### Capture liveness and idle auto-end -- `server/capture_liveness.py` (#425)
 
@@ -1374,8 +1422,9 @@ terms_loader=...)` on
 connection's `TranscriptSink` (default `InMemoryTranscriptSink`, whose `clock_offset` is the
 client-clock reading at session start in seconds); `provider_factory(stt)` builds a session's
 server-side provider (default `provider_from_settings`); `clock()` is backend epoch ms;
-`terms_loader(open_session)` reads the topic's terms for the vocabulary hints (default: the vault
-through `sessions.open_vault()` and `server.vocabulary.load_topic_terms`, never raising). Tests
+`terms_loader(open_session)` reads the topic's terms for the vocabulary hints (default: the
+session's user's folder, `for_user(session.user_id)` of `sessions.open_vault()`, through
+`server.vocabulary.load_topic_terms`, never raising). Tests
 replace them.
 
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then

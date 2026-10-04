@@ -39,10 +39,9 @@ sessions, and again before every session start; a `conflict` refuses the start
 (`VaultSyncConflictError`), while an unreachable remote or refused credentials are only logged
 (offline-first). While the app is serving (`startup()` .. `shutdown()`, the app's lifespan) the
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
-flushes whatever is still pending. `add_on_open(hook)` hooks are called with the vault once it is
-first opened, pulled and scanned (the page transcriber's server-start catch-up, #181); the
-handle they get is the root one, so a hook that works over one student's content narrows it with
-`for_user` itself (#550).
+flushes whatever is still pending. `add_on_open(hook)` hooks are called once PER USER with that
+user's handle once the vault is first opened, pulled and scanned (the page transcriber's
+server-start catch-up, #181), so what a catch-up reads and writes is one student's folder (#566).
 
 One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
 (`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
@@ -50,12 +49,13 @@ One active writer between PCs (ADR-0002): after each of those pulls the vault's 
 the record for this host, commits it and asks for an immediate push; its end releases it before
 the end's checkpoint and push.
 
-The derived search index (`VaultIndex`, ADR-0002) is opened at `[vault] index_path` right after
-the vault is (after its first pull), in a worker thread; an index that cannot be opened is logged
-and left out (`index` stays `None`), never failing the vault. While serving, `VaultIndex.run()`
-keeps it current in the background next to the sync loop; after the pull at every session start a
-`refresh()` is scheduled in a worker thread (without delaying the start); shutdown stops both and
-closes the index.
+The derived search index (`VaultIndex`, ADR-0002) is one database PER USER, at
+`user_index_path([vault] index_path, user_id)` over that user's handle, opened in a worker thread
+the first time `index_of(user_id)` is asked (a search, or that user's session start); an index
+that cannot be opened is logged and left out (`index_of` gives `None`), never failing the vault.
+While serving, one background loop keeps every opened index current next to the sync loop; after
+the pull at every session start the starting user's index is opened or refreshed in a worker
+thread (without delaying the start); shutdown stops both and closes every index.
 
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
 within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. They are relative
@@ -101,6 +101,7 @@ from studentassistant.vault import (
     Session,
     StoredSubject,
     SyncResult,
+    UserGitSync,
     UserNotFoundError,
     Vault,
     VaultError,
@@ -117,7 +118,7 @@ from studentassistant.vault import (
     start_session,
     user_ids,
 )
-from studentassistant.vault.index import VaultIndex, VaultIndexError
+from studentassistant.vault.index import VaultIndex, VaultIndexError, user_index_path
 
 SESSION_STARTED = "session.started"
 SESSION_RESUMED = "session.resumed"
@@ -296,8 +297,11 @@ class SessionService:
         self._before_ended: list[EndHook] = []
         self._before_close: list[EndHook] = []
         self._on_open: list[Callable[[Vault], object]] = []
+        self._syncs: dict[str, UserGitSync] = {}
         self._on_attached: list[Callable[[str], object]] = []
-        self._index: VaultIndex | None = None
+        # One search index per user, opened lazily (first search or session start of that user).
+        self._indexes: dict[str, VaultIndex] = {}
+        self._index_lock = asyncio.Lock()
         self._index_interval = index_interval
         self._index_runner: asyncio.Task[None] | None = None
         self._index_refresh: asyncio.Task[None] | None = None
@@ -344,6 +348,52 @@ class SessionService:
         """
         return await self._ready()
 
+    async def user_handles(self, user_id: str | None) -> tuple[str, Vault, UserGitSync]:
+        """`(user_id, vault, sync)` of the student a background consumer works for (#566).
+
+        The user's content handle and that folder's view of the repository's git sync, which is
+        what every consumer reads and writes through instead of the root handle. `None` is the
+        single-user fallback of `_user_scope`.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        wanted, vault = await self._user_scope(user_id)
+        sync = self._syncs.get(wanted)
+        if sync is None:
+            assert self._sync is not None, "the vault is open, so its sync exists"
+            sync = self._syncs[wanted] = await asyncio.to_thread(self._sync.for_user, wanted)
+        return wanted, vault, sync
+
+    async def consumer_scope(self, user_id: str | None) -> tuple[Vault, GitSync | UserGitSync]:
+        """The `(vault, sync)` a consumer or editor call works through for `user_id`.
+
+        A named user gets their own handle and sync view (`user_handles`). `None` is a caller that
+        is not user-scoped yet (the content routes until #551): it keeps the repository's root
+        handle and sync it always had.
+
+        Raises:
+            VaultUnavailableError, UnknownUserError: as `_user_scope`.
+        """
+        if user_id is None:
+            vault = await self.open_vault()
+            assert self._sync is not None, "the vault is open, so its sync exists"
+            return vault, self._sync
+        _, vault, sync = await self.user_handles(user_id)
+        return vault, sync
+
+    def only_user_id(self) -> str | None:
+        """The vault's one user, `None` while it is not open or does not hold exactly one.
+
+        What an in-memory consumer (the workspace hub) falls back to for a caller that names no
+        user, like `_user_scope` does for the lifecycle calls.
+        """
+        root = self._root or self._vault
+        if root is None:
+            return None
+        ids = user_ids(_root_handle(root))
+        return ids[0] if len(ids) == 1 else None
+
     @property
     def host_warning(self) -> ActiveHostWarning | None:
         """Another PC's open claim on the vault, as of the last pull (vault open, session start)."""
@@ -355,9 +405,33 @@ class SessionService:
         return self._runner is not None and not self._runner.done()
 
     @property
-    def index(self) -> VaultIndex | None:
-        """The vault's search index once the vault is open; `None` before, or if it cannot open."""
-        return self._index
+    def indexes(self) -> dict[str, VaultIndex]:
+        """The search indexes opened so far, by user id (a copy): one database per user."""
+        return dict(self._indexes)
+
+    async def index_of(self, user_id: str | None) -> VaultIndex | None:
+        """`user_id`'s search index, opened (in a worker thread) on first use; `None` if it cannot.
+
+        The index is the user's own database (`user_index_path`) over their folder, so a search
+        through it can only find that student's content. An index that cannot be opened is logged
+        and left out, never failing the vault.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        wanted, vault = await self._user_scope(user_id)
+        existing = self._indexes.get(wanted)
+        if existing is not None:
+            return existing
+        async with self._index_lock:
+            existing = self._indexes.get(wanted)
+            if existing is not None:
+                return existing
+            opened = await self._open_index(vault, wanted)
+            if opened is not None:
+                self._indexes[wanted] = opened
+                self._start_runner()
+            return opened
 
     @property
     def index_running(self) -> bool:
@@ -365,7 +439,7 @@ class SessionService:
         return self._index_runner is not None and not self._index_runner.done()
 
     async def wait_index_refreshed(self) -> None:
-        """Wait for the index refresh a session start scheduled, if one is still running."""
+        """Wait for the index open/refresh a session start scheduled, if one is still running."""
         task = self._pending_refresh()
         if task is not None:
             await asyncio.wait({task})
@@ -389,10 +463,14 @@ class SessionService:
         self._before_close.append(hook)
 
     def add_on_open(self, hook: Callable[[Vault], object]) -> None:
-        """Call `hook(vault)` once the vault is open (pulled and scanned), on the event loop.
+        """Call `hook(handle)` once per user when the vault is open (pulled and scanned).
 
-        For background work over the whole vault at server start (the page transcriber's
-        catch-up, #181). It must not block: schedule a task. A failure is logged.
+        For background work at server start (the page transcriber's catch-up, #181): each hook
+        runs on the event loop with one student's handle, so what it reads and writes is that
+        student's folder. It is also called once with the root handle, for what the routes that
+        are not user-scoped yet (#551) wrote at the repository's root. It must not block:
+        schedule a task. A failure is
+        logged and does not stop the other users' calls.
         """
         self._on_open.append(hook)
 
@@ -452,8 +530,8 @@ class SessionService:
         refresh, self._index_refresh = self._pending_refresh(), None
         if refresh is not None:
             await asyncio.wait({refresh})
-        index, self._index = self._index, None
-        if index is not None:
+        indexes, self._indexes = list(self._indexes.values()), {}
+        for index in indexes:
             # `close()` waits for the index lock; an update still in its worker thread holds it.
             await asyncio.to_thread(index.close)
 
@@ -462,10 +540,8 @@ class SessionService:
             self._runner = asyncio.create_task(
                 self._sync.run(self._sync_interval), name="vault-git-sync"
             )
-        if self._serving and self._index is not None and not self.index_running:
-            self._index_runner = asyncio.create_task(
-                self._index.run(self._index_interval), name="vault-index"
-            )
+        if self._serving and self._indexes and not self.index_running:
+            self._index_runner = asyncio.create_task(self._run_indexes(), name="vault-index")
 
     # -- subjects and topics -------------------------------------------------------------------
 
@@ -585,7 +661,7 @@ class SessionService:
                     " Resolve the conflict in the vault before starting a session",
                     result.conflicts,
                 )
-            self._schedule_index_refresh()
+            self._schedule_index_refresh(wanted)
             await self._check_host(root)
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
@@ -890,16 +966,20 @@ class SessionService:
                 await self._pull("vault open")
                 await self._check_host(root)
                 self._users, self._open = await asyncio.to_thread(_scan_open_sessions, root)
-                self._index = await self._open_index(root)
                 self._vault = root
                 self._root = root
                 self._loaded = True
                 self._start_runner()
-                for hook in self._on_open:
-                    try:
-                        hook(root)
-                    except Exception:
-                        logger.exception("vault open hook %r failed", hook)
+                # The root handle too: until the content routes are user-scoped (#551) they still
+                # write at the repository's root, and what they left behind is caught up as before.
+                for handle in [root, *self._users.values()]:
+                    for hook in self._on_open:
+                        try:
+                            hook(handle)
+                        except Exception:
+                            logger.exception(
+                                "vault open hook %r failed for user %s", hook, handle.user_id
+                            )
         assert self._root is not None
         return self._root
 
@@ -928,21 +1008,41 @@ class SessionService:
             logger.warning("vault sync at %s: %s: %s", when, result.outcome, result.message)
         return result
 
-    async def _open_index(self, vault: Vault) -> VaultIndex | None:
-        """`VaultIndex.open` in a worker thread; a failure is logged and leaves the index out."""
-        path = self._settings.index_path
+    async def _open_index(self, vault: Vault, user_id: str) -> VaultIndex | None:
+        """`VaultIndex.open` of one user in a worker thread; a failure is logged, index left out."""
+        path = user_index_path(self._settings.index_path, user_id)
         try:
             return await asyncio.to_thread(VaultIndex.open, vault, path)
         except (VaultIndexError, sqlite3.Error, OSError) as error:
             logger.error("search index at %s cannot be opened; search is off: %s", path, error)
             return None
 
-    def _schedule_index_refresh(self) -> None:
-        """Refresh the index in a worker thread after a pull, unless a refresh is still running."""
-        index = self._index
-        if index is None or self._pending_refresh() is not None:
+    async def _run_indexes(self) -> None:
+        """Keep every opened index current: one `update()` each per `index_interval`, until
+        cancelled. An index opened meanwhile joins at the next round."""
+        while True:
+            for index in list(self._indexes.values()):
+                try:
+                    await asyncio.to_thread(index.update)
+                except (sqlite3.Error, VaultError, OSError) as error:
+                    logger.warning("index update failed: %s", error)
+            await asyncio.sleep(self._index_interval)
+
+    def _schedule_index_refresh(self, user_id: str) -> None:
+        """Open or refresh the user's index in the background after a pull (one at a time)."""
+        if self._pending_refresh() is not None:
             return
-        self._index_refresh = asyncio.create_task(_refresh(index), name="vault-index-refresh")
+        self._index_refresh = asyncio.create_task(
+            self._refresh_user_index(user_id), name="vault-index-refresh"
+        )
+
+    async def _refresh_user_index(self, user_id: str) -> None:
+        try:
+            index = await self.index_of(user_id)
+        except (VaultUnavailableError, NoUserError, UnknownUserError):
+            return
+        if index is not None:
+            await _refresh(index)
 
     def _pending_refresh(self) -> asyncio.Task[None] | None:
         """The scheduled refresh while it runs on this event loop.

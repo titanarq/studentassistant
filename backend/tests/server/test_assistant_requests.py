@@ -8,6 +8,7 @@ and the turn is read back from `GET .../notes/chat` and from a workspace hub sub
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -32,7 +33,7 @@ from studentassistant.config import (
 )
 from studentassistant.editor.crop import CHECK_TOOL_NAME, CROP_TOOL, TOOL_NAME
 from studentassistant.editor.notes_format import notes_revision
-from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn
+from studentassistant.editor.revise import EDIT_TOOL, ChatRequestRef, ChatTurn, chat_history
 from studentassistant.llm import FakeClaude, LLMAPIError
 from studentassistant.observer import ASSISTANT_REQUEST_KIND, REQUEST_KINDS
 from studentassistant.protocol.version import PROTOCOL_VERSION
@@ -54,17 +55,14 @@ from studentassistant.vault import (
     Event,
     GitSync,
     Vault,
-    create_subject,
-    create_topic,
     end_session,
-    get_subject,
-    get_topic,
     list_sessions,
     put_source,
     read_notes,
     read_topic_events,
     resume_session,
     start_session,
+    user_ids,
     write_notes,
 )
 
@@ -74,15 +72,14 @@ AppFactory = Callable[..., FastAPI]
 
 
 def _topic_in_the_user_folder(root: Vault, user: Vault, topic: ReviseTopic) -> None:
-    """Create the fixture topic's subject and topic under the vault's one user as well.
+    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
 
-    `POST /api/sessions` acts for that user (#550), so the session it starts -- and every event
-    published on it -- lives under `users/<id>/`, which needs the subject and the topic there.
-    The notes, the sources and the review sessions the routes and the consumer read and write
-    still go through the repository root (`SessionService.open_vault()`) until #551.
+    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
+    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
+    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
+    the repository root's copy, so a test reads back from the handle whose side wrote it.
     """
-    subject = create_subject(user, get_subject(root, topic.subject).subject.name).slug
-    create_topic(user, subject, get_topic(root, subject, topic.topic).topic.title)
+    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
 
 
 @pytest.fixture
@@ -177,6 +174,19 @@ def _subscribe(client: TestClient, topic: ReviseTopic) -> WorkspaceSubscription:
     return hub.subscribe(topic.subject, topic.topic)  # type: ignore[no-any-return]
 
 
+def _history(vault: Vault, topic: ReviseTopic) -> dict[str, Any]:
+    """The topic's chat as `GET .../notes/chat` shows it, read from the student's folder.
+
+    The consumer writes through the student's handle (#566) and the route still reads the
+    repository root until #551, so a test of what a turn recorded reads it here.
+    """
+    return chat_history(vault, topic.subject, topic.topic).model_dump(mode="json")
+
+
+def _turns(vault: Vault, topic: ReviseTopic) -> list[dict[str, Any]]:
+    return list(_history(vault, topic)["turns"])
+
+
 def _names(events: list[WorkspaceEvent]) -> list[str]:
     """The event names, consecutive `reply.delta`s folded into one."""
     names: list[str] = []
@@ -207,7 +217,10 @@ def _edit(fake: FakeClaude, summary: str = "Añado la explicación del libro") -
 
 
 def test_a_spoken_request_becomes_a_voice_chat_turn_and_streams(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient,
+    fake: FakeClaude,
+    topic: ReviseTopic,
+    user_vault: Vault,
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -248,7 +261,7 @@ def test_a_spoken_request_becomes_a_voice_chat_turn_and_streams(
     assert all(e.data["turn_id"] == turn_id for e in events if e.event == "reply.delta")
     assert result.data["turn_id"] == turn_id and result.data["request_id"] == "req-1"
     assert result.data["applied"] and result.data["origin"] == "voice"
-    notes = read_notes(topic.vault, topic.subject, topic.topic) or ""
+    notes = read_notes(user_vault, topic.subject, topic.topic) or ""
     assert "Añado la explicación del libro: es el límite" in notes
     assert changed.data == {
         "revision": notes_revision(notes),
@@ -260,7 +273,7 @@ def test_a_spoken_request_becomes_a_voice_chat_turn_and_streams(
     sent = json.dumps(fake.requests[0].messages, ensure_ascii=False)
     assert "pon aquí la explicación del libro" in sent and "en voz alta" in sent
 
-    history = client.get(_chat(topic)).json()
+    history = _history(user_vault, topic)
     [turn] = history["turns"]
     assert turn["origin"] == "voice" and turn["turn_id"] == turn_id
     assert turn["message"] == "pon aquí la explicación del libro"
@@ -290,16 +303,19 @@ def _diagram() -> bytes:
 
 
 def test_a_spoken_crop_request_locates_the_region_with_the_apps_own_transport(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient,
+    fake: FakeClaude,
+    topic: ReviseTopic,
+    user_vault: Vault,
 ) -> None:
     # A spoken request carries no Recursos selection: the page to crop is one the notes cite.
     book_page = "sources/book/page-002.jpg"
-    put_source(topic.vault, topic.subject, topic.topic, "book", "foto.jpg", _diagram(), {})
+    put_source(user_vault, topic.subject, topic.topic, "book", "foto.jpg", _diagram(), {})
     notes = topic.notes.replace(
         "Se escribe $f'(x)$.[^t2]", "Se escribe $f'(x)$.[^t2][^b2]"
     ).replace("[^p1]: [Apuntes", f"[^b2]: [Libro, página 2](../{book_page})\n[^p1]: [Apuntes")
-    write_notes(topic.vault, topic.subject, topic.topic, notes)
-    GitSync(topic.vault).checkpoint("fixture: cite page 2")
+    write_notes(user_vault, topic.subject, topic.topic, notes)
+    GitSync(user_vault).checkpoint("fixture: cite page 2")
     session_id = _start(client, topic)
     crop_call = {
         "source": book_page,
@@ -324,16 +340,19 @@ def test_a_spoken_crop_request_locates_the_region_with_the_apps_own_transport(
     assert [request.role for request in fake.requests] == ["editor", *["observer"] * 3]
     assert fake.requests[1].tools[0]["name"] == TOOL_NAME and fake.pending == 0
     assert fake.requests[3].tools[0]["name"] == CHECK_TOOL_NAME
-    [turn] = client.get(_chat(topic)).json()["turns"]
+    [turn] = _turns(user_vault, topic)
     assert turn["origin"] == "voice" and turn["applied"] is True
     assert turn["crop"]["error"] is None
     assert turn["crop"]["source_id"] == "sources/images/img-001.jpg"
-    stored = read_notes(topic.vault, topic.subject, topic.topic) or ""
+    stored = read_notes(user_vault, topic.subject, topic.topic) or ""
     assert "![Imagen recortada 1](../sources/images/img-001.jpg)[^img001]" in stored
 
 
 def test_two_requests_run_one_at_a_time_in_order(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient,
+    fake: FakeClaude,
+    topic: ReviseTopic,
+    user_vault: Vault,
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -366,7 +385,7 @@ def test_two_requests_run_one_at_a_time_in_order(
     # The second request saw the first turn in its history.
     second = json.dumps(fake.requests[1].messages, ensure_ascii=False)
     assert "Primer cambio" in second and "qué es la derivada" in second
-    turns = client.get(_chat(topic)).json()["turns"]
+    turns = _turns(user_vault, topic)
     assert [t["message"] for t in turns] == [
         "pon aquí la explicación del libro",
         "qué es la derivada",
@@ -376,7 +395,10 @@ def test_two_requests_run_one_at_a_time_in_order(
 
 
 def test_a_request_of_an_ended_session_is_still_processed(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient,
+    fake: FakeClaude,
+    topic: ReviseTopic,
+    user_vault: Vault,
 ) -> None:
     session_id = _start(client, topic)
     _edit(fake)
@@ -388,7 +410,7 @@ def test_a_request_of_an_ended_session_is_still_processed(
 
     _settle(client)
 
-    [turn] = client.get(_chat(topic)).json()["turns"]
+    [turn] = _turns(user_vault, topic)
     assert turn["origin"] == "voice" and turn["applied"] is True
 
 
@@ -472,7 +494,7 @@ def test_prepare_notes_starts_a_generation(
     result = events[3].data
     assert result["kind"] == "prepare_notes" and result["request_id"] == "req-1"
     assert result["draft"] is False and result["version"] is not None
-    assert read_notes(topic.vault, topic.subject, topic.topic) == notes
+    assert read_notes(_student(topic), topic.subject, topic.topic) == notes
     assert fake.requests[0].role == "editor"
 
 
@@ -590,7 +612,7 @@ def test_a_request_queued_at_shutdown_is_answered_after_a_restart(
         assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-2"]
         assert len(second.requests) == 1
         assert "qué es la derivada" in json.dumps(second.requests[0].messages, ensure_ascii=False)
-        turns = client.get(_chat(topic)).json()["turns"]
+        turns = _turns(user_vault, topic)
         assert [t["transcript"]["request_id"] for t in turns] == ["req-1", "req-2"]
 
         # Resumed again (a reconnect): nothing is replayed twice.
@@ -640,27 +662,37 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _review_events(topic: ReviseTopic, kind: str) -> list[dict[str, Any]]:
-    """The payloads of `kind` in the topic's review sessions, read back from the vault."""
-    reviews = {
-        m.id for m in list_sessions(topic.vault, topic.subject, topic.topic) if not m.is_study
-    }
+def _student(topic: ReviseTopic) -> Vault:
+    """The vault's one student's handle: where the consumers write (#566)."""
+    return topic.vault.for_user(user_ids(topic.vault)[0])
+
+
+def _review_events(
+    topic: ReviseTopic, kind: str, *, vault: Vault | None = None
+) -> list[dict[str, Any]]:
+    """The payloads of `kind` in the topic's review sessions, read back from the vault.
+
+    From the student's folder, where the consumers write; a typed message posted through the route
+    that is not user-scoped yet (#551) is recorded at the repository's root: pass `vault`.
+    """
+    vault = vault or _student(topic)
+    reviews = {m.id for m in list_sessions(vault, topic.subject, topic.topic) if not m.is_study}
     return [
         dict(event.payload)
-        for session_id, event in read_topic_events(topic.vault, topic.subject, topic.topic)
+        for session_id, event in read_topic_events(vault, topic.subject, topic.topic)
         if session_id in reviews and event.kind == kind
     ]
 
 
 def _restart(
-    make_app: AppFactory, topic: ReviseTopic, transport: FakeClaude
+    make_app: AppFactory, topic: ReviseTopic, transport: FakeClaude, *, at_root: bool = False
 ) -> tuple[list[WorkspaceEvent], list[dict[str, Any]]]:
     """A new backend: open the vault (a first request), let it catch up; its stream and chat."""
     with _client(make_app(transport)) as client:
         subscription = _subscribe(client, topic)
         assert client.get(_chat(topic)).status_code == 200  # opens the vault: the catch-up runs
         _settle(client)
-        return subscription.drain(), client.get(_chat(topic)).json()["turns"]
+        return subscription.drain(), _turns(topic.vault if at_root else _student(topic), topic)
 
 
 def test_a_typed_request_of_a_review_session_is_answered_after_a_restart(
@@ -682,32 +714,29 @@ def test_a_typed_request_of_a_review_session_is_answered_after_a_restart(
         _shut_down(client)
         generator.release(topic.subject, topic.topic)
     assert len(first.requests) == 1  # the classification only: the turn never ran
-    [outstanding] = _review_events(topic, REQUESTS_OUTSTANDING_KIND)
+    [outstanding] = _review_events(topic, REQUESTS_OUTSTANDING_KIND, vault=topic.vault)
     assert outstanding == {"request_ids": ["req-t1"]}
-    assert _review_events(topic, TURN_FINISHED_KIND) == []
+    assert _review_events(topic, TURN_FINISHED_KIND, vault=topic.vault) == []
 
     second = FakeClaude()
     second.reply_text("La derivada mide el cambio instantáneo.")
-    events, turns = _restart(make_app, topic, second)
+    events, turns = _restart(make_app, topic, second, at_root=True)
     assert [e.data["request_id"] for e in events if e.event == "request.detected"] == ["req-t1"]
     assert [e.data["request_id"] for e in events if e.event == "turn.result"] == ["req-t1"]
     assert [e.data["origin"] for e in events if e.event == "turn.started"] == ["typed"]
     assert len(second.requests) == 1
     assert "qué es la derivada" in json.dumps(second.requests[0].messages, ensure_ascii=False)
     assert [(t["origin"], t["message"]) for t in turns] == [("typed", "¿qué es la derivada?")]
-    [finished] = _review_events(topic, TURN_FINISHED_KIND)
+    [finished] = _review_events(topic, TURN_FINISHED_KIND, vault=topic.vault)
     assert finished["request_id"] == "req-t1" and finished["outcome"] == "result"
 
     # A third backend finds it answered: exactly once.
     third = FakeClaude()
-    events, turns = _restart(make_app, topic, third)
+    events, turns = _restart(make_app, topic, third, at_root=True)
     assert not any(e.event == "request.detected" for e in events)
     assert third.requests == [] and len(turns) == 1
 
 
-@pytest.mark.skip(
-    reason="waits for the session consumers to write through the session's user (#566)"
-)
 def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restart(
     make_app: AppFactory, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -732,7 +761,9 @@ def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restar
         # Recorded as part of the end (#468): written, and committed with "sesión ... terminada".
         assert _review_events(topic, REQUESTS_OUTSTANDING_KIND)
         review = next(
-            m.id for m in list_sessions(topic.vault, topic.subject, topic.topic) if not m.is_study
+            m.id
+            for m in list_sessions(_student(topic), topic.subject, topic.topic)
+            if not m.is_study
         )
         last_commit = _git(topic.vault.path, "log", "-1", "--format=%s")
         assert last_commit == f"sesión {session_id} terminada"
@@ -879,10 +910,10 @@ def test_a_failing_event_does_not_stop_the_reader(
 ) -> None:
     submit = AssistantRequestConsumer.submit
 
-    def failing(self: AssistantRequestConsumer, *args: Any) -> bool:
+    def failing(self: AssistantRequestConsumer, *args: Any, **options: Any) -> bool:
         if args[-1].request_id == "req-1":
             raise RuntimeError("boom")
-        return submit(self, *args)
+        return submit(self, *args, **options)
 
     monkeypatch.setattr(AssistantRequestConsumer, "submit", failing)
     session_id = _start(client, topic)

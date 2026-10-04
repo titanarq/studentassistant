@@ -101,17 +101,24 @@ class DoubtChat:
         self.review_batch = review_batch
         self.enabled = enabled
         """`[editor] doubts_in_chat`: off, `schedule` reviews nothing (announcements still go)."""
-        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
-        self._again: set[tuple[str, str]] = set()
+        self._tasks: dict[tuple[str | None, str, str], asyncio.Task[None]] = {}
+        self._again: set[tuple[str | None, str, str]] = set()
 
     # -- the live session ------------------------------------------------------------------
 
-    def live(self, subject_id: str, topic_id: str) -> LiveSink:
-        """Publishes a doubts event in the topic's active session (through the bus)."""
+    def live(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> LiveSink:
+        """Publishes a doubts event in the topic's active session (through the bus).
+
+        With `user_id` the session has to be that student's too: another student's session of a
+        same-named topic is not this one (#566)."""
 
         async def publish(kind: str, origin: Origin, payload: dict[str, Any]) -> str:
             active = self.sessions.active
-            if active is None or (active.subject_id, active.topic_id) != (subject_id, topic_id):
+            if (
+                active is None
+                or (active.subject_id, active.topic_id) != (subject_id, topic_id)
+                or (user_id is not None and active.user_id != user_id)
+            ):
                 raise SessionNotAttachedError(
                     f"no active session of {subject_id}/{topic_id} on this backend"
                 )
@@ -122,7 +129,14 @@ class DoubtChat:
 
     # -- announcing ------------------------------------------------------------------------
 
-    def resolved(self, subject_id: str, topic_id: str, result: ResolutionResult) -> None:
+    def resolved(
+        self,
+        subject_id: str,
+        topic_id: str,
+        result: ResolutionResult,
+        *,
+        user_id: str | None = None,
+    ) -> None:
         """`doubt.resolved` (and `notes.changed` when the notes changed) for an answer/dismissal."""
         self.hub.publish(
             subject_id,
@@ -134,6 +148,7 @@ class DoubtChat:
                 "resolution": result.resolution,
                 "notes_changed": result.notes_changed,
             },
+            user_id=user_id,
         )
         if result.notes_changed:
             self.hub.notes_changed(
@@ -142,9 +157,12 @@ class DoubtChat:
                 revision=result.revision,
                 origin="editor",
                 summary=result.resolution,
+                user_id=user_id,
             )
 
-    def reviewed(self, subject_id: str, topic_id: str, result: ReviewResult) -> None:
+    def reviewed(
+        self, subject_id: str, topic_id: str, result: ReviewResult, *, user_id: str | None = None
+    ) -> None:
         """The short line of the auto-resolved doubts (and `notes.changed`), for a review."""
         if result.auto_resolved:
             self.hub.publish(
@@ -152,6 +170,7 @@ class DoubtChat:
                 topic_id,
                 DOUBTS_AUTO_RESOLVED,
                 {"pending_ids": result.auto_resolved, "summary": result.summary},
+                user_id=user_id,
             )
         if result.notes_changed:
             self.hub.notes_changed(
@@ -160,28 +179,38 @@ class DoubtChat:
                 revision=result.revision,
                 origin="editor",
                 summary=result.summary,
+                user_id=user_id,
             )
 
     # -- scheduling ------------------------------------------------------------------------
 
-    def after(self, subject_id: str, topic_id: str, result: BaseModel | Mapping[str, Any]) -> None:
+    def after(
+        self,
+        subject_id: str,
+        topic_id: str,
+        result: BaseModel | Mapping[str, Any],
+        *,
+        user_id: str | None = None,
+    ) -> None:
         """Schedule the topic when an editor write's `result` changed the notes or raised doubts."""
         data = result if isinstance(result, Mapping) else result.model_dump(mode="json")
         changed = data.get("notes_changed") or (
             "draft" in data and not data.get("draft") and data.get("version") is not None
         )
         if changed or data.get("doubts"):
-            self.schedule(subject_id, topic_id)
+            self.schedule(subject_id, topic_id, user_id=user_id)
 
-    def schedule(self, subject_id: str, topic_id: str) -> None:
+    def schedule(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> None:
         """Ask the topic's next doubt soon (after the lock the caller may still hold is free)."""
         if not self.enabled:
             return
-        key = (subject_id, topic_id)
+        key = (self.hub.resolve_user(user_id), subject_id, topic_id)
         if key in self._tasks:
             self._again.add(key)
             return
-        task = asyncio.create_task(self._work(key), name=f"doubt-chat-{subject_id}-{topic_id}")
+        task = asyncio.create_task(
+            self._work(key, user_id), name=f"doubt-chat-{subject_id}-{topic_id}"
+        )
         self._tasks[key] = task
 
     async def wait_idle(self, timeout: float = 10.0) -> None:
@@ -204,16 +233,16 @@ class DoubtChat:
         if pending:
             await asyncio.wait(pending)
 
-    async def _work(self, key: tuple[str, str]) -> None:
+    async def _work(self, key: tuple[str | None, str, str], user_id: str | None) -> None:
         try:
             while True:
                 self._again.discard(key)
                 try:
-                    await self.prepare(*key)
+                    await self.prepare(key[1], key[2], user_id=user_id)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    logger.exception("the doubt chat of %s/%s failed", *key)
+                    logger.exception("the doubt chat of %s/%s failed", key[1], key[2])
                 if key not in self._again:
                     return
         finally:
@@ -230,12 +259,17 @@ class DoubtChat:
         )
 
     async def _review(
-        self, vault: Any, subject_id: str, topic_id: str, pending_ids: list[str]
+        self,
+        vault: Any,
+        sync: Any,
+        subject_id: str,
+        topic_id: str,
+        pending_ids: list[str],
+        user_id: str | None,
     ) -> ReviewResult | None:
         """Review those doubts with the editor and announce it; `None` when it failed."""
         generator = self.generator
-        sync = self.sessions.sync
-        if generator is None or sync is None or not pending_ids:
+        if generator is None or not pending_ids:
             return None
         try:
             reviewed = await review_doubts(
@@ -246,56 +280,69 @@ class DoubtChat:
                 sync=sync,
                 host=self.sessions.host,
                 pending_ids=pending_ids,
-                live=self.live(subject_id, topic_id),
+                live=self.live(subject_id, topic_id, user_id=user_id),
             )
         except Exception as error:
             # A reached cost cap, a Claude failure: the doubt keeps no question (a generic one).
             logger.warning("the doubts of %s/%s were not reviewed: %s", subject_id, topic_id, error)
             return None
-        self.reviewed(subject_id, topic_id, reviewed)
+        self.reviewed(subject_id, topic_id, reviewed, user_id=user_id)
         return reviewed
 
-    async def marked(self, subject_id: str, topic_id: str) -> int:
+    async def marked(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> int:
         """Announce `doubts.marked` `{count}`: how many doubts the notes mark now."""
-        vault = await self.sessions.open_vault()
+        vault, _ = await self.sessions.consumer_scope(user_id)
         marks = await asyncio.to_thread(doubt_marks, vault, subject_id, topic_id)
-        self.hub.publish(subject_id, topic_id, DOUBTS_MARKED, {"count": marks.count})
+        self.hub.publish(
+            subject_id, topic_id, DOUBTS_MARKED, {"count": marks.count}, user_id=user_id
+        )
         return marks.count
 
-    async def prepare(self, subject_id: str, topic_id: str) -> int | None:
+    async def prepare(
+        self, subject_id: str, topic_id: str, *, user_id: str | None = None
+    ) -> int | None:
         """Review the relevant doubts without a question and announce the marks; their count."""
-        vault = await self.sessions.open_vault()
+        vault, sync = await self.sessions.consumer_scope(user_id)
         generator = self.generator
-        if generator is not None and generator.holder(subject_id, topic_id) == "editor":
+        if (
+            generator is not None
+            and generator.holder(subject_id, topic_id, user_id=user_id) == "editor"
+        ):
             return None  # "prepárame el tema" is rewriting the notes; it schedules us again
         plan = await asyncio.to_thread(ask_plan, vault, subject_id, topic_id)
         if plan.to_review:
-            await self._review(vault, subject_id, topic_id, plan.to_review[: self.review_batch])
-        return await self.marked(subject_id, topic_id)
+            await self._review(
+                vault,
+                sync,
+                subject_id,
+                topic_id,
+                plan.to_review[: self.review_batch],
+                user_id,
+            )
+        return await self.marked(subject_id, topic_id, user_id=user_id)
 
     # -- showing one -----------------------------------------------------------------------
 
-    async def show(self, subject_id: str, topic_id: str, pending_id: str) -> ShownDoubt:
+    async def show(
+        self, subject_id: str, topic_id: str, pending_id: str, *, user_id: str | None = None
+    ) -> ShownDoubt:
         """Bring the open doubt `pending_id` to the chat (module docstring).
 
         Raises:
             UnknownDoubtError, DoubtClosedError, OpenSessionError: nothing asked.
         """
-        vault = await self.sessions.open_vault()
-        sync = self.sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise RuntimeError("the vault has no sync")
+        vault, sync = await self.sessions.consumer_scope(user_id)
         doubt = await asyncio.to_thread(open_doubt, vault, subject_id, topic_id, pending_id)
         item_id = doubt.item.id
         generator = self.generator
         if (
             doubt.question is None
             and generator is not None
-            and generator.holder(subject_id, topic_id) != "editor"
+            and generator.holder(subject_id, topic_id, user_id=user_id) != "editor"
         ):
-            reviewed = await self._review(vault, subject_id, topic_id, [item_id])
+            reviewed = await self._review(vault, sync, subject_id, topic_id, [item_id], user_id)
             if reviewed is not None and item_id in reviewed.auto_resolved:
-                await self.marked(subject_id, topic_id)
+                await self.marked(subject_id, topic_id, user_id=user_id)
                 return ShownDoubt(
                     pending_id=item_id,
                     asked=False,
@@ -323,7 +370,7 @@ class DoubtChat:
                 item_id,
                 sync=sync,
                 host=self.sessions.host,
-                live=self.live(subject_id, topic_id),
+                live=self.live(subject_id, topic_id, user_id=user_id),
             )
         self.hub.publish(
             subject_id,
@@ -341,6 +388,7 @@ class DoubtChat:
                     "refs",
                 },
             ),
+            user_id=user_id,
         )
         return ShownDoubt(pending_id=item_id, asked=True)
 

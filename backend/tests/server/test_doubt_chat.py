@@ -8,6 +8,7 @@ doubts route is broadcast; during a session the events go to its live log.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -35,10 +36,6 @@ from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscription
 from studentassistant.vault import (
     Vault,
-    create_subject,
-    create_topic,
-    get_subject,
-    get_topic,
     list_sessions,
     read_notes,
     read_topic_events,
@@ -51,15 +48,14 @@ PAGE_2 = "sources/notes/page-002.jpg"
 
 
 def _topic_in_the_user_folder(root: Vault, user: Vault, topic: ReviseTopic) -> None:
-    """Create the fixture topic's subject and topic under the vault's one user as well.
+    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
 
-    `POST /api/sessions` acts for that user (#550), so the session it starts -- and every event
-    published on it -- lives under `users/<id>/`, which needs the subject and the topic there.
-    The notes, the doubts and the review sessions the routes and the consumers read and write
-    still go through the repository root (`SessionService.open_vault()`) until #551.
+    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
+    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
+    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
+    the repository root's copy, so a test reads back from the handle whose side wrote it.
     """
-    subject = create_subject(user, get_subject(root, topic.subject).subject.name).slug
-    create_topic(user, subject, get_topic(root, subject, topic.topic).topic.title)
+    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
 
 
 @pytest.fixture

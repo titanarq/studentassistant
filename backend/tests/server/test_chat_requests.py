@@ -8,6 +8,7 @@ editor's. Every wait is bounded.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,8 @@ from studentassistant.config import (
     SourcesSettings,
 )
 from studentassistant.editor.doubts import DECISION_TOOL, REVIEW_TOOL
-from studentassistant.editor.revise import EDIT_TOOL
+from studentassistant.editor.incorporate import source_status
+from studentassistant.editor.revise import EDIT_TOOL, chat_history
 from studentassistant.llm import FakeClaude, LLMAPIError
 from studentassistant.observer import ASSISTANT_REQUEST_KIND
 from studentassistant.observer.requests import TOOL_NAME, ReportedRequest
@@ -39,16 +41,13 @@ from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscript
 from studentassistant.sources import CAPTURE_TRIAGED_KIND, triage_status
 from studentassistant.vault import (
     Vault,
-    create_subject,
-    create_topic,
-    get_subject,
-    get_topic,
     list_sessions,
     put_source,
     read_notes,
     read_topic_events,
     sources_directory,
     update_page_meta,
+    user_ids,
 )
 
 LOCAL_BASE_URL = "http://localhost:8765"
@@ -108,15 +107,14 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
 
 
 def _topic_in_the_user_folder(root: Vault, user: Vault, topic: GenerateTopic | ReviseTopic) -> None:
-    """Create the fixture topic's subject and topic under the vault's one user as well.
+    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
 
-    `POST /api/sessions` acts for that user (#550), so the session it starts -- and every event
-    published on it -- lives under `users/<id>/`, which needs the subject and the topic there.
-    The notes, the sources and the review sessions the routes and the consumer read and write
-    still go through the repository root (`SessionService.open_vault()`) until #551.
+    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
+    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
+    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
+    the repository root's copy, so a test reads back from the handle whose side wrote it.
     """
-    subject = create_subject(user, get_subject(root, topic.subject).subject.name).slug
-    create_topic(user, subject, get_topic(root, subject, topic.topic).topic.title)
+    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
 
 
 @pytest.fixture
@@ -150,6 +148,16 @@ def _settle(client: TestClient) -> None:
 def _subscribe(client: TestClient, topic: GenerateTopic | ReviseTopic) -> WorkspaceSubscription:
     app: Any = client.app
     return app.state.workspace.subscribe(topic.subject, topic.topic)  # type: ignore[no-any-return]
+
+
+def _turns(vault: Vault, topic: GenerateTopic | ReviseTopic) -> list[dict[str, Any]]:
+    """The topic's chat turns as `GET .../notes/chat` shows them, read from the student's folder.
+
+    The consumer writes through the student's handle (#566); the route reads the repository root
+    until #551.
+    """
+    history = chat_history(vault, topic.subject, topic.topic)
+    return list(history.model_dump(mode="json")["turns"])
 
 
 def _names(events: list[WorkspaceEvent]) -> list[str]:
@@ -232,7 +240,9 @@ def _third_page(
     meta = {"triage": {"status": "set_aside", "reasons": ["blurry"]}} if aside else {}
     if triage is not None:
         meta = {"triage": triage}
-    put_source(topic.vault, topic.subject, topic.topic, "notes", "page.jpg", b"\xff\xd8 3", meta)
+    # In the root's copy of the topic (the routes' until #551) and the student's (the consumers').
+    for vault in (topic.vault, topic.vault.for_user(user_ids(topic.vault)[0])):
+        put_source(vault, topic.subject, topic.topic, "notes", "page.jpg", b"\xff\xd8 3", meta)
 
 
 # -- typed messages ------------------------------------------------------------------------------
@@ -305,7 +315,7 @@ def test_a_typed_message_is_classified_with_the_sources_and_incorporates_its_tar
     assert started["origin"] == "typed" and started["kind"] == "incorporate"
     result = next(e.data for e in events if e.event == "turn.result")
     assert result["applied"] is True and sorted(result["source_ids"]) == [PAGE_1, PAGE_2]
-    notes = read_notes(topic.vault, topic.subject, topic.topic)
+    notes = read_notes(user_vault, topic.subject, topic.topic)
     assert notes is not None and "{#definicion}" in notes
 
 
@@ -480,16 +490,16 @@ def test_a_spoken_set_aside_writes_the_triage_and_a_chat_entry(
     assert _replies(events) == "He apartado la página 3."
     result = events[-1].data
     assert result["decision"] == "set_aside" and result["source_ids"] == [PAGE_3]
-    assert triage_status(topic.vault, topic.subject, topic.topic)[PAGE_3].set_aside
+    assert triage_status(user_vault, topic.subject, topic.topic)[PAGE_3].set_aside
     [(sid, origin, payload)] = _events(user_vault, topic, CAPTURE_TRIAGED_KIND)
     assert (sid, origin) == (session_id, "user")
     assert payload["status"] == "set_aside" and payload["decided_by"] == "student"
 
-    turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+    turns = _turns(user_vault, topic)
     assert turns[-1]["kind"] == "triage" and turns[-1]["reply"] == "He apartado la página 3."
     assert turns[-1]["origin"] == "voice" and turns[-1]["request_summary"] == "aparta la 3"
-    status = client.get(f"{_base(topic)}/sources/status").json()["sources"]
-    assert [row["state"] for row in status if row["source_id"] == PAGE_3] == ["apartada"]
+    status = source_status(user_vault, topic.subject, topic.topic)
+    assert [row.state for row in status if row.source_id == PAGE_3] == ["apartada"]
 
 
 def test_a_restore_without_a_session_says_the_page_will_be_transcribed(
@@ -518,9 +528,9 @@ def test_a_restore_of_a_transcribed_page_and_one_not_set_aside(
     client: TestClient, topic: GenerateTopic, user_vault: Vault
 ) -> None:
     _third_page(topic, aside=True)
-    (
-        sources_directory(topic.vault, topic.subject, topic.topic, "notes") / "page-003.md"
-    ).write_text("Página 3.", encoding="utf-8")
+    (sources_directory(user_vault, topic.subject, topic.topic, "notes") / "page-003.md").write_text(
+        "Página 3.", encoding="utf-8"
+    )
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
 
@@ -555,7 +565,10 @@ def test_a_set_aside_of_an_unknown_page_is_a_turn_error(
 
 
 def test_a_spoken_incorporation_is_a_voice_incorporate_turn(
-    client: TestClient, fake: FakeClaude, topic: GenerateTopic
+    client: TestClient,
+    fake: FakeClaude,
+    topic: GenerateTopic,
+    user_vault: Vault,
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -567,7 +580,7 @@ def test_a_spoken_incorporation_is_a_voice_incorporate_turn(
     events = subscription.drain()
     assert _names(events) == ["request.detected", "turn.started", "turn.result", "notes.changed"]
     assert events[1].data["kind"] == "incorporate" and events[1].data["origin"] == "voice"
-    turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+    turns = _turns(user_vault, topic)
     assert turns[-1]["kind"] == "incorporate" and turns[-1]["origin"] == "voice"
     assert turns[-1]["request_summary"] == "incorpora la 1"
 
@@ -830,7 +843,7 @@ def test_a_spoken_edit_stopped_at_the_cap_is_confirmed(
         assert _names(events) == ["turn.started", "turn.result"]
         assert events[0].data["origin"] == "voice" and events[0].data["request_id"] == "req-1"
         assert [r.role for r in fake.requests] == ["editor"]
-        turns = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
+        turns = _turns(user_vault, topic)
         assert turns[-1]["origin"] == "voice" and turns[-1]["request_summary"] == "pon un ejemplo"
 
 
@@ -847,15 +860,17 @@ def test_confirmation_errors(client: TestClient, topic: GenerateTopic) -> None:
 
 
 def test_a_set_aside_says_each_target_s_triage_reason(
-    client: TestClient, topic: GenerateTopic
+    client: TestClient,
+    topic: GenerateTopic,
+    user_vault: Vault,
 ) -> None:
     # Page 3 was flagged as maybe cut off; page 1 was already set aside as a repeat of page 2;
     # page 2 has nothing wrong with it.
     _third_page(topic, aside=False, triage={"status": "flagged", "reasons": ["partial"]})
-    first = sources_directory(topic.vault, topic.subject, topic.topic, "notes") / "page-001.jpg"
+    first = sources_directory(user_vault, topic.subject, topic.topic, "notes") / "page-001.jpg"
     update_page_meta(
-        topic.vault,
-        first.relative_to(topic.vault.path).as_posix(),
+        user_vault,
+        first.relative_to(user_vault.path).as_posix(),
         {"triage": {"status": "set_aside", "reasons": ["duplicate"], "duplicate_of": PAGE_2}},
     )
     session_id = _start(client, topic)
@@ -882,8 +897,8 @@ def test_a_set_aside_says_each_target_s_triage_reason(
         {"source_id": PAGE_1, "reasons": ["duplicate"], "duplicate_of": PAGE_2, "already": True},
     ]
     # The flagged page keeps its reason once set aside.
-    assert triage_status(topic.vault, topic.subject, topic.topic)[PAGE_3].reasons == ["partial"]
-    [turn] = [t for t in client.get(f"{_base(topic)}/notes/chat").json()["turns"]]
+    assert triage_status(user_vault, topic.subject, topic.topic)[PAGE_3].reasons == ["partial"]
+    [turn] = [t for t in _turns(user_vault, topic)]
     assert turn["kind"] == "triage" and turn["reply"] == reply
     assert turn["targets"] == result["targets"]
 

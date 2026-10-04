@@ -102,6 +102,7 @@ at the next start for an outstanding one.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import dataclasses
 import logging
 import re
@@ -219,6 +220,14 @@ from studentassistant.vault import (
 
 logger = logging.getLogger(__name__)
 
+_Key = tuple[str | None, str, str]
+"""A topic of one student: `(user_id, subject_id, topic_id)`, the key of every per-topic map."""
+
+REQUEST_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "assistant_request_user", default=None
+)
+"""The student a typed message being classified belongs to, for `sources_lookup` (#566)."""
+
 CLAIM_POLL_SECONDS = 0.1
 CLAIM_TIMEOUT_SECONDS = 600.0
 """How long a request waits for the topic's notes lock before it fails as busy."""
@@ -284,6 +293,8 @@ class QueuedRequest:
     request: AssistantRequest
     confirm_over_cap: bool = False
     """The student confirmed going past a reached cost cap (`AssistantRequestConsumer.confirm`)."""
+    user_id: str | None = None
+    """The student whose topic it is: the turn reads and writes through their own handle (#566)."""
 
     def reference(self) -> ChatRequestRef:
         return ChatRequestRef(
@@ -336,20 +347,25 @@ class AssistantRequestConsumer:
         self.claim_poll, self.claim_timeout = claim_poll, claim_timeout
         self._subscription: Subscription | None = None
         self._reader: asyncio.Task[None] | None = None
-        self._queues: dict[tuple[str, str], deque[QueuedRequest]] = {}
-        self._workers: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._queues: dict[_Key, deque[QueuedRequest]] = {}
+        self._workers: dict[_Key, asyncio.Task[None]] = {}
         self._typed_lock = asyncio.Lock()
         self._typed_counts: dict[str, int] = {}
-        self._stopped: dict[tuple[str, str], dict[str, QueuedRequest]] = {}
+        self._stopped: dict[_Key, dict[str, QueuedRequest]] = {}
         """Per topic, the requests stopped at the cost cap by their failed turn id, oldest first."""
         self._busy = False
         """The reader is handling an event (`wait_idle`)."""
-        self._seen: set[tuple[str, str]] = set()
-        """`(session_id, request_id)` of every request submitted by this process (#408)."""
-        self._running: dict[tuple[str, str], QueuedRequest] = {}
+        self._seen: set[tuple[str | None, str, str]] = set()
+        """`(user_id, session_id, request_id)` of every request submitted by this process (#408)."""
+        self._session_users: dict[str, str] = {}
+        """The student of each session this consumer has seen, for a session that detached."""
+        self._running: dict[_Key, QueuedRequest] = {}
         """Per topic, the request whose turn runs now."""
         self._catch_up: asyncio.Task[None] | None = None
-        """The start-up submission of the vault's outstanding requests (#423)."""
+        """The start-up submission of the vault's outstanding requests (#423), the latest one."""
+        self._catch_ups: list[asyncio.Task[None]] = []
+        """One start-up submission per user (#566)."""
+        self._catch_up_users: set[str | None] = set()
         self._stopping = False
         self._ended_handled: dict[str, asyncio.Event] = {}
         """Per ended session, set once the reader handled its `session.ended` (#468); the entry is
@@ -375,16 +391,16 @@ class AssistantRequestConsumer:
             self._reader.cancel()
             await asyncio.gather(self._reader, return_exceptions=True)
             self._reader = None
-        if self._catch_up is not None:
-            self._catch_up.cancel()
-            await asyncio.gather(self._catch_up, return_exceptions=True)
+        for catch_up in self._catch_ups:
+            catch_up.cancel()
+        await asyncio.gather(*self._catch_ups, return_exceptions=True)
         for key, queue in self._queues.items():
             if queue:
                 logger.warning(
                     "%d queued assistant requests of %s/%s wait for the session's resume at"
                     " shutdown (%s)",
                     len(queue),
-                    *key,
+                    *key[1:],
                     ", ".join(queued.request.request_id for queued in queue),
                 )
             queue.clear()
@@ -402,7 +418,7 @@ class AssistantRequestConsumer:
         deadline = time.monotonic() + timeout
         while (
             self._reading()
-            or (self._catch_up is not None and not self._catch_up.done())
+            or any(not catch_up.done() for catch_up in self._catch_ups)
             or self._workers
             or any(self._queues.values())
         ):
@@ -416,8 +432,19 @@ class AssistantRequestConsumer:
             return False
         return self._busy or (self._subscription is not None and len(self._subscription) > 0)
 
-    def queued(self, subject_id: str, topic_id: str) -> int:
-        return len(self._queues.get((subject_id, topic_id), ()))
+    def _key(self, user_id: str | None, subject_id: str, topic_id: str) -> _Key:
+        """The queue key of a topic: the student's too, a caller naming none being the only one."""
+        return (self.hub.resolve_user(user_id), subject_id, topic_id)
+
+    def _user_of(self, session_id: str) -> str | None:
+        """The student a session belongs to: its handle's, else the one remembered."""
+        session = self.bus.attached(session_id)
+        if session is not None and session.vault.user_id is not None:
+            self._session_users[session_id] = session.vault.user_id
+        return self._session_users.get(session_id)
+
+    def queued(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> int:
+        return len(self._queues.get(self._key(user_id, subject_id, topic_id), ()))
 
     # -- intake ----------------------------------------------------------------------------------
 
@@ -456,7 +483,12 @@ class AssistantRequestConsumer:
             return
         if event.kind == SESSION_ENDED:
             try:
-                await self._ended(event.subject_id, event.topic_id, event.session_id)
+                await self._ended(
+                    event.subject_id,
+                    event.topic_id,
+                    event.session_id,
+                    self._user_of(event.session_id),
+                )
             finally:
                 self._ended_event(event.session_id).set()
             return
@@ -465,7 +497,13 @@ class AssistantRequestConsumer:
         except ValidationError:
             logger.warning("ignoring a malformed assistant.request of session %s", event.session_id)
             return
-        self.submit(event.subject_id, event.topic_id, event.session_id, request)
+        self.submit(
+            event.subject_id,
+            event.topic_id,
+            event.session_id,
+            request,
+            user_id=self._user_of(event.session_id),
+        )
 
     async def replay(self, session_id: str) -> list[str]:
         """Queue again the attached session's requests no turn answered (#408), oldest first,
@@ -475,6 +513,7 @@ class AssistantRequestConsumer:
         if session is None:
             return []
         s, t = session.subject_slug, session.topic_slug
+        user_id = self._user_of(session_id)
         try:
             events = await asyncio.to_thread(lambda: list(session.read_events()))
             turns = (await asyncio.to_thread(chat_history, session.vault, s, t)).turns
@@ -483,7 +522,7 @@ class AssistantRequestConsumer:
             return []
         replayed: list[str] = []
         for request in unanswered_requests(events, session_id, turns):
-            if self.submit(s, t, session_id, request):
+            if self.submit(s, t, session_id, request, user_id=user_id):
                 replayed.append(request.request_id)
         if replayed:
             logger.info(
@@ -516,9 +555,11 @@ class AssistantRequestConsumer:
             handled.cancel()
             self._ended_handled.pop(session_id, None)
 
-    async def _ended(self, subject_id: str, topic_id: str, session_id: str) -> None:
+    async def _ended(
+        self, subject_id: str, topic_id: str, session_id: str, user_id: str | None = None
+    ) -> None:
         """Record the ended session's requests still queued or running as outstanding (#423)."""
-        key = (subject_id, topic_id)
+        key = self._key(user_id, subject_id, topic_id)
         waiting = [
             *([self._running[key]] if key in self._running else []),
             *self._queues.get(key, ()),
@@ -530,28 +571,34 @@ class AssistantRequestConsumer:
             return
         payload = {"session_id": session_id, "request_ids": ids}
         await self._write_review(
-            subject_id, topic_id, [(REQUESTS_OUTSTANDING_KIND, "editor", payload)]
+            subject_id, topic_id, [(REQUESTS_OUTSTANDING_KIND, "editor", payload)], user_id
         )
 
     async def _write_review(
-        self, subject_id: str, topic_id: str, events: list[tuple[str, Origin, dict[str, Any]]]
+        self,
+        subject_id: str,
+        topic_id: str,
+        events: list[tuple[str, Origin, dict[str, Any]]],
+        user_id: str | None = None,
     ) -> str:
-        vault = await self.sessions.open_vault()
+        vault, sync = await self.sessions.consumer_scope(user_id)
         review = await asyncio.to_thread(
             _review_session, vault, subject_id, topic_id, self.sessions.host, events
         )
-        if self.sessions.sync is not None:
-            self.sessions.sync.note_change()
+        sync.note_change()
         return review
 
     def catch_up_vault(self, vault: Vault) -> None:
         """Once the vault is open: submit every topic's outstanding requests (#423), once per
-        process, in the background (a `SessionService.add_on_open` hook)."""
-        if self._catch_up is not None or self._stopping:
+        user and process, in the background (a `SessionService.add_on_open` hook, which calls it
+        with each student's handle; a root handle is the legacy single call)."""
+        if self._stopping or vault.user_id in self._catch_up_users:
             return
+        self._catch_up_users.add(vault.user_id)
         self._catch_up = asyncio.create_task(
             self._catch_up_vault(vault), name="assistant-requests:startup"
         )
+        self._catch_ups.append(self._catch_up)
 
     async def _catch_up_vault(self, vault: Vault) -> None:
         try:
@@ -572,7 +619,7 @@ class AssistantRequestConsumer:
             submitted = [
                 request.request_id
                 for session_id, request in pending
-                if self.submit(subject_id, topic_id, session_id, request)
+                if self.submit(subject_id, topic_id, session_id, request, user_id=vault.user_id)
             ]
             if submitted:
                 logger.info(
@@ -584,15 +631,23 @@ class AssistantRequestConsumer:
                 )
 
     def submit(
-        self, subject_id: str, topic_id: str, session_id: str, request: AssistantRequest
+        self,
+        subject_id: str,
+        topic_id: str,
+        session_id: str,
+        request: AssistantRequest,
+        *,
+        user_id: str | None = None,
     ) -> bool:
-        """Announce one request on the workspace stream and queue it for its topic; False (and
-        nothing done) when this process has submitted it already."""
-        seen = (session_id, request.request_id)
+        """Announce one request on the student's workspace stream and queue it for their topic;
+        False (and nothing done) when this process has submitted it already."""
+        seen = (self.hub.resolve_user(user_id), session_id, request.request_id)
         if seen in self._seen:
             return False
         self._seen.add(seen)
-        queued = QueuedRequest(subject_id, topic_id, session_id, request)
+        if user_id is not None:
+            self._session_users.setdefault(session_id, user_id)
+        queued = QueuedRequest(subject_id, topic_id, session_id, request, user_id=user_id)
         reference = queued.reference()
         self.hub.publish(
             subject_id,
@@ -614,22 +669,23 @@ class AssistantRequestConsumer:
                     else {}
                 ),
             },
+            user_id=user_id,
         )
         self._enqueue(queued)
         return True
 
     def _enqueue(self, queued: QueuedRequest) -> None:
-        key = (queued.subject_id, queued.topic_id)
+        key = self._key(queued.user_id, queued.subject_id, queued.topic_id)
         self._queues.setdefault(key, deque()).append(queued)
         if key not in self._workers:
             task = asyncio.create_task(
-                self._work(key), name=f"assistant-requests-{key[0]}-{key[1]}"
+                self._work(key), name=f"assistant-requests-{key[1]}-{key[2]}"
             )
             self._workers[key] = task
 
     # -- the turns -------------------------------------------------------------------------------
 
-    async def _work(self, key: tuple[str, str]) -> None:
+    async def _work(self, key: _Key) -> None:
         try:
             queue = self._queues[key]
             while queue:
@@ -640,7 +696,7 @@ class AssistantRequestConsumer:
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # pragma: no cover - `_run` reports its own failures
-                    logger.exception("an assistant request of %s/%s failed", *key)
+                    logger.exception("an assistant request of %s/%s failed", *key[1:])
                 finally:
                     self._running.pop(key, None)
         finally:
@@ -659,6 +715,7 @@ class AssistantRequestConsumer:
             origin="typed" if request.typed else "voice",
             request_id=request.request_id,
             kind=kind,
+            user_id=queued.user_id,
         )
         if handler is None:
             logger.warning("no handler for assistant request kind %r", request.kind)
@@ -667,7 +724,7 @@ class AssistantRequestConsumer:
             return
         holder = "editor" if kind == "prepare_notes" else TURN_HOLDER
         try:
-            await self._claim(queued.subject_id, queued.topic_id, holder)
+            await self._claim(queued.subject_id, queued.topic_id, holder, queued.user_id)
         except _BusyError:
             broadcast.error(409, BUSY_DETAIL)
             await self._finished(queued, broadcast, "error", 409)
@@ -679,7 +736,9 @@ class AssistantRequestConsumer:
             await self._finished(queued, broadcast, "result")
             broadcast.result(result)
             if self.doubts is not None:
-                self.doubts.after(queued.subject_id, queued.topic_id, result)
+                self.doubts.after(
+                    queued.subject_id, queued.topic_id, result, user_id=queued.user_id
+                )
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -698,7 +757,7 @@ class AssistantRequestConsumer:
             await self._finished(queued, broadcast, "error", status, code)
             broadcast.error(status, detail, code)
         finally:
-            self.generator.release(queued.subject_id, queued.topic_id)
+            self.generator.release(queued.subject_id, queued.topic_id, user_id=queued.user_id)
 
     async def _finished(
         self,
@@ -726,7 +785,10 @@ class AssistantRequestConsumer:
                 await self.bus.publish(queued.session_id, TURN_FINISHED_KIND, "editor", payload)
             except BusError:  # not attached: an ended session, or a review session
                 await self._write_review(
-                    queued.subject_id, queued.topic_id, [(TURN_FINISHED_KIND, "editor", payload)]
+                    queued.subject_id,
+                    queued.topic_id,
+                    [(TURN_FINISHED_KIND, "editor", payload)],
+                    queued.user_id,
                 )
         except Exception as error:  # the log refused it: the request may be replayed once
             logger.warning(
@@ -737,12 +799,16 @@ class AssistantRequestConsumer:
             )
 
     def _remember_stopped(self, turn_id: str, queued: QueuedRequest) -> None:
-        stopped = self._stopped.setdefault((queued.subject_id, queued.topic_id), {})
+        stopped = self._stopped.setdefault(
+            self._key(queued.user_id, queued.subject_id, queued.topic_id), {}
+        )
         stopped[turn_id] = queued
         while len(stopped) > STOPPED_PER_TOPIC:
             del stopped[next(iter(stopped))]
 
-    def confirm(self, subject_id: str, topic_id: str, turn_id: str) -> TypedMessageResult:
+    def confirm(
+        self, subject_id: str, topic_id: str, turn_id: str, *, user_id: str | None = None
+    ) -> TypedMessageResult:
         """Queue again, confirmed past the cost cap, the request whose turn `turn_id` stopped at
         the cap (#351): the same request, not classified again; its new turn streams as usual.
 
@@ -750,7 +816,7 @@ class AssistantRequestConsumer:
             NotStoppedError: `turn_id` is not a request of the topic stopped at the cap (never
                 was, already confirmed, or forgotten: a restart, or `STOPPED_PER_TOPIC` newer ones).
         """
-        stopped = self._stopped.get((subject_id, topic_id), {})
+        stopped = self._stopped.get(self._key(user_id, subject_id, topic_id), {})
         queued = stopped.pop(turn_id, None)
         if queued is None:
             raise NotStoppedError(turn_id)
@@ -760,29 +826,31 @@ class AssistantRequestConsumer:
             message_id=request.message_id or f"msg-{uuid.uuid4().hex[:16]}", requests=[request]
         )
 
-    async def _claim(self, subject_id: str, topic_id: str, holder: str) -> None:
+    async def _claim(
+        self, subject_id: str, topic_id: str, holder: str, user_id: str | None = None
+    ) -> None:
         deadline = time.monotonic() + self.claim_timeout
-        while not self.generator.claim(subject_id, topic_id, holder):
+        while not self.generator.claim(subject_id, topic_id, holder, user_id=user_id):
             if time.monotonic() >= deadline:
                 raise _BusyError
             await asyncio.sleep(self.claim_poll)
 
-    def _publisher(self, subject_id: str, topic_id: str) -> Callable[..., Awaitable[None]]:
+    def _publisher(
+        self, subject_id: str, topic_id: str, user_id: str | None = None
+    ) -> Callable[..., Awaitable[None]]:
         async def publish(kind: str, payload: dict[str, Any]) -> None:
             active = self.sessions.active
-            if active is not None and (active.subject_id, active.topic_id) == (
-                subject_id,
-                topic_id,
+            if (
+                active is not None
+                and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+                and (user_id is None or active.user_id == user_id)
             ):
                 await self.bus.publish(active.session_id, kind, "editor", payload)
 
         return publish
 
     async def _revise(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
-        vault = await self.sessions.open_vault()
-        sync = self.sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise VaultUnavailableError("the vault has no sync")
+        vault, sync = await self.sessions.consumer_scope(queued.user_id)
         client = get_client(
             "editor",
             settings=self.generator.settings,
@@ -797,7 +865,7 @@ class AssistantRequestConsumer:
             client=client,
             sync=sync,
             on_reply=broadcast.reply,
-            on_event=self._publisher(queued.subject_id, queued.topic_id),
+            on_event=self._publisher(queued.subject_id, queued.topic_id, queued.user_id),
             request=queued.chat_request(),
             confirm_over_cap=queued.confirm_over_cap,
             turn_id=broadcast.turn_id,
@@ -808,7 +876,7 @@ class AssistantRequestConsumer:
             else None,
             live=None
             if self.doubts is None
-            else self.doubts.live(queued.subject_id, queued.topic_id),
+            else self.doubts.live(queued.subject_id, queued.topic_id, user_id=queued.user_id),
             host=self.sessions.host,
             # An `edit` answered only in prose is re-asked once, then flagged (#452).
             expects_change=queued.request.kind == "edit",
@@ -830,6 +898,7 @@ class AssistantRequestConsumer:
             queued.subject_id,
             queued.topic_id,
             confirm_over_cap=queued.confirm_over_cap,
+            user_id=queued.user_id,
         )
 
     async def _incorporate(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
@@ -842,6 +911,7 @@ class AssistantRequestConsumer:
             request=queued.chat_request(),
             turn_id=broadcast.turn_id,
             confirm_over_cap=queued.confirm_over_cap,
+            user_id=queued.user_id,
         )
 
     async def _set_aside(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
@@ -857,8 +927,7 @@ class AssistantRequestConsumer:
         decision: Literal["set_aside", "restore"],
     ) -> BaseModel:
         """Set the request's targets aside (or restore them), one `capture.triaged` each."""
-        vault = await self.sessions.open_vault()
-        sync = self.sessions.sync
+        vault, sync = await self.sessions.consumer_scope(queued.user_id)
         s, t = queued.subject_id, queued.topic_id
         rows = {row.source_id: row for row in await asyncio.to_thread(source_status, vault, s, t)}
         triage = (
@@ -891,14 +960,20 @@ class AssistantRequestConsumer:
             )
             change = await asyncio.to_thread(change_for, vault, s, t, target, result)
             await self._write_event(
-                vault, s, t, CAPTURE_TRIAGED_KIND, TYPED_ORIGIN, triaged_payload(change)
+                vault,
+                s,
+                t,
+                CAPTURE_TRIAGED_KIND,
+                TYPED_ORIGIN,
+                triaged_payload(change),
+                queued.user_id,
             )
             done.append(row)
             if decision == "restore" and not await asyncio.to_thread(
                 _has_transcription, vault, change.source_path
             ):
                 owed.append(row)
-        live = self._live_session(s, t) is not None
+        live = self._live_session(s, t, queued.user_id) is not None
         reply = _triage_reply(
             decision,
             done,
@@ -921,17 +996,13 @@ class AssistantRequestConsumer:
             targets=list(targets.values()),
         )
         await asyncio.to_thread(record_triage_turn, vault, s, t, turn)
-        if sync is not None:
-            sync.note_change()
+        sync.note_change()
         return turn
 
     async def _doubt_answer(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
         request = queued.request
         assert request.pending_id is not None and request.answer is not None
-        vault = await self.sessions.open_vault()
-        sync = self.sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise VaultUnavailableError("the vault has no sync")
+        vault, sync = await self.sessions.consumer_scope(queued.user_id)
         s, t = queued.subject_id, queued.topic_id
         client = get_client(
             "editor",
@@ -949,19 +1020,21 @@ class AssistantRequestConsumer:
             sync=sync,
             confirm_over_cap=queued.confirm_over_cap,
             host=self.sessions.host,
-            live=None if self.doubts is None else self.doubts.live(s, t),
+            live=None if self.doubts is None else self.doubts.live(s, t, user_id=queued.user_id),
         )
         reply = result.resolution or "Anotado."
         await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
         if self.doubts is not None:
-            self.doubts.resolved(s, t, result)
-            self.doubts.schedule(s, t)
+            self.doubts.resolved(s, t, result, user_id=queued.user_id)
+            self.doubts.schedule(s, t, user_id=queued.user_id)
         return result
 
     async def _study(self, queued: QueuedRequest, broadcast: TurnBroadcast) -> BaseModel:
         """End the capture and label the study version, as `POST .../study` (under our lock)."""
         s, t = queued.subject_id, queued.topic_id
-        state = await switch_to_study(self.sessions, self.hub, s, t, reason="command")
+        state = await switch_to_study(
+            self.sessions, self.hub, s, t, reason="command", user_id=queued.user_id
+        )
         reply = study_reply(state)
         await broadcast.reply(REPLY_DELTA, {"text": reply, "attempt": 1})
         return StudyTurn(
@@ -976,10 +1049,16 @@ class AssistantRequestConsumer:
 
     # -- where the events go ---------------------------------------------------------------------
 
-    def _live_session(self, subject_id: str, topic_id: str) -> str | None:
-        """The topic's active session on this backend, if it has one."""
+    def _live_session(
+        self, subject_id: str, topic_id: str, user_id: str | None = None
+    ) -> str | None:
+        """The topic's active session on this backend, if it has one (the student's, if named)."""
         active = self.sessions.active
-        if active is not None and (active.subject_id, active.topic_id) == (subject_id, topic_id):
+        if (
+            active is not None
+            and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+            and (user_id is None or active.user_id == user_id)
+        ):
             return active.session_id
         return None
 
@@ -991,16 +1070,17 @@ class AssistantRequestConsumer:
         kind: str,
         origin: Origin,
         payload: dict[str, Any],
+        user_id: str | None = None,
     ) -> str:
         """Write one event in the topic's live session, else in a review session; its session."""
-        session_id = self._live_session(subject_id, topic_id)
+        session_id = self._live_session(subject_id, topic_id, user_id)
         if session_id is not None:
             try:
                 await self.bus.publish(session_id, kind, origin, payload)
                 return session_id
             except BusError:
                 logger.info("the session of %s/%s ended meanwhile", subject_id, topic_id)
-        return await self._write_review(subject_id, topic_id, [(kind, origin, payload)])
+        return await self._write_review(subject_id, topic_id, [(kind, origin, payload)], user_id)
 
     # -- typed messages --------------------------------------------------------------------------
 
@@ -1011,6 +1091,8 @@ class AssistantRequestConsumer:
         text: str,
         classifier: MessageClassifier | None,
         selected: Sequence[str] = (),
+        *,
+        user_id: str | None = None,
     ) -> TypedMessageResult:
         """Classify a message typed in the workspace chat and queue its requests (#327).
 
@@ -1024,19 +1106,20 @@ class AssistantRequestConsumer:
         becomes one `edit` (a `question` when it asks something) with the raw text, so nothing
         typed is lost.
         """
-        vault = await self.sessions.open_vault()
+        vault, sync = await self.sessions.consumer_scope(user_id)
         message_id = f"msg-{uuid.uuid4().hex[:16]}"
         text = text.strip()
         reported: list[ReportedRequest] = []
         classified = True
         if classifier is not None:
+            token = REQUEST_USER.set(user_id)
             try:
                 reported = await classifier.classify(
                     vault,
                     subject_id,
                     topic_id,
                     text,
-                    session_id=self._live_session(subject_id, topic_id),
+                    session_id=self._live_session(subject_id, topic_id, user_id),
                     selected=selected,
                 )
             except Exception as error:  # a ClassificationError, or anything else: keep the text
@@ -1044,10 +1127,12 @@ class AssistantRequestConsumer:
                     "the typed message of %s/%s was not classified: %s", subject_id, topic_id, error
                 )
                 classified = False
+            finally:
+                REQUEST_USER.reset(token)
         if not reported:
             reported = [_fallback(text)]
         async with self._typed_lock:
-            session_id = self._live_session(subject_id, topic_id)
+            session_id = self._live_session(subject_id, topic_id, user_id)
             if session_id is not None:
                 requests = await self._typed_live(session_id, message_id, text, reported, selected)
                 if requests is not None:
@@ -1071,10 +1156,9 @@ class AssistantRequestConsumer:
                     (REQUESTS_OUTSTANDING_KIND, "editor", outstanding),
                 ],
             )
-            if self.sessions.sync is not None:
-                self.sessions.sync.note_change()
+            sync.note_change()
         for request in requests:
-            self.submit(subject_id, topic_id, review, request)
+            self.submit(subject_id, topic_id, review, request, user_id=user_id)
         return TypedMessageResult(message_id=message_id, requests=requests, classified=classified)
 
     async def _typed_live(
@@ -1260,7 +1344,17 @@ def sources_lookup(sessions: SessionService) -> SourcesLookup:
     chat is asking now; injected into the observer so it never imports the editor."""
 
     async def lookup(subject_id: str, topic_id: str) -> RequestContext:
-        vault = await sessions.open_vault()
+        # Whose topic: the typed message being classified, else the student of the active
+        # session the observer is working for; the observer's own code names no user (#566).
+        user_id = REQUEST_USER.get()
+        active = sessions.active
+        if (
+            user_id is None
+            and active is not None
+            and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+        ):
+            user_id = active.user_id
+        vault, _ = await sessions.consumer_scope(user_id)
         return await asyncio.to_thread(request_context, vault, subject_id, topic_id)
 
     return lookup

@@ -136,9 +136,6 @@ def _chat_settings(**eval_options: object) -> Settings:
     )
 
 
-@pytest.mark.skip(
-    reason="waits for the session consumers to write through the session's user (#566)"
-)
 def test_the_chat_path_scores_the_notes_the_spoken_requests_built(home: Path) -> None:
     directory = make_case(home / "evals")
     write_requests(directory)

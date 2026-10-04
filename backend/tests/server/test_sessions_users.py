@@ -11,12 +11,30 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from datetime import datetime, timedelta, tzinfo
+from pathlib import Path
+from typing import Any
 
+import cv2
+import numpy as np
 import pytest
+from fastapi.testclient import TestClient
+from ws_harness import WsHarness
 
-from studentassistant.protocol import PROTOCOL_VERSION, ErrorCode
+from studentassistant.config import (
+    ObserverSettings,
+    ServerSettings,
+    Settings,
+    SourcesSettings,
+    SttSettings,
+    VaultSettings,
+)
+from studentassistant.llm import FakeClaude
+from studentassistant.observer.live import TOOL_NAME
+from studentassistant.protocol import PROTOCOL_VERSION, USER_HEADER, ErrorCode
+from studentassistant.server.app import create_app
 from studentassistant.server.bus import SessionBus
 from studentassistant.server.errors import ApiError
+from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.session_routes import _http_errors
 from studentassistant.server.sessions import (
     OTHER_USER_SESSION_OPEN_DETAIL,
@@ -404,3 +422,182 @@ async def test_the_other_user_refusal_is_409_session_open_with_no_open_session_h
             raise ActiveSessionExistsError("still open", "20260101-000000")
     assert own.value.headers is not None
     assert own.value.headers["X-Open-Session-Id"] == "20260101-000000"
+
+
+# the isolation of everything a session writes (#566)
+
+
+LOCAL_BASE_URL = "http://localhost:8765"
+SAME_SLUGS_TEXT = "El péndulo simple oscila con periodo constante"
+CAPTURE_ID = "0b6f3c2e-9a41-4d8e-8f7a-2c5d1e3b4a60"
+
+
+def _jpeg() -> bytes:
+    rng = np.random.default_rng(3)
+    ok, data = cv2.imencode(".jpg", rng.integers(0, 256, (240, 320, 3), dtype=np.uint8))
+    assert ok
+    return data.tobytes()
+
+
+def _capture_body() -> tuple[bytes, str]:
+    boundary = "sa-test-boundary"
+    metadata = {
+        "capture_id": CAPTURE_ID,
+        "trigger": "button",
+        "client_time_ms": 1_790_000_000_000,
+        "images": [
+            {
+                "part": "image_0",
+                "content_type": "image/jpeg",
+                "width_px": 3000,
+                "height_px": 4000,
+                "client_time_ms": 1_790_000_000_100,
+            }
+        ],
+    }
+    import json
+
+    body = bytearray()
+    body += f'--{boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n'.encode()
+    body += b"Content-Type: application/json\r\n\r\n" + json.dumps(metadata).encode() + b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="image_0"; filename="image_0"\r\n'
+    body += b"Content-Type: image/jpeg\r\n\r\n" + _jpeg() + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def _files(directory: Path) -> list[str]:
+    """Every file under `directory`, relative to it, git's own metadata excluded."""
+    return sorted(
+        path.relative_to(directory).as_posix()
+        for path in directory.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(directory).parts
+    )
+
+
+def test_two_users_with_the_same_slugs_never_share_a_file_a_route_or_a_search_hit(
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    student_user_id: str,
+) -> None:
+    """User A captures on a topic whose slugs user B has too: all of it lands under `users/a/`.
+
+    The session logs, the stored page, the observer's snapshot and conversation, the digest and
+    the ledger are written through A's handle by the consumers (#566); nothing is under the root's
+    `subjects/` nor under B's folder beyond B's own, empty topic; B sees no open session on the
+    topic list and B's search finds nothing of A's.
+    """
+    a, b = student_user_id, create_user(tmp_vault, "Lucía Martín").id
+    fake = FakeClaude()
+    fake.reply_tool(
+        TOOL_NAME, {"ops": [{"op": "add_section", "section_id": "sec-1", "title": "El péndulo"}]}
+    )
+    for _ in range(5):  # more than the observer can ask for
+        fake.reply_tool(TOOL_NAME, {"ops": []})
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=server,
+        codes=codes,
+        vault=tmp_vault,
+        stt=SttSettings(mode="client", provider="web-speech", language="es"),
+        vault_settings=VaultSettings(path=tmp_vault.path, index_path=tmp_path / "cache" / "i.db"),
+        llm_transport=fake,
+        # The detector and the transcriber would share the fake's script; their own tests have it.
+        llm_settings=Settings(observer=ObserverSettings(request_detection="off")),
+        sources=SourcesSettings(transcription_enabled=False),
+    )
+    client = TestClient(app, base_url=LOCAL_BASE_URL, client=("127.0.0.1", 50000))
+    as_a, as_b = {USER_HEADER: a}, {USER_HEADER: b}
+
+    with client:
+        for headers in (as_a, as_b):
+            made = client.post("/api/subjects", json={"name": SUBJECT}, headers=headers)
+            assert made.status_code == 201
+            made = client.post(
+                f"/api/subjects/{SUBJECT_ID}/topics", json={"name": TOPIC}, headers=headers
+            )
+            assert made.status_code == 201
+        started = client.post(
+            "/api/sessions",
+            json={"subject_id": SUBJECT_ID, "topic_id": TOPIC_ID, "client_time_ms": 1_000},
+            headers=as_a,
+        )
+        assert started.status_code == 201
+        session_id = started.json()["session_id"]
+
+        body, content_type = _capture_body()
+        uploaded = client.post(
+            f"/api/sessions/{session_id}/captures",
+            content=body,
+            headers={**as_a, "Content-Type": content_type},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+
+        hello: dict[str, Any] = WsHarness.hello(1_000_000)
+        with client.websocket_connect(
+            f"ws://localhost:8765/ws/sessions/{session_id}", headers=as_a
+        ) as socket:
+            socket.send_json(hello)
+            assert socket.receive_json()["type"] == "hello.ack"
+            socket.send_json(
+                {
+                    "type": "transcript.client.final",
+                    "segment_id": "seg-1",
+                    "client_start_ms": 1_000_100,
+                    "client_end_ms": 1_001_000,
+                    "text": SAME_SLUGS_TEXT,
+                    "provider": "web-speech",
+                    "language": "es-ES",
+                    "confidence": 0.9,
+                }
+            )
+            assert socket.receive_json()["type"] == "transcript.final"
+
+        # B is not capturing: B's topic list shows no open session, and A's is not revealed.
+        topics = client.get(f"/api/subjects/{SUBJECT_ID}/topics", headers=as_b)
+        assert topics.status_code == 200
+        assert [t.get("open_session_id") for t in topics.json()["topics"]] == [None]
+        mine = client.get(f"/api/subjects/{SUBJECT_ID}/topics", headers=as_a)
+        assert [t.get("open_session_id") for t in mine.json()["topics"]] == [session_id]
+
+        ended = client.post(
+            f"/api/sessions/{session_id}/end",
+            json={"client_time_ms": 2_000, "reason": "button"},
+            headers=as_a,
+        )
+        assert ended.status_code == 200, ended.text
+
+        # A finds their own transcript; B finds nothing of it. Each user's index is their own.
+        assert client.get("/api/search", params={"q": "péndulo"}, headers=as_a).status_code == 200
+        indexes = app.state.sessions.indexes
+        assert set(indexes) == {a}, "an index opens on the first search or session start of a user"
+        indexes[a].refresh()
+        found = client.get("/api/search", params={"q": "péndulo"}, headers=as_a).json()["hits"]
+        assert [hit["kind"] for hit in found].count("transcript") == 1
+        assert client.get("/api/search", params={"q": "péndulo"}, headers=as_b).json()["hits"] == []
+        assert set(app.state.sessions.indexes) == {a, b}
+
+    root = tmp_vault.path
+    assert not (root / "subjects").exists(), "nothing was written at the repository's root"
+    topic = f"subjects/{SUBJECT_ID}/topics/{TOPIC_ID}"
+    written = _files(root / "users" / a)
+    assert [f for f in written if "/sessions/" in f] == [
+        f"{topic}/sessions/{session_id}/{name}"
+        for name in ("events.jsonl", "session.yaml", "transcript.jsonl")
+    ]
+    for expected in (
+        f"{topic}/sources/notes/page-001.jpg",  # the captured page
+        f"{topic}/state/digest.md",  # the digest written when the session ended
+        f"{topic}/state/observer-snapshot.json",
+        f"{topic}/conversations/observer-{session_id}.jsonl",
+        f"{topic}/ledger.jsonl",
+    ):
+        assert expected in written
+    # B's folder holds B's own subject and topic and nothing a session of A's wrote.
+    theirs = _files(root / "users" / b)
+    assert [f for f in theirs if "/sessions/" in f or "/sources/" in f or "/state/" in f] == []
+    assert [f for f in theirs if "conversations" in f or "ledger" in f] == []
+    assert session_id not in "\n".join(theirs)

@@ -229,7 +229,7 @@ def create_app(
     digest_zone = (llm_settings or Settings()).observer.digest_zone()
     app.state.sessions.add_before_close(DigestOnEnd(app.state.bus.attached, timezone=digest_zone))
     # The study workspace's live stream, per topic (`workspace.py`, `workspace_routes.py`).
-    app.state.workspace = WorkspaceHub()
+    app.state.workspace = WorkspaceHub(single_user=app.state.sessions.only_user_id)
     # Set when the server starts shutting down; the open-ended streams end on it (#466).
     app.state.shutdown = ShutdownSignal()
     # Doubts asked in the workspace chat one at a time (#325, `doubt_chat.py`).

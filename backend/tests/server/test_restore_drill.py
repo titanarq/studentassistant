@@ -76,6 +76,7 @@ from studentassistant.server.replay import (
 from studentassistant.vault import (
     GitSync,
     Vault,
+    get_user,
     list_sessions,
     list_subjects,
     list_topics,
@@ -83,7 +84,7 @@ from studentassistant.vault import (
     read_notes,
     user_ids,
 )
-from studentassistant.vault.index import VaultIndex, rebuild_index
+from studentassistant.vault.index import VaultIndex, rebuild_index, user_index_path
 from studentassistant.vault.setup import clone_vault
 from triage_images import paper
 
@@ -440,7 +441,7 @@ def _build_original(
             return result
 
     result = asyncio.run(main())
-    notes = read_notes(vault, SUBJECT, TOPIC) or ""
+    notes = read_notes(_student(vault), SUBJECT, TOPIC) or ""
     assert REVISION in notes, "the revision turn was applied"
     assert NUCLEUS in notes and DEFINITION_EDITED in notes, "the workspace turn and the save"
     assert all(fake.pending == 0 for fake in fakes.values() if fake is not fakes["observer"])
@@ -536,10 +537,10 @@ def _read_client(
 def _student(vault: Vault) -> Vault:
     """The handle of the vault's one student, whose folder holds the session content (#550).
 
-    The subjects, topics, sessions, sources and observer state the capture paths wrote live under
-    `users/<user-id>/`, so comparing them through the root handle would compare two empty vaults.
-    The notes, their version tags, the doubts and the ledger are left on the root handle below:
-    the routes that write them are not user-scoped yet (#551).
+    Everything the drill built -- subjects, topics, sessions, sources, observer state, notes and
+    their version tags, doubts, the ledger and the search index -- lives under `users/<user-id>/`
+    (#550, #566), so the restore is compared per user: through the root handle two vaults would
+    compare as empty ones.
     """
     (user_id,) = user_ids(vault)
     return vault.for_user(user_id)
@@ -619,24 +620,37 @@ def test_a_cloned_vault_restores_the_desk_notes_workspace_and_study_state(
     assert original_fold[f"{SUBJECT}/{TOPIC}"].state.pending, "the drill has pending items"
     assert _per_topic(restored_student, fold) == original_fold
 
-    original_notes = read_notes(tmp_vault, SUBJECT, TOPIC)
+    # The same users, each with their own profile, and nothing at the root's `subjects/`.
+    (user_id,) = user_ids(tmp_vault)
+    assert user_ids(restored) == [user_id]
+    assert get_user(restored, user_id) == get_user(tmp_vault, user_id)
+    assert not (tmp_vault.path / "subjects").exists() and not (restored.path / "subjects").exists()
+
+    original_notes = read_notes(original_student, SUBJECT, TOPIC)
     assert original_notes is not None and REVISION in original_notes
-    assert read_notes(restored, SUBJECT, TOPIC) == original_notes
-    original_tags = GitSync(tmp_vault).list_notes_tags(SUBJECT, TOPIC)
+    assert read_notes(restored_student, SUBJECT, TOPIC) == original_notes
+    original_tags = GitSync(tmp_vault).for_user(user_id).list_notes_tags(SUBJECT, TOPIC)
     assert [tag.version for tag in original_tags][:1] == [1]
-    assert GitSync(restored).list_notes_tags(SUBJECT, TOPIC) == original_tags
+    assert GitSync(restored).for_user(user_id).list_notes_tags(SUBJECT, TOPIC) == original_tags
 
-    original_doubts = list_doubts(tmp_vault, SUBJECT, TOPIC)
+    original_doubts = list_doubts(original_student, SUBJECT, TOPIC)
     assert original_doubts.open_count >= 2
-    assert list_doubts(restored, SUBJECT, TOPIC) == original_doubts
+    assert list_doubts(restored_student, SUBJECT, TOPIC) == original_doubts
 
-    original_costs = _ledger_totals(tmp_vault)
+    original_costs = _ledger_totals(original_student)
     assert original_costs["calls"] >= 4 and original_costs["input_tokens"] > 0
-    assert _ledger_totals(restored) == original_costs
+    assert _ledger_totals(restored_student) == original_costs
 
+    # One index database per user: the clone's rebuild wrote the user's own (`user_index_path`).
+    assert user_index_path(restored_index_path, user_id).is_file()
+    assert not restored_index_path.exists()
     with (
-        VaultIndex.open(tmp_vault, tmp_path / "first-pc-index.sqlite3") as original_index,
-        VaultIndex.open(restored, restored_index_path) as restored_index,
+        VaultIndex.open(
+            original_student, user_index_path(tmp_path / "first-pc-index.sqlite3", user_id)
+        ) as original_index,
+        VaultIndex.open(
+            restored_student, user_index_path(restored_index_path, user_id)
+        ) as restored_index,
     ):
         assert restored_index.is_current(), "the clone's rebuilt index is used as it is"
         original_hits = _searches(original_index)

@@ -258,7 +258,9 @@ submodules.
   Markdown is stored, the events are not) and returns every `add_pending` id already in the log.
 - When: at every `session.started` / `session.resumed` (every session of the topic, captures
   stored before the opening event), and once at server start (`catch_up_vault(vault)`, called when
-  the server first opens the vault: each topic's unended study sessions and its newest one, review sessions left out;
+  the server first opens the vault, once per user with that user's handle -- `vault.user_id` --
+  so it reads and queues one student's folder, and once with the root handle for what is still
+  at the root: each topic's unended study sessions and its newest one, review sessions left out;
   `wait_startup()` waits for it). Owed pages are transcribed at once (no window wait; hints from the capture's own session's
   `transcript.jsonl`), bound to the ledger of the session that queued them; the exchange goes to
   `conversations/transcriber-<capture session>.jsonl`. Stored ones have their events published
@@ -328,7 +330,8 @@ transcribed with Claude vision into `page-NNN.pKKK.md`, next to its `.txt` and `
   whose `.md` is there by the time its turn comes is skipped); the web upload calls it after the
   import, never waiting for it (`app.state.pdf_transcriber`, built with the page transcriber when
   the app has an LLM transport and `transcription_enabled`). `catch_up_vault(vault)` is a
-  `SessionService.add_on_open` hook: once per start it queues every page
+  `SessionService.add_on_open` hook (called once per user with their handle, #566): once per
+  start and user it queues every page
   `scanned_pages_without_transcription(vault, s, t)` (in `pdf.py`) lists for every topic -- pages
   whose `.txt` is stored but empty and with no non-empty `.md` (a restart cut the job, a cost cap
   stopped it, or the PDF came in through the CLI). Concurrency, attempts and retry waits are the
