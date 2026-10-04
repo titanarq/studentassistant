@@ -110,13 +110,41 @@ class UserProfile(VaultFileModel):
     created_at: datetime
 
 
+def prospective_user(vault: Vault, name: str, email: str | None = None) -> UserProfile:
+    """The user `create_user` would add for `name`, with nothing written and no folder created.
+
+    The same id rule, the same validation and the same profile, so a caller that has to say what
+    adding somebody would do -- the `--dry-run` of the migration to format 2, which names the user
+    the root's content would become (`vault/migrate.py`, #548) -- says what `create_user` then does
+    instead of a second copy of the rule that could drift from it. `created_at` is this moment, and
+    is the one field the later `create_user` does not keep: a profile records when the user was
+    added, not when a dry run guessed at them.
+
+    Raises:
+        ValueError: when `vault` is a user handle, as `create_user`.
+        UserProfileError: when `name` or `email` is not one this backend accepts.
+    """
+    if vault.user_id is not None:
+        raise ValueError(
+            f"this handle is the one of user {vault.user_id!r}: adding a user needs a root handle,"
+            " the one Vault.open returns"
+        )
+    validated_name = _validated_name(name)
+    return UserProfile(
+        id=unique_slug(_id_from_name(validated_name), user_ids(vault)),
+        name=validated_name,
+        email=_validated_email(email),
+        created_at=datetime.now(UTC),
+    )
+
+
 def create_user(vault: Vault, name: str, email: str | None = None) -> UserProfile:
     """Add a user to the vault: `users/<id>/profile.json` and the `subjects/` folder beside it.
 
     The id is `slugify(name)` with the first free numeric suffix when another user already has it,
     so two students called "Ana García" are two folders and neither one's notes are written over
     the other's. The name is stored trimmed, as it is validated, and the id derived from it stays
-    theirs for as long as the vault exists.
+    theirs for as long as the vault exists. `prospective_user` is this minus the writing.
 
     Raises:
         ValueError: when `vault` is a user handle. Adding somebody is a decision about the whole
@@ -127,22 +155,9 @@ def create_user(vault: Vault, name: str, email: str | None = None) -> UserProfil
             what creating the same user twice at once looks like; nothing is overwritten.
         OSError: when a directory cannot be made or a file cannot be written.
     """
-    if vault.user_id is not None:
-        raise ValueError(
-            f"this handle is the one of user {vault.user_id!r}: create_user needs a root handle,"
-            " the one Vault.open returns"
-        )
-    validated_name = _validated_name(name)
-    validated_email = _validated_email(email)
-    user_id = unique_slug(_id_from_name(validated_name), user_ids(vault))
-    directory = _user_directory(vault, user_id)
+    profile = prospective_user(vault, name, email)
+    directory = _user_directory(vault, profile.id)
     directory.mkdir(parents=True)
-    profile = UserProfile(
-        id=user_id,
-        name=validated_name,
-        email=validated_email,
-        created_at=datetime.now(UTC),
-    )
     write_json_atomic(directory / USER_PROFILE_NAME, profile)
     subjects = directory / SUBJECTS_DIRNAME
     subjects.mkdir()

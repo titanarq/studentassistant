@@ -771,6 +771,61 @@ class GitSync:
         self._schedule_push(self.settings.push_debounce_seconds)
         return listed[0] if listed else NotesTag(name=name, version=version, commit=commit)
 
+    def retag_notes(
+        self,
+        user_id: str | None,
+        subject_slug: str,
+        topic_slug: str,
+        tags: Sequence[NotesTag],
+        commit: str = "HEAD",
+    ) -> list[NotesTag]:
+        """Re-create `tags` as `user_id`'s notes versions of the topic, on `commit`.
+
+        Each new tag is annotated, on `commit` (HEAD by default), and keeps the version number and
+        the message of the one it copies: only the name changes, to the form that user's handle
+        writes and lists (`user_id=None` gives the repository's own unprefixed one). The tags
+        copied are left exactly as they were -- this adds names, it never moves or deletes one --
+        and a name that is taken already is skipped rather than refused, so re-creating twice does
+        the second time nothing. Nothing is committed and no push is scheduled: the caller owns
+        both, which for the migration that needs this is the one commit it makes and the
+        `push_now()` that follows it (`vault/migrate.py`, #548).
+
+        Copying rather than tagging the next free version is the point: a notes version a student
+        read by its tag, and a study label (`study/version.yaml`) that names one, keep the number
+        they were given when the content they tag moves into its user's folder.
+
+        Returns the new tags as git lists them, oldest version first; a skipped name is not in it.
+
+        Raises:
+            ValueError: when `subject_slug` or `topic_slug` is not a slug, or `commit` is not a
+                revision this vault may be asked about.
+            GitCommandError: when git refuses a tag, or another process kept git on the vault busy
+                past `timeout_seconds`.
+        """
+        _check_slugs(subject_slug, topic_slug)
+        _check_revision(commit)
+        created: set[str] = set()
+        with self._git_locked_or_raise():
+            for tag in tags:
+                name = notes_tag_name(subject_slug, topic_slug, tag.version, user_id)
+                if name == tag.name or self._tag_exists(name):
+                    continue
+                self.git.check(
+                    "tag",
+                    "--annotate",
+                    name,
+                    "--message",
+                    tag.message or f"apuntes v{tag.version}",
+                    commit,
+                )
+                created.add(name)
+            listed = self._list_tags_locked(user_id, subject_slug, topic_slug)
+        return [tag for tag in listed if tag.name in created]
+
+    def _tag_exists(self, name: str) -> bool:
+        """Whether `refs/tags/<name>` is taken; the caller holds the git lock."""
+        return self.git.run("rev-parse", "--verify", "--quiet", f"refs/tags/{name}").ok
+
     # -- reverting one commit's paths ----------------------------------------------------------
 
     def revert_paths(self, commit: str, paths: Sequence[str], message: str) -> str | None:

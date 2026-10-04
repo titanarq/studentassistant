@@ -3,91 +3,30 @@ the vault-relative ids they hand back are relative to it, not to the repository.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from pathlib import Path
-
 import pytest
-from pydantic import BaseModel
-from user_helpers import add_user, everything_under
+from user_helpers import (
+    GENERATED,
+    GENERATED_TEXT,
+    add_user,
+    everything_under,
+    handle_relative,
+    write_everything,
+)
 
 from studentassistant.vault import (
-    ConversationRecord,
-    LedgerEntry,
     Vault,
-    append_conversation_record,
-    append_ledger_entry,
-    create_subject,
-    create_topic,
-    end_session,
     list_generated,
     list_sources,
     list_subjects,
-    put_page_transcription,
-    put_pasted_image,
-    put_source,
     read_generated,
     read_notes,
     read_source,
-    set_book,
-    set_fidelity_mode,
-    set_style_guide,
-    start_session,
-    write_generated,
-    write_notes,
-    write_notes_draft,
-    write_observer_snapshot,
-    write_pending_review,
-    write_topic_digest,
 )
 from studentassistant.vault.locking import LOCKS_DIRNAME
-from studentassistant.vault.models import VaultFileModel
-from studentassistant.vault.study import append_study_record, write_study_file
 
-JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + bytes(range(32))
-PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(16))
-WHEN = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
-
-SUBJECT = "Matemáticas II"
-TOPIC = "Derivadas"
 # Both users below get these same two slugs on purpose: the point is that the same id names a
-# different file for each of them.
+# different file for each of them. They are the slugs `write_everything`'s default names give.
 SLUGS = ("matematicas-ii", "derivadas")
-GENERATED = "quiz.yaml"
-GENERATED_TEXT = "preguntas: []\n"
-
-
-class Snapshot(BaseModel):
-    """A stand-in for the observer's own model: `state.py` writes any `BaseModel`."""
-
-    last_seq: dict[str, int]
-    topics: list[str]
-
-
-class PendingReview(BaseModel):
-    open_count: int
-    items: list[str]
-
-
-class QuizAttempt(BaseModel):
-    score: int
-
-
-class StudyVersion(VaultFileModel):
-    label: str
-
-
-def ledger_entry(subject: str, topic: str) -> LedgerEntry:
-    return LedgerEntry.model_validate(
-        {
-            "time": WHEN,
-            "role": "editor",
-            "model": "claude-sonnet-test",
-            "input_tokens": 1200,
-            "output_tokens": 300,
-            "subject": subject,
-            "topic": topic,
-        }
-    )
 
 
 @pytest.fixture
@@ -98,75 +37,6 @@ def ana(tmp_vault: Vault) -> Vault:
 @pytest.fixture
 def luis(tmp_vault: Vault) -> Vault:
     return add_user(tmp_vault, "luis-martin", "Luis Martín")
-
-
-def _relative(vault: Vault, path: Path) -> str:
-    return path.relative_to(vault.path).as_posix()
-
-
-def write_everything(vault: Vault, text: str) -> list[Path]:
-    """One call of every writer family of `docs/modules/vault.md`, on the handle it is given.
-
-    Subjects, topics, sessions, sources, notes, state, conversations, ledger and study; `text` is
-    what this user's notes and web page say, so two users' content can be told apart. Returns the
-    paths the writers that return one handed back.
-    """
-    subject = create_subject(vault, SUBJECT).slug
-    set_style_guide(vault, subject, "Vectores en negrita.")
-    topic = create_topic(vault, subject, TOPIC).slug
-    set_fidelity_mode(vault, subject, topic, "ampliado")
-
-    session = start_session(vault, subject, topic, host="pc", protocol_version="1.0")
-    session.append_event("session_started", "phone")
-    session.append_transcript(0, 1200, text)
-    end_session(session)
-
-    page = put_source(
-        vault,
-        subject,
-        topic,
-        "notes",
-        "foto.jpg",
-        JPEG,
-        {"capture_id": "c1"},
-        derived={"page.jpg": JPEG},
-    )
-    transcription = put_page_transcription(vault, _relative(vault, page), f"# {text}\n")
-    put_source(vault, subject, topic, "book", "libro.jpg", JPEG, {"capture_id": "c2"})
-    set_book(vault, subject, topic, "Biología 2º Bachillerato")
-    put_source(
-        vault,
-        subject,
-        topic,
-        "pdf",
-        "tema.pdf",
-        b"%PDF-1.4 fake",
-        {"original_name": "tema.pdf"},
-        derived={"p001.txt": "aceleración media", "p001.jpg": JPEG},
-    )
-    put_source(
-        vault, subject, topic, "web", "Movimiento", f"# {text}\n", {"url": "https://x.invalid"}
-    )
-    pasted = put_pasted_image(vault, subject, topic, PNG, "image/png", added_at=WHEN)
-
-    append_conversation_record(
-        vault, subject, topic, "editor", ConversationRecord(time=WHEN, kind="context")
-    )
-    append_ledger_entry(vault, subject, topic, ledger_entry(subject, topic))
-
-    return [
-        page,
-        transcription,
-        pasted,
-        write_notes(vault, subject, topic, f"# {text}\n"),
-        write_notes_draft(vault, subject, topic, "un borrador"),
-        write_generated(vault, subject, topic, GENERATED, GENERATED_TEXT),
-        write_observer_snapshot(vault, subject, topic, Snapshot(last_seq={}, topics=[topic])),
-        write_pending_review(vault, subject, topic, PendingReview(open_count=1, items=["duda"])),
-        write_topic_digest(vault, subject, topic, f"# Resumen de {text}\n"),
-        append_study_record(vault, subject, topic, "quiz-results", QuizAttempt(score=8)),
-        write_study_file(vault, subject, topic, "version", StudyVersion(label="v1")),
-    ]
 
 
 def test_every_writer_of_a_user_handle_writes_inside_that_users_folder(
@@ -192,7 +62,7 @@ def test_every_writer_of_a_user_handle_writes_inside_that_users_folder(
         "the locks of a user handle's writers are the repository's, under its own .git/"
     )
     assert all(path.is_relative_to(ana.path) for path in paths)
-    assert _relative(ana, paths[0]) == (
+    assert handle_relative(ana, paths[0]) == (
         "subjects/matematicas-ii/topics/derivadas/sources/notes/page-001.jpg"
     ), "the path a writer returns is the one relative to the user's folder"
 
