@@ -40,7 +40,8 @@ from studentassistant.editor.versions import (
 )
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.notes_routes import NotesGenerator
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import WorkspaceHub
 from studentassistant.vault import (
     GitSync,
@@ -70,14 +71,7 @@ def versions_router() -> APIRouter:
     router = APIRouter()
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
@@ -123,15 +117,18 @@ def versions_router() -> APIRouter:
     ) -> RestoreResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         generator: NotesGenerator | None = request.app.state.notes
-        if generator is not None and not generator.claim(subject_id, topic_id):
+        if generator is not None and not generator.claim(
+            subject_id, topic_id, user_id=vault.user_id
+        ):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         sessions: SessionService = request.app.state.sessions
 
         async def publish(kind: str, payload: dict[str, Any]) -> None:
             active = sessions.active
-            if active is not None and (active.subject_id, active.topic_id) == (
-                subject_id,
-                topic_id,
+            if (
+                active is not None
+                and active.user_id == vault.user_id
+                and (active.subject_id, active.topic_id) == (subject_id, topic_id)
             ):
                 await sessions.bus.publish(active.session_id, kind, "editor", payload)
 
@@ -143,7 +140,7 @@ def versions_router() -> APIRouter:
             raise _http_error(error) from error
         finally:
             if generator is not None:
-                generator.release(subject_id, topic_id)
+                generator.release(subject_id, topic_id, user_id=vault.user_id)
         hub: WorkspaceHub = request.app.state.workspace
         hub.notes_changed(
             subject_id,
@@ -151,6 +148,7 @@ def versions_router() -> APIRouter:
             revision=result.revision,
             origin="restore",
             summary=f"Restaurada la versión {result.restored_version}.",
+            user_id=vault.user_id,
         )
         return result
 

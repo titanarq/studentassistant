@@ -57,7 +57,6 @@ def _run_session(local: TestClient, *ops: dict[str, object]) -> str:
     return session_id
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_ending_a_session_writes_the_digest_the_routes_serve(
     local: TestClient, user_vault: Vault
 ) -> None:
@@ -77,13 +76,10 @@ def test_ending_a_session_writes_the_digest_the_routes_serve(
         assert summary["digest_excerpt"] == body["excerpt"]
 
 
-def test_a_topic_without_a_digest_answers_null(local: TestClient, tmp_vault: Vault) -> None:
+def test_a_topic_without_a_digest_answers_null(local: TestClient, user_vault: Vault) -> None:
     with local:
-        # `GET .../digest` and `GET .../summary` are not user-scoped yet: they read the repository
-        # root (`SessionService.open_vault()`), so the topic they answer about is created there
-        # rather than through the user-scoped subject and topic routes (#550, moved by #551).
-        subject = create_subject(tmp_vault, "Física").slug
-        create_topic(tmp_vault, subject, "Óptica")
+        subject = create_subject(user_vault, "Física").slug
+        create_topic(user_vault, subject, "Óptica")
         body = local.get("/api/subjects/fisica/topics/optica/digest").json()
         assert body == {"subject_id": "fisica", "topic_id": "optica", "text": None, "excerpt": None}
         summary = local.get("/api/subjects/fisica/topics/optica/summary").json()
@@ -150,10 +146,10 @@ def test_the_observer_reads_the_stored_digest(
 
 
 def test_the_editor_gets_the_stored_digest(
-    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault, user_vault: Vault
 ) -> None:
-    topic = make_topic(tmp_vault)
-    write_topic_digest(tmp_vault, topic.subject, topic.topic, "# Resumen\n\nSesión 1: límites.\n")
+    topic = make_topic(user_vault)
+    write_topic_digest(user_vault, topic.subject, topic.topic, "# Resumen\n\nSesión 1: límites.\n")
     fake = FakeClaude()
     fake.reply_text(valid_notes(topic.session))
     app = create_app(

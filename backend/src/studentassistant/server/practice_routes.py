@@ -42,7 +42,7 @@ from studentassistant.generators.practice import (
     suspend_practice_item,
 )
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     GitSync,
     SubjectNotFoundError,
@@ -66,14 +66,7 @@ def practice_router() -> APIRouter:
     router = APIRouter()
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:

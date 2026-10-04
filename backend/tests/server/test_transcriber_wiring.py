@@ -122,14 +122,20 @@ def test_the_replayed_capture_is_transcribed_before_the_session_ends(
 
 
 def test_at_server_start_an_untranscribed_page_of_the_last_session_is_transcribed(
-    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    user_vault: Vault,
 ) -> None:
     # A session the previous run ended while its only page was still waiting for Claude.
-    subject = create_subject(tmp_vault, "Biología").slug
-    topic = create_topic(tmp_vault, subject, "La célula").slug
-    session = start_session(tmp_vault, subject, topic, "pc", PROTOCOL_VERSION)
-    stored = put_source(tmp_vault, subject, topic, "notes", "foto.jpg", b"\xff\xd8 not decoded", {})
-    source_path = stored.relative_to(tmp_vault.path).as_posix()
+    subject = create_subject(user_vault, "Biología").slug
+    topic = create_topic(user_vault, subject, "La célula").slug
+    session = start_session(user_vault, subject, topic, "pc", PROTOCOL_VERSION)
+    stored = put_source(
+        user_vault, subject, topic, "notes", "foto.jpg", b"\xff\xd8 not decoded", {}
+    )
+    source_path = stored.relative_to(user_vault.path).as_posix()
     session.append_event(
         CAPTURE_EVENT_KIND, "phone", {"capture_id": "cap-1", "source_path": source_path}
     )
@@ -149,4 +155,4 @@ def test_at_server_start_an_untranscribed_page_of_the_last_session_is_transcribe
 
     [request] = fake.requests
     assert request.role == "transcriber"
-    assert (tmp_vault.path / transcription_path(source_path)).is_file()
+    assert (user_vault.path / transcription_path(source_path)).is_file()

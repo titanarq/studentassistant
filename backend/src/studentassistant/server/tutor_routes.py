@@ -81,7 +81,6 @@ from studentassistant.server.errors import ApiError, caller_speaks_error_codes, 
 from studentassistant.server.generators_routes import MaterialGenerators, generate_material
 from studentassistant.server.notes_routes import NotesGenerator
 from studentassistant.server.revise_routes import sse
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
 from studentassistant.server.study_requests import (
     OPTION_TITLES,
     Clarification,
@@ -94,6 +93,7 @@ from studentassistant.server.study_requests import (
     started_text,
 )
 from studentassistant.server.study_routes import study_state
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     GitSync,
     SubjectNotFoundError,
@@ -177,19 +177,12 @@ def _exam_counts(vault: Vault, subject_id: str, topic_id: str, kind: str) -> dic
 
 def tutor_router() -> APIRouter:
     router = APIRouter()
-    running: set[tuple[str, str]] = set()
+    running: set[tuple[str | None, str, str]] = set()
     # The running questions, so one whose client went away is not garbage-collected.
     tasks: set[asyncio.Task[None]] = set()
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
@@ -429,7 +422,7 @@ def tutor_router() -> APIRouter:
         notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
         if not notes or not notes.strip():
             raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
-        key = (subject_id, topic_id)
+        key = (vault.user_id, subject_id, topic_id)
         if key in running:
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         running.add(key)

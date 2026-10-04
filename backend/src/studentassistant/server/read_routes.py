@@ -35,7 +35,7 @@ from studentassistant.observer import (
     topic_digest,
 )
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     SOURCE_KINDS,
     SVG_MEDIA_TYPE,
@@ -318,17 +318,10 @@ def _notes_version(sync: GitSync | None, subject_id: str, topic_id: str) -> int 
     return max((tag.version for tag in tags), default=None)
 
 
-def _service(request: Request) -> SessionService:
-    return request.app.state.sessions
-
-
 async def _vault(request: Request) -> Vault:
-    try:
-        return await _service(request).open_vault()
-    except VaultUnavailableError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-        ) from error
+    """The active user's handle (`active_user_vault`: 503, `user_required`, `user_not_found`)."""
+    vault, _sync = await active_user_vault(request)
+    return vault
 
 
 async def _read[T](function: Callable[..., T], *args: object) -> T:
@@ -381,8 +374,7 @@ def read_router() -> APIRouter:
     async def topic_summary(
         request: Request, subject_id: SubjectId, topic_id: TopicId
     ) -> TopicSummary:
-        vault = await _vault(request)
-        sync = _service(request).sync
+        vault, sync = await active_user_vault(request)
 
         def summarise() -> TopicSummary:
             sources = list_sources(vault, subject_id, topic_id)
@@ -447,8 +439,7 @@ def read_router() -> APIRouter:
         responses={404: {"description": "Unknown topic, or no notes written yet."}},
     )
     async def topic_notes(request: Request, subject_id: SubjectId, topic_id: TopicId) -> TopicNotes:
-        vault = await _vault(request)
-        sync = _service(request).sync
+        vault, sync = await active_user_vault(request)
         async with _not_found():
             text = await _read(read_notes, vault, subject_id, topic_id)
         if text is None:

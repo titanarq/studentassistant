@@ -31,7 +31,9 @@ NOW = datetime(2026, 9, 25, 18, 0, tzinfo=UTC)
 
 
 @pytest.fixture
-def app(devices_path: Path, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault) -> object:
+def app(
+    devices_path: Path, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault, user_vault: Vault
+) -> object:
     return create_app(
         static_dir=tmp_path / "no-web-build",
         server=ServerSettings(devices_path=devices_path, public_url=PUBLIC_URL),
@@ -75,11 +77,11 @@ def test_no_topics(client: TestClient) -> None:
     assert body["totals"] == {"due": 0, "new": 0, "topics": 0}
 
 
-def test_one_topic_due(client: TestClient, tmp_vault: Vault) -> None:
-    subject = create_subject(tmp_vault, "Matemáticas").slug
-    create_topic(tmp_vault, subject, "Sin material")  # omitted: neither flashcards nor quiz
-    topic, keys = _topic(tmp_vault, subject, "Derivadas", 3)
-    _review(tmp_vault, subject, topic, keys[0])  # `again` long ago: due now
+def test_one_topic_due(client: TestClient, user_vault: Vault) -> None:
+    subject = create_subject(user_vault, "Matemáticas").slug
+    create_topic(user_vault, subject, "Sin material")  # omitted: neither flashcards nor quiz
+    topic, keys = _topic(user_vault, subject, "Derivadas", 3)
+    _review(user_vault, subject, topic, keys[0])  # `again` long ago: due now
 
     body = client.get("/api/practice/summary").json()
     assert body["topics"] == [
@@ -98,23 +100,23 @@ def test_one_topic_due(client: TestClient, tmp_vault: Vault) -> None:
     assert client.get("/api/practice/summary", params={"new_limit": 500}).status_code == 422
 
 
-def test_several_topics_sorted_by_due_and_suspended_items_left_out(tmp_vault: Vault) -> None:
-    maths = create_subject(tmp_vault, "Matemáticas").slug
-    physics = create_subject(tmp_vault, "Física").slug
-    one, one_keys = _topic(tmp_vault, maths, "Derivadas", 2)
-    three, three_keys = _topic(tmp_vault, physics, "Cinemática", 4)
-    none, _ = _topic(tmp_vault, maths, "Integrales", 1)
+def test_several_topics_sorted_by_due_and_suspended_items_left_out(user_vault: Vault) -> None:
+    maths = create_subject(user_vault, "Matemáticas").slug
+    physics = create_subject(user_vault, "Física").slug
+    one, one_keys = _topic(user_vault, maths, "Derivadas", 2)
+    three, three_keys = _topic(user_vault, physics, "Cinemática", 4)
+    none, _ = _topic(user_vault, maths, "Integrales", 1)
     for key in one_keys[:1]:
-        _review(tmp_vault, maths, one, key)
+        _review(user_vault, maths, one, key)
     for key in three_keys[:3]:
-        _review(tmp_vault, physics, three, key)
-    path = study_log_path(tmp_vault, physics, three, "practice")
+        _review(user_vault, physics, three, key)
+    path = study_log_path(user_vault, physics, three, "practice")
     append_jsonl(  # set aside: neither due nor new
         path,
         PracticeSuspension(time=PAST, item=three_keys[3], source="flashcards", action="suspend"),
     )
 
-    summary = practice_summary(tmp_vault, now=NOW)
+    summary = practice_summary(user_vault, now=NOW)
     assert [(t.topic_id, t.due, t.new) for t in summary.topics] == [
         (three, 3, 0),
         (one, 1, 1),
@@ -123,19 +125,19 @@ def test_several_topics_sorted_by_due_and_suspended_items_left_out(tmp_vault: Va
     assert (summary.totals.due, summary.totals.new, summary.totals.topics) == (4, 2, 3)
     assert summary.warnings == []
 
-    _review(tmp_vault, maths, none, flashcard_item_key("c00000000"), rating="good")
-    later = practice_summary(tmp_vault, now=PAST + timedelta(hours=1))
+    _review(user_vault, maths, none, flashcard_item_key("c00000000"), rating="good")
+    later = practice_summary(user_vault, now=PAST + timedelta(hours=1))
     integrals = next(t for t in later.topics if t.topic_id == none)
     assert integrals.due == 0 and integrals.next_due == PAST + timedelta(days=1)
 
 
 def test_an_unreadable_topic_is_skipped_with_a_warning(
-    client: TestClient, tmp_vault: Vault
+    client: TestClient, user_vault: Vault
 ) -> None:
-    subject = create_subject(tmp_vault, "Matemáticas").slug
-    good, _ = _topic(tmp_vault, subject, "Derivadas", 1)
-    broken, _ = _topic(tmp_vault, subject, "Límites", 0)
-    write_generated(tmp_vault, subject, broken, YAML_NAME, "cards: [no es un mazo")
+    subject = create_subject(user_vault, "Matemáticas").slug
+    good, _ = _topic(user_vault, subject, "Derivadas", 1)
+    broken, _ = _topic(user_vault, subject, "Límites", 0)
+    write_generated(user_vault, subject, broken, YAML_NAME, "cards: [no es un mazo")
 
     response = client.get("/api/practice/summary")
     assert response.status_code == 200, response.text

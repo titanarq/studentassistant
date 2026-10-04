@@ -34,7 +34,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_the_sample_case_is_replayed_scored_and_reported(home: Path) -> None:
     directory = make_case(home / "evals")
     write_requests(directory)

@@ -30,8 +30,6 @@ from studentassistant.server.ws import CLOSE_UNKNOWN_SESSION
 from studentassistant.vault import (
     Event,
     Vault,
-    create_subject,
-    create_topic,
     read_jsonl,
     read_notes,
 )
@@ -377,11 +375,6 @@ def test_an_idle_end_generates_nothing(
         llm_transport=fake,
         llm_settings=Settings(observer=ObserverSettings(enabled=False)),
     )
-    # A generation would write the notes through the repository's root handle, which is what
-    # `NotesGenerator` still uses (`SessionService.open_vault()`) until #551 moves it under the
-    # user, so the topic is created there too for that handle to be checkable at all.
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, "fisica", "Cinemática")
     for live in enter(app, user_vault):
         session_id = live.start()
         live.clock.advance(GRACE)
@@ -389,8 +382,7 @@ def test_an_idle_end_generates_nothing(
         generator = app.state.notes
         assert generator is not None
     assert fake.requests == []
-    assert read_notes(tmp_vault, "fisica", "cinematica") is None
-    # The student's own folder stays empty of notes too, which is where #551 will write them.
+    # A generation would have written the notes in the student's own folder.
     assert read_notes(user_vault, "fisica", "cinematica") is None
 
 

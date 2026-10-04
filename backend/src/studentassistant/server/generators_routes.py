@@ -52,7 +52,7 @@ from studentassistant.llm import (
 )
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import cost_cap_error
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     GitSync,
     NotesError,
@@ -101,22 +101,26 @@ class GenerateMaterialRequest(BaseModel):
 
 
 class MaterialGenerators:
-    """What the generate route needs: settings, transport and one lock per topic and kind."""
+    """What the generate route needs: settings, transport and a lock per student, topic and kind."""
 
     def __init__(self, settings: Settings, transport: Transport) -> None:
         self.settings = settings
         self.transport = transport
-        self._running: set[tuple[str, str, str]] = set()
+        self._running: set[tuple[str | None, str, str, str]] = set()
 
-    def claim(self, subject_id: str, topic_id: str, kind: str) -> bool:
-        key = (subject_id, topic_id, kind)
+    def claim(
+        self, subject_id: str, topic_id: str, kind: str, *, user_id: str | None = None
+    ) -> bool:
+        key = (user_id, subject_id, topic_id, kind)
         if key in self._running:
             return False
         self._running.add(key)
         return True
 
-    def release(self, subject_id: str, topic_id: str, kind: str) -> None:
-        self._running.discard((subject_id, topic_id, kind))
+    def release(
+        self, subject_id: str, topic_id: str, kind: str, *, user_id: str | None = None
+    ) -> None:
+        self._running.discard((user_id, subject_id, topic_id, kind))
 
 
 async def generate_material(
@@ -142,7 +146,7 @@ async def generate_material(
             no notes 409, a reached cost cap `ApiError` 409 `cost_cap_reached` (until
             `confirm_over_cap`), a Claude refusal or failure 502.
     """
-    if not service.claim(subject_id, topic_id, kind):
+    if not service.claim(subject_id, topic_id, kind, user_id=vault.user_id):
         raise HTTPException(status_code=409, detail=BUSY_DETAIL)
     try:
         client = get_client(
@@ -175,7 +179,7 @@ async def generate_material(
         logger.warning("generation of %s for %s/%s failed: %s", kind, subject_id, topic_id, error)
         raise HTTPException(status_code=502, detail=FAILED_DETAIL) from error
     finally:
-        service.release(subject_id, topic_id, kind)
+        service.release(subject_id, topic_id, kind, user_id=vault.user_id)
 
 
 def generators_router() -> APIRouter:
@@ -185,14 +189,7 @@ def generators_router() -> APIRouter:
         return request.app.state.generators
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:

@@ -18,12 +18,12 @@ LOCAL_BASE_URL = "http://localhost:8765"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    topic = make_revise_topic(tmp_vault)
-    sync = GitSync(tmp_vault)
+def topic(tmp_vault: Vault, user_vault: Vault, student_user_id: str) -> ReviseTopic:
+    topic = make_revise_topic(user_vault)
+    sync = GitSync(tmp_vault).for_user(student_user_id)
     sync.create_notes_tag(topic.subject, topic.topic, "Apuntes v1")
     write_notes(
-        tmp_vault,
+        user_vault,
         topic.subject,
         topic.topic,
         topic.notes.replace("Se escribe $f'(x)$.", "Se escribe $f'(x)$ o df/dx."),

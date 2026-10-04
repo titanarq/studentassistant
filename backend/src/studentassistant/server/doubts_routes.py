@@ -67,7 +67,8 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.doubt_chat import DoubtChat, ShownDoubt
 from studentassistant.server.errors import ApiError, cost_cap_error
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     GitSync,
     SubjectNotFoundError,
@@ -123,17 +124,10 @@ def _code(error: DoubtError) -> ErrorCode | None:
 
 def doubts_router() -> APIRouter:
     router = APIRouter()
-    running: set[tuple[str, str]] = set()
+    running: set[tuple[str | None, str, str]] = set()
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
@@ -142,19 +136,19 @@ def doubts_router() -> APIRouter:
 
     @asynccontextmanager
     async def exclusive(
-        request: Request, subject_id: str, topic_id: str, *, editor: bool
+        request: Request, user_id: str | None, subject_id: str, topic_id: str, *, editor: bool
     ) -> AsyncIterator[NotesGenerator | None]:
         """One doubts operation of the topic at a time; `editor` ones also take the notes lock."""
         generator: NotesGenerator | None = request.app.state.notes
         if editor and generator is None:
             raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
-        key = (subject_id, topic_id)
+        key = (user_id, subject_id, topic_id)
         if key in running:
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         if (
             editor
             and generator is not None
-            and not generator.claim(subject_id, topic_id, TURN_HOLDER)
+            and not generator.claim(subject_id, topic_id, TURN_HOLDER, user_id=user_id)
         ):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         running.add(key)
@@ -175,7 +169,7 @@ def doubts_router() -> APIRouter:
         finally:
             running.discard(key)
             if editor and generator is not None:
-                generator.release(subject_id, topic_id)
+                generator.release(subject_id, topic_id, user_id=user_id)
 
     def doubt_chat(request: Request) -> DoubtChat:
         chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
@@ -206,10 +200,10 @@ def doubts_router() -> APIRouter:
     async def ask(
         request: Request, subject_id: SubjectId, topic_id: TopicId, pending_id: PendingId
     ) -> ShownDoubt:
-        await open_topic(request, subject_id, topic_id)
+        vault, _sync = await open_topic(request, subject_id, topic_id)
         chat = doubt_chat(request)
-        async with exclusive(request, subject_id, topic_id, editor=False):
-            return await chat.show(subject_id, topic_id, pending_id)
+        async with exclusive(request, vault.user_id, subject_id, topic_id, editor=False):
+            return await chat.show(subject_id, topic_id, pending_id, user_id=vault.user_id)
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/review")
     async def review(
@@ -221,7 +215,9 @@ def doubts_router() -> APIRouter:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
         chat = doubt_chat(request)
-        async with exclusive(request, subject_id, topic_id, editor=True) as generator:
+        async with exclusive(
+            request, vault.user_id, subject_id, topic_id, editor=True
+        ) as generator:
             assert generator is not None
             result = await review_doubts(
                 vault,
@@ -231,10 +227,10 @@ def doubts_router() -> APIRouter:
                 sync=sync,
                 host=sessions.host,
                 confirm_over_cap=bool(body and body.confirm_over_cap),
-                live=chat.live(subject_id, topic_id),
+                live=chat.live(subject_id, topic_id, user_id=vault.user_id),
             )
-        chat.reviewed(subject_id, topic_id, result)
-        chat.schedule(subject_id, topic_id)
+        chat.reviewed(subject_id, topic_id, result, user_id=vault.user_id)
+        chat.schedule(subject_id, topic_id, user_id=vault.user_id)
         return result
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/{pending_id}/answer")
@@ -248,7 +244,9 @@ def doubts_router() -> APIRouter:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
         chat = doubt_chat(request)
-        async with exclusive(request, subject_id, topic_id, editor=True) as generator:
+        async with exclusive(
+            request, vault.user_id, subject_id, topic_id, editor=True
+        ) as generator:
             assert generator is not None
             result = await answer_doubt(
                 vault,
@@ -260,10 +258,10 @@ def doubts_router() -> APIRouter:
                 sync=sync,
                 host=sessions.host,
                 confirm_over_cap=body.confirm_over_cap,
-                live=chat.live(subject_id, topic_id),
+                live=chat.live(subject_id, topic_id, user_id=vault.user_id),
             )
-        chat.resolved(subject_id, topic_id, result)
-        chat.schedule(subject_id, topic_id)
+        chat.resolved(subject_id, topic_id, result, user_id=vault.user_id)
+        chat.schedule(subject_id, topic_id, user_id=vault.user_id)
         return result
 
     @router.post("/api/subjects/{subject_id}/topics/{topic_id}/doubts/{pending_id}/dismiss")
@@ -273,7 +271,7 @@ def doubts_router() -> APIRouter:
         vault, sync = await open_topic(request, subject_id, topic_id)
         sessions: SessionService = request.app.state.sessions
         chat = doubt_chat(request)
-        async with exclusive(request, subject_id, topic_id, editor=False):
+        async with exclusive(request, vault.user_id, subject_id, topic_id, editor=False):
             result = await dismiss_doubt(
                 vault,
                 subject_id,
@@ -281,10 +279,10 @@ def doubts_router() -> APIRouter:
                 pending_id,
                 sync=sync,
                 host=sessions.host,
-                live=chat.live(subject_id, topic_id),
+                live=chat.live(subject_id, topic_id, user_id=vault.user_id),
             )
-        chat.resolved(subject_id, topic_id, result)
-        chat.schedule(subject_id, topic_id)
+        chat.resolved(subject_id, topic_id, result, user_id=vault.user_id)
+        chat.schedule(subject_id, topic_id, user_id=vault.user_id)
         return result
 
     return router

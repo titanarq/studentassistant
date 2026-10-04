@@ -24,8 +24,8 @@ AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    return make_revise_topic(user_vault)
 
 
 def _base(topic: ReviseTopic) -> str:
@@ -161,7 +161,7 @@ def test_errors_before_the_stream(
     assert client.post(_base(topic), json={"message": ""}).status_code == 422
     missing = client.post("/api/subjects/nada/topics/nada/notes/chat", json={"message": "Hola"})
     assert missing.status_code == 404
-    bare = create_topic(tmp_vault, topic.subject, "Integrales").slug
+    bare = create_topic(topic.vault, topic.subject, "Integrales").slug
     # A chat turn starts the notes of a bare topic; "¿por qué?" needs notes.
     no_notes = client.post(
         f"/api/subjects/{topic.subject}/topics/{bare}/notes/why", json={"block": 1}

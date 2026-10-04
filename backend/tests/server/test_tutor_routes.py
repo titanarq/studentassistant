@@ -29,8 +29,8 @@ AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    return make_revise_topic(user_vault)
 
 
 def _base(topic: ReviseTopic) -> str:
@@ -159,7 +159,7 @@ def test_a_reached_cap_is_a_coded_error_until_confirmed(
 
 
 def test_errors_before_the_stream(
-    client: TestClient, make_app: AppFactory, tmp_vault: Vault, topic: ReviseTopic
+    client: TestClient, make_app: AppFactory, user_vault: Vault, topic: ReviseTopic
 ) -> None:
     assert client.post(_base(topic), json={"question": ""}).status_code == 422
     blank = client.post(_base(topic), json={"question": "   "})
@@ -168,7 +168,7 @@ def test_errors_before_the_stream(
     missing = client.post("/api/subjects/nada/topics/nada/tutor", json={"question": "Hola"})
     assert missing.status_code == 404
     assert client.get("/api/subjects/nada/topics/nada/tutor").status_code == 404
-    bare = create_topic(tmp_vault, topic.subject, "Integrales").slug
+    bare = create_topic(user_vault, topic.subject, "Integrales").slug
     no_notes = client.post(
         f"/api/subjects/{topic.subject}/topics/{bare}/tutor", json={"question": "Hola"}
     )

@@ -145,9 +145,9 @@ def _requests_written(topic: GenerateTopic) -> list[dict[str, Any]]:
 
 
 def test_a_selection_outside_the_topic_or_too_long_is_refused(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_topic(tmp_vault)
+    topic = make_topic(user_vault)
     with _client(make_app(fake, max_selected_sources=2)) as client:
         url = _url(topic)
         unknown = client.post(
@@ -175,9 +175,9 @@ def test_a_selection_outside_the_topic_or_too_long_is_refused(
 
 
 def test_a_message_without_a_selection_is_as_before_and_says_nothing_is_selected(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake, {"kind": "edit", "summary": "Poner la definición en negrita"})
     fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Vale.")
     response = client.post(_url(topic), json={"text": "pon la definición en negrita"})
@@ -193,9 +193,9 @@ def test_a_message_without_a_selection_is_as_before_and_says_nothing_is_selected
 
 
 def test_the_selection_is_the_referent_of_an_incorporation(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_topic(tmp_vault)
+    topic = make_topic(user_vault)
     subscription = _subscribe(client, topic)
     _classify(
         fake,
@@ -257,9 +257,9 @@ def test_the_selection_is_the_referent_of_an_incorporation(
 
 
 def test_nothing_selected_and_nothing_named_asks_back_in_spanish(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     subscription = _subscribe(client, topic)
     _classify(fake, {"kind": "question", "summary": ASK_BACK})
     fake.reply_text(ASK_BACK)
@@ -280,9 +280,9 @@ def test_nothing_selected_and_nothing_named_asks_back_in_spanish(
 
 
 def test_an_edit_gets_the_selected_pages_first_marked_with_their_images(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake, {"kind": "edit", "summary": "Reescribir con el texto de la captura"})
     fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Lo reescribo.")
 
@@ -315,9 +315,9 @@ def test_an_edit_gets_the_selected_pages_first_marked_with_their_images(
 
 
 def test_a_selected_pdf_cannot_be_set_aside_and_the_rest_is(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_multi_source_topic(tmp_vault)
+    topic = make_multi_source_topic(user_vault)
     subscription = _subscribe(client, topic)  # type: ignore[arg-type]
     _classify(
         fake,
@@ -349,9 +349,9 @@ def test_a_selected_pdf_cannot_be_set_aside_and_the_rest_is(
 
 
 def test_a_pdf_named_without_a_selection_is_still_refused_for_a_set_aside(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_multi_source_topic(tmp_vault)
+    topic = make_multi_source_topic(user_vault)
     with _client(make_app(fake, llm=LlmSettings(structured_reasks=0))) as client:
         _classify(fake, {"kind": "set_aside", "summary": "Apartar el PDF", "targets": [PDF_ID]})
         fake.reply_text("Vale.")  # the kept text, answered by the editor
@@ -377,9 +377,9 @@ class _ScriptedClassifier:
 
 
 def test_an_edit_stopped_at_the_cap_keeps_its_selection_when_confirmed(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     app = make_app(fake, llm=LlmSettings(max_usd_per_day=0))
     with _client(app) as client:
         classifier = _ScriptedClassifier(

@@ -67,7 +67,7 @@ from studentassistant.server.assistant_requests import (
 )
 from studentassistant.server.revise_routes import sse
 from studentassistant.server.serving import until_shutdown
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import WorkspaceClosedError, WorkspaceHub
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, get_topic
 
@@ -118,10 +118,11 @@ async def workspace_events(
     subject_id: str,
     topic_id: str,
     *,
+    user_id: str | None = None,
     keepalive: float = KEEPALIVE_SECONDS,
 ) -> AsyncIterator[bytes]:
-    """The topic's stream (see the module docstring); subscribes on the first iteration."""
-    subscription = hub.subscribe(subject_id, topic_id)
+    """The user's topic stream (see the module docstring); subscribes on the first iteration."""
+    subscription = hub.subscribe(subject_id, topic_id, user_id=user_id)
     try:
         yield CONNECTED
         while True:
@@ -147,20 +148,17 @@ def workspace_router() -> APIRouter:
     async def stream(
         request: Request, subject_id: SubjectId, topic_id: TopicId
     ) -> StreamingResponse:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
+        vault, _ = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
+        user_id = vault.user_id
         hub: WorkspaceHub = request.app.state.workspace
         keepalive: float = getattr(request.app.state, "workspace_keepalive", KEEPALIVE_SECONDS)
         return StreamingResponse(
             until_shutdown(
-                workspace_events(hub, subject_id, topic_id, keepalive=keepalive),
+                workspace_events(hub, subject_id, topic_id, user_id=user_id, keepalive=keepalive),
                 request.app.state.shutdown,
             ),
             media_type="text/event-stream",
@@ -176,18 +174,14 @@ def workspace_router() -> APIRouter:
         consumer: AssistantRequestConsumer | None = request.app.state.assistant_requests
         if consumer is None:
             raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
+        vault, _ = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
         if body.turn_id is not None:
             try:
-                return consumer.confirm(subject_id, topic_id, body.turn_id)
+                return consumer.confirm(subject_id, topic_id, body.turn_id, user_id=vault.user_id)
             except NotStoppedError as error:
                 raise HTTPException(status_code=404, detail=NOT_STOPPED_DETAIL) from error
         selected: list[str] = []
@@ -201,7 +195,12 @@ def workspace_router() -> APIRouter:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         classifier: MessageClassifier | None = request.app.state.message_classifier
         return await consumer.post_message(
-            subject_id, topic_id, body.text or "", classifier, selected=selected
+            subject_id,
+            topic_id,
+            body.text or "",
+            classifier,
+            selected=selected,
+            user_id=vault.user_id,
         )
 
     return router

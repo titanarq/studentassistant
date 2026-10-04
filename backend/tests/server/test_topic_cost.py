@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from studentassistant.config import ServerSettings, VaultSettings
+from studentassistant.server.app import create_app
 from studentassistant.vault import (
     LedgerEntry,
     Vault,
@@ -21,9 +23,9 @@ GONE_SESSION = "20260920-080000"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> tuple[str, str]:
-    subject = create_subject(tmp_vault, "Matemáticas").slug
-    return subject, create_topic(tmp_vault, subject, "Derivadas").slug
+def topic(user_vault: Vault) -> tuple[str, str]:
+    subject = create_subject(user_vault, "Matemáticas").slug
+    return subject, create_topic(user_vault, subject, "Derivadas").slug
 
 
 @pytest.fixture(autouse=True)
@@ -61,15 +63,15 @@ def path(topic: tuple[str, str]) -> str:
 
 
 def test_sums_per_session_and_without_one(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str]
+    local: TestClient, user_vault: Vault, topic: tuple[str, str]
 ) -> None:
-    meta = start_session(tmp_vault, *topic, "pc", "1.1").meta
-    seed(tmp_vault, topic, 0.25, session=meta.id)
-    seed(tmp_vault, topic, 0.5, session=meta.id)
-    seed(tmp_vault, topic, 1.0, session=None, role="editor")
-    seed(tmp_vault, topic, None, session=None, role="generator")
+    meta = start_session(user_vault, *topic, "pc", "1.1").meta
+    seed(user_vault, topic, 0.25, session=meta.id)
+    seed(user_vault, topic, 0.5, session=meta.id)
+    seed(user_vault, topic, 1.0, session=None, role="editor")
+    seed(user_vault, topic, None, session=None, role="generator")
     first = datetime(2026, 9, 20, 8, 1, tzinfo=UTC)
-    seed(tmp_vault, topic, 0.125, session=GONE_SESSION, time=first)
+    seed(user_vault, topic, 0.125, session=GONE_SESSION, time=first)
 
     response = local.get(path(topic))
 
@@ -103,9 +105,9 @@ def test_sums_per_session_and_without_one(
 
 
 def test_a_topic_without_spend_lists_its_sessions_at_zero(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str]
+    local: TestClient, user_vault: Vault, topic: tuple[str, str]
 ) -> None:
-    meta = start_session(tmp_vault, *topic, "pc", "1.1").meta
+    meta = start_session(user_vault, *topic, "pc", "1.1").meta
 
     body = local.get(path(topic)).json()
 
@@ -132,10 +134,15 @@ def test_a_malformed_id_is_422(local: TestClient) -> None:
     assert local.get("/api/subjects/Mal%20Id/topics/derivadas/cost").status_code == 422
 
 
-def test_a_missing_vault_is_503(local: TestClient, tmp_path: Path, isolated_config: Path) -> None:
-    isolated_config.write_text(f'[vault]\npath = "{tmp_path / "nowhere"}"\n', encoding="utf-8")
+def test_a_missing_vault_is_503(server: ServerSettings, tmp_path: Path) -> None:
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=server,
+        vault_settings=VaultSettings(path=tmp_path / "nowhere"),
+    )
+    client = TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 50000))
 
-    response = local.get("/api/subjects/matematicas/topics/derivadas/cost")
+    response = client.get("/api/subjects/matematicas/topics/derivadas/cost")
 
     assert response.status_code == 503
     assert response.json()["detail"] == "No se puede abrir la bóveda."

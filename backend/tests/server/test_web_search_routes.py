@@ -33,9 +33,9 @@ AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> tuple[str, str]:
-    subject = create_subject(tmp_vault, "Historia").slug
-    return subject, create_topic(tmp_vault, subject, "La Revolución francesa").slug
+def topic(user_vault: Vault) -> tuple[str, str]:
+    subject = create_subject(user_vault, "Historia").slug
+    return subject, create_topic(user_vault, subject, "La Revolución francesa").slug
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def _wait_done(client: TestClient, topic: tuple[str, str], search_id: str) -> di
 
 
 def test_search_then_keep_a_result(
-    client: TestClient, fake: FakeClaude, topic: tuple[str, str], tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, topic: tuple[str, str], user_vault: Vault
 ) -> None:
     assert client.get(_base(topic)).json() == {"searches": []}
     search_reply(fake)
@@ -106,7 +106,7 @@ def test_search_then_keep_a_result(
     body = kept.json()
     assert body["source_id"] == "sources/web/001-toma-de-la-bastilla.md"
     assert body["url"] == HITS[0][0] and body["title"] == "Toma de la Bastilla"
-    assert PAGE_TEXT in read_source(tmp_vault, body["vault_id"]).content.decode()
+    assert PAGE_TEXT in read_source(user_vault, body["vault_id"]).content.decode()
     (listed,) = client.get(_base(topic)).json()["searches"]
     assert listed["kept"][0]["source_id"] == body["source_id"]
 
@@ -129,7 +129,7 @@ def test_refusals(client: TestClient, fake: FakeClaude, topic: tuple[str, str]) 
 
 
 def test_without_a_transport_searching_is_unavailable(
-    make_app: AppFactory, topic: tuple[str, str], tmp_vault: Vault
+    make_app: AppFactory, topic: tuple[str, str], user_vault: Vault
 ) -> None:
     with _client(make_app(None)) as client:
         assert client.get(_base(topic)).json() == {"searches": []}
@@ -137,7 +137,7 @@ def test_without_a_transport_searching_is_unavailable(
         assert refused.status_code == 503 and "no está disponible" in refused.json()["detail"]
     with _client(make_app(FakeClaude(), SourcesSettings(web_search_enabled=False))) as client:
         assert client.post(_base(topic), json={"query": "bastilla"}).status_code == 503
-    assert list_sources(tmp_vault, *topic) == []
+    assert list_sources(user_vault, *topic) == []
 
 
 def _pages(topic: tuple[str, str]) -> str:
@@ -151,7 +151,7 @@ def _check_contract(name: str, body: dict) -> None:
 
 
 def test_add_a_web_page_by_its_url(
-    client: TestClient, fake: FakeClaude, topic: tuple[str, str], tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, topic: tuple[str, str], user_vault: Vault
 ) -> None:
     url = HITS[1][0]
     request = {"url": url, "via": "share"}
@@ -168,7 +168,7 @@ def test_add_a_web_page_by_its_url(
         "url": url,
         "already_kept": False,
     }
-    stored = read_source(tmp_vault, body["vault_id"])
+    stored = read_source(user_vault, body["vault_id"])
     assert PAGE_TEXT in stored.content.decode()
     assert stored.meta is not None and stored.meta["added_via"] == "share"
 
@@ -178,7 +178,7 @@ def test_add_a_web_page_by_its_url(
 
 
 def test_add_a_web_page_refusals(
-    client: TestClient, fake: FakeClaude, topic: tuple[str, str], tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, topic: tuple[str, str], user_vault: Vault
 ) -> None:
     assert client.post(_pages(topic), json={"url": "ftp://example.org"}).status_code == 422
     assert client.post(_pages(topic), json={"url": "https://x.org", "via": "x"}).status_code == 422
@@ -187,7 +187,7 @@ def test_add_a_web_page_refusals(
     fetch_reply(fake, HITS[0][0], error_code="url_not_accessible")
     failed = client.post(_pages(topic), json={"url": HITS[0][0]})
     assert failed.status_code == 422 and "url_not_accessible" in failed.json()["detail"]
-    assert list_sources(tmp_vault, *topic) == []
+    assert list_sources(user_vault, *topic) == []
 
 
 def test_add_a_web_page_over_the_cost_cap(

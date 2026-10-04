@@ -28,16 +28,9 @@ LOCAL_BASE_URL = "http://localhost:8765"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault, user_vault: Vault) -> GenerateTopic:
-    """The fixture topic in both scopes, while the migration to per-user content is underway.
-
-    `POST /api/sessions` is user-scoped (#550), so the subject and the topic have to be in the one
-    student's folder for a start to be accepted; `notes/generate` and its `read_notes` still go
-    through the repository root (`SessionService.open_vault()`) until #551. The handle returned is
-    the root one, which is what the generation assertions read.
-    """
-    make_topic(user_vault)
-    return make_topic(tmp_vault)
+def topic(user_vault: Vault) -> GenerateTopic:
+    """The fixture topic, in the one student's folder: every content route is user-scoped."""
+    return make_topic(user_vault)
 
 
 def _route(topic: GenerateTopic) -> str:
@@ -90,7 +83,8 @@ def test_generates_tags_and_answers_the_result(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["draft"] is False and body["version"] == 1
-    assert body["tag"] == f"{topic.subject}/{topic.topic}/apuntes-v1"
+    # The tag carries the user: the repository holds every student's notes (#551).
+    assert body["tag"] == f"{topic.vault.user_id}/{topic.subject}/{topic.topic}/apuntes-v1"
     assert body["model"] == "claude-sonnet-5-5"
     assert read_notes(topic.vault, topic.subject, topic.topic) == valid_notes(topic.session)
     assert fake.requests[0].role == "editor"

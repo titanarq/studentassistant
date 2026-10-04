@@ -49,7 +49,8 @@ from studentassistant.protocol import ErrorCode
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import ApiError, caller_speaks_error_codes
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import WorkspaceHub
 from studentassistant.vault import (
     GitSync,
@@ -222,30 +223,22 @@ def notes_edit_router() -> APIRouter:
     router = APIRouter(prefix="/api")
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, UNKNOWN_TOPIC_DETAIL) from error
         return vault, sync
 
-    def publisher(request: Request, subject_id: str, topic_id: str) -> Any:
+    def publisher(request: Request, user_id: str | None, subject_id: str, topic_id: str) -> Any:
         sessions: SessionService = request.app.state.sessions
 
         async def publish(kind: str, payload: dict[str, Any]) -> None:
             active = sessions.active
-            if active is not None and (active.subject_id, active.topic_id) == (
-                subject_id,
-                topic_id,
+            if (
+                active is not None
+                and active.user_id == user_id
+                and (active.subject_id, active.topic_id) == (subject_id, topic_id)
             ):
                 await sessions.bus.publish(active.session_id, kind, "user", payload)
 
@@ -265,7 +258,9 @@ def notes_edit_router() -> APIRouter:
     ) -> StudentEditResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         generator: NotesGenerator | None = request.app.state.notes
-        if generator is not None and generator.holder(subject_id, topic_id) not in (
+        if generator is not None and generator.holder(
+            subject_id, topic_id, user_id=vault.user_id
+        ) not in (
             None,
             TURN_HOLDER,
         ):
@@ -278,7 +273,7 @@ def notes_edit_router() -> APIRouter:
                 body.text,
                 body.base_revision,
                 sync=sync,
-                on_event=publisher(request, subject_id, topic_id),
+                on_event=publisher(request, vault.user_id, subject_id, topic_id),
             )
         except NotesChangedError as error:
             content: dict[str, Any] = {
@@ -304,6 +299,7 @@ def notes_edit_router() -> APIRouter:
                 revision=result.revision,
                 origin="user",
                 summary=_save_summary(result.changed_sections),
+                user_id=vault.user_id,
             )
         return result
 

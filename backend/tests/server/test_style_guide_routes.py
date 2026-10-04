@@ -17,8 +17,8 @@ LOCAL_BASE_URL = "http://localhost:8765"
 
 
 @pytest.fixture
-def subject(tmp_vault: Vault) -> str:
-    return create_subject(tmp_vault, "Historia", style_guide="Fechas en negrita.").slug
+def subject(user_vault: Vault) -> str:
+    return create_subject(user_vault, "Historia", style_guide="Fechas en negrita.").slug
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def client(
 
 
 def test_list_confirm_and_edit_the_rules(
-    client: TestClient, tmp_vault: Vault, subject: str
+    client: TestClient, user_vault: Vault, subject: str
 ) -> None:
     base = f"/api/subjects/{subject}/style-guide"
 
@@ -56,7 +56,7 @@ def test_list_confirm_and_edit_the_rules(
 
     edited = client.put(base, json={"rules": ["Usa tablas para comparar."]})
     assert edited.status_code == 200 and edited.json()["rules"] == ["Usa tablas para comparar."]
-    assert get_subject(tmp_vault, subject).subject.style_guide == "- Usa tablas para comparar.\n"
+    assert get_subject(user_vault, subject).subject.style_guide == "- Usa tablas para comparar.\n"
 
 
 def test_errors(client: TestClient, subject: str) -> None:

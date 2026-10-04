@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from read_api_fixtures import ReadVault
 
 from studentassistant.editor.notes_format import notes_revision
-from studentassistant.vault import GitSync, create_subject, create_topic, notes_path
+from studentassistant.vault import GitSync, Vault, create_subject, create_topic, notes_path
 from studentassistant.vault.files import write_text_atomic
 
 NOTES = "# Cinemática\n\nLa velocidad es la derivada de la posición.[^1]\n"
@@ -50,10 +50,10 @@ def test_an_empty_topic_summarises_as_zeros(read_vault: ReadVault, reader: TestC
 
 
 def test_the_summary_reports_the_highest_notes_tag(
-    read_vault: ReadVault, reader: TestClient
+    read_vault: ReadVault, reader: TestClient, tmp_vault: Vault
 ) -> None:
     write_notes(read_vault)
-    sync = GitSync(read_vault.vault)
+    sync = GitSync(tmp_vault).for_user(read_vault.vault.user_id)
     sync.create_notes_tag(read_vault.subject, read_vault.topic)
     write_notes(read_vault, NOTES + "\nMás.\n")
     sync.create_notes_tag(read_vault.subject, read_vault.topic)
@@ -63,11 +63,11 @@ def test_the_summary_reports_the_highest_notes_tag(
 
 
 def test_another_subjects_topic_of_the_same_slug_keeps_its_own_version(
-    read_vault: ReadVault, reader: TestClient
+    read_vault: ReadVault, reader: TestClient, tmp_vault: Vault
 ) -> None:
     other = create_subject(read_vault.vault, "Química").slug
     assert create_topic(read_vault.vault, other, "Cinemática").slug == read_vault.topic
-    sync = GitSync(read_vault.vault)
+    sync = GitSync(tmp_vault).for_user(read_vault.vault.user_id)
     sync.create_notes_tag(other, read_vault.topic)
 
     assert summary_of(reader, read_vault)["notes_version"] is None
@@ -93,7 +93,9 @@ def test_notes_not_written_yet_are_404_in_spanish(
     assert response.json()["detail"] == "Todavía no hay apuntes de este tema."
 
 
-def test_notes_return_the_text_and_version(read_vault: ReadVault, reader: TestClient) -> None:
+def test_notes_return_the_text_and_version(
+    read_vault: ReadVault, reader: TestClient, tmp_vault: Vault
+) -> None:
     write_notes(read_vault)
     path = f"/api/subjects/{read_vault.subject}/topics/{read_vault.topic}/notes"
 
@@ -106,7 +108,9 @@ def test_notes_return_the_text_and_version(read_vault: ReadVault, reader: TestCl
         "revision": notes_revision(NOTES),
     }
 
-    GitSync(read_vault.vault).create_notes_tag(read_vault.subject, read_vault.topic)
+    GitSync(tmp_vault).for_user(read_vault.vault.user_id).create_notes_tag(
+        read_vault.subject, read_vault.topic
+    )
     assert reader.get(path).json()["version"] == 1
 
 

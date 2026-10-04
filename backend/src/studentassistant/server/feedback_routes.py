@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import FeedbackItem, FeedbackStatus, JsonlError, list_feedback
 
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
@@ -35,18 +35,15 @@ def feedback_router() -> APIRouter:
         request: Request,
         status_filter: Annotated[FeedbackStatus | None, Query(alias="status")] = None,
     ) -> FeedbackList:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
+        vault, _ = await active_user_vault(request)
         try:
             items = await asyncio.to_thread(list_feedback, vault, status_filter)
         except JsonlError as error:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, UNREADABLE_DETAIL) from error
-        return FeedbackList(items=items)
+        # The inbox is the repository's; a student sees the reports they made and the ones that
+        # name nobody (written before the vault had users), never another student's.
+        own = [item for item in items if item.context.user in (None, vault.user_id)]
+        return FeedbackList(items=own)
 
     return router
 

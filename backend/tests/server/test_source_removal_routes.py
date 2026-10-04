@@ -11,9 +11,6 @@ from ws_harness import WsHarness
 
 from studentassistant.server.assistant_requests import SelectionError, check_selection
 from studentassistant.vault import (
-    Vault,
-    create_subject,
-    create_topic,
     put_source,
     read_topic_events,
 )
@@ -98,16 +95,10 @@ def test_a_lan_client_without_a_token_cannot_remove(
     assert read_vault.notes_page in _listed(reader, read_vault)
 
 
-def test_the_live_session_of_the_topic_gets_a_source_removed_event(
-    ws: WsHarness, tmp_vault: Vault
-) -> None:
-    # `DELETE /api/sources` still reads the ROOT handle (#551 moves it) while the live session
-    # and its log are the user's (#550): the source goes where the route looks, and the event it
-    # publishes is written through the session's own handle, under `users/<id>/`.
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, "fisica", "Cinemática")
-    page = put_source(tmp_vault, "fisica", "cinematica", "notes", "f.jpg", JPEG_BYTES, {})
-    path = page.relative_to(tmp_vault.path).as_posix()
+def test_the_live_session_of_the_topic_gets_a_source_removed_event(ws: WsHarness) -> None:
+    # The harness already has the subject and topic, in the student's folder.
+    page = put_source(ws.vault, "fisica", "cinematica", "notes", "f.jpg", JPEG_BYTES, {})
+    path = page.relative_to(ws.vault.path).as_posix()
 
     assert ws.client.delete(f"/api/sources/{path}").status_code == 204
 

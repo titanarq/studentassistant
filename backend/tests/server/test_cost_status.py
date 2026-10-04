@@ -6,8 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from studentassistant.config import ServerSettings, VaultSettings
+from studentassistant.server.app import create_app
+from studentassistant.server.pairing import PairingCodes
 from studentassistant.vault import (
     LedgerEntry,
     Vault,
@@ -20,9 +24,17 @@ SESSION = "20260924-100000"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> tuple[str, str]:
-    subject = create_subject(tmp_vault, "Matemáticas").slug
-    return subject, create_topic(tmp_vault, subject, "Derivadas").slug
+def app(server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault) -> FastAPI:
+    """The app over the vault the test seeds: the cost route works on the active user's folder."""
+    return create_app(
+        static_dir=tmp_path / "no-web-build", server=server, codes=codes, vault=tmp_vault
+    )
+
+
+@pytest.fixture
+def topic(user_vault: Vault) -> tuple[str, str]:
+    subject = create_subject(user_vault, "Matemáticas").slug
+    return subject, create_topic(user_vault, subject, "Derivadas").slug
 
 
 def configure(config: Path, vault: Vault, caps: str = "") -> None:
@@ -52,10 +64,14 @@ def seed(
 
 
 def test_no_cap_reports_the_day_total(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str], isolated_config: Path
+    local: TestClient,
+    tmp_vault: Vault,
+    user_vault: Vault,
+    topic: tuple[str, str],
+    isolated_config: Path,
 ) -> None:
     configure(isolated_config, tmp_vault)
-    seed(tmp_vault, topic, 0.25)
+    seed(user_vault, topic, 0.25)
 
     response = local.get("/api/cost")
 
@@ -74,10 +90,14 @@ def test_no_cap_reports_the_day_total(
 
 
 def test_day_cap_reached_sets_both_flags(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str], isolated_config: Path
+    local: TestClient,
+    tmp_vault: Vault,
+    user_vault: Vault,
+    topic: tuple[str, str],
+    isolated_config: Path,
 ) -> None:
     configure(isolated_config, tmp_vault, "max_usd_per_day = 0.5")
-    seed(tmp_vault, topic, 0.5)
+    seed(user_vault, topic, 0.5)
 
     body = local.get("/api/cost").json()
 
@@ -87,11 +107,15 @@ def test_day_cap_reached_sets_both_flags(
 
 
 def test_session_cap_needs_the_session_query_parameters(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str], isolated_config: Path
+    local: TestClient,
+    tmp_vault: Vault,
+    user_vault: Vault,
+    topic: tuple[str, str],
+    isolated_config: Path,
 ) -> None:
     configure(isolated_config, tmp_vault, "max_usd_per_session = 1.0")
-    seed(tmp_vault, topic, 1.0)
-    seed(tmp_vault, topic, 0.5, session="20260924-110000")
+    seed(user_vault, topic, 1.0)
+    seed(user_vault, topic, 0.5, session="20260924-110000")
 
     unselected = local.get("/api/cost").json()
     selected = local.get(
@@ -107,10 +131,14 @@ def test_session_cap_needs_the_session_query_parameters(
 
 
 def test_unpriced_calls_are_reported(
-    local: TestClient, tmp_vault: Vault, topic: tuple[str, str], isolated_config: Path
+    local: TestClient,
+    tmp_vault: Vault,
+    user_vault: Vault,
+    topic: tuple[str, str],
+    isolated_config: Path,
 ) -> None:
     configure(isolated_config, tmp_vault)
-    seed(tmp_vault, topic, None, model="claude-mystery-1")
+    seed(user_vault, topic, None, model="claude-mystery-1")
 
     body = local.get(
         "/api/cost", params={"subject": topic[0], "topic": topic[1], "session": SESSION}
@@ -154,8 +182,16 @@ def test_a_session_without_its_topic_is_refused(
     assert "subject" in response.json()["detail"]
 
 
-def test_a_missing_vault_is_503(local: TestClient, tmp_path: Path, isolated_config: Path) -> None:
-    isolated_config.write_text(f'[vault]\npath = "{tmp_path / "nowhere"}"\n', encoding="utf-8")
+def test_a_missing_vault_is_503(
+    server: ServerSettings, codes: PairingCodes, tmp_path: Path
+) -> None:
+    app = create_app(
+        static_dir=tmp_path / "no-web-build",
+        server=server,
+        codes=codes,
+        vault_settings=VaultSettings(path=tmp_path / "nowhere"),
+    )
+    local = TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 50000))
 
     response = local.get("/api/cost")
 

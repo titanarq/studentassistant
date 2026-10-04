@@ -73,10 +73,10 @@ AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def vault(tmp_vault: Vault) -> Vault:
-    subject = create_subject(tmp_vault, "Historia").slug
-    create_topic(tmp_vault, subject, "Revolución industrial")
-    return tmp_vault
+def vault(user_vault: Vault) -> Vault:
+    subject = create_subject(user_vault, "Historia").slug
+    create_topic(user_vault, subject, "Revolución industrial")
+    return user_vault
 
 
 @pytest.fixture

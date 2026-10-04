@@ -20,6 +20,7 @@ from studentassistant.vault import (
     get_feedback,
     list_feedback,
     read_jsonl,
+    user_ids,
 )
 from studentassistant.vault.feedback import FeedbackLine
 from studentassistant.vault.locking import vault_lock
@@ -82,6 +83,18 @@ def test_list_shows_one_line_per_item(vault: Vault, ids: tuple[str, str]) -> Non
         f"{bug}\tnuevo\tbug\t2026-09-28 10:00\tEl micro se corta",
         f"{mejora}\tnuevo\tmejora\t2026-09-28 10:00\tModo oscuro",
     ]
+
+
+def test_list_shows_who_reported_an_item(vault: Vault, ids: tuple[str, str]) -> None:
+    (student_user_id,) = user_ids(vault)
+    mine = add_feedback(
+        vault.for_user(student_user_id), "bug", "Del alumno", "No carga.", clock=lambda: T0
+    )
+
+    lines = run("list").output.splitlines()
+
+    assert lines[-1] == f"{mine.id}\tnuevo\tbug\t2026-09-28 10:00\tDel alumno\t@{student_user_id}"
+    assert all("\t@" not in line for line in lines[:-1])  # items from before users name nobody
 
 
 def test_list_json_is_machine_readable(vault: Vault, ids: tuple[str, str]) -> None:

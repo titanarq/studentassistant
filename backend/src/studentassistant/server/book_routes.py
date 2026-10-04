@@ -19,7 +19,7 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel, Field
 
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     SecretRefused,
     SourceError,
@@ -56,13 +56,8 @@ class BookResponse(BaseModel):
 
 
 async def _vault(request: Request) -> Vault:
-    service: SessionService = request.app.state.sessions
-    try:
-        return await service.open_vault()
-    except VaultUnavailableError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-        ) from error
+    vault, _sync = await active_user_vault(request)
+    return vault
 
 
 def book_router() -> APIRouter:
