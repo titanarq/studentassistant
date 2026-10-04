@@ -39,6 +39,10 @@ from studentassistant.server.workspace import WorkspaceEvent, WorkspaceSubscript
 from studentassistant.sources import CAPTURE_TRIAGED_KIND, triage_status
 from studentassistant.vault import (
     Vault,
+    create_subject,
+    create_topic,
+    get_subject,
+    get_topic,
     list_sessions,
     put_source,
     read_notes,
@@ -103,9 +107,23 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
         yield client
 
 
+def _topic_in_the_user_folder(root: Vault, user: Vault, topic: GenerateTopic | ReviseTopic) -> None:
+    """Create the fixture topic's subject and topic under the vault's one user as well.
+
+    `POST /api/sessions` acts for that user (#550), so the session it starts -- and every event
+    published on it -- lives under `users/<id>/`, which needs the subject and the topic there.
+    The notes, the sources and the review sessions the routes and the consumer read and write
+    still go through the repository root (`SessionService.open_vault()`) until #551.
+    """
+    subject = create_subject(user, get_subject(root, topic.subject).subject.name).slug
+    create_topic(user, subject, get_topic(root, subject, topic.topic).topic.title)
+
+
 @pytest.fixture
-def topic(tmp_vault: Vault) -> GenerateTopic:
-    return make_topic(tmp_vault)
+def topic(tmp_vault: Vault, user_vault: Vault) -> GenerateTopic:
+    built = make_topic(tmp_vault)
+    _topic_in_the_user_folder(tmp_vault, user_vault, built)
+    return built
 
 
 def _base(topic: GenerateTopic | ReviseTopic) -> str:
@@ -193,10 +211,17 @@ def _incorporation(fake: FakeClaude, n: int) -> None:
     )
 
 
-def _events(topic: GenerateTopic | ReviseTopic, kind: str) -> list[tuple[str, str, dict[str, Any]]]:
+def _events(
+    vault: Vault, topic: GenerateTopic | ReviseTopic, kind: str
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Every `kind` event of the topic as `(session id, origin, payload)`, read back from `vault`.
+
+    `vault` is the handle the events are in: the one user's for a session `POST /api/sessions`
+    started (#550), the repository root for the review sessions the consumer writes there (#551).
+    """
     return [
         (session_id, event.origin, event.payload)
-        for session_id, event in read_topic_events(topic.vault, topic.subject, topic.topic)
+        for session_id, event in read_topic_events(vault, topic.subject, topic.topic)
         if event.kind == kind
     ]
 
@@ -214,7 +239,7 @@ def _third_page(
 
 
 def test_a_typed_message_is_classified_with_the_sources_and_incorporates_its_targets(
-    client: TestClient, fake: FakeClaude, topic: GenerateTopic
+    client: TestClient, fake: FakeClaude, topic: GenerateTopic, user_vault: Vault
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -270,7 +295,7 @@ def test_a_typed_message_is_classified_with_the_sources_and_incorporates_its_tar
     assert "m1 incorpora las dos últimas" in text
 
     # Persisted in the live session with origin `user`, then run as a typed incorporation.
-    [(sid, origin, payload)] = _events(topic, ASSISTANT_REQUEST_KIND)
+    [(sid, origin, payload)] = _events(user_vault, topic, ASSISTANT_REQUEST_KIND)
     assert (sid, origin) == (session_id, "user")
     assert payload["detector"] == "typed" and payload["message_id"] == body["message_id"]
     events = subscription.drain()
@@ -297,7 +322,7 @@ def test_typed_messages_without_a_session_go_to_a_review_session(
     assert "targets" not in request or request["targets"] == []  # only for its kinds
     _settle(client)
 
-    [(sid, origin, payload)] = _events(topic, ASSISTANT_REQUEST_KIND)
+    [(sid, origin, payload)] = _events(topic.vault, topic, ASSISTANT_REQUEST_KIND)
     meta = {m.id: m for m in list_sessions(topic.vault, topic.subject, topic.topic)}
     assert meta[sid].kind == "review" and meta[sid].ended_at is not None
     assert origin == "user" and payload["kind"] == "edit"
@@ -440,7 +465,7 @@ def test_typed_message_errors(
 
 
 def test_a_spoken_set_aside_writes_the_triage_and_a_chat_entry(
-    client: TestClient, topic: GenerateTopic
+    client: TestClient, topic: GenerateTopic, user_vault: Vault
 ) -> None:
     _third_page(topic, aside=False)
     session_id = _start(client, topic)
@@ -456,7 +481,7 @@ def test_a_spoken_set_aside_writes_the_triage_and_a_chat_entry(
     result = events[-1].data
     assert result["decision"] == "set_aside" and result["source_ids"] == [PAGE_3]
     assert triage_status(topic.vault, topic.subject, topic.topic)[PAGE_3].set_aside
-    [(sid, origin, payload)] = _events(topic, CAPTURE_TRIAGED_KIND)
+    [(sid, origin, payload)] = _events(user_vault, topic, CAPTURE_TRIAGED_KIND)
     assert (sid, origin) == (session_id, "user")
     assert payload["status"] == "set_aside" and payload["decided_by"] == "student"
 
@@ -483,14 +508,14 @@ def test_a_restore_without_a_session_says_the_page_will_be_transcribed(
         "He recuperado la página 3; se transcribirá en la próxima sesión del tema."
     )
     assert not triage_status(topic.vault, topic.subject, topic.topic)[PAGE_3].set_aside
-    [(sid, origin, payload)] = _events(topic, CAPTURE_TRIAGED_KIND)
+    [(sid, origin, payload)] = _events(topic.vault, topic, CAPTURE_TRIAGED_KIND)
     assert origin == "user" and payload["status"] == "kept"
     meta = {m.id: m for m in list_sessions(topic.vault, topic.subject, topic.topic)}
     assert meta[sid].kind == "review"
 
 
 def test_a_restore_of_a_transcribed_page_and_one_not_set_aside(
-    client: TestClient, topic: GenerateTopic
+    client: TestClient, topic: GenerateTopic, user_vault: Vault
 ) -> None:
     _third_page(topic, aside=True)
     (
@@ -507,7 +532,7 @@ def test_a_restore_of_a_transcribed_page_and_one_not_set_aside(
     assert _replies(subscription.drain()) == (
         "He recuperado la página 3. La página 1 no estaba apartada."
     )
-    assert len(_events(topic, CAPTURE_TRIAGED_KIND)) == 1
+    assert len(_events(user_vault, topic, CAPTURE_TRIAGED_KIND)) == 1
 
 
 def test_a_set_aside_of_an_unknown_page_is_a_turn_error(
@@ -780,9 +805,10 @@ def test_a_typed_incorporation_stopped_at_the_cap_is_confirmed_and_incorporates(
 
 
 def test_a_spoken_edit_stopped_at_the_cap_is_confirmed(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault, user_vault: Vault
 ) -> None:
     topic = make_revise_topic(tmp_vault)
+    _topic_in_the_user_folder(tmp_vault, user_vault, topic)  # the session `_start` asks for
     with _client(make_app(fake, llm=LlmSettings(max_usd_per_day=0))) as client:
         session_id = _start(client, topic)
         subscription = _subscribe(client, topic)

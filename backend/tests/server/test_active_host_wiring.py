@@ -30,6 +30,7 @@ from studentassistant.vault import (
 pytestmark = pytest.mark.anyio
 
 SETTINGS = VaultGitSettings(commit_quiet_seconds=5, push_debounce_seconds=30)
+# The fixture subject's file, relative to the user folder it lives in (#550).
 SUBJECT = "subjects/fisica/subject.yaml"
 
 
@@ -62,9 +63,11 @@ def sync(tmp_vault: Vault, git_origin: Path) -> GitSync:
 
 
 @pytest.fixture
-def pc_b(tmp_vault: Vault, git_origin: Path, tmp_path: Path, sync: GitSync) -> Vault:
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, "fisica", "Cinemática")
+def pc_b(user_vault: Vault, git_origin: Path, tmp_path: Path, sync: GitSync) -> Vault:
+    # The subject and the topic go in the one user's folder: the service under test starts its
+    # session for that user (#550), and the clone PC B pushes to has to hold them too.
+    create_subject(user_vault, "Física")
+    create_topic(user_vault, "fisica", "Cinemática")
     sync.flush()
     subprocess.run(
         ["git", "clone", "--quiet", str(git_origin), str(tmp_path / "pc-b")],
@@ -82,7 +85,7 @@ def service(tmp_vault: Vault, sync: GitSync, pc_b: Vault) -> SessionService:
 async def test_the_start_claims_commits_and_asks_for_a_push_and_the_end_releases(
     service: SessionService, sync: GitSync, tmp_vault: Vault, git_origin: Path
 ) -> None:
-    session = await service.start("fisica", "cinematica", client_time_ms=0)
+    session = await service.start(None, "fisica", "cinematica", client_time_ms=0)
 
     record = read_active_host(tmp_vault)
     assert record is not None
@@ -106,11 +109,11 @@ async def test_another_pcs_open_claim_warns_but_never_blocks_the_start(
     claim_active_host(pc_b, "pc-b", "20260925-090000", "fisica", "cinematica")
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
 
-    await service.list_subjects()  # opening the vault pulls and checks
+    await service.list_subjects(None)  # opening the vault pulls and checks
     warning = service.host_warning
     assert warning is not None and warning.record.host == "pc-b"
 
-    session = await service.start("fisica", "cinematica", client_time_ms=0)
+    session = await service.start(None, "fisica", "cinematica", client_time_ms=0)
 
     assert session.status == "active"
     assert service.host_warning is not None  # still pc-b's claim, as pulled
@@ -119,7 +122,7 @@ async def test_another_pcs_open_claim_warns_but_never_blocks_the_start(
 
 
 async def test_no_warning_without_another_pcs_claim(service: SessionService) -> None:
-    await service.start("fisica", "cinematica", client_time_ms=0)
+    await service.start(None, "fisica", "cinematica", client_time_ms=0)
     assert service.host_warning is None
 
 
@@ -169,22 +172,24 @@ def test_the_status_route_without_warning_or_divergence(app: FastAPI) -> None:
 
 
 def test_a_divergence_is_shown_with_both_versions(
-    app: FastAPI, tmp_vault: Vault, pc_b: Vault
+    app: FastAPI, tmp_vault: Vault, pc_b: Vault, user_vault: Vault
 ) -> None:
-    (pc_b.path / SUBJECT).write_text("name: Física B\nstyle_guide: null\n")
+    # The subject's file as git names it: inside its user's folder (#550).
+    subject = f"users/{user_vault.user_id}/{SUBJECT}"
+    (pc_b.path / subject).write_text("name: Física B\nstyle_guide: null\n")
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
-    (tmp_vault.path / SUBJECT).write_text("name: Física A\nstyle_guide: null\n")
+    (tmp_vault.path / subject).write_text("name: Física A\nstyle_guide: null\n")
     client = client_of(app)
 
     body = client.get("/api/vault/status").json()
 
     divergence = body["divergence"]
     assert body["last_sync"]["outcome"] == "conflict"
-    assert divergence["paths"] == [SUBJECT]
-    assert SUBJECT in divergence["message"]
-    versions = client.get("/api/vault/divergence", params={"path": SUBJECT}).json()
+    assert divergence["paths"] == [subject]
+    assert subject in divergence["message"]
+    versions = client.get("/api/vault/divergence", params={"path": subject}).json()
     assert versions == {
-        "path": SUBJECT,
+        "path": subject,
         "local": "name: Física A\nstyle_guide: null\n",
         "remote": "name: Física B\nstyle_guide: null\n",
     }

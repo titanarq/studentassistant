@@ -124,10 +124,15 @@ def clone(origin: Path, path: Path) -> Vault:
 
 
 async def test_the_pull_at_session_start_is_followed_by_an_index_refresh(
-    tmp_vault: Vault, git_origin: Path, tmp_path: Path, index_path: Path
+    tmp_vault: Vault, user_vault: Vault, git_origin: Path, tmp_path: Path, index_path: Path
 ) -> None:
     create_subject(tmp_vault, "Física")
     create_topic(tmp_vault, "fisica", "Cinemática")
+    # The service starts a session for the vault's one user (#550), so the topic has to be in
+    # that student's folder too; PC B's session and the index stay at the repository root, which
+    # is what the handle `make_service` gets and the one the index is built over.
+    create_subject(user_vault, "Física")
+    create_topic(user_vault, "fisica", "Cinemática")
     GitSync(tmp_vault, SETTINGS, clock=ManualClock()).flush()
     pc_b = clone(git_origin, tmp_path / "pc-b")
     service = make_service(
@@ -140,7 +145,7 @@ async def test_the_pull_at_session_start_is_followed_by_an_index_refresh(
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
     assert texts(service, "parabólico") == []
 
-    await service.start("fisica", "cinematica", client_time_ms=0)
+    await service.start(None, "fisica", "cinematica", client_time_ms=0)
     await asyncio.wait_for(service.wait_index_refreshed(), timeout=10)
 
     assert service.index is not None
@@ -157,7 +162,7 @@ async def test_an_index_that_cannot_open_leaves_search_off_but_the_vault_usable(
     service = make_service(tmp_vault, unusable)
     await service.startup()
 
-    await service.create_subject("Física")
+    await service.create_subject(None, "Física")
 
     assert service.index is None and not service.index_running
     assert "search index" in caplog.text

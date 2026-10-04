@@ -107,7 +107,11 @@ def test_the_request_detector_is_built_unless_request_detection_is_off(
 
 
 def test_the_replayed_sample_yields_observer_ops_in_the_vault(
-    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    user_vault: Vault,
 ) -> None:
     fake = FakeClaude()
     fake.reply_tool(
@@ -137,16 +141,19 @@ def test_the_replayed_sample_yields_observer_ops_in_the_vault(
         assert text in sent
     assert "button switch_source" in sent and "capture " in sent
 
-    topic = tmp_vault.path / "subjects" / "biologia" / "topics" / "la-celula"
+    # The observer works on the session the lifecycle attached, which is the one user's handle
+    # (#550): the session's events, its conversation and the ledger are in that student's folder.
+    topic = user_vault.path / "subjects" / "biologia" / "topics" / "la-celula"
     events = list(read_jsonl(topic / "sessions" / result.session_id / "events.jsonl", Event))
     ops = [e for e in events if e.kind == STATE_OP_EVENT_KIND]
     assert [(e.origin, e.payload["op"]) for e in ops] == [("observer", "add_section")]
     ended = next(e.seq for e in events if e.kind == "session.ended")
     assert all(e.seq < ended for e in ops)
 
-    records = read_conversation(tmp_vault, "biologia", "la-celula", f"observer-{result.session_id}")
+    name = f"observer-{result.session_id}"
+    records = read_conversation(user_vault, "biologia", "la-celula", name)
     assert records[0].kind == "context"
     assert sum(record.kind == "assistant" for record in records) == len(fake.requests)
-    ledger = read_ledger(tmp_vault, "biologia", "la-celula")
+    ledger = read_ledger(user_vault, "biologia", "la-celula")
     assert len(ledger) == len(fake.requests)
     assert {entry.role for entry in ledger} == {"observer"}
