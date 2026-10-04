@@ -16,7 +16,9 @@ What one run does, in the order it does it:
    not refuse -- what a migration does is local, and the push it ends with is retried by the next
    sync -- but the report says which of the two happened.
 2. It refuses while any session of any topic is unended, and names them: a capture still writing a
-   transcript would write it where the directory it is writing into just went.
+   transcript would write it where the directory it is writing into just went. The sync of step 1
+   has by then committed what that capture had written, which is what a sync does anyway and loses
+   nothing; what has not happened is any part of the move.
 3. `create_user` makes the first user -- named after `vault.yaml`'s `student` unless the caller
    gives a name -- and their `profile.json` with it.
 4. `git mv` of every entry of the root `subjects/` into `users/<id>/subjects/`: a rename git
@@ -183,7 +185,10 @@ def migrate_to_users(
         MigrationRefusedError: when the vault is in a state this backend will not migrate -- the
             sync came back with a conflict, a session of some topic is unended, another process
             holds the repository's git lock, or the user's folder is there already. The message is
-            Spanish and says what to do; nothing was written.
+            Spanish and says what to do. No migration was made and the vault is still format 1 with
+            its content at the root; the one thing a run that is not a dry one has done by then is
+            the commit of what was pending, which the sync it starts with makes and which loses
+            nothing.
         MigrationError: when `vault` is not a root handle, `sync` is one user's view of the
             repository's, or the migration commit did not happen. A commit that fails leaves the
             moves and `vault.yaml` on disk, in the layout that file then names, so the vault still

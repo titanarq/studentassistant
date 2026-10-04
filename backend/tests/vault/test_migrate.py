@@ -85,6 +85,11 @@ def content_of(root: Path) -> list[Path]:
     return [path for path in everything_under(root) if path.parts[0] != ".git"]
 
 
+def moved_of(relative: str) -> str:
+    """Where the migration puts a repository-relative path of the root's content."""
+    return f"users/{FIRST_USER}/{relative}"
+
+
 def test_the_roots_content_becomes_the_first_users_and_the_vault_says_format_2(
     vault: Vault, sync: GitSync
 ) -> None:
@@ -129,7 +134,18 @@ def test_the_move_is_a_rename_that_gits_history_follows(vault: Vault, sync: GitS
     followed = set(git(vault.root, "log", "--follow", "--format=%H", "--", moved).split())
     assert history_before <= followed, "the commits of the notes before the move are still its own"
     assert report.commit in followed
-    assert git(vault.root, "show", "--name-status", "--format=", report.commit).startswith("R"), (
+
+    # The commit also adds the profile and the user's `.gitkeep` and rewrites `vault.yaml`, so a
+    # rename is not its first line: what proves the move is that every file it took is one, and
+    # that git recorded neither a copy nor a delete anywhere in it.
+    name_status = git(vault.root, "show", "--name-status", "--format=", report.commit)
+    statuses = [line.split("\t") for line in name_status.splitlines()]
+    renamed = {fields[1]: fields[2] for fields in statuses if fields[0].startswith("R")}
+    assert set(renamed) == set(report.moved_files), "every file the move took, git renames"
+    assert all(target == moved_of(source) for source, target in renamed.items()), (
+        "and renames it into the user's folder, keeping the path it had"
+    )
+    assert not [fields for fields in statuses if fields[0][0] in "CD"], (
         "git records the move as the rename it is, not as a copy and a delete"
     )
 
@@ -220,9 +236,16 @@ def test_an_unended_session_refuses_the_migration_and_names_it(vault: Vault, syn
         assert f"{SLUGS[0]}/{SLUGS[1]}/{open_session.id}" in message, "the session is named"
         assert MIGRATE_USERS_COMMAND in message, "and so is what to run once it has ended"
 
-    assert commit_count(vault.root) == commits
+    # A run that is not a dry one starts with the sync the migration is specified to start with,
+    # and that sync commits what the open session had written so far: the vault's own hygiene,
+    # which loses nothing, and not a step of a migration that never happened.
+    assert commit_count(vault.root) == commits + 1, "only what was pending, which the sync commits"
+    assert git(vault.root, "log", "-1", "--format=%s").strip() != migration_commit_subject(
+        FIRST_USER
+    ), "and none of them the migration's"
     assert content_of(vault.root) == before
-    assert not (vault.root / "users").exists()
+    assert not (vault.root / "users").exists(), "the content stayed where format 1 keeps it"
+    assert Vault.open_for_migration(vault.root).meta.format_version == LEGACY_FORMAT_VERSION
 
 
 def test_a_conflict_with_the_remote_refuses_the_migration_and_names_the_paths(

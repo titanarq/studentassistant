@@ -142,8 +142,8 @@ def write_everything(
     subjects calls it twice. Returns the paths the writers that return one handed back.
 
     Nothing here commits: the writers leave the files on disk, and the caller's `GitSync` decides
-    what a commit of them is (`write_notes(..., commit=True)` is the one call that tags, and it is
-    the caller's to make).
+    what a commit of them is, and whether a version of them is worth a tag of its own
+    (`sync.create_notes_tag`, which is the call that commits and tags).
     """
     subject_slug = create_subject(vault, subject).slug
     set_style_guide(vault, subject_slug, "Vectores en negrita.")
