@@ -8,19 +8,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,46 +32,39 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.titanarq.studentassistant.R
 import com.titanarq.studentassistant.backend.BackendResult
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
-import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.protocol.Subject
+import com.titanarq.studentassistant.ui.AppScaffold
+import com.titanarq.studentassistant.ui.SessionActions
 import com.titanarq.studentassistant.ui.backendFailureMessage
-import com.titanarq.studentassistant.users.UserAvatar
 import com.titanarq.studentassistant.users.UserPhotos
-import java.text.DateFormat
-import java.util.Date
+import java.time.ZoneId
 import java.util.Locale
 
 /**
- * Subjects -> topics of the active backend; "Nuevo tema"; start or continue a session. Each topic
- * also opens its «Construir» or «Estudiar» screen in the study desk ([onOpenDesk]) and the voice
- * tutor.
+ * Subjects -> topics of the active backend, under the shared top bar (back, title, settings gear,
+ * user avatar). Tapping a topic card goes straight to its capture screen ([onSessionOpened]); there
+ * is nothing else on a card. [onBack] at the subject list signs out to «¿Quién eres?». With no
+ * connection to the backend the screen only warns, with «Configurar conexión» ([onBackends]).
  */
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel,
     onSessionOpened: () -> Unit,
     onBackends: () -> Unit,
-    onOpenDesk: (DeskTopic) -> Unit,
     photos: UserPhotos,
     onEditProfile: () -> Unit,
     modifier: Modifier = Modifier,
-    onAskTutor: (TutorTopic) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val user by viewModel.user.collectAsStateWithLifecycle()
-    var menuOpen by rememberSaveable { mutableStateOf(false) }
-    var confirmSignOut by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { viewModel.load() }
     LaunchedEffect(state.openedSession) {
         if (state.openedSession != null) {
@@ -81,85 +75,31 @@ fun HomeScreen(
     val subject = state.selectedSubject
     BackHandler(enabled = subject != null) { viewModel.clearSubject() }
 
-    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    subject?.name ?: stringResource(R.string.home_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = onBackends) { Text(stringResource(R.string.home_backends)) }
-                user?.let { current ->
-                    Box {
-                        val menuDescription = stringResource(R.string.users_menu_description, current.name)
-                        IconButton(
-                            onClick = { menuOpen = true },
-                            modifier = Modifier.semantics { contentDescription = menuDescription },
-                        ) {
-                            UserAvatar(current, photos, contentDescription = null)
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.users_edit_profile)) },
-                                onClick = {
-                                    menuOpen = false
-                                    onEditProfile()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.users_sign_out)) },
-                                onClick = {
-                                    menuOpen = false
-                                    confirmSignOut = true
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            state.backendName?.let {
-                Text(stringResource(R.string.home_backend, it), style = MaterialTheme.typography.bodySmall)
-            }
+    AppScaffold(
+        title = subject?.name ?: stringResource(R.string.home_title),
+        onBack = { if (subject != null) viewModel.clearSubject() else viewModel.signOut() },
+        modifier = modifier,
+        actions = { SessionActions(user, photos, onSettings = onBackends, onProfile = onEditProfile) },
+    ) { padding ->
+        Column(
+            modifier = Modifier.padding(padding).fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             when {
-                state.noBackend -> Text(stringResource(R.string.home_no_backend))
+                state.noConnection -> NoConnectionWarning(onConfigure = onBackends, onRetry = viewModel::load)
                 subject == null -> SubjectList(state.subjects, onSelect = viewModel::selectSubject, onRetry = viewModel::load)
-                else -> {
-                    TextButton(onClick = viewModel::clearSubject) { Text(stringResource(R.string.back)) }
-                    TopicList(
-                        topics = state.topics ?: Loadable.Loading,
-                        session = state.session,
-                        onOpen = viewModel::startOrContinue,
-                        onOpenDesk = { row, view -> viewModel.deskTarget(row, view)?.let(onOpenDesk) },
-                        onAskTutor = { row -> onAskTutor(TutorTopic(subject.subjectId, row.topic.topicId, row.topic.name)) },
-                        onRetry = viewModel::refreshTopics,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                }
+                else -> TopicList(
+                    topics = state.topics ?: Loadable.Loading,
+                    session = state.session,
+                    onOpen = viewModel::startOrContinue,
+                    onRetry = viewModel::refreshTopics,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
             }
-            if (!state.noBackend && state.subjects is Loadable.Loaded) {
+            if (!state.noConnection && state.subjects is Loadable.Loaded) {
                 Button(onClick = viewModel::openCreateTopic) { Text(stringResource(R.string.home_new_topic)) }
             }
         }
-    }
-
-    val signingOut = user
-    if (confirmSignOut && signingOut != null) {
-        AlertDialog(
-            onDismissRequest = { confirmSignOut = false },
-            text = { Text(stringResource(R.string.users_sign_out_confirm, signingOut.name)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmSignOut = false
-                        viewModel.signOut()
-                    },
-                ) { Text(stringResource(R.string.users_sign_out)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmSignOut = false }) { Text(stringResource(R.string.cancel)) }
-            },
-        )
     }
 
     state.createTopic?.let { dialog ->
@@ -211,13 +151,32 @@ private fun SubjectList(
     }
 }
 
+/** The warning shown instead of the lists while the backend cannot be reached. */
+@Composable
+private fun NoConnectionWarning(onConfigure: () -> Unit, onRetry: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.home_no_connection),
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onConfigure) { Text(stringResource(R.string.home_configure_connection)) }
+                OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.home_retry)) }
+            }
+        }
+    }
+}
+
 @Composable
 private fun TopicList(
     topics: Loadable<List<TopicRow>>,
     session: SessionAction,
     onOpen: (TopicRow) -> Unit,
-    onOpenDesk: (TopicRow, DeskView) -> Unit,
-    onAskTutor: (TopicRow) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -235,9 +194,6 @@ private fun TopicList(
                             opening = (session as? SessionAction.Opening)?.topicId == row.topic.topicId,
                             busy = session is SessionAction.Opening,
                             onOpen = { onOpen(row) },
-                            onBuild = { onOpenDesk(row, DeskView.WORKSPACE) },
-                            onStudy = { onOpenDesk(row, DeskView.STUDY) },
-                            onAskTutor = { onAskTutor(row) },
                         )
                     }
                 }
@@ -245,58 +201,39 @@ private fun TopicList(
     }
 }
 
+/**
+ * A topic: its name, below it the date of its last capture, and a capture icon at the bottom-right.
+ * The whole card is the button that opens the capture screen.
+ */
 @Composable
-private fun TopicCard(
-    row: TopicRow,
-    opening: Boolean,
-    busy: Boolean,
-    onOpen: () -> Unit,
-    onBuild: () -> Unit,
-    onStudy: () -> Unit,
-    onAskTutor: () -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(row.topic.name, style = MaterialTheme.typography.titleMedium)
-            row.digestExcerpt?.let {
-                Text(
-                    it,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
+private fun TopicCard(row: TopicRow, opening: Boolean, busy: Boolean, onOpen: () -> Unit) {
+    val description = stringResource(R.string.home_capture_topic, row.topic.name)
+    Card(
+        onClick = onOpen,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth().semantics { contentDescription = description },
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp).padding(16.dp)) {
+            Column(modifier = Modifier.align(Alignment.TopStart).padding(end = 48.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(row.topic.name, style = MaterialTheme.typography.titleMedium)
+                row.lastSessionAtMs?.let {
+                    Text(
+                        stringResource(R.string.home_last_capture, formatCaptureDate(it)),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            if (opening) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.BottomEnd).size(24.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    painterResource(R.drawable.ic_capture),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.BottomEnd).size(28.dp),
                 )
             }
-            if (row.ending) {
-                Text(
-                    stringResource(R.string.home_session_ending),
-                    color = MaterialTheme.colorScheme.secondary,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else if (row.canContinue) {
-                Text(
-                    stringResource(R.string.home_session_open),
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            row.lastSessionAtMs?.let {
-                Text(stringResource(R.string.home_last_session, formatDate(it)), style = MaterialTheme.typography.bodySmall)
-            }
-            row.pendingCount?.takeIf { it > 0 }?.let {
-                Text(pluralStringResource(R.plurals.home_pending_doubts, it, it), style = MaterialTheme.typography.bodySmall)
-            }
-            val label = when {
-                opening -> R.string.home_opening_session
-                row.canContinue -> R.string.home_continue_session
-                else -> R.string.home_start_session
-            }
-            Button(onClick = onOpen, enabled = !busy) { Text(stringResource(label)) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onBuild) { Text(stringResource(R.string.home_build)) }
-                OutlinedButton(onClick = onStudy) { Text(stringResource(R.string.home_study)) }
-            }
-            OutlinedButton(onClick = onAskTutor) { Text(stringResource(R.string.home_ask_tutor)) }
         }
     }
 }
@@ -380,8 +317,7 @@ private fun sessionFailureMessage(failure: SessionFailure): String = when (failu
     is SessionFailure.Backend -> backendFailureMessage(failure.failure)
 }
 
-private fun formatDate(epochMs: Long): String =
-    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT, Locale.forLanguageTag("es")).format(Date(epochMs))
+private fun formatCaptureDate(epochMs: Long): String = formatCaptureDate(epochMs, Locale.forLanguageTag("es"), ZoneId.systemDefault())
 
 /** The protocol's `name` limit for subjects and topics. */
 private const val MAX_NAME_LENGTH = 200

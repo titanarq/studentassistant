@@ -11,12 +11,6 @@ enum class Route {
     BACKENDS,
     CONNECTION_TEST,
 
-    /** A topic's notes and the editor chat, in a WebView of the backend's web UI (#83). */
-    DESK,
-
-    /** «Preguntar al tutor»: a topic's voice tutor (#248). */
-    TUTOR,
-
     /** «¿Quién eres?»: which user of the active backend is using the app (#554). */
     USERS,
 
@@ -25,7 +19,7 @@ enum class Route {
 }
 
 /** The screens that act for the selected user: none of them is shown while no user is selected. */
-val USER_SCOPED_ROUTES: Set<Route> = setOf(Route.HOME, Route.CAPTURE, Route.DESK, Route.TUTOR, Route.PROFILE)
+val USER_SCOPED_ROUTES: Set<Route> = setOf(Route.HOME, Route.CAPTURE, Route.PROFILE)
 
 /**
  * Where the app opens: pairing when no backend is stored yet, else «¿Quién eres?» while no user
@@ -44,3 +38,17 @@ fun startRoute(stored: PairedBackends, user: User?): Route = when {
  */
 fun routeFor(route: Route, hasBackends: Boolean, user: User?): Route =
     if (hasBackends && user == null && route in USER_SCOPED_ROUTES) Route.USERS else route
+
+/**
+ * Where the top bar's Back icon (and the system back) of [route] goes, or null when the route has no
+ * Back: the initial screens («¿Quién eres?», or pairing when nothing is paired yet). The settings
+ * (computers) screen returns to [settingsFrom], the screen its gear was tapped on. Home and capture
+ * handle their own back (subject list / ending the session), so they are not decided here.
+ */
+fun backRoute(route: Route, hasBackends: Boolean, settingsFrom: Route): Route? = when (route) {
+    Route.PAIRING -> if (hasBackends) Route.BACKENDS else null
+    Route.BACKENDS -> settingsFrom
+    Route.CONNECTION_TEST -> Route.BACKENDS
+    Route.PROFILE -> Route.HOME
+    Route.USERS, Route.HOME, Route.CAPTURE -> null
+}

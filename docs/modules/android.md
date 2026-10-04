@@ -6,23 +6,23 @@
 Thin capture client (ADR-0001), Spanish UI:
 - Pairing: scan the backend's QR (URL + one-time code), exchange for a token, store it in
   DataStore; several backends allowed; connection test.
-- Users (#554, #555): «¿Quién eres?» at every start, the chosen user sent as `X-SA-User` on every call, avatar menu
-  with «Editar perfil» / «Cerrar sesión» on the home; «Editar perfil» edits name, email and photo.
-- Home: subjects/topics from the backend, create topic, start or continue a session.
-- Capture screen: a large CameraX preview, transcription with SpeechRecognizer (Google) sent as
-  segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), the session buttons
-  (Capturar first and largest, Importante, Libro/Apuntes, Terminar captura), the thumbnail strip,
-  pending-doubts counter, screen kept on. Since #556 there is no transcript box on screen: the
-  transcription keeps being sent, only the box went.
+- The app is deliberately minimal (#575): capture photos and relate them to subjects and topics.
+  Every screen has the same top bar (`ui.AppTopBar` / `AppScaffold`): Back at the left (none on the
+  initial screen), the title right after it; the subjects and capture screens also have, at the
+  right, the settings gear (opens the computers screen, «Ordenadores pareados») and the user's
+  avatar (opens «Editar perfil»).
+- Users (#554, #555): «¿Quién eres?» at every start, the chosen user sent as `X-SA-User` on every call;
+  «Editar perfil» edits name, email and photo. Back on the subject list signs out (to «¿Quién eres?»).
+- Home: subjects/topics from the backend, create topic; a topic card opens the capture screen directly.
+- Capture screen: the CameraX preview, the «Capturar» button below it and the thumbnail strip at the
+  bottom; entering starts the session, leaving ends it. The microphone and its transcription
+  (SpeechRecognizer, or AudioRecord PCM16 in server STT mode, ADR-0008) keep running and being sent
+  with no UI; screen kept on.
 - Still capture: burst of 3 full-resolution photos on «Capturar» only (#556: the server's
   `capture_now` command is ignored); haptic + shutter sound; upload with retries; thumbnail strip
   (see "Still capture (#46)").
 - Share target: "Compartir -> Student Assistant" saves a shared link as a web source of a topic
   (see "Share a web page (#62)").
-- Study desk (#83, #414): a topic's «Construir» (workspace) and «Estudiar» (study) screens, the
-  backend's web UI in a WebView.
-- Voice tutor (#248): «Preguntar al tutor» on a topic, a spoken or typed question answered from the
-  notes and sources by the backend, read aloud with `TextToSpeech`.
 - Offline resilience: disk spool of audio, transcript lines, session events and photos while
   disconnected, resent in order on reconnect; an end while offline is completed later (see
   "Offline spool (#53)").
@@ -87,24 +87,24 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
 - **`users.UsersViewModel` / `UserSelectionScreen`** («¿Quién eres?», `Route.USERS`): the active
   backend's users from `BackendClient.listUsers` (`GET /api/users`, sent without `X-SA-User`), each
   row with photo or initials, name and email. A failure shows the existing Spanish backend message
-  with «Reintentar»; no users says «No hay usuarios en este ordenador.». A button leads to
-  «Ordenadores». The photo is `BackendClient.userPhoto(backend, photo_url)` (`GET` with the bearer
+  with «Reintentar»; no users says «No hay usuarios en este ordenador.». The top bar's gear leads to
+  the computers screen. The photo is `BackendClient.userPhoto(backend, photo_url)` (`GET` with the bearer
   token, same origin only), cached in memory by `users.UserPhotos` (`invalidate()` for #555);
   `UserAvatar` draws it in a circle or `initialsOf(name)`, and loads it again whenever `UserPhotos.version`
   grows (`invalidate()`, called after a photo change).
 - **Routing** (`ui/Route.kt`, tested without Compose): `startRoute(stored, user)` is `PAIRING` with no
   backend, else `USERS` without a user, else `HOME`; `routeFor(route, hasBackends, user)` sends any
-  screen of `USER_SCOPED_ROUTES` (home, capture, desk, tutor, profile) to `USERS` while a backend is
+  screen of `USER_SCOPED_ROUTES` (home, capture, profile) to `USERS` while a backend is
   stored and no user is selected. `MainActivity` applies it on every change of route or user, so
   sign-out, a backend switch and a refused user all end on the selection. Back does not leave `USERS`
   for the home.
 - **Header**: `BackendCredentials(baseUrl, token, userId)` (`forUser(id)`); every user-scoped call of
-  `OkHttpBackendClient` (subjects, topics, sessions, captures, web pages) and of `OkHttpTutorClient`
+  `OkHttpBackendClient` (subjects, topics, sessions, captures, web pages) 
   sends `X-SA-User: <id>` (`USER_HEADER`) when `userId` is not null. `pair`, `health`, `listUsers`
   and `userPhoto` never send it. `SessionSocketFactory.open(url, token, userId, listener)` sends it
   on the WebSocket handshake (`SessionConnection(..., userId)`). The view models take the user from
   `UserHolder` when they read the active backend (`HomeViewModel`, `ShareViewModel`,
-  `TutorViewModel`, `StudyDeskViewModel`, `ConnectionTestViewModel`); a user change reloads the home.
+  `ConnectionTestViewModel`); a user change reloads the home.
   The connection test (#568) runs `GET /api/health`, then one authenticated check with the stored
   token: «asignaturas» (`GET /api/subjects`) as the selected user, or, while nobody is selected
   (right after pairing), «usuarios» (`GET /api/users`, user-independent), so a vault with several
@@ -130,20 +130,17 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
     pudo leer esa imagen»). «Quitar foto» (shown only when the user has one) asks for confirmation
     and sends `DELETE`. After either, `UserPhotos.invalidate()` makes the home bar and the selection
     screen draw the new `photo_url`.
-- **Study desk**: next to `sa_token` the WebView gets `sa_user=<id>; Path=/; SameSite=Strict`
-  (`StudyDesk.userCookie`, `DeskPage.userCookie`); `removeAllCookies` drops both when the screen is
-  left.
 - **Share**: `ShareActivity` shows «¿Quién eres?» before its subjects while no user is selected
   (same `UserHolder`, same process).
-- **Home top bar**: the user's avatar at the right (content description «Menú de <nombre>») opens a
-  dropdown «Editar perfil» (`Route.PROFILE`, see "Profile" below) and «Cerrar sesión»
-  (dialog «¿Cerrar la sesión de <nombre>?»; confirmed, `HomeViewModel.signOut()` clears `UserHolder`
-  and `SessionHolder`). An open capture session stays open on the backend and its spool keeps its
+- **Top bar** (#575): the user's avatar at the right (content description «Perfil de <nombre>») opens
+  «Editar perfil» (`Route.PROFILE`); there is no menu and no «Cerrar sesión» button any more: Back on
+  the subject list (`HomeViewModel.signOut()` clears `UserHolder` and `SessionHolder`) returns to
+  «¿Quién eres?». An open capture session stays open on the backend and its spool keeps its
   user, so it can be continued or ended later.
 - **`user_required` / `user_not_found`**: `BackendResult.HttpError(status, code)` carries `code` only
   for these two (`400 user_required`, `404 user_not_found`; `userRejected`); no other error body is
-  read. `AppContainer.scopedBackendClient` and `scopedTutorClient`
-  (`UserRejectionBackendClient` / `UserRejectionTutorClient`) wrap the clients used by the screens
+  read. `AppContainer.scopedBackendClient`
+  (`UserRejectionBackendClient`) wraps the client used by the screens
   and the background workers: such a refusal of a call made as the selected user clears `UserHolder`
   and the app opens the selection. A refusal of a spooled item sent as another user (or none) changes
   nothing.
@@ -163,33 +160,38 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
   (`Idle`/`Opening(topicId)`/`Failed(topicId, SessionFailure)`) and `openedSession`, a one-shot
   the screen consumes with `onSessionShown()` to navigate. `load()` runs every time the home is
   shown (a switched backend resets the state; the selected subject is kept while it exists).
-- Topic rows are `TopicRow(topic, lastSessionAtMs?, pendingCount?, digestExcerpt?)`;
-  `canContinue` is `topic.open_session_id != null`. `lastSessionAtMs` / `pendingCount` are the
-  topic's `last_session_at_ms` / `pending_count` (protocol 1.1) and `digestExcerpt` its
-  `digest_excerpt` (1.3, the topic digest's summary: where the topic was left). The excerpt is
-  shown under the topic name (at most three lines), the date and doubts count below; each only
-  when present (an older backend leaves the newer ones out).
+- Topic rows are `TopicRow(topic, lastSessionAtMs?, ending)`; `canContinue` is
+  `topic.open_session_id != null`. `lastSessionAtMs` is the topic's `last_session_at_ms` (protocol
+  1.1), shown as the date of the last capture (`formatCaptureDate`, date only) when present. The
+  topic card (#575) is the whole card as one button: the name, the date below it, and a capture icon
+  at the bottom-right; nothing else (no digest excerpt, doubts count, session state or buttons).
+  Tapping it calls `startOrContinue(row)` and the capture screen shows.
+- **No connection** (#575): `HomeUiState.noConnection` is true with no stored backend or when the
+  subject or topic list failed as `BackendResult.Unreachable`; the screen then shows only a warning
+  («No hay conexión con el ordenador…») with «Configurar conexión» (the computers screen) and
+  «Reintentar». There is no other connectivity feedback in the app (no address, no
+  connected/disconnected indicator).
 - **Create topic** (`createTopic(subjectName, title)`): the dialog takes a subject name (typed, or
   one tap on an existing one) and a title. A name matching an existing subject (trimmed, ignoring
   case) reuses it; otherwise `POST /api/subjects` runs first. Then `POST .../topics`, the dialog
   closes and that subject's topics are shown. Failures stay in the dialog.
-- **«Iniciar captura» / "Continuar"** (`startOrContinue(row)`, #431 renamed «Empezar sesión»): `POST /api/sessions` with the
+- **Opening a topic** (`startOrContinue(row)`): `POST /api/sessions` with the
   clock's `client_time_ms`, or `POST /api/sessions/{open_session_id}/resume`. On success the
   `session.OpenSession(backend, session, subjectName, topicName)` goes into
   **`session.SessionHolder`** (in memory, `AppContainer.sessionHolder`) and the app opens
   `Route.CAPTURE`. A 409 (another session open) is `SessionFailure.Conflict`; a 409 or 404 also
-  refreshes the topic list so the session that is really open shows "Continuar".
+  refreshes the topic list so the session that is really open is the one resumed.
 - **Pending ends** (#198): `HomeViewModel(..., pendingEnds)` takes a `session.PendingEnds` (the
   `SessionFinisher` in the app, `NoPendingEnds` by default). A row whose `open_session_id` is in
-  `pending` has `TopicRow.ending` and shows «Terminando sesión…» instead of «Sesión abierta»; when a
-  session leaves `pending` the topics are fetched again. "Continuar" always resumes through
+  `pending` has `TopicRow.ending` and is only used to stop that end first; when a
+  session leaves `pending` the topics are fetched again. Opening a topic with an open session always resumes through
   `PendingEnds.continueInstead(sessionId) { resume }`: the finisher's attempt in flight is cancelled
   and joined first (its flush socket is let go), so no end races the resume; a successful resume
   drops the pending end for good (also one refused earlier, so a later start never ends a session
   in use), a failed one lets a running end go on. An end the backend already took shows up as a 409
   on the resume (the conflict message, the list refreshed).
-- Routes: the app now opens on `Route.HOME` when a backend is stored ("Ordenadores" leads to the
-  paired backends); `Route.CAPTURE` shows the capture screen (below) for the session in
+- Routes: `Route.HOME` is the subjects/topics screen (the gear leads to the paired backends, whose
+  Back returns to the screen that opened it, `backRoute`); `Route.CAPTURE` shows the capture screen (below) for the session in
   `SessionHolder`, and goes back home when there is none.
 
 ## Share a web page (#62)
@@ -217,199 +219,53 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
 - `OkHttpBackendClient.addWebPage` uses a client with a longer read timeout
   (`WEB_PAGE_READ_TIMEOUT_SECONDS`, 120 s): the backend answers after Claude fetched the page.
 
-## Study desk on the phone (#83)
-
-Package `desk`. The phone works on and studies a topic through the backend's own web UI, the same
-two topic screens the web desk offers (web #368/#378): **Construir**, the workspace
-(`/workspace`: the document, its sources and the chat that drives the work), and **Estudiar**, the
-study screen (`/study`: study modes and generated material). No notes logic in the app (ADR-0001).
-The legacy notes page (`/notes`) is no longer opened from the phone (#414).
-
-- **«Construir»** and **«Estudiar»** on every topic card of the home screen, below
-  «Iniciar captura/Continuar» and above «Preguntar al tutor», open `Route.DESK` for
-  `HomeViewModel.deskTarget(row, view)` -> `DeskTopic(subjectId, topicId, topicName, view)` with
-  `DeskView.WORKSPACE` or `DeskView.STUDY` (kept by `MainActivity` across recreation, the view by
-  name; the desk view model is keyed per topic and view).
-- **`StudyDesk.kt`** (pure, JVM-tested): `topicPageUrl(baseUrl, subjectId, topicId, view)` ->
-  `<base>/subjects/<s>/topics/<t>/<workspace|study>` (each id percent-encoded as one segment, the
-  base URL's path/query dropped; null for a non-http(s) base), with the shorthands
-  `workspacePageUrl` and `studyPageUrl`, `backendOrigin(baseUrl)`,
-  `tokenCookie(token)` -> `sa_token=<token>; Path=/; HttpOnly; SameSite=Strict`,
-  `deskPage(baseUrl, token, topic)` (the page of `topic.view`) -> `DeskPage(url, cookieUrl, cookie)` (its `toString()` hides
-  the cookie) and `isSameOrigin(url, baseUrl)` (scheme, host and port).
-- **Authentication**: a page cannot send `Authorization: Bearer` on its own loads and `fetch`
-  calls, so the backend also accepts the paired token from the `sa_token` cookie (server
-  `auth.TOKEN_COOKIE`, docs/modules/server.md). The screen sets it in the WebView `CookieManager`
-  for the backend's origin right before loading, and removes the WebView's cookies (then
-  flushes) when the screen is left, so the token does not stay in the WebView store. It is
-  never logged or put in a URL.
-- **`StudyDeskViewModel(store, topic)`** (`AppContainer.studyDeskViewModelFactory(topic)`, keyed
-  `desk-<subject>/<topic>`) reads the active backend once: `DeskUiState` `Loading`, `NoBackend`,
-  `InvalidBackend` or `Ready(backendName, baseUrl, page, reload, failure)`.
-  `onLoadFailed(status, detail)` records a main-frame failure (`401` ->
-  `DeskLoadFailure.Unauthorized`, «Vuelve a emparejarlo»; else `Failed("HTTP <n>" | detail)`);
-  `retry()` («Reintentar», «Recargar») clears it and bumps `reload`.
-- **`StudyDeskScreen`**: a bar with «Volver», «Construir: <tema>» or «Estudiar: <tema>» and «Recargar» over the
-  WebView (JavaScript and DOM storage on, file/content access off). Links to another origin open
-  in the system browser; system back goes back in the WebView history, then home. A progress bar
-  shows while a page loads; a failure covers the page with its Spanish message.
-- **Files and downloads (#259)**: a file input (the topic's PDF upload) opens the system document
-  picker (`OpenDocument`, or `OpenMultipleDocuments` for a `multiple` input) filtered by
-  `acceptMimeTypes(accept)`; a cancel answers `null`, so the input stays usable. A download (the
-  generated materials' links: Anki deck, PDF exam, slides) goes through `decideDownload` and then
-  `DownloadManager` with `Authorization: Bearer <token>` (never logged; `DeskPage.token`,
-  redacted from `toString()`), the server's file name (`URLUtil.guessFileName` on
-  `Content-Disposition`, made safe by `safeFileName`) and a notification, into Downloads (the
-  app's own external Downloads folder on Android 9, which would need a storage permission for
-  the shared one); a URL that is not on the paired backend's origin is refused. Toasts:
-  «Descarga iniciada: <archivo>», «No se pudo descargar el archivo.», «Solo se descargan
-  archivos del ordenador emparejado.». The decisions live in `DeskFiles.kt` (pure, JVM-tested),
-  the Android glue in `DeskDownloader.kt`.
-- The web layout is responsive (#263): below 48rem (docs/modules/web.md, "Phone width") the
-  study desk, the topic page and the notes page are one column, and the notes page's sources
-  panel and editor chat collapse behind "Fuentes" and "Chat con el editor"; nothing changes on
-  the phone side.
-- The file chooser and the downloads (#259) work the same on both pages: «Añadir fuente» in the
-  workspace's Recursos picks a PDF, and the slides exports (`<a download>`) from Estudiar go to the
-  download manager. Estudiar has no Anki export link today (that lives on the legacy topic page's
-  materials panel); when it gets one it takes the same path.
-- Known gaps: no microphone inside the WebView. Voice requests come from the native capture session
-  («Iniciar captura/Continuar»), whose transcript feeds the same topic's workspace, and the voice
-  tutor is native too (#248); nothing offline.
-
-## Voice tutor on the phone (#248)
-
-Package `tutor`. The phone side of the backend's voice tutor (#82, `server/tutor_routes.py`,
-docs/modules/server.md and editor.md "The voice tutor"): the backend answers, grounded in the
-topic's notes and sources; the app only carries the question and shows / reads the answer
-(ADR-0001). It is the web capture page's tutor (docs/modules/web.md) in native Compose.
-
-- **«Preguntar al tutor»** on every topic card of the home screen opens `Route.TUTOR` for that
-  `TutorTopic(subjectId, topicId, topicName)` (kept by `MainActivity` across recreation).
-- **`TutorClient`** (`history`, `ask`) over the active backend's `BackendCredentials` (bearer
-  token); **`OkHttpTutorClient`** is the real one (read timeout `TUTOR_READ_TIMEOUT_SECONDS`, 180 s,
-  since Claude reads before the first delta; cancelled with the coroutine; nothing logged). Not part
-  of the capture protocol: bodies are read leniently (`TutorJson`, unknown fields ignored).
-  - `GET /api/subjects/{s}/topics/{t}/tutor` -> the `turns` (`TutorTurn`: `time`, `question`,
-    `reply`, `refs`, `warning`), oldest first.
-  - `POST .../tutor` `{"question", "confirm_over_cap"}` with `Accept: text/event-stream`: the
-    stream is read by **`readTutorStream(source, onProgress)`** over **`SseParser`** (event name +
-    joined `data:` lines; comments, `id:`, `retry:` ignored): `reply.delta` -> `TutorProgress.Delta`,
-    `reply.restart` -> `TutorProgress.Restart`, `result` -> the `TutorAnswer` (`question`, `reply`,
-    `refs` `{label, kind, text, source_id, path}`, `warning`), `error` -> a refusal with the event's
-    own status.
-  - Every call returns a `TutorResult`: `Success`, `Refused(status, detail, code)` (an HTTP error
-    before the stream or an `error` event; `detail` only when it is a string; `overCap` when `code`
-    is `cost_cap_reached`), `Unreachable(reason)`, `Interrupted` (the stream ended or broke before
-    `result`/`error`) or `InvalidResponse(reason)`.
-- **`VoiceQuestion(engine)`**: one listening round of the capture screen's `RecognizerEngine`
-  (`AndroidSpeechRecognizerEngine`, `es-ES`, one per tutor screen), not continuous: `onInterim`
-  while the student speaks, then exactly one `onFinal(text)` or `onProblem(VoiceProblem)`
-  (`NO_SPEECH`, `PERMISSION_DENIED`, `UNAVAILABLE`, `FAILED`). A round that ends in an empty
-  result or an error after partials keeps the last partial; `stop()` («Ya he terminado») ends it
-  with what was heard; `cancel()` / `release()` report nothing (`release` also destroys the
-  recognizer, recreated on the next round).
-- **`SpeechOutput`** (`available`, `speak(text, onDone)`, `stop()`, `shutdown()`):
-  **`AndroidSpeechOutput`** is `TextToSpeech` in `es-ES` (one per app, `AppContainer.speechOutput`;
-  a text asked for before the engine is ready waits for it; no engine or no Spanish makes
-  `available` false; texts over the engine's input limit go as several utterances,
-  `speechChunks`). `NoSpeechOutput` is the container default. The manifest's `<queries>` lists
-  `android.intent.action.TTS_SERVICE` (package visibility on Android 11+).
-- **`shownText(reply)`** shows each `[^label]` as `[label]` (matching «Fuentes:»);
-  **`spokenText(reply)`** drops the marks, `[[?..]]` brackets and Markdown symbols -- the web's
-  `speech.ts` rules.
-- **`TutorViewModel(client, store, topic, voice, speech)`**
-  (`AppContainer.tutorViewModelFactory(topic)`, keyed `tutor-<subject>/<topic>`) exposes
-  `TutorUiState`: `setup` (`Loading`/`NoBackend`/`Ready(backendName)`), `history`
-  (`Loading`/`Loaded`/`Failed(failure)`, «Reintentar» -> `retryHistory()`), `turns`, `draft`
-  (capped at `MAX_QUESTION_CHARS`, 1000, the backend's), `listening`/`heard`/`voiceProblem`,
-  `pending` (`PendingQuestion(question, partial)`, the answer streamed so far), `failure`
-  (`AskFailure(question, failure)`), `readAloud` (on by default), `speaking`, `speechAvailable`.
-  One question at a time (`canAsk`). `askDraft()` («Preguntar»), `startVoice()` («Preguntar por
-  voz»: the recognised question is asked at once), `stopVoice()`; an answer is appended to
-  `turns` and, with `readAloud`, read aloud (`spokenText`); `readAgain(turn)` («Leer otra vez»),
-  `stopSpeaking()` («Parar de leer»), `setReadAloud(false)` stops the reading. A failure keeps
-  its question: `confirmOverCap()` («Continuar igualmente», only for a reached cost cap) asks it
-  again with `confirm_over_cap`, `retryFailed()` («Reintentar») without. `onBackground()` stops
-  listening (releasing the recognizer) and reading.
-- **`TutorScreen`**: «Volver» and «Tutor: <tema>», the earlier turns (question, answer, a
-  warning, «Fuentes:» `[label] text`), the question being answered («El tutor está pensando…»
-  until the first delta), the failure card, then the controls («Preguntar por voz» / «Lo que te
-  oigo: …» + «Ya he terminado», the typed field + «Preguntar», the «Leer las respuestas en voz
-  alta» switch with «Parar de leer»). `RECORD_AUDIO` is asked for on the first spoken question; a
-  refusal says typing still works. Leaving the screen or `ON_STOP` (not a rotation) calls
-  `onBackground()`.
-- Messages: `ui.tutorFailureMessage` -- 401 the re-pair message, otherwise the backend's Spanish
-  `detail` when it gave one (no notes yet, another question running, cost cap, Claude failed,
-  ...), else 404 / 503 / the HTTP status; unreachable, interrupted and invalid answers have their
-  own. Each `VoiceProblem` has its Spanish sentence.
-- Known gaps: the answer's sources are listed, not opened (the study desk shows them); nothing
-  offline.
-
 ## Capture screen (#42)
 
-Package `capture`. The screen for one open session, in three bands (#556): the header with the
-pending-doubts counter and the status lines, a CameraX preview as large as the space the other two
-bands leave, and the bottom area -- the thumbnail strip and the session buttons. The microphone
-runs in the STT mode the backend picks (ADR-0008) and its transcription is sent, but no box on
-screen shows it.
+Package `capture`. The screen for one open session (#575), nothing but the capture: the shared top
+bar (Back, «<asignatura> · <tema>», gear, avatar), the CameraX preview (the only weighted child, so it
+takes the vertical space left), **Capturar** BELOW the preview (a full-width button outside it; it was
+overlaid and did not respond because it stayed disabled until the microphone permission started the
+session), and at the bottom the thumbnail strip. The microphone runs in the STT mode the backend picks
+(ADR-0008) and its transcription is sent, but the screen shows neither it, nor the connection, the
+pending doubts, nor any warning (the plumbing stays: a hidden UI, not a protocol change).
 
-- **`CaptureScreen(viewModel, onLeave, onEnded)`**: asks for `CAMERA` and `RECORD_AUDIO` at runtime
-  (Spanish rationale; the session starts once the microphone is granted, the preview once the
-  camera is), keeps the screen on (`View.keepScreenOn`) while shown, and lays the session out in
-  three bands (#556, human correction 2026-10-03):
-  - the header -- the connection state (with "Reintentar" after a failure) and "N dudas pendientes"
-    from the last `notice` -- and, under it, the status lines (`StatusLines`): in server STT mode
-    the backend recognizer's warning while degraded (protocol 1.5 `stt.status`, #222: its Spanish
-    `detail`, or `capture_stt_reconnecting` / `capture_stt_unavailable`), the microphone's pause
-    and problems, the spool near its cap and an end failure;
-  - the back camera's CameraX `Preview`, the screen's only weighted child, so it takes all the
-    vertical space left between the two other bands;
-  - the bottom area, top to bottom: the thumbnail strip (while there are shots) and the buttons --
-    **Capturar** first, full width and taller than the rest since it is the only capture trigger,
-    then **Importante** and **Libro/Apuntes** (shows what the camera looks at) side by side, then
-    **Terminar captura** (`capture_button_end`, the counterpart of «Iniciar captura»; one
-    confirmation saying the session ends and the notes are built later from «Construir» through the
-    chat).
-  The live-transcript box is gone and with it the `capture_transcript_empty` string: the
-  transcription itself keeps running and being sent in both STT modes (#556). Back ("Salir") leaves
-  the session open: the home screen offers "Continuar".
-- **Ending only ends the capture** (#431, human decision 2026-09-27: nothing anywhere builds the
-  topic's document automatically). `CaptureViewModel.end()` sends `button end_session` and
-  `POST /api/sessions/{id}/end` **without `prepare_notes`** (optional since protocol 1.6, so valid
-  for every backend); a spooled end is delivered without it too (see "Offline spool"). After a
-  successful end (live, 404/409 already ended, or handed to the spool) the screen shows
-  **«Sesión terminada»** (phase `ENDED`, `EndedPanel`) instead of jumping home: **Abrir en
-  Construir** opens `CaptureViewModel.deskTopic`, the topic's **Construir** screen
-  (`DeskView.WORKSPACE`, #414) in the study desk (`CaptureScreen(onOpenWorkspace)`), where the
-  student asks for the notes in the chat; **Volver al inicio** and back go home
-  (`CaptureScreen(onHome)`). The `SessionHolder` keeps the session until then: leaving calls
-  `closeEnded()`, which clears it. The former «Terminar y preparar apuntes» button (#272), its
-  `NOTES` phase, `NotesProgress` / `NotesGenerationPoller` and `BackendClient.notesGeneration` are
-  gone; the protocol mirror keeps `SessionEndRequest.prepareNotes` (never sent; the backend ignores it
-  since #440, which also removed `NotesGenerationStatus` and `SessionEndResponse.notesGeneration`).
+- **`CaptureScreen(viewModel, user, photos, onLeave, onSettings, onProfile)`**: keeps the screen on
+  (`View.keepScreenOn`); entering calls `start()` at once (the session runs even if the microphone is
+  refused, then without transcript) and asks for `CAMERA` and `RECORD_AUDIO` once; the preview shows
+  as soon as the camera is granted. **Leaving ends the session**: the top bar's Back, the system
+  back, the gear and the avatar call `CaptureViewModel.endOnLeave()` first. There are no Start/End
+  buttons, no «Importante», no «Libro/Apuntes» and no «Sesión terminada» panel.
+- **Ending** (#431, #575): nothing anywhere builds the topic's document automatically.
+  `CaptureViewModel.endOnLeave()` sends `button end_session` and `POST /api/sessions/{id}/end`
+  **without `prepare_notes`**; a spooled end is delivered without it too (see "Offline spool"). The
+  session is released from `SessionHolder` as soon as the end is taken (live, 404/409 already ended,
+  or handed to the spool) or refused for a non-transient reason (the socket stops and the backend
+  closes the session on its own later); the screen can already be gone by then. A screen that never
+  started the session (`IDLE`) ends it too. The former «Terminar y preparar apuntes» button (#272),
+  its `NOTES` phase, `NotesProgress` / `NotesGenerationPoller` and `BackendClient.notesGeneration`
+  are gone; the protocol mirror keeps `SessionEndRequest.prepareNotes` (never sent).
 - **`CaptureViewModel(open, backendClient, sessionHolder, clock, socketFactory,
   transcriberFactory, audioStreamerFactory, stillCapture)`**, one per session id
   (`AppContainer.captureViewModelFactory(open)`, keyed `capture-<session_id>`), exposes
   `CaptureUiState` (`phase` IDLE/RUNNING/ENDING/ENDED, `connection`, `transcript` -- the last 50
   `TranscriptLine(segmentId, text, final)` from the server's `transcript.partial/final`, so the
   state holds the backend's normalised text in both STT modes, though since #556 nothing draws it
-  --, `pendingCount`, `source`, `micProblem`, `endFailure`, `sttWarning`: the last degraded
+  --, `pendingCount`, `micProblem`, `endFailure`, `sttWarning`: the last degraded
   `SttStatus`, cleared by an `ok` one and by every
   new `hello.ack`, after which the backend repeats a status that still holds). `start()` opens the socket; when `hello.ack` names the mode it starts the
   `ClientTranscriber` (client mode: each `ClientTranscript` goes out as
   `transcript.client.partial/final` with the transcriber's `provider`/`language`) or the
   `AudioStreamer` (server mode). The mic keeps running through a reconnect. `leave()` stops
-  socket and mic. Buttons: `important()` -> `button important`; `toggleSource()` -> `button
-  switch_source` with `book`/`notes` (starts on `notes`); `capture()` calls `StillCapture` with
+  socket and mic. `capture()` calls `StillCapture` with
   `trigger: button` and is the app's only capture trigger (#556): a server `command capture_now`
   -- the voice command the backend's `stt` still publishes -- is deliberately neither acted on nor
   `ack`ed (nothing was done, so nothing is acknowledged), and every other server event is handled
   as before. The protocol is unchanged: `CaptureTrigger.COMMAND`, `Command`/`CommandName` and
   `ClientAck` stay in the protocol package and the web capture page still obeys `capture_now`
-  (docs/modules/web.md). `end()` sends `button end_session`, then `POST
-  /api/sessions/{id}/end` (`reason: button`); success, 404 or 409 clear the `SessionHolder` and end
-  the screen, any other failure keeps the session running with `endFailure` shown.
+  (docs/modules/web.md). `end()` (called by `endOnLeave()`) sends `button end_session`, then `POST
+  /api/sessions/{id}/end` (`reason: button`). `important()` / `toggleSource()` and the `source` state
+  were removed with their buttons (#575); the protocol's `ButtonName.IMPORTANT` / `SWITCH_SOURCE`
+  stay in the protocol package.
 - **`StillCapture`** (`shots: Flow<List<CaptureShot>>`, `capture(trigger, commandId)`,
   `retry(captureId)`) is what the view model calls; it exposes the strip as
   `CaptureViewModel.shots` and `retryShot(captureId)`. See "Still capture" below.
@@ -501,8 +357,10 @@ screen shows it.
   session may be resuming) are retried after 1/2/5/10/30 s (30 s repeats); any other refusal is
   `FAILED`, and a tap on its thumbnail retries it. Statuses: `CAPTURING`, `PENDING`, `UPLOADING`,
   `UPLOADED`, `FAILED`, `CAMERA_FAILED`; full-size stills are dropped once uploaded.
-- **Thumbnail strip** (`CaptureScreen`): a row between the preview and the session buttons (#556),
-  one 64 dp tile per capture with a badge (spinner while capturing/uploading, «↑» pending, «✓»
+- **Thumbnail strip** (`CaptureScreen`): a row at the bottom of the screen, below the «Capturar»
+  button (#575); it shows the photos of the session being captured (the backend has no list of a
+  topic's earlier captures), each its own keyed `Thumbnail` composable so a later task can add
+  discarding by dragging a thumbnail down (not implemented). One 72 dp tile per capture with a badge (spinner while capturing/uploading, «↑» pending, «✓»
   sent, «!» failed) and a Spanish content description.
 - In the app the queue spools every burst to disk before its first upload (see "Offline spool
   (#53)"); a WebSocket `ack`'s `capture_ids` and a resume's `received_capture_ids` mark captures
@@ -566,13 +424,13 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
   audio by client time and never skips a missing `seq`. Without an `ack` in time they go out as
   numbered, renumbered from 0 only when the backlog never saw any `ack` (its last acknowledged
   `seq` is kept in the `floor` file) and its first frame is not 0. After an app restart,
-  "Continuar" opens the same spools, so everything left is resent the same way.
+  Resuming the session opens the same spools, so everything left is resent the same way.
 - **Captures on resume**: the session start/resume's `received_capture_ids` (the capture screen's
   start and every 4404 resume) are confirmed and failed captures of the session retried.
-- **Ending** (`CaptureViewModel` with `CaptureSpooling`): «Terminar captura» while not connected, or
+- **Ending** (`CaptureViewModel` with `CaptureSpooling`): Ending while not connected, or
   answered with a transient failure (unreachable, 408/425/429/5xx), writes a `PendingEnd` and hands
   it to **`SessionFinisher`** (`AppContainer.sessionFinisher`, on the app-wide scope); the screen
-  shows «Sesión terminada» at once. Online, «Terminar captura» first waits up to 10 s for `drained` and the session's uploads.
+  ends the screen's work at once. Online, ending first waits up to 10 s for `drained` and the session's uploads.
   The finisher, per pending end: `POST .../resume` (409: skip the flush; 404: drop), a
   `SessionConnection` over the spools until `drained` (at most 120 s), the session's captures
   uploaded (at most 300 s), then `POST .../end` with the original «Terminar captura» time and
@@ -589,9 +447,6 @@ Package `spool`, all under app-private `filesDir/spool` (`Spools(root, budget)`,
 
 ## Tests
 JVM unit tests for view models, protocol (shared examples), spool/retry logic with fakes. The
-tutor tests use `tutor/Fakes.kt` (`FakeTutorClient`, whose questions the test answers through a
-`CompletableDeferred`, and `FakeSpeechOutput`) with the capture tests' `FakeRecognizerEngine`, and
-MockWebServer for `OkHttpTutorClient`. The
 spool tests (`spool/AudioSpoolTest`, `spool/CaptureSpoolTest`, `capture/SpooledUploadQueueTest`,
 `capture/SessionFinisherTest`, `capture/CaptureViewModelOfflineTest`) use a JUnit
 `TemporaryFolder`, never `filesDir`. The

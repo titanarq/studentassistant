@@ -5,8 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.titanarq.studentassistant.Clock
 import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendResult
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
 import com.titanarq.studentassistant.protocol.CaptureTrigger
@@ -17,7 +15,6 @@ import com.titanarq.studentassistant.protocol.ServerAck
 import com.titanarq.studentassistant.protocol.ServerEvent
 import com.titanarq.studentassistant.protocol.SessionEndReason
 import com.titanarq.studentassistant.protocol.SessionEndRequest
-import com.titanarq.studentassistant.protocol.SourceKind
 import com.titanarq.studentassistant.protocol.SttMode
 import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.protocol.SttStatus
@@ -56,14 +53,10 @@ enum class CapturePhase {
 
     RUNNING,
 
-    /** «Terminar captura» pressed; the backend is ending the session. */
+    /** The student left the screen; the backend is ending the session. */
     ENDING,
 
-    /**
-     * The session is over (the backend took the end, or the spool will deliver it): the screen
-     * shows «Sesión terminada» with «Abrir en Construir» / «Volver al inicio» until the student
-     * leaves it ([CaptureViewModel.closeEnded]).
-     */
+    /** The session is over (the backend took the end, or the spool will deliver it). */
     ENDED,
 }
 
@@ -82,8 +75,6 @@ data class CaptureUiState(
     val transcript: List<TranscriptLine> = emptyList(),
     /** Doubts awaiting review, from the last `notice`; null until one arrives. */
     val pendingCount: Int? = null,
-    /** What the camera is looking at, toggled by "Libro/Apuntes". */
-    val source: SourceKind = SourceKind.NOTES,
     val micProblem: MicProblem? = null,
     /** The last «Terminar captura» failed with this; the session is still open. */
     val endFailure: BackendResult.Failure? = null,
@@ -119,10 +110,11 @@ class CaptureSpooling(
 /**
  * The capture screen (ADR-0001, ADR-0008): the session WebSocket, the microphone in the STT mode
  * the backend chose (client: [ClientTranscriber] segments; server: [AudioStreamer] frames), the
- * live transcript and pending counter from server events, and the session buttons.
+ * live transcript and pending counter from server events (kept running, but the screen shows
+ * neither), and the capture trigger.
  *
- * [start] runs once the microphone permission is granted; [leave] stops everything without ending
- * the session (the home screen offers "Continuar"); [end] ends it. [onBackground] / [onForeground]
+ * The screen has no session buttons: entering it starts the capture ([start]) and leaving it ends
+ * the session ([endOnLeave]). [leave] stops everything without ending the session. [onBackground] / [onForeground]
  * (the screen's `ON_STOP` / `ON_START`) pause and resume the microphone while the socket stays
  * open, so the session goes on where it was.
  *
@@ -134,10 +126,8 @@ class CaptureSpooling(
  * session's captures to upload. Without it (tests), everything stays in memory.
  *
  * Ending only ends the capture (#431): nothing on the phone prepares the notes. The end request
- * never carries `prepare_notes`; after it the screen stays in [CapturePhase.ENDED] and offers the
- * topic's «Construir» screen ([deskTopic]), where the student asks for the notes through the chat.
- * The open session is released ([SessionHolder.clear]) when the student leaves that screen
- * ([closeEnded], [leave]).
+ * never carries `prepare_notes`. The open session is released ([SessionHolder.clear]) once the end
+ * is taken by the backend or handed to the spool.
  */
 class CaptureViewModel(
     private val open: OpenSession,
@@ -161,6 +151,9 @@ class CaptureViewModel(
     }
 
     private var resumedOnce = false
+
+    /** Set once the student left the screen: the session is released as soon as it has ended. */
+    private var releaseWhenEnded = false
 
     /** This session's captures for the thumbnail strip, oldest first, with their upload state. */
     val shots: StateFlow<List<CaptureShot>> =
@@ -226,13 +219,6 @@ class CaptureViewModel(
         )
         connection.start()
     }
-
-    /**
-     * What «Abrir en Construir» opens in the study desk after the end: the topic's «Construir»
-     * screen (its workspace, #414), where the student asks for the notes through the chat.
-     */
-    val deskTopic: DeskTopic
-        get() = DeskTopic(open.session.subjectId, open.session.topicId, open.topicName, DeskView.WORKSPACE)
 
     /**
      * Leaves the screen: socket and microphone stop, the session stays open. In
@@ -302,25 +288,42 @@ class CaptureViewModel(
         stillCapture.retry(captureId)
     }
 
-    /** "Importante": flags this moment. */
-    fun important() {
-        sendButton(ButtonName.IMPORTANT)
-    }
-
-    /** "Libro/Apuntes": switches between the textbook and the notebook. */
-    fun toggleSource() {
-        if (_state.value.phase != CapturePhase.RUNNING) return
-        val next = if (_state.value.source == SourceKind.NOTES) SourceKind.BOOK else SourceKind.NOTES
-        _state.update { it.copy(source = next) }
-        sendButton(ButtonName.SWITCH_SOURCE, next)
-    }
-
     /**
-     * «Terminar captura»: `button end_session`, then `POST /api/sessions/{id}/end` without
-     * `prepare_notes`. With
-     * [spooling], an end the backend cannot take now is handed to the [SessionFinisher] (see the
-     * class doc). Either way the screen then shows «Sesión terminada» ([CapturePhase.ENDED]).
+     * The student left the capture screen: the session ends. `button end_session`, then
+     * `POST /api/sessions/{id}/end` without `prepare_notes`. With [spooling], an end the backend
+     * cannot take now is handed to the [SessionFinisher] (see the class doc). The session is
+     * released from [SessionHolder] when the end is done, so the screen can already be gone; an
+     * end refused for a non-transient reason stops the socket and releases the session anyway (the
+     * backend closes it on its own after a while).
      */
+    fun endOnLeave() {
+        releaseWhenEnded = true
+        when (_state.value.phase) {
+            CapturePhase.ENDED -> closeEnded()
+            CapturePhase.ENDING -> Unit
+            CapturePhase.RUNNING -> end()
+            CapturePhase.IDLE -> {
+                // The screen never started the session (no camera permission): end it all the same.
+                _state.update { it.copy(phase = CapturePhase.ENDING) }
+                val endedAtMs = clock.nowMillis()
+                val spooling = spooling
+                if (spooling != null) {
+                    handOffEnd(spooling, endedAtMs)
+                } else {
+                    viewModelScope.launch {
+                        backendClient.endSession(
+                            open.backend,
+                            open.session.sessionId,
+                            SessionEndRequest(endedAtMs, SessionEndReason.BUTTON),
+                        )
+                        markEnded()
+                    }
+                }
+            }
+        }
+    }
+
+    /** Ends the session now ([endOnLeave] is the screen's entry point). */
     fun end() {
         if (_state.value.phase != CapturePhase.RUNNING) return
         _state.update { it.copy(phase = CapturePhase.ENDING, endFailure = null) }
@@ -352,10 +355,14 @@ class CaptureViewModel(
                 ended -> {
                     leave()
                     spooling?.finisher?.ended(open.session.sessionId)
-                    _state.update { it.copy(phase = CapturePhase.ENDED) }
+                    markEnded()
                 }
                 spooling != null && CaptureUploadQueue.isTransient(result as BackendResult.Failure) &&
                     !(result is BackendResult.HttpError && result.status == 409) -> handOffEnd(spooling, endedAtMs)
+                releaseWhenEnded -> {
+                    leave()
+                    markEnded()
+                }
                 else -> {
                     val state = connection?.state?.value
                     if (state is ConnectionState.Connected) startMic(state.sttMode)
@@ -367,10 +374,12 @@ class CaptureViewModel(
         }
     }
 
-    /**
-     * Leaves «Sesión terminada» («Abrir en Construir», «Volver al inicio», back): the open session
-     * is released, so the home screen offers no «Continuar» for it.
-     */
+    private fun markEnded() {
+        _state.update { it.copy(phase = CapturePhase.ENDED) }
+        if (releaseWhenEnded) sessionHolder.clear()
+    }
+
+    /** The open session is released, so nothing offers it any more. */
     fun closeEnded() {
         if (_state.value.phase != CapturePhase.ENDED) return
         sessionHolder.clear()
@@ -383,12 +392,12 @@ class CaptureViewModel(
             open.backend,
             PendingEnd(open.session.sessionId, open.backend.baseUrl, endedAtMs, SessionEndReason.BUTTON, userId = open.backend.userId),
         )
-        _state.update { it.copy(phase = CapturePhase.ENDED) }
+        markEnded()
     }
 
-    private fun sendButton(button: ButtonName, source: SourceKind? = null, force: Boolean = false) {
+    private fun sendButton(button: ButtonName, force: Boolean = false) {
         if (!force && _state.value.phase != CapturePhase.RUNNING) return
-        connection?.send(Button(button, source, clock.nowMillis()))
+        connection?.send(Button(button, null, clock.nowMillis()))
     }
 
     private fun startMic(mode: SttMode) {

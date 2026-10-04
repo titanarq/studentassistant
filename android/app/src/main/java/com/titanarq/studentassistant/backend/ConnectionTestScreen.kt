@@ -24,7 +24,6 @@ import com.titanarq.studentassistant.ui.backendFailureMessage
 @Composable
 fun ConnectionTestScreen(
     viewModel: ConnectionTestViewModel,
-    onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -32,7 +31,6 @@ fun ConnectionTestScreen(
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.connection_title), style = MaterialTheme.typography.headlineSmall)
             if (state.noBackend) {
                 Text(stringResource(R.string.connection_no_backend))
             } else {
@@ -53,7 +51,6 @@ fun ConnectionTestScreen(
                     Text(stringResource(R.string.connection_run_again))
                 }
             }
-            OutlinedButton(onClick = onBack) { Text(stringResource(R.string.back)) }
         }
     }
 }

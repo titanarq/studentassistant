@@ -40,7 +40,6 @@ fun PairedBackendsScreen(
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.backends_title), style = MaterialTheme.typography.headlineSmall)
             val current = stored
             when {
                 current == null -> Text(stringResource(R.string.loading))

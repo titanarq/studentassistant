@@ -6,8 +6,6 @@ import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
 import com.titanarq.studentassistant.backend.FakeBackendClient
 import com.titanarq.studentassistant.backend.PairedBackend
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
 import com.titanarq.studentassistant.protocol.Subject
@@ -27,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -132,6 +131,25 @@ class HomeViewModelTest {
     }
 
     @Test
+    fun `no stored backend or an unreachable one is no connection, other failures are not`() {
+        viewModel.load()
+        assertTrue(until { it.noBackend }.noConnection)
+
+        runBlocking { store.save(home) }
+        client.listSubjectsResult = BackendResult.Unreachable("down")
+        viewModel.load()
+        assertTrue(until { it.subjects is Loadable.Failed }.noConnection)
+
+        client.listSubjectsResult = BackendResult.HttpError(401)
+        viewModel.load()
+        assertFalse(until { it.subjects is Loadable.Failed && !it.noBackend }.noConnection)
+
+        client.listSubjectsResult = BackendResult.Success(SubjectsListResponse(listOf(historia)))
+        viewModel.load()
+        assertFalse(until { it.subjects is Loadable.Loaded }.noConnection)
+    }
+
+    @Test
     fun `a failed subject list is shown as a failure`() {
         runBlocking { store.save(home) }
         client.listSubjectsResult = BackendResult.HttpError(401)
@@ -142,43 +160,16 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `selecting a subject lists its topics, an open session offers Continuar`() {
+    fun `selecting a subject lists its topics, an open session can be resumed`() {
         val state = showHistoria()
 
         assertEquals(historia, state.selectedSubject)
         val rows = (state.topics as Loadable.Loaded).value
         assertEquals(listOf(feudalismo, reconquista), rows.map { it.topic })
         assertEquals(listOf(false, true), rows.map { it.canContinue })
-        // The last session date, pending count and digest excerpt are mapped when sent, else null.
+        // The last session date is mapped when sent, else null.
         assertEquals(listOf(null, 1_790_244_900_000), rows.map { it.lastSessionAtMs })
-        assertEquals(listOf(null, 2), rows.map { it.pendingCount })
-        assertEquals(listOf(null, reconquista.digestExcerpt), rows.map { it.digestExcerpt })
         assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
-    }
-
-    @Test
-    fun `every topic offers Construir and Estudiar in the study desk`() {
-        val rows = (showHistoria().topics as Loadable.Loaded).value
-
-        assertEquals(
-            listOf(
-                DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE),
-                DeskTopic("historia", "reconquista", "La Reconquista", DeskView.WORKSPACE),
-            ),
-            rows.map { viewModel.deskTarget(it, DeskView.WORKSPACE) },
-        )
-        assertEquals(
-            listOf(
-                DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.STUDY),
-                DeskTopic("historia", "reconquista", "La Reconquista", DeskView.STUDY),
-            ),
-            rows.map { viewModel.deskTarget(it, DeskView.STUDY) },
-        )
-        // Opening either calls nothing on the backend: the web page does.
-        assertEquals("listTopics http://192.168.1.20:8000 historia", client.calls.last())
-
-        viewModel.clearSubject()
-        assertNull(viewModel.deskTarget(rows.first(), DeskView.STUDY))
     }
 
     @Test

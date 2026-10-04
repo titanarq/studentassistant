@@ -29,7 +29,7 @@ class RouteTest {
 
     @Test
     fun `after sign-out or a backend switch the screens that need a user ask who is using the app`() {
-        for (route in listOf(Route.HOME, Route.CAPTURE, Route.DESK, Route.TUTOR, Route.PROFILE)) {
+        for (route in listOf(Route.HOME, Route.CAPTURE, Route.PROFILE)) {
             assertEquals(Route.USERS, routeFor(route, hasBackends = true, user = null))
             assertEquals(route, routeFor(route, hasBackends = true, user = laura))
         }
@@ -41,5 +41,20 @@ class RouteTest {
             assertEquals(route, routeFor(route, hasBackends = true, user = null))
         }
         assertEquals(Route.HOME, routeFor(Route.HOME, hasBackends = false, user = null))
+    }
+
+    @Test
+    fun `the initial screens have no back, pairing goes back to the computers only when some are paired`() {
+        assertEquals(null, backRoute(Route.USERS, hasBackends = true, settingsFrom = Route.HOME))
+        assertEquals(null, backRoute(Route.PAIRING, hasBackends = false, settingsFrom = Route.HOME))
+        assertEquals(Route.BACKENDS, backRoute(Route.PAIRING, hasBackends = true, settingsFrom = Route.HOME))
+    }
+
+    @Test
+    fun `settings goes back to the screen whose gear opened it`() {
+        assertEquals(Route.USERS, backRoute(Route.BACKENDS, hasBackends = true, settingsFrom = Route.USERS))
+        assertEquals(Route.HOME, backRoute(Route.BACKENDS, hasBackends = true, settingsFrom = Route.HOME))
+        assertEquals(Route.BACKENDS, backRoute(Route.CONNECTION_TEST, hasBackends = true, settingsFrom = Route.HOME))
+        assertEquals(Route.HOME, backRoute(Route.PROFILE, hasBackends = true, settingsFrom = Route.USERS))
     }
 }
