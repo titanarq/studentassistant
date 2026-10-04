@@ -1512,8 +1512,9 @@ token):
 
 ### Profile page (`users/ProfilePage.tsx`, #553)
 - Route `/profile`, inside the gate, for the active user. `api.ts` adds `updateUser` (PATCH),
-  `uploadUserPhoto` (multipart) and `deleteUserPhoto`, all returning `UserWriteResult`
-  (`ok` with the user / `rejected` with status and `detail` / `unreachable`).
+  `uploadUserPhoto` (`PUT /api/users/{id}/photo`, the raw image as the body with its own
+  `Content-Type`, not multipart) and `deleteUserPhoto`, all returning `UserWriteResult` (`ok` with
+  the user / `rejected` with status and `detail` / `unreachable`).
 - Form: «Nombre» (required, trimmed, max `USER_NAME_MAX_CHARS`) and «Correo electrónico»
   (optional, max `USER_EMAIL_MAX_CHARS`, `USER_EMAIL_PATTERN`); `validateName`/`validateEmail`
   mirror the protocol and show Spanish messages next to the field (`role="alert"`). The id is not
