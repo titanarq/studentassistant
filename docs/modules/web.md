@@ -1491,9 +1491,11 @@ token):
   `listUsers`; photo from `photo_url`, or the initials on a coloured circle -- `Avatar.tsx`; name;
   email in small type). Zero users: «No hay usuarios. Créalos con `studentassistant users add`.»;
   a failed list: Spanish error with «Reintentar». Choosing renders the requested path as that user.
-- The choice lives only in memory (nothing in `localStorage`/`sessionStorage`/IndexedDB), so a
-  reload always shows the selection again. Choosing sets the session cookie
-  `sa_user=<id>; Path=/; SameSite=Strict` (`USER_COOKIE`, no `Max-Age`/`Expires`), which every
+- The choice is the session cookie `sa_user=<id>; Path=/; SameSite=Strict` (`USER_COOKIE`, no
+  `Max-Age`/`Expires`, nothing in web storage; decision of 2026-10-04): a reload, a link click or
+  a new window finds it, validates it against `GET /api/users` («Cargando…» meanwhile) and enters
+  as that user without asking; a cookie naming an unknown user shows the selection. It dies with
+  the browser and «Cerrar sesión» deletes it. The cookie is also what every
   `fetch`, `EventSource`, WebSocket handshake and `<img>` carries: the API modules add no header.
   `useActiveUser()` gives `{user, signOut}` to descendants.
 - Other-tab check: on `visibilitychange`/`focus`, if the cookie no longer names this tab's user,

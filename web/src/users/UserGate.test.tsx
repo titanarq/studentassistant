@@ -47,17 +47,28 @@ describe("UserGate", () => {
     expect(document.cookie).toContain("sa_user=luis");
   });
 
-  it("writes nothing to web storage and asks again after a reload even with the cookie set", async () => {
+  it("sets a session cookie without expiry and keeps the user after a reload or in a new window", async () => {
     stubApi({ "/api/users": jsonResponse(USERS) });
     const local = vi.spyOn(Storage.prototype, "setItem");
+    const setter = vi.spyOn(document, "cookie", "set");
     const first = renderGate();
     fireEvent.click(await screen.findByRole("button", { name: /Ana/ }));
     expect(local).not.toHaveBeenCalled();
+    expect(setter).toHaveBeenCalledWith("sa_user=ana; Path=/; SameSite=Strict");
+    setter.mockRestore();
     first.unmount();
+    renderGate();
+    expect(await screen.findByText("contenido")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "¿Quién eres?" })).toBeNull();
+    local.mockRestore();
+  });
+
+  it("asks again when the cookie names a user that no longer exists", async () => {
+    document.cookie = "sa_user=ghost; Path=/";
+    stubApi({ "/api/users": jsonResponse(USERS) });
     renderGate();
     expect(await screen.findByRole("heading", { name: "¿Quién eres?" })).toBeTruthy();
     expect(screen.queryByText("contenido")).toBeNull();
-    local.mockRestore();
   });
 
   it("explains an empty vault and a failed list, and retries", async () => {

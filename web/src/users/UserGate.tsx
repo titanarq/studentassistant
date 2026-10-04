@@ -7,9 +7,10 @@ import { USER_REQUIRED_EVENT } from "./userRequired";
 import "./userGate.css";
 
 /**
- * Asks «¿Quién eres?» on every load of every page but `/pair` and renders its children as the
- * chosen user (epic #544). The choice lives only in memory; the `sa_user` session cookie
- * (no `Max-Age`, so it dies with the browser) is how every request of the app names the user.
+ * Asks «¿Quién eres?» on every page but `/pair` until a user is chosen and renders its children as
+ * that user (epic #544). The choice is the `sa_user` session cookie (no `Max-Age`, so it dies with
+ * the browser): a reload or a new window finds it, checks it against the user list and does not ask
+ * again; «Cerrar sesión» deletes it.
  */
 
 export interface ActiveUser {
@@ -105,6 +106,7 @@ const ChooseContext = createContext<(user: User) => void>(() => {});
 export default function UserGate({ children, pathname = window.location.pathname }: { children: ReactNode; pathname?: string }) {
   const [user, setUser] = useState<User | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(() => readCookie() !== null);
   const userRef = useRef<User | null>(null);
   userRef.current = user;
 
@@ -118,6 +120,21 @@ export default function UserGate({ children, pathname = window.location.pathname
     deleteCookie();
     setNote(null);
     setUser(null);
+  }, []);
+
+  useEffect(() => {
+    const id = readCookie();
+    if (id === null) return;
+    let cancelled = false;
+    void listUsers().then((result) => {
+      if (cancelled) return;
+      const known = result.kind === "ok" ? result.users.find((candidate) => candidate.id === id) : undefined;
+      if (known !== undefined) setUser(known);
+      setRestoring(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -145,6 +162,7 @@ export default function UserGate({ children, pathname = window.location.pathname
   }, [user]);
 
   if (pathname.replace(/\/+$/, "") === "/pair") return <>{children}</>;
+  if (user === null && restoring) return <p className="user-gate-status">Cargando…</p>;
   if (user === null) {
     return (
       <ChooseContext.Provider value={choose}>
