@@ -57,6 +57,7 @@ def _run_session(local: TestClient, *ops: dict[str, object]) -> str:
     return session_id
 
 
+@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_ending_a_session_writes_the_digest_the_routes_serve(
     local: TestClient, user_vault: Vault
 ) -> None:

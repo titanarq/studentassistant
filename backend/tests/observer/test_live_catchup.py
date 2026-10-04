@@ -29,6 +29,7 @@ from studentassistant.vault import (
     create_topic,
     read_topic_events,
     start_session,
+    user_ids,
 )
 
 pytestmark = pytest.mark.anyio
@@ -107,6 +108,7 @@ async def _until(condition: Any, what: str) -> None:
 async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state(
     tmp_vault: Vault, settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
+    user_vault = tmp_vault.for_user(user_ids(tmp_vault)[0])  # the one student of the vault
     fake = FakeClaude()
     slow = SlowTransport(fake)
     bus = SessionBus()
@@ -120,9 +122,9 @@ async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state
     service.add_before_ended(loop.flush)
     loop.start()
     try:
-        subject = await service.create_subject("Biología")
-        topic = await service.create_topic(subject.subject_id, "La célula")
-        first = await service.start(subject.subject_id, topic.topic_id, client_time_ms=1)
+        subject = await service.create_subject(None, "Biología")
+        topic = await service.create_topic(None, subject.subject_id, "La célula")
+        first = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=1)
         # One final segment, below the trigger: only the end's flush sends it.
         await _segment(bus, first.session_id, 1, "Las mitocondrias producen energía.")
         await asyncio.wait_for(loop.drain(), WAIT)
@@ -143,12 +145,12 @@ async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state
         assert [
             event.kind
             for session_id, event in read_topic_events(
-                tmp_vault, subject.subject_id, topic.topic_id
+                user_vault, subject.subject_id, topic.topic_id
             )
             if session_id == first.session_id and event.origin == "observer"
         ] == [ACK_EVENT_KIND]  # the baseline only: no op, no acknowledgement of the batch
         state = load_observer_snapshot(
-            tmp_vault, subject.subject_id, topic.topic_id, write_back=False
+            user_vault, subject.subject_id, topic.topic_id, write_back=False
         ).state
         assert "sec-late" not in state.sections
 
@@ -162,7 +164,7 @@ async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state
                 ]
             },
         )
-        second = await service.start(subject.subject_id, topic.topic_id, client_time_ms=3)
+        second = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=3)
         await asyncio.wait_for(loop.wait_idle(second.session_id), WAIT)
         assert len(fake.requests) == 2
         text = _text(fake.requests[1])
@@ -170,15 +172,15 @@ async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state
         assert "segment seg-1" in text and "Las mitocondrias producen energía." in text
 
         state = load_observer_snapshot(
-            tmp_vault, subject.subject_id, topic.topic_id, write_back=False
+            user_vault, subject.subject_id, topic.topic_id, write_back=False
         ).state
         assert state.segments_of("sec-mito") == ["seg-1"]
-        live = await service.require_active(second.session_id)
+        live = await service.require_active(None, second.session_id)
         acks = _kinds(live, ACK_EVENT_KIND)
         seg_1 = next(
             event.seq
             for session_id, event in read_topic_events(
-                tmp_vault, subject.subject_id, topic.topic_id
+                user_vault, subject.subject_id, topic.topic_id
             )
             if session_id == first.session_id and event.kind == "transcript.final"
         )
@@ -186,7 +188,7 @@ async def test_the_last_batch_of_a_call_outliving_the_end_hook_reaches_the_state
 
         # Answered: a later session of the topic owes nothing.
         await service.end(second.session_id, client_time_ms=4, reason="button")
-        third = await service.start(subject.subject_id, topic.topic_id, client_time_ms=5)
+        third = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=5)
         await asyncio.wait_for(loop.wait_idle(third.session_id), WAIT)
         assert len(fake.requests) == 2
     finally:

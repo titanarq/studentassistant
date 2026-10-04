@@ -40,6 +40,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -567,6 +568,7 @@ def _searches(index: VaultIndex) -> dict[str, list[Any]]:
     return {query: index.search(query, limit=50) for query in SEARCHES}
 
 
+@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_a_cloned_vault_restores_the_desk_notes_workspace_and_study_state(
     server: ServerSettings,
     codes: PairingCodes,

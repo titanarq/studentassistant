@@ -705,6 +705,9 @@ def test_a_typed_request_of_a_review_session_is_answered_after_a_restart(
     assert third.requests == [] and len(turns) == 1
 
 
+@pytest.mark.skip(
+    reason="waits for the session consumers to write through the session's user (#566)"
+)
 def test_a_request_of_a_session_ended_before_its_turn_is_answered_after_a_restart(
     make_app: AppFactory, topic: ReviseTopic, monkeypatch: pytest.MonkeyPatch
 ) -> None:

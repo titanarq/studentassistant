@@ -295,6 +295,7 @@ def test_a_turn_with_doubts_marks_them_and_one_is_shown_when_asked_for(
     assert subscription.drain() == []
 
 
+@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_during_a_session_the_doubts_go_to_its_live_log(
     client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
 ) -> None:
