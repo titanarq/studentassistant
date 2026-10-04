@@ -11,6 +11,7 @@ of them reads this machine's configuration or its vault.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -202,12 +203,25 @@ def test_a_second_run_says_there_was_nothing_to_do(vault: Vault) -> None:
     assert migration_commits(vault.root) == 1, "the second run committed nothing"
 
 
-def test_the_help_says_to_stop_the_backend_first(configured: Path) -> None:
+def test_the_help_says_to_stop_the_backend_first(
+    configured: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # rich (through typer) colours and wraps the help according to the terminal; pin a wide, plain
+    # one and also strip ANSI and the box borders, so the check holds on CI as well as locally.
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
     result = CliRunner().invoke(cli, ["vault", "migrate-users", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "Stop the backend first" in result.output
-    assert "--name" in result.output and "--email" in result.output and "--dry-run" in result.output
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.output)
+    text = re.sub(r"[│╭╮╰╯─]", " ", text)
+    text = " ".join(text.split())
+    assert "Stop the backend first" in text
+    for option in ("--name", "--email", "--dry-run"):
+        assert option in text, f"{option} is missing from the help:\n{result.output}"
 
 
 def test_a_vault_that_is_not_there_exits_1(
