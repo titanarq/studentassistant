@@ -7,8 +7,6 @@ import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.Subject
@@ -38,19 +36,17 @@ sealed interface Loadable<out T> {
 }
 
 /**
- * One topic row. [lastSessionAtMs] and [pendingCount] come from the topic list (protocol 1.1),
- * [digestExcerpt] (where the topic was left, protocol 1.3) too; each is shown only when the
- * backend reports it, and an older backend leaves the newer ones out. [ending] is true
- * while the phone is still completing the end of the topic's open session («Terminando sesión…»).
+ * One topic row. [lastSessionAtMs] comes from the topic list (protocol 1.1): the time of the
+ * topic's last session, which is when its last capture was taken (shown only when the backend
+ * reports it). [ending] is true while the phone is still completing the end of the topic's open
+ * session.
  */
 data class TopicRow(
     val topic: Topic,
     val lastSessionAtMs: Long? = null,
-    val pendingCount: Int? = null,
-    val digestExcerpt: String? = null,
     val ending: Boolean = false,
 ) {
-    /** True when the topic has an unended session: the row offers "Continuar", not "Empezar". */
+    /** True when the topic has an unended session: opening it resumes that session. */
     val canContinue: Boolean get() = topic.openSessionId != null
 }
 
@@ -77,6 +73,9 @@ data class CreateTopicDialog(
     val failure: BackendResult.Failure? = null,
 )
 
+/** True when [failure] means the backend could not be reached at all (as opposed to answering with an error). */
+fun isNoConnection(failure: BackendResult.Failure): Boolean = failure is BackendResult.Unreachable
+
 data class HomeUiState(
     /** The active backend's display name; null until read or when none is stored. */
     val backendName: String? = null,
@@ -92,13 +91,22 @@ data class HomeUiState(
     val session: SessionAction = SessionAction.Idle,
     /** Set once a session was opened: the screen navigates to capture and calls [HomeViewModel.onSessionShown]. */
     val openedSession: Session? = null,
-)
+) {
+    /**
+     * True when there is no connection to the backend (none stored, or the lists could not be
+     * fetched because it is unreachable): the screen warns and offers «Configurar conexión».
+     */
+    val noConnection: Boolean
+        get() = noBackend ||
+            ((subjects as? Loadable.Failed)?.failure?.let(::isNoConnection) == true) ||
+            ((topics as? Loadable.Failed)?.failure?.let(::isNoConnection) == true)
+}
 
 /**
  * The home screen: the active backend's subjects and their topics, creating a topic (and its
- * subject when it is new), and starting («Iniciar captura») or resuming ("Continuar") a session,
- * which is handed to the capture screen through [SessionHolder]. A topic whose session end is still
- * pending is marked [TopicRow.ending]; "Continuar" on it stops that end first ([PendingEnds]).
+ * subject when it is new), and opening a topic's capture session (starting one, or resuming the
+ * open one), which is handed to the capture screen through [SessionHolder]. A topic whose session
+ * end is still pending is marked [TopicRow.ending]; opening it stops that end first ([PendingEnds]).
  */
 class HomeViewModel(
     private val client: BackendClient,
@@ -237,7 +245,7 @@ class HomeViewModel(
         }
     }
 
-    /** «Iniciar captura» (no open session) or "Continuar" (resumes the topic's open session). */
+    /** Tapping a topic: starts a session (none open) or resumes the topic's open one, then the capture screen shows. */
     fun startOrContinue(row: TopicRow) {
         val credentials = backend ?: return
         val subject = _state.value.selectedSubject ?: return
@@ -275,15 +283,6 @@ class HomeViewModel(
         }
     }
 
-    /**
-     * What a topic row's «Construir» ([DeskView.WORKSPACE]) or «Estudiar» ([DeskView.STUDY]) opens
-     * in the study desk (#414); null when no subject is selected.
-     */
-    fun deskTarget(row: TopicRow, view: DeskView): DeskTopic? {
-        val subject = _state.value.selectedSubject ?: return null
-        return DeskTopic(subject.subjectId, row.topic.topicId, row.topic.name, view)
-    }
-
     /** Hides a start/continue failure. */
     fun dismissSessionFailure() {
         _state.update { it.copy(session = SessionAction.Idle) }
@@ -305,13 +304,7 @@ class HomeViewModel(
             val topics = client.listTopics(credentials, subject.subjectId).toLoadable { response ->
                 val pending = pendingEnds.pending.value
                 response.topics.map {
-                    TopicRow(
-                        it,
-                        it.lastSessionAtMs,
-                        it.pendingCount,
-                        it.digestExcerpt,
-                        ending = it.openSessionId in pending,
-                    )
+                    TopicRow(it, it.lastSessionAtMs, ending = it.openSessionId in pending)
                 }
             }
             _state.update {

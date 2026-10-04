@@ -5,8 +5,6 @@ import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.FakeBackendClient
 import com.titanarq.studentassistant.protocol.ErrorCode
 import com.titanarq.studentassistant.protocol.User
-import com.titanarq.studentassistant.tutor.FakeTutorClient
-import com.titanarq.studentassistant.tutor.TutorResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -55,20 +53,6 @@ class UserRejectionTest {
         client.listSubjects(asLaura.forUser(null))
 
         assertEquals(laura, holder.current.value)
-    }
-
-    @Test
-    fun `the tutor's refusals follow the same rule`() = runBlocking {
-        val tutor = FakeTutorClient()
-        val wrapped = UserRejectionTutorClient(tutor, holder)
-
-        tutor.historyResult = TutorResult.Refused(404, "Ese tema no existe", "something_else")
-        wrapped.history(asLaura, "s", "t")
-        assertEquals(laura, holder.current.value)
-
-        tutor.historyResult = TutorResult.Refused(400, "Di quién eres", "user_required")
-        wrapped.history(asLaura, "s", "t")
-        assertNull(holder.current.value)
     }
 
     @Test

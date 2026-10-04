@@ -6,8 +6,6 @@ import com.titanarq.studentassistant.MainDispatcherRule
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.FakeBackendClient
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.AudioFormat
 import com.titanarq.studentassistant.protocol.Button
 import com.titanarq.studentassistant.protocol.ButtonName
@@ -114,7 +112,7 @@ class CaptureViewModelOfflineTest {
         sockets.last.drop()
         runCurrent()
         transcriber.emit(final("a-0"))
-        viewModel.important()
+        viewModel.onBackground() // queues a pause button next to the line
         runCurrent()
         viewModel.leave() // the process dies before the connection returns
 
@@ -126,7 +124,7 @@ class CaptureViewModelOfflineTest {
         handshake()
         val resent = sockets.last.sent.drop(1)
         assertEquals(wire("a-0"), resent[0])
-        assertTrue(resent[1] is Button && (resent[1] as Button).button == ButtonName.IMPORTANT)
+        assertTrue(resent[1] is Button && (resent[1] as Button).button == ButtonName.PAUSE)
         sockets.last.receive(TranscriptFinal("a-0", 0, 1, "línea a-0", "es-ES"))
         runCurrent()
         assertEquals(emptyList<TranscriptClientFinal>(), restartedSpools.events("s1").finals())
@@ -147,9 +145,7 @@ class CaptureViewModelOfflineTest {
 
         viewModel.end()
         runCurrent()
-        // «Sesión terminada» offers the topic's workspace; leaving it releases the session.
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
-        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE), viewModel.deskTopic)
         assertFalse(transcriber.running)
         assertEquals(listOf(PendingEnd("s1", credentials.baseUrl, clock.now)), spools.ends())
         assertEquals(setOf("s1"), finisher.pending.value)

@@ -77,7 +77,6 @@ fun ProfileScreen(
             modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(stringResource(R.string.users_edit_profile), style = MaterialTheme.typography.headlineSmall)
             user?.let { current ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     UserAvatar(current, photos, size = 96.dp)

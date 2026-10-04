@@ -22,26 +22,15 @@ import com.titanarq.studentassistant.capture.OkHttpSessionSocketFactory
 import com.titanarq.studentassistant.capture.SessionFinisher
 import com.titanarq.studentassistant.capture.SessionSocketFactory
 import com.titanarq.studentassistant.capture.StillCamera
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.StudyDeskViewModel
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.session.OpenSession
 import com.titanarq.studentassistant.session.SessionHolder
 import com.titanarq.studentassistant.share.ShareViewModel
-import com.titanarq.studentassistant.capture.RecognizerEngine
-import com.titanarq.studentassistant.tutor.NoSpeechOutput
-import com.titanarq.studentassistant.tutor.OkHttpTutorClient
-import com.titanarq.studentassistant.tutor.SpeechOutput
-import com.titanarq.studentassistant.tutor.TutorClient
-import com.titanarq.studentassistant.tutor.TutorTopic
-import com.titanarq.studentassistant.tutor.TutorViewModel
-import com.titanarq.studentassistant.tutor.VoiceQuestion
 import com.titanarq.studentassistant.users.ProfileViewModel
 import com.titanarq.studentassistant.users.UserHolder
 import com.titanarq.studentassistant.users.UserPhotos
 import com.titanarq.studentassistant.users.UserRejectionBackendClient
-import com.titanarq.studentassistant.users.UserRejectionTutorClient
 import com.titanarq.studentassistant.users.UsersViewModel
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.spool.SpoolBudget
@@ -84,10 +73,6 @@ object SystemClock : Clock {
  * @param spoolGraceMs how long a session's spooled data is kept untouched before it may be swept
  *   when its backend reports the session ended or unknown.
  * @param ioContext where disk-backed session connections run (never the main thread).
- * @param tutorClientFactory the voice tutor API client (#248).
- * @param recognizerEngineFactory the tutor's one-utterance speech recognizer (Android's
- *   `SpeechRecognizer` on a device), one per tutor screen.
- * @param speechOutputFactory the tutor's voice (Android's `TextToSpeech` on a device), one per app.
  */
 class AppContainer(
     private val filesDir: File,
@@ -105,9 +90,6 @@ class AppContainer(
     private val spoolMaxBytes: Long = SpoolBudget.DEFAULT_MAX_BYTES,
     private val spoolGraceMs: Long = StaleSpoolSweeper.DEFAULT_GRACE_MS,
     private val ioContext: CoroutineContext = Dispatchers.IO,
-    tutorClientFactory: () -> TutorClient = { OkHttpTutorClient() },
-    private val recognizerEngineFactory: () -> RecognizerEngine = { error("no speech recognizer configured") },
-    speechOutputFactory: () -> SpeechOutput = { NoSpeechOutput },
 ) {
     /** The app-wide clock, created on first access and shared afterwards. */
     val clock: Clock by lazy(clockFactory)
@@ -221,34 +203,6 @@ class AppContainer(
 
     private suspend fun credentialsFor(baseUrl: String): BackendCredentials? =
         backendStore.current().backends.firstOrNull { it.baseUrl == baseUrl }?.credentials
-
-    /** Creates the study desk screen's [StudyDeskViewModel] for [topic] (#83). */
-    fun studyDeskViewModelFactory(topic: DeskTopic): ViewModelProvider.Factory = viewModelFactory {
-        initializer { StudyDeskViewModel(backendStore, topic, userHolder) }
-    }
-
-    /** The voice tutor API client (#248). */
-    val tutorClient: TutorClient by lazy(tutorClientFactory)
-
-    /** [tutorClient] with the same user-refusal rule as [scopedBackendClient]. */
-    val scopedTutorClient: TutorClient by lazy { UserRejectionTutorClient(tutorClient, userHolder) }
-
-    /** Reads the tutor's answers aloud; one synthesizer for the whole app. */
-    val speechOutput: SpeechOutput by lazy(speechOutputFactory)
-
-    /** Creates the tutor screen's [TutorViewModel] for [topic] (#248). */
-    fun tutorViewModelFactory(topic: TutorTopic): ViewModelProvider.Factory = viewModelFactory {
-        initializer {
-            TutorViewModel(
-                scopedTutorClient,
-                backendStore,
-                topic,
-                VoiceQuestion(recognizerEngineFactory()),
-                speechOutput,
-                userHolder,
-            )
-        }
-    }
 
     /** Creates the share screen's [ShareViewModel] for what another app shared ([sharedText], [sharedSubject]). */
     fun shareViewModelFactory(sharedText: String?, sharedSubject: String?): ViewModelProvider.Factory = viewModelFactory {

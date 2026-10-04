@@ -24,11 +24,6 @@ import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
-import com.titanarq.studentassistant.tutor.TutorAnswer
-import com.titanarq.studentassistant.tutor.TutorClient
-import com.titanarq.studentassistant.tutor.TutorProgress
-import com.titanarq.studentassistant.tutor.TutorResult
-import com.titanarq.studentassistant.tutor.TutorTurn
 import com.titanarq.studentassistant.protocol.ErrorCode
 
 // A `400 user_required` or `404 user_not_found` from any call means the backend no longer accepts
@@ -36,11 +31,6 @@ import com.titanarq.studentassistant.protocol.ErrorCode
 // two decorators below apply that rule to every call without each screen repeating it. Only a call
 // made as the selected user clears it: an old spooled item sent as another user, or a call with no
 // user, says nothing about the selection.
-
-/** The tutor's wire code of the user refusals (the tutor result carries it as a string). */
-private fun TutorResult.Refused.userRejected(): Boolean =
-    (status == 400 && code == ErrorCode.USER_REQUIRED.wire) ||
-        (status == 404 && code == ErrorCode.USER_NOT_FOUND.wire)
 
 /** A [BackendClient] that clears [users] when a user-scoped call is refused for its user. */
 class UserRejectionBackendClient(
@@ -128,32 +118,4 @@ class UserRejectionBackendClient(
         request: WebPageAddRequest,
     ): BackendResult<WebPageAddResponse> =
         delegate.addWebPage(backend, subjectId, topicId, request).checked(backend)
-}
-
-/** A [TutorClient] that clears [users] when a tutor call is refused for its user. */
-class UserRejectionTutorClient(
-    private val delegate: TutorClient,
-    private val users: UserHolder,
-) : TutorClient {
-    private fun <T> TutorResult<T>.checked(backend: BackendCredentials): TutorResult<T> {
-        val userId = backend.userId
-        if (userId != null && this is TutorResult.Refused && userRejected()) users.clearIfSelected(userId)
-        return this
-    }
-
-    override suspend fun history(
-        backend: BackendCredentials,
-        subjectId: String,
-        topicId: String,
-    ): TutorResult<List<TutorTurn>> = delegate.history(backend, subjectId, topicId).checked(backend)
-
-    override suspend fun ask(
-        backend: BackendCredentials,
-        subjectId: String,
-        topicId: String,
-        question: String,
-        confirmOverCap: Boolean,
-        onProgress: (TutorProgress) -> Unit,
-    ): TutorResult<TutorAnswer> =
-        delegate.ask(backend, subjectId, topicId, question, confirmOverCap, onProgress).checked(backend)
 }

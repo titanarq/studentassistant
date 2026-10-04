@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,23 +32,12 @@ fun UserSelectionScreen(
     photos: UserPhotos,
     onSelected: () -> Unit,
     modifier: Modifier = Modifier,
-    onBackends: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.load() }
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    stringResource(R.string.users_title),
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (onBackends != null) {
-                    TextButton(onClick = onBackends) { Text(stringResource(R.string.home_backends)) }
-                }
-            }
             when (val current = state) {
                 UsersUiState.Loading -> Text(stringResource(R.string.loading))
                 UsersUiState.NoBackend -> Text(stringResource(R.string.users_no_backend))

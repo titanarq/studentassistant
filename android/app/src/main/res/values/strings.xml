@@ -11,10 +11,7 @@
     <string name="users_empty">No hay usuarios en este ordenador.</string>
     <string name="users_no_backend">No hay ningún ordenador activo. Empareja uno primero.</string>
     <string name="users_photo_description">Foto de %1$s</string>
-    <string name="users_menu_description">Menú de %1$s</string>
     <string name="users_edit_profile">Editar perfil</string>
-    <string name="users_sign_out">Cerrar sesión</string>
-    <string name="users_sign_out_confirm">¿Cerrar la sesión de %1$s?</string>
 
     <!-- Profile (#555) -->
     <string name="profile_name_label">Nombre</string>
@@ -87,40 +84,20 @@
     <string name="connection_run_again">Volver a probar</string>
     <!-- Home: subjects, topics, sessions -->
     <string name="home_title">Asignaturas</string>
-    <string name="home_backends">Ordenadores</string>
-    <string name="home_backend">Ordenador: %1$s</string>
-    <string name="home_no_backend">No hay ningún ordenador activo. Empareja uno primero.</string>
+    <string name="settings_description">Ajustes</string>
+    <string name="profile_description">Perfil de %1$s</string>
+    <string name="home_no_connection">No hay conexión con el ordenador. Comprueba que está encendido y en la misma red, o configura la conexión.</string>
+    <string name="home_configure_connection">Configurar conexión</string>
+    <string name="home_capture_topic">Capturar en %1$s</string>
+    <string name="home_last_capture">Última captura: %1$s</string>
     <string name="home_no_subjects">Todavía no hay asignaturas. Crea un tema para empezar.</string>
     <string name="home_no_topics">Esta asignatura todavía no tiene temas.</string>
     <string name="home_retry">Reintentar</string>
     <string name="home_new_topic">Nuevo tema</string>
-    <string name="home_start_session">Iniciar captura</string>
-    <string name="home_continue_session">Continuar</string>
-    <string name="home_opening_session">Abriendo la sesión…</string>
     <string name="home_session_open">Sesión abierta</string>
-    <string name="home_session_ending">Terminando sesión… Pulsa «Continuar» si quieres seguir con ella.</string>
-    <string name="home_last_session">Última sesión: %1$s</string>
-    <plurals name="home_pending_doubts">
-        <item quantity="one">%1$d duda pendiente</item>
-        <item quantity="other">%1$d dudas pendientes</item>
-    </plurals>
     <string name="home_session_conflict">Hay otra sesión abierta. Termínala o continúala antes de empezar una nueva; la lista se ha actualizado.</string>
     <string name="home_dismiss">Entendido</string>
-    <string name="home_build">Construir</string>
-    <string name="home_study">Estudiar</string>
-    <string name="home_ask_tutor">Preguntar al tutor</string>
 
-    <!-- Study desk on the phone: the topic's notes and the editor chat (#83) -->
-    <string name="desk_title_workspace">Construir: %1$s</string>
-    <string name="desk_title_study">Estudiar: %1$s</string>
-    <string name="desk_reload">Recargar</string>
-    <string name="desk_invalid_backend">La dirección del ordenador activo no es válida. Vuelve a emparejarlo.</string>
-    <string name="desk_unauthorized">El ordenador ya no acepta este teléfono. Vuelve a emparejarlo desde «Ordenadores».</string>
-    <string name="desk_load_failed">No se ha podido abrir la página en %1$s (%2$s). Comprueba que el ordenador está encendido y en la misma red.</string>
-    <string name="desk_download_started">Descarga iniciada: %1$s</string>
-    <string name="desk_download_failed">No se pudo descargar el archivo.</string>
-    <string name="desk_download_refused">Solo se descargan archivos del ordenador emparejado.</string>
-    <string name="desk_file_chooser_failed">No hay ninguna aplicación para elegir el archivo.</string>
     <string name="create_topic_title">Nuevo tema</string>
     <string name="create_topic_subject">Asignatura</string>
     <string name="create_topic_subject_hint">Elige una o escribe una nueva</string>
@@ -130,33 +107,11 @@
     <string name="create_topic_saving">Creando…</string>
 
     <!-- Capture screen -->
-    <string name="retry">Reintentar</string>
     <string name="capture_title">%1$s · %2$s</string>
-    <string name="capture_leave">Salir</string>
-    <string name="capture_connecting">Conectando…</string>
-    <string name="capture_connected">Conectado</string>
-    <string name="capture_reconnecting">Sin conexión; reintentando (intento %1$d)…</string>
-    <string name="capture_failed_unauthorized">El ordenador ha rechazado este teléfono. Vuelve a emparejarlo.</string>
-    <string name="capture_failed_not_active">La sesión ya no está abierta en el ordenador.</string>
-    <string name="capture_failed_refused">El ordenador ha cerrado la conexión: %1$s</string>
-    <string name="capture_stopped">Desconectado</string>
-    <plurals name="capture_pending">
-        <item quantity="one">%d duda pendiente</item>
-        <item quantity="other">%d dudas pendientes</item>
-    </plurals>
-    <string name="capture_mic_rationale">Para transcribir lo que explicas, la aplicación necesita el micrófono. Solo se usa mientras la sesión está abierta en esta pantalla.</string>
-    <string name="capture_mic_permission_denied">Sin permiso de micrófono la sesión no puede transcribir. Permítelo para continuar.</string>
     <string name="capture_camera_rationale">Para ver y fotografiar tus apuntes, la aplicación necesita la cámara. Solo se usa mientras esta pantalla está abierta.</string>
     <string name="capture_camera_denied">Sin permiso de cámara no se pueden ver ni fotografiar los apuntes.</string>
     <string name="capture_permission_button">Dar permisos</string>
-    <string name="capture_no_camera">Cámara sin permiso</string>
     <string name="camera_unavailable_capture">No se pudo abrir la cámara.</string>
-    <string name="capture_mic_denied">El micrófono no tiene permiso: no se está transcribiendo.</string>
-    <string name="capture_mic_paused">Micrófono en pausa</string>
-    <string name="capture_stt_reconnecting">El servidor ha perdido la transcripción y está reintentando; lo que digas mientras tanto no se transcribe</string>
-    <string name="capture_stt_unavailable">La transcripción del servidor no está disponible; lo que digas no se transcribe</string>
-    <string name="capture_spool_near_cap">Queda poco espacio para guardar sin conexión: si no vuelve la conexión se perderá el audio más antiguo</string>
-    <string name="capture_mic_unavailable">No hay reconocimiento de voz disponible en este teléfono.</string>
     <string name="capture_button_capture">Capturar</string>
     <string name="capture_shot_capturing">Haciendo fotos…</string>
     <string name="capture_shot_pending">Foto pendiente de enviar</string>
@@ -164,19 +119,6 @@
     <string name="capture_shot_uploaded">Foto enviada</string>
     <string name="capture_shot_failed">El ordenador no aceptó la foto. Toca para reintentar.</string>
     <string name="capture_shot_camera_failed">No se pudo hacer la foto</string>
-    <string name="capture_button_important">Importante</string>
-    <string name="capture_source_notes">Mirando: Apuntes</string>
-    <string name="capture_source_book">Mirando: Libro</string>
-    <string name="capture_button_end">Terminar captura</string>
-    <string name="capture_ending">Terminando…</string>
-    <string name="capture_end_title">¿Terminar la captura?</string>
-    <string name="capture_end_text">Se cerrará la sesión de captura de este tema. Los apuntes se preparan después desde «Construir», pidiéndolos en el chat.</string>
-    <string name="capture_end_confirm">Terminar captura</string>
-    <string name="capture_end_failed">No se pudo terminar la sesión: %1$s</string>
-    <string name="capture_ended_title">Sesión terminada</string>
-    <string name="capture_ended_text">%1$s · %2$s. Pide los apuntes en el chat de «Construir».</string>
-    <string name="capture_ended_open_workspace">Abrir en Construir</string>
-    <string name="capture_ended_home">Volver al inicio</string>
     <!-- "Compartir -> Student Assistant" (share/ShareScreen.kt, #62) -->
     <string name="share_label">Guardar en un tema</string>
     <string name="share_title">Guardar la página en un tema</string>
@@ -194,30 +136,4 @@
     <string name="share_error_claude">Claude no ha podido descargar la página. Inténtalo de nuevo.</string>
     <string name="share_error_unavailable">La descarga de páginas web no está disponible en el ordenador.</string>
 
-    <!-- Voice tutor on the phone (#248) -->
-    <string name="tutor_title">Tutor: %1$s</string>
-    <string name="tutor_no_questions">Pregúntale al tutor lo que no entiendas de este tema: contesta con tus apuntes y sus fuentes.</string>
-    <string name="tutor_history_failed">No se han podido cargar las preguntas anteriores: %1$s</string>
-    <string name="tutor_you_asked">Tú: %1$s</string>
-    <string name="tutor_thinking">El tutor está pensando…</string>
-    <string name="tutor_sources">Fuentes:</string>
-    <string name="tutor_source">[%1$s] %2$s</string>
-    <string name="tutor_read_again">Leer otra vez</string>
-    <string name="tutor_continue_over_cap">Continuar igualmente</string>
-    <string name="tutor_ask_voice">Preguntar por voz</string>
-    <string name="tutor_listening">Te escucho…</string>
-    <string name="tutor_heard">Lo que te oigo: %1$s</string>
-    <string name="tutor_stop_voice">Ya he terminado</string>
-    <string name="tutor_question_label">Escribe tu pregunta</string>
-    <string name="tutor_ask">Preguntar</string>
-    <string name="tutor_read_aloud">Leer las respuestas en voz alta</string>
-    <string name="tutor_stop_reading">Parar de leer</string>
-    <string name="tutor_no_speech_output">Este teléfono no puede leer en voz alta en español: las respuestas solo se muestran escritas.</string>
-    <string name="tutor_voice_no_speech">No te he oído. Vuelve a intentarlo o escribe la pregunta.</string>
-    <string name="tutor_voice_permission">Sin permiso para usar el micrófono no puedo oírte. Puedes escribir la pregunta.</string>
-    <string name="tutor_voice_unavailable">Este teléfono no tiene reconocimiento de voz en español. Escribe la pregunta.</string>
-    <string name="tutor_voice_failed">El reconocimiento de voz ha fallado. Vuelve a intentarlo o escribe la pregunta.</string>
-    <string name="tutor_error_not_found">El ordenador no encuentra este tema o no tiene el tutor (actualiza el servidor).</string>
-    <string name="tutor_error_unavailable">El tutor no está disponible en el ordenador.</string>
-    <string name="tutor_error_interrupted">Se cortó la conexión con el tutor antes de terminar la respuesta.</string>
 </resources>

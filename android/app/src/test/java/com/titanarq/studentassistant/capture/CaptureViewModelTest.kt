@@ -18,8 +18,6 @@ import com.titanarq.studentassistant.protocol.CommandName
 import com.titanarq.studentassistant.protocol.Hello
 import com.titanarq.studentassistant.protocol.HelloAck
 import com.titanarq.studentassistant.protocol.Notice
-import com.titanarq.studentassistant.desk.DeskTopic
-import com.titanarq.studentassistant.desk.DeskView
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.SttState
 import com.titanarq.studentassistant.protocol.SttStatus
@@ -147,25 +145,14 @@ class CaptureViewModelTest {
     }
 
     @Test
-    fun `the buttons send their protocol events and Capturar hands over to still capture`() = runTest(main.dispatcher) {
+    fun `Capturar hands over to still capture and sends no other event`() = runTest(main.dispatcher) {
         val viewModel = viewModel()
         connect(viewModel)
         val socket = sockets.last
         clock.now = 2_000_100
-        viewModel.important()
-        viewModel.toggleSource()
-        assertEquals(SourceKind.BOOK, viewModel.state.value.source)
-        viewModel.toggleSource()
         viewModel.capture()
         runCurrent()
-        assertEquals(
-            listOf(
-                Button(ButtonName.IMPORTANT, null, 2_000_100),
-                Button(ButtonName.SWITCH_SOURCE, SourceKind.BOOK, 2_000_100),
-                Button(ButtonName.SWITCH_SOURCE, SourceKind.NOTES, 2_000_100),
-            ),
-            socket.sent.drop(1),
-        )
+        assertTrue(socket.sent.drop(1).isEmpty())
         assertEquals(listOf(CaptureTrigger.BUTTON to null), captures)
         viewModel.leave()
     }
@@ -213,7 +200,7 @@ class CaptureViewModelTest {
     }
 
     @Test
-    fun `Terminar captura sends end_session, ends it over REST and offers the topic's workspace`() = runTest(main.dispatcher) {
+    fun `ending sends end_session and ends it over REST`() = runTest(main.dispatcher) {
         backend.endSessionResult = BackendResult.Success(SessionEndResponse("s1", SessionEndedStatus.ENDED, 9))
         val viewModel = viewModel()
         connect(viewModel)
@@ -228,12 +215,51 @@ class CaptureViewModelTest {
         assertTrue(socket.closed)
         assertFalse(transcriber.running)
 
-        // «Sesión terminada»: the screen stays (no jump home) and offers «Abrir en Construir».
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
-        assertEquals(DeskTopic("historia", "feudalismo", "El feudalismo", DeskView.WORKSPACE), viewModel.deskTopic)
-        assertNotNull(holder.current.value) // kept until the student leaves «Sesión terminada»
+        assertNotNull(holder.current.value) // kept until released
         viewModel.closeEnded()
         assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(holder.current.value)
+    }
+
+    @Test
+    fun `leaving the screen ends the session and releases it`() = runTest(main.dispatcher) {
+        backend.endSessionResult = BackendResult.Success(SessionEndResponse("s1", SessionEndedStatus.ENDED, 9))
+        val viewModel = viewModel()
+        connect(viewModel)
+        val socket = sockets.last
+        viewModel.endOnLeave()
+        advanceUntilIdle()
+
+        assertEquals(Button(ButtonName.END_SESSION, null, clock.now), socket.sent.last())
+        assertEquals(listOf("endSession http://192.168.1.20:8000 s1"), backend.calls)
+        assertTrue(socket.closed)
+        assertFalse(transcriber.running)
+        assertEquals(CapturePhase.ENDED, viewModel.state.value.phase)
+        assertNull(holder.current.value)
+    }
+
+    @Test
+    fun `leaving the screen releases the session even when the backend refuses the end`() = runTest(main.dispatcher) {
+        backend.endSessionResult = BackendResult.HttpError(500)
+        val viewModel = viewModel()
+        connect(viewModel)
+        viewModel.endOnLeave()
+        advanceUntilIdle()
+
+        assertTrue(sockets.last.closed)
+        assertFalse(transcriber.running)
+        assertNull(holder.current.value)
+    }
+
+    @Test
+    fun `leaving a screen that never started the session still ends it`() = runTest(main.dispatcher) {
+        backend.endSessionResult = BackendResult.Success(SessionEndResponse("s1", SessionEndedStatus.ENDED, 9))
+        val viewModel = viewModel()
+        viewModel.endOnLeave()
+        advanceUntilIdle()
+
+        assertEquals(listOf("endSession http://192.168.1.20:8000 s1"), backend.calls)
         assertNull(holder.current.value)
     }
 

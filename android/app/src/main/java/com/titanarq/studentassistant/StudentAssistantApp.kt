@@ -7,7 +7,6 @@ import com.titanarq.studentassistant.capture.AndroidCaptureFeedback
 import com.titanarq.studentassistant.capture.AudioRecordSource
 import com.titanarq.studentassistant.capture.CameraXStillCamera
 import com.titanarq.studentassistant.capture.SpeechRecognizerTranscriber
-import com.titanarq.studentassistant.tutor.AndroidSpeechOutput
 
 /** Creates the one [AppContainer] of the process; activities read it from here. */
 class StudentAssistantApp : Application() {
@@ -28,8 +27,6 @@ class StudentAssistantApp : Application() {
             audioSourceFactory = { AudioRecordSource() },
             stillCameraFactory = { stillCamera },
             captureFeedbackFactory = { AndroidCaptureFeedback(applicationContext) },
-            recognizerEngineFactory = { AndroidSpeechRecognizerEngine(applicationContext) },
-            speechOutputFactory = { AndroidSpeechOutput(applicationContext) },
         )
         container.recoverSpool()
     }

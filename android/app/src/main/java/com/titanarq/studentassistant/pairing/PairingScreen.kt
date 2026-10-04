@@ -32,13 +32,12 @@ import com.titanarq.studentassistant.ui.pairingFailureMessage
 
 /**
  * Pairing: the QR scanner on top and the manual form below, both through [PairingViewModel].
- * [onDone] leaves the screen once paired; [onBack], when given, shows a back button.
+ * [onDone] leaves the screen once paired.
  */
 @Composable
 fun PairingScreen(
     viewModel: PairingViewModel,
     onDone: () -> Unit,
-    onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -50,8 +49,6 @@ fun PairingScreen(
             modifier = Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(stringResource(R.string.pairing_title), style = MaterialTheme.typography.headlineSmall)
-
             when (val current = state) {
                 PairingUiState.Idle -> {
                     Text(stringResource(R.string.pairing_scan_hint), style = MaterialTheme.typography.bodyMedium)
@@ -104,10 +101,6 @@ fun PairingScreen(
                     onClick = { viewModel.onManualEntry(url, code) },
                     enabled = state !is PairingUiState.Pairing,
                 ) { Text(stringResource(R.string.manual_submit)) }
-            }
-
-            if (onBack != null) {
-                OutlinedButton(onClick = onBack) { Text(stringResource(R.string.back)) }
             }
         }
     }
