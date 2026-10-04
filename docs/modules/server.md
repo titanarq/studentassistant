@@ -5,6 +5,10 @@
 
 ## Responsibility
 - FastAPI app factory, LAN bind, pairing + bearer auth (ADR-0001), static web assets.
+- The **active user** of every request (protocol 1.8, #549, epic #544): `server/user_scope.py`
+  turns `X-SA-User` / `sa_user` into that user's own vault handles, and the users REST API
+  (`server/user_routes.py`) lists, adds and edits the students this backend serves and their
+  profile photo.
 - Session lifecycle (create/resume/end) and the in-process **session event bus** that feature
   modules (stt, sources, observer, editor) subscribe to.
 - WebSocket gateway: audio frames -> stt pipeline, client events -> bus, bus -> phone.
@@ -71,6 +75,59 @@ Routes registered today:
 - `POST /api/pair` (`rest.pair.request` -> `rest.pair.response`): redeems a code and returns a new
   `device_id` and bearer `token`. An unknown, expired or already redeemed code is 401 with the same
   body in all three cases. Codes live only in the serving process's memory.
+- **The users themselves** (`server/user_routes.py`, `users_router()`, protocol 1.8, #549): what a
+  client's selection screen reads and what «Editar perfil» writes, registered right after pairing
+  and, like it, **never user-scoped** -- these routes work on the vault's ROOT handle (the one
+  `SessionService.open_vault()` gives), never on `vault.for_user(...)`, so an `X-SA-User` header or
+  an `sa_user` cookie on one of them is read by nobody and a stale or bogus selection cannot stop a
+  client from listing the users to choose from (see "Active user" below). Bodies are the five
+  `rest.users.*` messages of `protocol/README.md` "Users (1.8)"; a `User` is `{id, name, email?,
+  photo_url?}`, with the optional ones left out rather than `null` (`response_model_exclude_none`).
+  Every write calls `SessionService.note_change()`, so the background `GitSync` commits and pushes
+  it, and every vault call runs in a worker thread (one blocking step per request: the writers
+  fsync and the photo's decode/resize/encode is CPU-bound). They sit behind the bearer check like
+  every `/api` route but health and pairing, and a cookie-authenticated write passes
+  `same_site_origin` exactly like every other cookie write. A vault that cannot be opened is 503
+  (`"No se puede abrir la bóveda."`) on every one of them.
+  - `GET /api/users` -> `rest.users.list.response`, every user in `vault.list_users`' order (by
+    name, compared case-insensitively, and then id). A `profile.json` that cannot be read back, or
+    one that parses but is no `User` the protocol can carry (a hand-edited name over
+    `USER_NAME_MAX_CHARS`, 80), is 500 with a Spanish `detail` («No se puede leer el perfil de un
+    usuario de la bóveda.»).
+  - `POST /api/users` (`rest.users.create.request`) -> 201 the created `User`
+    (`rest.users.create.response`): `vault.create_user` picks the id (`slugify(name)`, plus a
+    numeric suffix when that folder is taken) and creates the folder and its `profile.json`. A name
+    or an email the vault refuses is 422 with the vault's Spanish message; a folder already there
+    (two creates of the same name at once) is 409.
+  - `PATCH /api/users/{user_id}` (`rest.users.update.request`) -> the updated `User`
+    (`rest.users.update.response`). A field left out keeps what the user has, an `email` of `""`
+    clears it, and a body carrying neither is refused by the model itself: the three are
+    `UserUpdateRequest`'s and `vault.update_user`'s own reading of these two values, so the route
+    passes the body straight on. The id never changes when the name does. An unknown user is 404
+    `user_not_found`; a name or an email the vault refuses is 422 with its Spanish message.
+  - `PUT /api/users/{user_id}/photo` -> the updated `User`. The body is the raw image, not JSON,
+    and its `Content-Type` must be one of `USER_PHOTO_CONTENT_TYPES` (`image/jpeg`, `image/png`,
+    `image/webp`); another one is 415 with the Spanish sentence the vault writes for the same
+    refusal, answered before a byte of the body is read -- as the user lookup is, so a stale id
+    costs nobody an upload. The body is read as it streams in, never buffered whole, and refused
+    with 413 past `[server] max_user_photo_bytes` (a `Content-Length` over the cap is refused
+    before anything is read; the running total is what catches a body that declares no length or
+    lies about it). What lands in the vault is `vault.set_user_photo`'s downscaled `photo.jpg`,
+    never the bytes that arrived. An image that does not decode, an empty body, one over the
+    vault's own `MAX_USER_PHOTO_BYTES` ceiling (5 MiB, which no configuration lifts, so a raised
+    `[server]` cap lets the bytes by the 413 and into this Spanish 422) or one the secret guard
+    refuses («La foto parece contener una clave o un token y no se ha guardado.») is 422.
+  - `DELETE /api/users/{user_id}/photo` -> the updated `User`, now with no `photo_url`. Removing a
+    photo that is not there is not an error: «Quitar foto» says the profile has none, which is
+    already true, so a repeated request gets the same answer.
+  - `GET /api/users/{user_id}/photo` -> `image/jpeg` (the one type stored, whatever came in), with
+    `Cache-Control: no-cache` (a browser revalidates an avatar instead of trusting its copy) and
+    `X-Content-Type-Options: nosniff`; 404 `user_not_found` for an unknown user and 404 with a
+    Spanish `detail` («El usuario no tiene foto de perfil.») for one with no photo.
+  - `photo_url` is `/api/users/<id>/photo?v=<first 12 hex of the stored photo's SHA-256>`
+    (`PHOTO_VERSION_HEX_CHARS`), so the URL changes exactly when the image behind it does and a
+    client that cached the previous avatar cannot keep showing it. A profile naming a photo its
+    folder has lost gives no URL at all: pointing a client at a 404 is worse than an empty avatar.
 - Subjects, topics and the session lifecycle (`server/session_routes.py`), protocol v1 bodies in
   and out, optional fields left out rather than `null`. Every one needs the bearer token (none is
   in `EXEMPT_ROUTES`). Ids are vault slugs: `subject_id` is the subject's slug, `topic_id` the
@@ -1016,13 +1073,21 @@ Routes registered today:
   Bearer auth like every `/api` route.
 - **Error bodies** (`server/errors.py`, protocol 1.2, `protocol/README.md` "REST errors"): every
   REST error is `{"detail": "<Spanish>"}`; the refusals a client branches on also carry `code`
-  (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`).
-  A route raises `ApiError(status, detail, code, headers=None)` (an `HTTPException`) or
-  `cost_cap_error(error, then)` (409 `cost_cap_reached` from a `CostConfirmationRequiredError`;
-  `then` ends the Spanish sentence, e.g. `"Confirma para continuar igualmente."`); the handler
-  `install_error_handler(app)` puts in `create_app` answers it, adding `code` only when
-  `speaks_error_codes(principal.protocol_version)` (negotiated version >= 1.2; the PC itself
-  always), so a device paired as 1.0/1.1 keeps the plain body. Every new coded refusal (e.g. the
+  (`studentassistant.protocol.ErrorCode`: `cost_cap_reached`, `doubt_closed`, `session_open`, and
+  since 1.8 `user_required` and `user_not_found`).
+  A route raises `ApiError(status, detail, code, headers=None)` (an `HTTPException`) or one of the
+  helpers: `cost_cap_error(error, then)` (409 `cost_cap_reached` from a
+  `CostConfirmationRequiredError`; `then` ends the Spanish sentence, e.g. `"Confirma para
+  continuar igualmente."`), `user_required_error()` (400 `user_required`, #549) and
+  `unknown_user_error(user_id)` (404 `user_not_found`, the id in the Spanish sentence because it is
+  the one thing that says which selection went stale). The handler `install_error_handler(app)`
+  puts in `create_app` answers it, adding `code` only when the caller speaks **that** code:
+  `error_body` asks `caller_speaks_this_error_code(request, code)`, which reads
+  `protocol.ERROR_CODES_SINCE[code]` -- so a device paired as 1.0/1.1 keeps the plain body for every
+  code, and one paired as 1.2-1.7 gets the other three but not the two user codes, which are new in
+  1.8 (`USER_ERROR_CODES_SINCE`) and reach it as a Spanish `detail` and a status alone, which is
+  what a client that has never heard of a code does anyway (`speaks_error_codes` still answers the
+  coarser "codes at all" question). Every new coded refusal (e.g. the
   editor's revision routes) adds its code to `ErrorCode` and the protocol README and raises
   `ApiError`; uncoded errors stay plain `HTTPException`s.
 - `WS /ws/sessions/{session_id}` (`server/ws.py`): the capture client's session WebSocket,
@@ -1097,7 +1162,53 @@ check, so a revocation from the CLI takes effect in the running server immediate
 the process's log record factory. Every record, uvicorn's access and error logs included, then has
 its message, string arguments and traceback redacted: `Bearer ...`, `token=...`, `sa_...`
 tokens, `XXXX-XXXX` codes, and the JSON fields `token` / `pairing_code`. A 422 validation error
-never echoes the request's `input` back.
+never echoes the request's `input` back. The user selection is not in that list and is not a
+secret: `sa_user` is too short for the token pattern (16+ characters after `sa_`), so the logs keep
+which student a request was about while still redacting the `sa_token` cookie it travels with.
+
+### Active user -- `server/user_scope.py` (protocol 1.8, #549)
+
+One backend and one vault serve several students, each with their own `users/<id>/` folder
+(`docs/modules/vault.md`, "Users"), and nothing but the request itself says who is calling.
+
+- `resolve_user_id(headers, cookies, vault) -> str` is the rule of `protocol/README.md` "Users
+  (1.8)" and nothing else: the `X-SA-User` header (`protocol.USER_HEADER`, what the native Android
+  app sends), else the `sa_user` cookie (`protocol.USER_COOKIE`, what the web page and the Android
+  WebView set), else -- when the vault holds exactly one user -- that one, so a client that knows
+  nothing about users keeps working on a single-user vault. A present header wins over the cookie,
+  and a value that is there but blank names nobody, so the cookie still gets its turn; header names
+  are matched case-insensitively, because that is how they travel. With neither and any number of
+  users but one there is nothing to assume: `UserRequiredError`. An id this vault does not have:
+  `UnknownUserError(user_id)`. It reads the file system -- one listing of `users/`, no JSON read per
+  request, which is `vault.user_ids`' own cheap rule and counts a folder as a user whether or not
+  its `profile.json` reads back -- so a caller on the event loop runs it in a worker thread.
+- `resolve_websocket_user(websocket, vault)` is the same rule on the upgrade request's headers and
+  cookies. A handshake carries no REST body, so the two refusals travel as the exceptions they are
+  and the gateway decides how to close on them (#550).
+- `active_user_vault(request) -> (user_vault, user_sync)` is the FastAPI dependency every
+  user-scoped route declares: `vault.for_user(id)` and `sync.for_user(id)`, both views of what
+  `SessionService.open_vault()` has open, so a route keeps calling the readers and writers it
+  already calls and nothing it writes can land in another user's folder. The resolution and the two
+  handles are built in one `asyncio.to_thread` step. A vault that cannot be opened at all is 503
+  (`"No se puede abrir la bóveda."`); the two refusals become `user_required_error()` (400) and
+  `unknown_user_error(id)` (404); and a folder that `user_ids` counted but whose `profile.json`
+  will not open a handle (`vault.UserNotFoundError` out of `for_user`) is told to the student as
+  that same 404 `user_not_found`.
+
+**The selection is not authentication.** Neither the header nor the cookie is a credential: they
+name a user, they do not prove one, and whoever can reach the backend can name any user of it --
+the bearer/loopback trust of ADR-0001 is what guards the door, unchanged, and a device pairs with
+the backend, never with a user. That is why a request that sends a user to a route that is not
+user-scoped is unaffected (the users routes above read nobody's selection), and why neither value
+is redacted in the logs.
+
+**What is scoped today:** the rule, the handshake helper and the dependency -- and no route yet.
+Every route that exists works on the handle `SessionService.open_vault()` gives, which is the root
+one. `/api/health`, `/api/pair*` and `/api/users*` stay that way by design (protocol 1.8 names
+them as not user-scoped); the rest change in #550 (session lifecycle, captures, WebSocket, live,
+search and the session consumers) and #551 (every other content route: notes, sources, study,
+generated material, ...), each declaring `active_user_vault` and working on the two handles it
+returns.
 
 ### Session lifecycle -- `server/sessions.py`
 
@@ -1241,7 +1352,10 @@ through `sessions.open_vault()` and `server.vocabulary.load_topic_terms`, never 
 replace them.
 
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
-  `authenticate_websocket` (1008 without a valid token or loopback trust).
+  `authenticate_websocket` (1008 without a valid token or loopback trust). The upgrade request also
+  carries the active user, under the same `X-SA-User` / `sa_user` rule
+  (`user_scope.resolve_websocket_user`, "Active user" above): #550 resolves it here and decides how
+  to close on the two refusals; today the gateway reads nobody's selection.
 - **Session check** (after `accept()`, so the client can read the reason): a `session_id` that is
   not the active, attached session (unknown, ended, or unended but not resumed) is closed with
   `CLOSE_UNKNOWN_SESSION` (4404) and a reason; nothing is published. A session that ends while a
@@ -1517,6 +1631,22 @@ WebSocket gateway publish and subscribe here.
   message; so does an ambiguous legacy id two PCs both allocated (#476, «El identificador «fb-3»
   es ambiguo: …»), which prints every item that has it and writes nothing. Nothing is committed by the command: the next
   batch commit of the vault carries it.
+- `studentassistant users list [--json]` (#549, epic #544): the students of this vault, by name,
+  one tab-separated line each -- id, name, email or «sin email», «con foto»/«sin foto» -- or with
+  `--json` the `UserProfile`s as a JSON list (which carries `photo` and `created_at` too, what the
+  protocol's `User` leaves out). With no user yet it says so in Spanish and names `users add`. It
+  opens the vault's ROOT handle, because `users/` is the repository's and no user's folder has a
+  copy of it; a vault that cannot be opened, or a `profile.json` that cannot be read back, exits 1
+  with a Spanish message. Reads only, so it is safe while `serve` runs.
+- `studentassistant users add --name NAME [--email EMAIL]`: creates the student's folder and its
+  `profile.json` (`vault.create_user`) and prints the new id on the standard output, so a script
+  gets the id the selection screen will show. The name decides the id, which then never changes
+  whatever the name is edited into, and two students with the same name are two folders
+  (`ana-garcia` and `ana-garcia-2`), so nobody's notes are written over. Nothing is committed by
+  the command: a user is ordinary vault content, so the service's next batch commit carries the
+  folder, like the inbox line `feedback mark` leaves behind, and it is safe while `serve` runs. A
+  name or an email the vault refuses exits 1 with its Spanish message, and so does a folder of that
+  id already being there.
 - `studentassistant devices` / `devices list`: the paired devices (id, name, paired-at; never a
   token). `studentassistant devices revoke <id>` removes one, and its token stops being accepted.
 - `studentassistant vault migrate-users [--name NAME] [--email EMAIL] [--dry-run]` (#548, epic
@@ -1574,6 +1704,7 @@ stream, the live stream and a capture WebSocket open and asserts shutdown takes 
 | `public_url` | unset | the base URL put in the pairing QR (default: LAN address + port); its host is also an allowed `Host` |
 | `max_capture_image_bytes` | `15728640` (15 MiB) | largest image part a capture burst may carry (413 beyond) |
 | `max_capture_images` | `5` | most images one capture burst may hold (413 beyond) |
+| `max_user_photo_bytes` | `5242880` (5 MiB) | largest profile photo `PUT /api/users/{user_id}/photo` accepts (#549): the body is read as it streams in and refused with 413 the moment it goes past this. `vault.users.MAX_USER_PHOTO_BYTES` keeps a ceiling of its own at this same value, which no configuration lifts, so raising this one only turns a 413 into the vault's Spanish 422; `>= 1` |
 | `allowed_hosts` | `[]` | extra names a request's `Host` may carry (the DNS-rebinding allowlist above); env as JSON, `SA_SERVER__ALLOWED_HOSTS='["mypc.local"]'` |
 | `capture_idle_end_seconds` | `300` | a capture session with no capture client connected and sending for this long is ended by the backend (`reason: "idle"`, nothing generated, #425); `> 0` |
 | `graceful_shutdown_seconds` | `5` | on SIGTERM the open streams end at once; a request still running after this long is cancelled before the lifespan shutdown (final vault commit and push) runs (#466); `> 0` |
