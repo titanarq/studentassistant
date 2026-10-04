@@ -518,12 +518,12 @@ def _turn_sequence(events: list[tuple[str, dict[str, Any]]], turn_id: str) -> li
 # -- the test --------------------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_a_replayed_session_builds_the_notes_and_studies_them(
     server: ServerSettings,
     codes: PairingCodes,
     tmp_path: Path,
     tmp_vault: Vault,
+    student_user_id: str,
     git_origin: Path,
     recording: Recording,
 ) -> None:
@@ -677,7 +677,9 @@ def test_a_replayed_session_builds_the_notes_and_studies_them(
     assert go_study["reply"].startswith("He cerrado la captura")
     [marked] = [data for name, data in events if name == "study.marked"]
     # The study request's own turn ended its session: its record is in a review session (#423).
-    [meta] = [m for m in list_sessions(tmp_vault, SUBJECT, TOPIC) if m.is_study]
+    [meta] = [
+        m for m in list_sessions(tmp_vault.for_user(student_user_id), SUBJECT, TOPIC) if m.is_study
+    ]
     assert meta.id == session_id and meta.ended_at is not None
     after_switch = seen["study_after_switch"]
     assert after_switch["study_version"]["version"] == marked["version"]
@@ -724,7 +726,7 @@ def test_a_replayed_session_builds_the_notes_and_studies_them(
     # The page was stored by the time it was incorporated.
     incorporation = named[1][0]
     tree = _git(tmp_vault.path, "ls-tree", "-r", "--name-only", incorporation)
-    assert f"subjects/{SUBJECT}/topics/{TOPIC}/{PAGE}" in tree.splitlines()
+    assert f"users/{student_user_id}/subjects/{SUBJECT}/topics/{TOPIC}/{PAGE}" in tree.splitlines()
     assert _git(tmp_vault.path, "status", "--porcelain") == ""
     assert _git(git_origin, "rev-parse", "main") == _git(tmp_vault.path, "rev-parse", "HEAD")
     assert _git(git_origin, "tag").split() == [marked["tag"]]

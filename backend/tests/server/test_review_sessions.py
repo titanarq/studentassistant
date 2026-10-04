@@ -42,17 +42,19 @@ def test_the_topic_list_dates_the_topic_by_its_latest_study_session(
 
 
 def test_a_topic_with_only_review_sessions_has_no_last_session(
-    read_vault: ReadVault, user_read_vault: ReadVault, user_reader: TestClient
+    read_vault: ReadVault, user_reader: TestClient
 ) -> None:
-    subject, topic = user_read_vault.subject, user_read_vault.empty_topic
-    # `GET /api/subjects/{s}/topics` reads the user's folder (#550) while `.../summary` still
-    # reads the repository root (#551 moves it), so the review session goes where each looks.
-    for vault in (read_vault.vault, user_read_vault.vault):
-        end_session(
-            start_session(
-                vault, subject, topic, host="ubuntu-pc", protocol_version="1.0", kind="review"
-            )
+    subject, topic = read_vault.subject, read_vault.empty_topic
+    end_session(
+        start_session(
+            read_vault.vault,
+            subject,
+            topic,
+            host="ubuntu-pc",
+            protocol_version="1.0",
+            kind="review",
         )
+    )
 
     response = user_reader.get(f"/api/subjects/{subject}/topics")
     listed = {e["topic_id"]: e for e in response.json()["topics"]}

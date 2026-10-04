@@ -8,7 +8,6 @@ and the turn is read back from `GET .../notes/chat` and from a workspace hub sub
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -62,7 +61,6 @@ from studentassistant.vault import (
     read_topic_events,
     resume_session,
     start_session,
-    user_ids,
     write_notes,
 )
 
@@ -71,21 +69,9 @@ WAIT_SECONDS = 10.0
 AppFactory = Callable[..., FastAPI]
 
 
-def _topic_in_the_user_folder(root: Vault, user: Vault, topic: ReviseTopic) -> None:
-    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
-
-    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
-    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
-    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
-    the repository root's copy, so a test reads back from the handle whose side wrote it.
-    """
-    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
-
-
 @pytest.fixture
 def topic(tmp_vault: Vault, user_vault: Vault) -> ReviseTopic:
-    built = make_revise_topic(tmp_vault)
-    _topic_in_the_user_folder(tmp_vault, user_vault, built)
+    built = make_revise_topic(user_vault)
     return built
 
 
@@ -177,8 +163,7 @@ def _subscribe(client: TestClient, topic: ReviseTopic) -> WorkspaceSubscription:
 def _history(vault: Vault, topic: ReviseTopic) -> dict[str, Any]:
     """The topic's chat as `GET .../notes/chat` shows it, read from the student's folder.
 
-    The consumer writes through the student's handle (#566) and the route still reads the
-    repository root until #551, so a test of what a turn recorded reads it here.
+    The consumer and the route both work on the student's folder (#566, #551).
     """
     return chat_history(vault, topic.subject, topic.topic).model_dump(mode="json")
 
@@ -664,7 +649,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _student(topic: ReviseTopic) -> Vault:
     """The vault's one student's handle: where the consumers write (#566)."""
-    return topic.vault.for_user(user_ids(topic.vault)[0])
+    return topic.vault
 
 
 def _review_events(
@@ -672,8 +657,7 @@ def _review_events(
 ) -> list[dict[str, Any]]:
     """The payloads of `kind` in the topic's review sessions, read back from the vault.
 
-    From the student's folder, where the consumers write; a typed message posted through the route
-    that is not user-scoped yet (#551) is recorded at the repository's root: pass `vault`.
+    From the student's folder, where the consumers and the routes write; `vault` overrides it.
     """
     vault = vault or _student(topic)
     reviews = {m.id for m in list_sessions(vault, topic.subject, topic.topic) if not m.is_study}

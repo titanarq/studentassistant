@@ -33,8 +33,8 @@ PAGE = "[Apuntes, página {n}](../sources/notes/page-00{n}.jpg)"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> GenerateTopic:
-    return make_topic(tmp_vault)
+def topic(user_vault: Vault) -> GenerateTopic:
+    return make_topic(user_vault)
 
 
 AppFactory = Callable[..., FastAPI]
@@ -130,7 +130,7 @@ def test_prepare_notes_runs_in_batches_on_the_workspace_stream(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["draft"] is False and body["version"] == 1
-    assert body["tag"] == f"{topic.subject}/{topic.topic}/apuntes-v1"
+    assert body["tag"] == f"{topic.vault.user_id}/{topic.subject}/{topic.topic}/apuntes-v1"
     assert len(fake.requests) == 3  # two incorporations, then the contradictions search
     first = str(fake.requests[0].messages)
     assert "page-001.jpg" in first and "page-002.jpg`:" not in first

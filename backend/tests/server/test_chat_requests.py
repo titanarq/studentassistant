@@ -8,7 +8,6 @@ editor's. Every wait is bounded.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -47,7 +46,6 @@ from studentassistant.vault import (
     read_topic_events,
     sources_directory,
     update_page_meta,
-    user_ids,
 )
 
 LOCAL_BASE_URL = "http://localhost:8765"
@@ -106,21 +104,9 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
         yield client
 
 
-def _topic_in_the_user_folder(root: Vault, user: Vault, topic: GenerateTopic | ReviseTopic) -> None:
-    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
-
-    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
-    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
-    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
-    the repository root's copy, so a test reads back from the handle whose side wrote it.
-    """
-    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
-
-
 @pytest.fixture
 def topic(tmp_vault: Vault, user_vault: Vault) -> GenerateTopic:
-    built = make_topic(tmp_vault)
-    _topic_in_the_user_folder(tmp_vault, user_vault, built)
+    built = make_topic(user_vault)
     return built
 
 
@@ -153,8 +139,7 @@ def _subscribe(client: TestClient, topic: GenerateTopic | ReviseTopic) -> Worksp
 def _turns(vault: Vault, topic: GenerateTopic | ReviseTopic) -> list[dict[str, Any]]:
     """The topic's chat turns as `GET .../notes/chat` shows them, read from the student's folder.
 
-    The consumer writes through the student's handle (#566); the route reads the repository root
-    until #551.
+    The consumer and the route both work on the student's folder (#566, #551).
     """
     history = chat_history(vault, topic.subject, topic.topic)
     return list(history.model_dump(mode="json")["turns"])
@@ -224,8 +209,7 @@ def _events(
 ) -> list[tuple[str, str, dict[str, Any]]]:
     """Every `kind` event of the topic as `(session id, origin, payload)`, read back from `vault`.
 
-    `vault` is the handle the events are in: the one user's for a session `POST /api/sessions`
-    started (#550), the repository root for the review sessions the consumer writes there (#551).
+    `vault` is the student's handle, where every session of the test lives.
     """
     return [
         (session_id, event.origin, event.payload)
@@ -240,9 +224,7 @@ def _third_page(
     meta = {"triage": {"status": "set_aside", "reasons": ["blurry"]}} if aside else {}
     if triage is not None:
         meta = {"triage": triage}
-    # In the root's copy of the topic (the routes' until #551) and the student's (the consumers').
-    for vault in (topic.vault, topic.vault.for_user(user_ids(topic.vault)[0])):
-        put_source(vault, topic.subject, topic.topic, "notes", "page.jpg", b"\xff\xd8 3", meta)
+    put_source(topic.vault, topic.subject, topic.topic, "notes", "page.jpg", b"\xff\xd8 3", meta)
 
 
 # -- typed messages ------------------------------------------------------------------------------
@@ -320,9 +302,9 @@ def test_a_typed_message_is_classified_with_the_sources_and_incorporates_its_tar
 
 
 def test_typed_messages_without_a_session_go_to_a_review_session(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake, {"kind": "edit", "summary": "Añadir un ejemplo", "targets": [PAGE_1]})
     fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="De acuerdo.")
 
@@ -344,10 +326,10 @@ EXAMPLE_BLOCK = "**Derivada**: el límite del cociente incremental, por ejemplo.
 
 
 def test_an_edit_answered_only_in_prose_is_re_asked_once_and_then_applied(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
     # #452: the editor said it had changed the notes but called no tool; one re-ask gets the call.
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake, {"kind": "edit", "summary": "Añadir un ejemplo"})
     fake.reply_text("He rehecho los apuntes con la página.")
     fake.reply_tool(
@@ -377,10 +359,10 @@ def test_an_edit_answered_only_in_prose_is_re_asked_once_and_then_applied(
 
 
 def test_an_edit_that_still_calls_no_tool_says_the_notes_did_not_change(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
-    before = read_notes(tmp_vault, topic.subject, topic.topic)
+    topic = make_revise_topic(user_vault)
+    before = read_notes(user_vault, topic.subject, topic.topic)
     _classify(fake, {"kind": "edit", "summary": "Rehacer los apuntes"})
     fake.reply_text("He rehecho los apuntes.")
     fake.reply_text("¿Qué página quieres que use?")
@@ -392,13 +374,13 @@ def test_an_edit_that_still_calls_no_tool_says_the_notes_did_not_change(
     [turn] = client.get(f"{_base(topic)}/notes/chat").json()["turns"]
     assert turn["applied"] is False and turn["reply"] == "¿Qué página quieres que use?"
     assert turn["warning"] is not None and "no han cambiado" in turn["warning"]
-    assert read_notes(tmp_vault, topic.subject, topic.topic) == before
+    assert read_notes(user_vault, topic.subject, topic.topic) == before
 
 
 def test_a_question_answered_in_prose_is_not_re_asked(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake, {"kind": "question", "summary": "Qué es la derivada"})
     fake.reply_text("Es un límite.")
 
@@ -411,9 +393,9 @@ def test_a_question_answered_in_prose_is_not_re_asked(
 
 
 def test_a_classifier_failure_keeps_the_typed_text_as_a_request(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     fake.fail(LLMAPIError("boom"))
     fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Es por la regla.")
 
@@ -431,9 +413,9 @@ def test_a_classifier_failure_keeps_the_typed_text_as_a_request(
 
 
 def test_an_empty_classification_is_kept_as_an_edit(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(fake)
     fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Vale.")
 
@@ -444,9 +426,9 @@ def test_an_empty_classification_is_kept_as_an_edit(
 
 
 def test_typed_messages_are_classified_whatever_the_speech_detection(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     with _client(make_app(fake, request_detection="off")) as client:
         _classify(fake, {"kind": "question", "summary": "¿Qué es la derivada?"})
         fake.reply_tool(EDIT_TOOL, {"summary": "Nada", "ops": []}, text="Es un límite.")
@@ -665,9 +647,9 @@ def _ask_a_doubt(client: TestClient, fake: FakeClaude, topic: ReviseTopic) -> st
 
 
 def test_a_typed_answer_to_the_asked_doubt_resolves_it(
-    make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault
+    make_app: AppFactory, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     with _client(make_app(fake, doubts=True)) as client:
         pending_id = _ask_a_doubt(client, fake, topic)
         subscription = _subscribe(client, topic)
@@ -728,9 +710,9 @@ def test_a_typed_answer_to_the_asked_doubt_resolves_it(
 
 
 def test_a_doubt_answer_is_refused_without_an_asked_doubt(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
+    topic = make_revise_topic(user_vault)
     _classify(
         fake, {"kind": "doubt_answer", "summary": "La segunda", "pending_id": "p-9", "answer": "2"}
     )
@@ -820,8 +802,7 @@ def test_a_typed_incorporation_stopped_at_the_cap_is_confirmed_and_incorporates(
 def test_a_spoken_edit_stopped_at_the_cap_is_confirmed(
     make_app: AppFactory, fake: FakeClaude, tmp_vault: Vault, user_vault: Vault
 ) -> None:
-    topic = make_revise_topic(tmp_vault)
-    _topic_in_the_user_folder(tmp_vault, user_vault, topic)  # the session `_start` asks for
+    topic = make_revise_topic(user_vault)
     with _client(make_app(fake, llm=LlmSettings(max_usd_per_day=0))) as client:
         session_id = _start(client, topic)
         subscription = _subscribe(client, topic)

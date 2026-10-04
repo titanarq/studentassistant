@@ -254,27 +254,21 @@ def ws(
 
 
 @pytest.fixture
-def read_vault(tmp_vault: Vault) -> ReadVault:
-    """`tmp_vault` populated as `read_api_fixtures.populate` describes.
+def read_vault(tmp_vault: Vault, student_user_id: str) -> ReadVault:
+    """`tmp_vault` populated as `read_api_fixtures.populate` describes, under its one user.
 
-    The content stays at the repository root, where the routes that are NOT user-scoped yet look
-    for it: they read the root handle `SessionService.open_vault()` gives them, and moving them to
-    `active_user_vault` is #551. A test of a route #550 has already scoped to the user asks for
-    `user_read_vault` instead.
+    Every content route is scoped to the active user (#551), so the content is under
+    `users/<id>/`; `ReadVault.vault` is then the USER handle, which is also what a test reads
+    sessions, sources and digests back through, while `create_app` keeps getting `tmp_vault`,
+    the root handle it takes.
     """
-    return populate(tmp_vault)
+    return populate(tmp_vault.for_user(student_user_id))
 
 
 @pytest.fixture
-def user_read_vault(tmp_vault: Vault, student_user_id: str) -> ReadVault:
-    """The same populated vault, with the content under its one user's folder.
-
-    For a test of a route #550 has already scoped to the user (`/api/subjects*`, `/api/sessions*`):
-    those read `users/<id>/...`, so the content has to be there. `ReadVault.vault` is then the USER
-    handle, which is also what the test reads sessions, sources and digests back through, while
-    `create_app` keeps getting `tmp_vault`, the root handle it takes.
-    """
-    return populate(tmp_vault.for_user(student_user_id))
+def user_read_vault(read_vault: ReadVault) -> ReadVault:
+    """Another name for `read_vault`, from when only some routes were user-scoped (#550)."""
+    return read_vault
 
 
 @pytest.fixture

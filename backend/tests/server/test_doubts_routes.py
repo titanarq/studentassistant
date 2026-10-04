@@ -25,8 +25,8 @@ WAIT_SECONDS = 10.0
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> DoubtsTopic:
-    return make_doubts_topic(tmp_vault)
+def topic(user_vault: Vault) -> DoubtsTopic:
+    return make_doubts_topic(user_vault)
 
 
 def _base(topic: DoubtsTopic) -> str:

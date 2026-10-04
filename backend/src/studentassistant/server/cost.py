@@ -2,7 +2,8 @@
 
 `GET /api/cost` is the cost-cap status of the llm module: the web and the capture clients read it
 to show that the observer is paused or that editor calls need confirmation. The server computes
-nothing there: it opens the configured vault and returns `studentassistant.llm.cost_status` as is.
+nothing there: it works on the active user's folder (`active_user_vault`, so the day total is that
+user's own ledgers) and returns `studentassistant.llm.cost_status` as is.
 
 `GET /api/subjects/{s}/topics/{t}/cost` is a topic's spend for its page: the topic's ledger entries
 (read through `studentassistant.vault.read_ledger`, ADR-0002) summed per session and for the calls
@@ -15,21 +16,22 @@ up without restarting the server.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel
 
 from studentassistant.config import Settings
 from studentassistant.llm import CostStatus, LedgerBinding, cost_status
 from studentassistant.protocol.base import ID_PATTERN
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     LedgerEntry,
     SubjectNotFoundError,
     TopicNotFoundError,
     Vault,
-    VaultError,
     get_topic,
     list_sessions,
     read_ledger,
@@ -129,43 +131,38 @@ def topic_cost(vault: Vault, subject: str, topic: str) -> TopicCost:
     )
 
 
-def _open_vault() -> Vault:
-    try:
-        return Vault.open(Settings().vault.path)
-    except VaultError as error:
-        raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-
-
 def cost_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/cost")
-    def cost(
-        subject: str | None = None, topic: str | None = None, session: str | None = None
+    async def cost(
+        request: Request,
+        subject: str | None = None,
+        topic: str | None = None,
+        session: str | None = None,
     ) -> CostStatus:
         if (subject is None) != (topic is None) or (session is not None and subject is None):
             raise HTTPException(status_code=422, detail=TOPIC_REQUIRED_DETAIL)
         settings = Settings()
-        try:
-            vault = Vault.open(settings.vault.path)
-        except VaultError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
+        vault, _sync = await active_user_vault(request)
         if subject is None or topic is None:
             # No session selected: `session_usd` is 0 and only the day total drives the flags.
             binding = LedgerBinding(vault=vault, subject="", topic="")
         else:
             try:
-                get_topic(vault, subject, topic)
+                await asyncio.to_thread(get_topic, vault, subject, topic)
             except (SubjectNotFoundError, TopicNotFoundError) as error:
                 raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
             binding = LedgerBinding(vault=vault, subject=subject, topic=topic, session=session)
-        return cost_status(binding, settings)
+        return await asyncio.to_thread(cost_status, binding, settings)
 
     @router.get("/api/subjects/{subject_id}/topics/{topic_id}/cost")
-    def cost_of_topic(subject_id: SubjectId, topic_id: TopicId) -> TopicCost:
-        vault = _open_vault()
+    async def cost_of_topic(
+        request: Request, subject_id: SubjectId, topic_id: TopicId
+    ) -> TopicCost:
+        vault, _sync = await active_user_vault(request)
         try:
-            return topic_cost(vault, subject_id, topic_id)
+            return await asyncio.to_thread(topic_cost, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
 

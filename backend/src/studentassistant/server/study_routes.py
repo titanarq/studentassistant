@@ -55,6 +55,7 @@ from studentassistant.server.sessions import (
     UnknownSessionError,
     VaultUnavailableError,
 )
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import STUDY_MARKED, WorkspaceHub
 from studentassistant.vault import (
     SubjectNotFoundError,
@@ -215,7 +216,7 @@ async def switch_to_study(
     """End the topic's capture session (no notes generation) and label the study version.
 
     The caller holds the topic's notes lock; `user_id` is the student whose topic it is (None:
-    not user-scoped yet, #551). Publishes `study.marked` on the workspace stream.
+    the vault's only user). Publishes `study.marked` on the workspace stream.
 
     Raises:
         VaultUnavailableError: the vault cannot be opened.
@@ -261,11 +262,7 @@ def study_router() -> APIRouter:
         return getattr(request.app.state, "generators", None) or default_registry
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> Vault:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
+        vault, _sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
@@ -288,9 +285,11 @@ def study_router() -> APIRouter:
         },
     )
     async def switch(request: Request, subject_id: SubjectId, topic_id: TopicId) -> StudyState:
-        await open_topic(request, subject_id, topic_id)
+        user_id = (await open_topic(request, subject_id, topic_id)).user_id
         generator: NotesGenerator | None = request.app.state.notes
-        if generator is not None and not generator.claim(subject_id, topic_id, TURN_HOLDER):
+        if generator is not None and not generator.claim(
+            subject_id, topic_id, TURN_HOLDER, user_id=user_id
+        ):
             raise ApiError(409, BUSY_DETAIL, ErrorCode.NOTES_BUSY)
         try:
             return await switch_to_study(
@@ -299,6 +298,7 @@ def study_router() -> APIRouter:
                 subject_id,
                 topic_id,
                 registry=registry_of(request),
+                user_id=user_id,
             )
         except NotesMissingError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -306,7 +306,7 @@ def study_router() -> APIRouter:
             raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
         finally:
             if generator is not None:
-                generator.release(subject_id, topic_id)
+                generator.release(subject_id, topic_id, user_id=user_id)
 
     return router
 

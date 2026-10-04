@@ -18,7 +18,6 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-import pytest
 import yaml
 from fastapi import FastAPI
 
@@ -102,7 +101,6 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_a_replayed_session_becomes_pushed_master_notes(
     server: ServerSettings,
     codes: PairingCodes,

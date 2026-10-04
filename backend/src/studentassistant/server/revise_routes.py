@@ -81,7 +81,8 @@ from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.doubt_chat import DoubtChat
 from studentassistant.server.errors import caller_speaks_error_codes, cost_cap_error
 from studentassistant.server.notes_routes import TURN_HOLDER, NotesGenerator
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import TurnBroadcast, WorkspaceHub
 from studentassistant.vault import (
     GitSync,
@@ -155,36 +156,32 @@ def revise_router() -> APIRouter:
     turns: set[asyncio.Task[None]] = set()
 
     async def open_topic(request: Request, subject_id: str, topic_id: str) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
             raise HTTPException(status_code=404, detail=UNKNOWN_TOPIC_DETAIL) from error
         return vault, sync
 
-    def publisher(request: Request, subject_id: str, topic_id: str) -> Any:
+    def publisher(request: Request, user_id: str | None, subject_id: str, topic_id: str) -> Any:
         sessions: SessionService = request.app.state.sessions
 
         async def publish(kind: str, payload: dict[str, Any]) -> None:
             active = sessions.active
-            if active is not None and (active.subject_id, active.topic_id) == (
-                subject_id,
-                topic_id,
+            if (
+                active is not None
+                and active.user_id == user_id
+                and (active.subject_id, active.topic_id) == (subject_id, topic_id)
             ):
                 await sessions.bus.publish(active.session_id, kind, "editor", payload)
 
         return publish
 
-    def live(request: Request, subject_id: str, topic_id: str) -> LiveSink | None:
+    def live(
+        request: Request, user_id: str | None, subject_id: str, topic_id: str
+    ) -> LiveSink | None:
         chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
-        return None if chat is None else chat.live(subject_id, topic_id)
+        return None if chat is None else chat.live(subject_id, topic_id, user_id=user_id)
 
     @router.get("/api/subjects/{subject_id}/topics/{topic_id}/notes/chat")
     async def history(request: Request, subject_id: SubjectId, topic_id: TopicId) -> ChatHistory:
@@ -225,7 +222,7 @@ def revise_router() -> APIRouter:
                     broadcast.result(result)
                 chat: DoubtChat | None = getattr(request.app.state, "doubt_chat", None)
                 if chat is not None:
-                    chat.after(subject_id, topic_id, result)
+                    chat.after(subject_id, topic_id, result, user_id=vault.user_id)
             except Exception as error:
                 status, detail, code = turn_error(error)
                 if status == 500:
@@ -241,7 +238,7 @@ def revise_router() -> APIRouter:
                 if broadcast is not None:
                     broadcast.error(status, detail, None if code is None else code.value)
             finally:
-                generator.release(subject_id, topic_id)
+                generator.release(subject_id, topic_id, user_id=vault.user_id)
                 queue.put_nowait(None)
 
         task = asyncio.create_task(run())
@@ -285,7 +282,7 @@ def revise_router() -> APIRouter:
                 raise HTTPException(status_code=409, detail=NO_NOTES_DETAIL)
             if check is not None:
                 check(notes)
-        if not generator.claim(subject_id, topic_id, TURN_HOLDER):
+        if not generator.claim(subject_id, topic_id, TURN_HOLDER, user_id=vault.user_id):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         return generator, vault, sync
 
@@ -298,7 +295,7 @@ def revise_router() -> APIRouter:
             request, subject_id, topic_id, invalid, need_notes=False
         )
         hub: WorkspaceHub = request.app.state.workspace
-        broadcast = TurnBroadcast(hub, subject_id, topic_id, origin="typed")
+        broadcast = TurnBroadcast(hub, subject_id, topic_id, origin="typed", user_id=vault.user_id)
         broadcast.started()
 
         async def work(client: LLMClient, on_reply: ReplySink) -> BaseModel:
@@ -310,10 +307,10 @@ def revise_router() -> APIRouter:
                 client=client,
                 sync=sync,
                 on_reply=on_reply,
-                on_event=publisher(request, subject_id, topic_id),
+                on_event=publisher(request, vault.user_id, subject_id, topic_id),
                 confirm_over_cap=body.confirm_over_cap,
                 turn_id=broadcast.turn_id,
-                live=live(request, subject_id, topic_id),
+                live=live(request, vault.user_id, subject_id, topic_id),
                 host=request.app.state.sessions.host,
                 # A `crop_image` turn locates the region with the app's own transport (#493).
                 crop_client=crop_client(
@@ -360,7 +357,9 @@ def revise_router() -> APIRouter:
     async def undo(request: Request, subject_id: SubjectId, topic_id: TopicId) -> UndoResult:
         vault, sync = await open_topic(request, subject_id, topic_id)
         generator: NotesGenerator | None = request.app.state.notes
-        if generator is not None and not generator.claim(subject_id, topic_id):
+        if generator is not None and not generator.claim(
+            subject_id, topic_id, user_id=vault.user_id
+        ):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         try:
             result = await undo_last_revision(
@@ -368,7 +367,7 @@ def revise_router() -> APIRouter:
                 subject_id,
                 topic_id,
                 sync=sync,
-                on_event=publisher(request, subject_id, topic_id),
+                on_event=publisher(request, vault.user_id, subject_id, topic_id),
             )
             if result.notes_changed:
                 hub: WorkspaceHub = request.app.state.workspace
@@ -378,12 +377,13 @@ def revise_router() -> APIRouter:
                     revision=result.revision,
                     origin="editor",
                     summary=f"Deshecho: {result.summary}" if result.summary else "Deshecho",
+                    user_id=vault.user_id,
                 )
             return result
         except RevisionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         finally:
             if generator is not None:
-                generator.release(subject_id, topic_id)
+                generator.release(subject_id, topic_id, user_id=vault.user_id)
 
     return router

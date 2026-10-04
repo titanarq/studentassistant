@@ -63,6 +63,7 @@ from studentassistant.observer import topic_digest
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.server.errors import cost_cap_error
 from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.server.workspace import (
     INCORPORATION_PROGRESS,
     TurnBroadcast,
@@ -393,9 +394,10 @@ def notes_router() -> APIRouter:
         if generator is None:
             raise HTTPException(status_code=503, detail=UNAVAILABLE_DETAIL)
         sessions: SessionService = request.app.state.sessions
-        vault = await _open_vault(sessions)
+        vault, _sync = await active_user_vault(request)
+        user_id = vault.user_id
         await _require_topic(vault, subject_id, topic_id)
-        if not generator.claim(subject_id, topic_id):
+        if not generator.claim(subject_id, topic_id, user_id=user_id):
             raise HTTPException(status_code=409, detail=BUSY_DETAIL)
         try:
             return await generator.generate(
@@ -403,6 +405,7 @@ def notes_router() -> APIRouter:
                 subject_id,
                 topic_id,
                 confirm_over_cap=bool(body and body.confirm_over_cap),
+                user_id=user_id,
             )
         except CostConfirmationRequiredError as error:
             raise cost_cap_error(error, CONFIRM_SENTENCE) from error
@@ -416,16 +419,9 @@ def notes_router() -> APIRouter:
         except VaultUnavailableError as error:
             raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
         finally:
-            generator.release(subject_id, topic_id)
+            generator.release(subject_id, topic_id, user_id=user_id)
 
     return router
-
-
-async def _open_vault(sessions: SessionService) -> Vault:
-    try:
-        return await sessions.open_vault()
-    except VaultUnavailableError as error:
-        raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
 
 
 async def _require_topic(vault: Vault, subject_id: str, topic_id: str) -> None:

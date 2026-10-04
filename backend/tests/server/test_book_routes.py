@@ -13,10 +13,10 @@ from studentassistant.vault import Vault, create_subject, create_topic, get_book
 
 
 def test_the_book_route_reads_and_sets_the_title(
-    tmp_vault: Vault, devices_path: Path, codes: PairingCodes, tmp_path: Path
+    tmp_vault: Vault, user_vault: Vault, devices_path: Path, codes: PairingCodes, tmp_path: Path
 ) -> None:
-    subject = create_subject(tmp_vault, "Biología").slug
-    topic = (subject, create_topic(tmp_vault, subject, "La célula").slug)
+    subject = create_subject(user_vault, "Biología").slug
+    topic = (subject, create_topic(user_vault, subject, "La célula").slug)
     app = create_app(
         static_dir=tmp_path / "no-web-build",
         server=ServerSettings(devices_path=devices_path, public_url="http://192.168.1.20:8765"),
@@ -33,7 +33,7 @@ def test_the_book_route_reads_and_sets_the_title(
     assert put.status_code == 200, put.text
     assert put.json()["title"] == "Biología 2"
     assert client.get(route).json()["title"] == "Biología 2"
-    assert get_book(tmp_vault, *topic) is not None
+    assert get_book(user_vault, *topic) is not None
     assert changes == [None]
 
     empty = client.put(route, json={"title": "  "})

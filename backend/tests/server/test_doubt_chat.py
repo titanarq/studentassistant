@@ -8,7 +8,6 @@ doubts route is broadcast; during a session the events go to its live log.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -47,21 +46,9 @@ PAGE_1 = "sources/notes/page-001.jpg"
 PAGE_2 = "sources/notes/page-002.jpg"
 
 
-def _topic_in_the_user_folder(root: Vault, user: Vault, topic: ReviseTopic) -> None:
-    """Give the vault's one user a copy of the fixture topic: subjects, notes, sources, sessions.
-
-    The session `POST /api/sessions` starts acts for that user (#550) and, since #566, so do the
-    consumers it feeds (the assistant requests, the doubt chat, the catch-ups): everything they
-    read and write is under `users/<id>/`. The routes that are not user-scoped yet (#551) keep
-    the repository root's copy, so a test reads back from the handle whose side wrote it.
-    """
-    shutil.copytree(root.path / "subjects", user.path / "subjects", dirs_exist_ok=True)
-
-
 @pytest.fixture
 def topic(tmp_vault: Vault, user_vault: Vault) -> ReviseTopic:
-    built = make_revise_topic(tmp_vault)
-    _topic_in_the_user_folder(tmp_vault, user_vault, built)
+    built = make_revise_topic(user_vault)
     return built
 
 
@@ -291,7 +278,6 @@ def test_a_turn_with_doubts_marks_them_and_one_is_shown_when_asked_for(
     assert subscription.drain() == []
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_during_a_session_the_doubts_go_to_its_live_log(
     client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
 ) -> None:
@@ -333,8 +319,7 @@ def test_during_a_session_the_doubts_go_to_its_live_log(
     shown = client.post(f"{_base(topic)}/doubts/{queue.current}/ask")
     assert shown.status_code == 200, shown.text
     assert _names(subscription.drain()) == ["doubt.asked"]
-    # The live log is the session's own, under its user's folder (#550); the doubts and the notes
-    # the routes read are still at the repository root (#551).
+    # The live log is the session's own, under its user's folder.
     live = [
         (event.kind, event.origin, event.payload)
         for sid, event in read_topic_events(user_vault, topic.subject, topic.topic)

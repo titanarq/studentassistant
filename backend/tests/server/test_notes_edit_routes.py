@@ -25,8 +25,8 @@ WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 " + bytes(32)
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    return make_revise_topic(user_vault)
 
 
 @pytest.fixture

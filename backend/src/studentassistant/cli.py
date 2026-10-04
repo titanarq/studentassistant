@@ -745,9 +745,10 @@ def _open_configured_vault() -> Vault:
 
 def _feedback_line(item: FeedbackItem) -> str:
     issue = f"\t#{item.issue}" if item.issue is not None else ""
+    user = f"\t@{item.context.user}" if item.context.user else ""
     return (
         f"{item.id}\t{item.status}\t{item.kind}\t{item.created_at:%Y-%m-%d %H:%M}"
-        f"\t{item.title}{issue}"
+        f"\t{item.title}{issue}{user}"
     )
 
 
@@ -759,7 +760,7 @@ def feedback_list(
     ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Salida en JSON para scripts.")] = False,
 ) -> None:
-    """List the inbox, oldest first: id, status, kind, date, title and the triage issue."""
+    """List the inbox, oldest first: id, status, kind, date, title, triage issue and reporter."""
     vault = _open_configured_vault()
     try:
         items = list_feedback(vault, status_filter.value if status_filter else None)

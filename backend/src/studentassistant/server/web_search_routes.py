@@ -41,7 +41,8 @@ from studentassistant.protocol import WebPageAddRequest, WebPageAddResponse
 from studentassistant.protocol.base import ID_PATTERN
 from studentassistant.protocol.errors import ErrorCode
 from studentassistant.server.errors import ApiError
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.sources.web import KeptWebSource, WebSearchRecord, list_web_searches
 from studentassistant.sources.web_searcher import KeepError, WebSearcher
 from studentassistant.vault import SubjectNotFoundError, TopicNotFoundError, Vault, get_topic
@@ -81,12 +82,8 @@ class KeptResponse(BaseModel):
 
 
 async def _vault(request: Request) -> Vault:
-    service: SessionService = request.app.state.sessions
-    try:
-        return await service.open_vault()
-    except VaultUnavailableError as error:
-        unavailable = status.HTTP_503_SERVICE_UNAVAILABLE
-        raise HTTPException(unavailable, VAULT_UNAVAILABLE_DETAIL) from error
+    vault, _sync = await active_user_vault(request)
+    return vault
 
 
 async def _topic_vault(request: Request, subject_id: str, topic_id: str) -> Vault:
@@ -105,10 +102,15 @@ def _searcher(request: Request) -> WebSearcher:
     return searcher
 
 
-def _topic_session(request: Request, subject_id: str, topic_id: str) -> str | None:
+def _topic_session(request: Request, vault: Vault, subject_id: str, topic_id: str) -> str | None:
+    """The id of the user's active session when it is on this topic."""
     service: SessionService = request.app.state.sessions
     active = service.active
-    if active is not None and (active.subject_id, active.topic_id) == (subject_id, topic_id):
+    if (
+        active is not None
+        and active.user_id == vault.user_id
+        and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+    ):
         return active.session_id
     return None
 
@@ -142,7 +144,7 @@ def web_search_router() -> APIRouter:
             topic_id,
             body.query,
             requested_by="web",
-            session_id=_topic_session(request, subject_id, topic_id),
+            session_id=_topic_session(request, vault, subject_id, topic_id),
         )
         return WebSearchQueued(search_id=search_id)
 
@@ -166,7 +168,7 @@ def web_search_router() -> APIRouter:
                 search_id,
                 index,
                 kept_by="student",
-                session_id=_topic_session(request, subject_id, topic_id),
+                session_id=_topic_session(request, vault, subject_id, topic_id),
             )
         except (KeepError, LLMError) as error:
             raise _keep_failure(error) from error
@@ -195,7 +197,7 @@ def web_search_router() -> APIRouter:
                 body.url,
                 added_via=body.via or "url",
                 kept_by="student",
-                session_id=_topic_session(request, subject_id, topic_id),
+                session_id=_topic_session(request, vault, subject_id, topic_id),
             )
         except (KeepError, LLMError) as error:
             raise _keep_failure(error) from error

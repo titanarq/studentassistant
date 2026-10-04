@@ -259,8 +259,7 @@ submodules.
 - When: at every `session.started` / `session.resumed` (every session of the topic, captures
   stored before the opening event), and once at server start (`catch_up_vault(vault)`, called when
   the server first opens the vault, once per user with that user's handle -- `vault.user_id` --
-  so it reads and queues one student's folder, and once with the root handle for what is still
-  at the root: each topic's unended study sessions and its newest one, review sessions left out;
+  so it reads and queues one student's folder: each topic's unended study sessions and its newest one, review sessions left out;
   `wait_startup()` waits for it). Owed pages are transcribed at once (no window wait; hints from the capture's own session's
   `transcript.jsonl`), bound to the ledger of the session that queued them; the exchange goes to
   `conversations/transcriber-<capture session>.jsonl`. Stored ones have their events published

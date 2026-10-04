@@ -741,8 +741,7 @@ Routes registered today:
   `turn.finished` (which now always carries the request's `session_id`) whose session is no
   longer attached is written in a review session of the request's student. Once the vault is open
   (`catch_up_vault`, a `SessionService.add_on_open` hook called once per user with that user's
-  handle -- and once with the root handle, for what the routes not user-scoped yet wrote there --
-  so after the restarted backend's first request that opens it), every readable topic's `outstanding_requests(vault, subject, topic)` -- each named request
+  handle -- so after the restarted backend's first request that opens it), every readable topic's `outstanding_requests(vault, subject, topic)` -- each named request
   with no `turn.finished` of that session's request anywhere in the topic and no voice chat turn
   of it -- is submitted again through `submit`, oldest first, announced and streamed as usual,
   and answered exactly once (the `turn.finished` is written before `turn.result`). This reads
@@ -1075,7 +1074,8 @@ Routes registered today:
     never failing the call. 503 when the vault cannot be opened. Bearer auth like every `/api`.
 - `GET /api/feedback[?status=nuevo|triado|descartado]` (`server/feedback_routes.py`,
   `feedback_router()`, #472), web-only, not phone protocol -> `FeedbackList` (`items`: the vault's
-  feedback inbox folded, `vault.list_feedback`, oldest first, each `{id, created_at, kind, title,
+  feedback inbox folded, `vault.list_feedback`, oldest first, only the active user's reports and the
+  ones with no `context.user`, each `{id, created_at, kind, title,
   body, context, status, issue, updated_at}`; only those in `status` when given, another value
   422). Read only: triage is the CLI's (`studentassistant feedback mark`); the backend never
   calls GitHub. A vault that cannot be opened 503, an unreadable inbox 500 (Spanish `detail`).
@@ -1211,15 +1211,26 @@ the backend, never with a user. That is why a request that sends a user to a rou
 user-scoped is unaffected (the users routes above read nobody's selection), and why neither value
 is redacted in the logs.
 
-**What is scoped today:** the rule, the handshake helper and the dependency, and the session side
-(#550): `session_routes` (`/api/subjects*`, `/api/sessions*`), `captures`, `ws`, `live_routes`,
-`vault_status` and `session_health`, which work on the active user's handle or hand its id to
-`SessionService`, and, since #566, `GET /api/search` (the user's own index) and every session-driven
-background consumer ("Session consumers per user" below). The other content routes still work on
-the handle `SessionService.open_vault()` gives, which is the root one. `/api/health`, `/api/pair*`
-and `/api/users*` stay that way by design (protocol 1.8 names them as not user-scoped); the rest
-change in #551 (every other content route: notes, sources, study, generated material, ...), each
-declaring `active_user_vault` and working on the two handles it returns.
+**Every content route is scoped to the active user (#550, #566, #551).** The session routes
+(`session_routes`, `captures`, `ws`, `live_routes`, `vault_status`, `session_health`), search
+(`GET /api/search`, the user's own index) and every content route -- reads, notes and versions,
+revision and chat, sources, PDF, book, web search, style guide, study, quiz, exam, practice,
+doubts, tutor, generated material, the workspace stream, feedback and cost -- obtain their vault
+and sync from `active_user_vault` and work on those two handles and nothing else: no content route
+calls `SessionService.open_vault()` or reads `SessionService.sync` (a test greps the modules for
+it), so a request naming no user on a vault with several is `400 user_required`, an unknown one
+`404 user_not_found`, and what a route reads or writes is under that student's `users/<id>/`. The
+in-memory state that outlives a request is keyed by user as well -- the notes lock and the doubts,
+tutor and PDF locks, the generation claim, the workspace hub -- and a route passes `vault.user_id`
+on to the consumers (`NotesGenerator`, `DoubtChat`, `AssistantRequestConsumer`, `TurnBroadcast`),
+which is why two students' same-named topics never wait on each other. Only `/api/health`,
+`/api/pair*` and `/api/users*` are not user-scoped, by design (protocol 1.8). What is specific to
+a few routes: the notes versions go through the user's `UserGitSync` (`<user-id>/<s>/<t>/apuntes-vN`
+tags only, plus the ones created before the migration, which `legacy_root_user` keeps readable);
+`GET /api/cost` and `/api/practice/summary` add up only that student's ledgers and topics;
+`GET /api/feedback` lists the reports the student made (the inbox itself is the repository's) plus
+the ones that name nobody, and the editor's report records the reporting user in `context.user`.
+The isolation test is `tests/server/test_users_content.py`.
 
 ### Session lifecycle -- `server/sessions.py`
 
@@ -1304,13 +1315,11 @@ fallback (the vault's only user, else `NoUserError`; an id the vault lacks is `U
   call, or `VaultUnavailableError`: what the read routes read through.
 - `add_on_open(hook)`: `hook(handle)` is called (synchronously, on the event loop; it must only
   schedule work) once the vault is first opened, pulled and scanned, ONCE PER USER with that
-  user's handle (and once with the root handle, for what the routes not user-scoped yet wrote
-  there). The app registers the page transcriber's, the PDF transcriber's and the assistant
+  user's handle. The app registers the page transcriber's, the PDF transcriber's and the assistant
   requests' `catch_up_vault` there (server-start catch-ups, #181, #257, #423), so each runs once per
   user and reads and writes that student's folder.
 - `await user_handles(user_id)` -> `(user_id, vault, UserGitSync)`, `await consumer_scope(user_id)`
-  -> `(vault, sync)` (a named user's handle and sync view; `None` keeps the root handle and sync
-  for a caller not user-scoped yet, #551) and `only_user_id()`: what the session consumers work
+  -> `(vault, sync)` (the user's handle and sync view; `None` is the single-user fallback) and `only_user_id()`: what the session consumers work
   through, see "Session consumers per user".
 - `add_on_attached(hook)` (#425): `hook(session_id)` is called synchronously, under the lifecycle
   lock, whenever `start` or `resume` makes a session the active one (before `session.started` /
@@ -1349,13 +1358,13 @@ Every consumer driven by a session works for the student the session belongs to
   (the session's, found from the bus or remembered), its queue, running turn, stopped-at-the-cap
   list and notes lock are keyed `(user_id, subject, topic)`, and each turn reads and writes through
   `SessionService.consumer_scope(user_id)` -- the student's `Vault` and `UserGitSync` -- including its
-  review sessions, ledger binding, triage writes and `switch_to_study`. A `user_id` of `None` is a
-  caller that is not user-scoped yet (the content routes until #551) and keeps the root handle.
+  review sessions, ledger binding, triage writes and `switch_to_study`. A `user_id` of `None` is the
+  single-user fallback of `SessionService`; the content routes always pass the user.
 - **The workspace hub** (`WorkspaceHub`, `TurnBroadcast`) is keyed by user and topic. A caller
   that names no user is the vault's only one (`SessionService.only_user_id`), which is what keeps
-  the unscoped workspace stream receiving the events of a one-user vault.
+  a caller that names no user receiving the events of a one-user vault.
 - **The `add_on_open` catch-ups** (page transcriber, scanned PDFs, assistant requests) run once per
-  user with that user's handle, plus once with the root handle for what is still written there.
+  user with that user's handle.
 - **The active-host claim** records the user: `claim_active_host(..., user_id=...)`.
 - **The index loop** keeps one `VaultIndex` per user, opened lazily on that user's first search or
   session start, updated by one background loop and all closed at shutdown; `GET /api/search`
@@ -1699,7 +1708,8 @@ WebSocket gateway publish and subscribe here.
   Since minting is loopback-only, `pair` needs the default wildcard bind (or `127.0.0.1`).
 - `studentassistant feedback list [--status nuevo|triado|descartado] [--json]` (#472): the vault's
   app feedback inbox (`vault.list_feedback`), oldest first, one tab-separated line per item (`id`,
-  status, kind, `YYYY-MM-DD HH:MM`, title, `#issue` when triaged; «No hay comentarios en el
+  status, kind, `YYYY-MM-DD HH:MM`, title, `#issue` when triaged, `@<user-id>` of the reporting
+  student when the item names one; «No hay comentarios en el
   buzón.» when empty), or with `--json` the `FeedbackItem`s as a JSON list. An unreadable inbox or
   vault exits 1.
 - `studentassistant feedback mark <id> --status triado|descartado|nuevo [--issue N]`: appends a
@@ -1739,9 +1749,9 @@ WebSocket gateway publish and subscribe here.
   stop the service first (`systemctl --user stop studentassistant`). It prints in Spanish what it
   moved, the new user's id, the tags re-created and the push outcome, then rebuilds the per-user
   indexes; any refusal exits 1 with the Spanish reason and changes nothing, and a vault that is
-  already format 2 is told there was nothing to do. Until #549-#551 land, a backend of format 2
-  refuses a format-1 vault and is not yet user-scoped: `main` in that window is not what the PC's
-  service should run.
+  already format 2 is told there was nothing to do. A backend of format 2
+  refuses a format-1 vault, so this command is what a vault of an older backend goes through
+  before the service is restarted.
 
 ### Shutdown on SIGTERM/SIGINT -- `server/serving.py` (#466)
 

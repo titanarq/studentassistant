@@ -32,7 +32,7 @@ from studentassistant.editor.style_guide import (
     replace_style_rules,
 )
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import GitSync, SubjectNotFoundError, Vault
 
 SubjectId = Annotated[str, Path(pattern=ID_PATTERN)]
@@ -50,15 +50,8 @@ class StyleRulesRequest(BaseModel):
 def style_guide_router() -> APIRouter:
     router = APIRouter()
 
-    async def open_vault(request: Request) -> tuple[Vault, GitSync]:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
-        if sessions.sync is None:  # pragma: no cover - the vault opens with its sync
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL)
-        return vault, sessions.sync
+    async def user_scope(request: Request) -> tuple[Vault, GitSync]:
+        return await active_user_vault(request)
 
     async def run(function: Callable[..., StyleGuide], *args: Any, **kwargs: Any) -> StyleGuide:
         try:
@@ -70,21 +63,21 @@ def style_guide_router() -> APIRouter:
 
     @router.get("/api/subjects/{subject_id}/style-guide")
     async def get_guide(request: Request, subject_id: SubjectId) -> StyleGuide:
-        vault, _ = await open_vault(request)
+        vault, _ = await user_scope(request)
         return await run(read_style_guide, vault, subject_id)
 
     @router.post("/api/subjects/{subject_id}/style-guide/rules")
     async def add_rules(
         request: Request, subject_id: SubjectId, body: StyleRulesRequest
     ) -> StyleGuide:
-        vault, sync = await open_vault(request)
+        vault, sync = await user_scope(request)
         return await run(add_style_rules, vault, subject_id, body.rules, sync=sync)
 
     @router.put("/api/subjects/{subject_id}/style-guide")
     async def replace_rules(
         request: Request, subject_id: SubjectId, body: StyleRulesRequest
     ) -> StyleGuide:
-        vault, sync = await open_vault(request)
+        vault, sync = await user_scope(request)
         return await run(replace_style_rules, vault, subject_id, body.rules, sync=sync)
 
     return router

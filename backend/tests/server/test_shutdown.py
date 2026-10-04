@@ -109,13 +109,11 @@ def test_the_signal_serves_waiters_in_different_event_loops() -> None:
 
 
 def test_shutdown_with_open_streams_and_socket_is_prompt_and_still_commits(
-    tmp_path: Path, tmp_vault: Vault
+    tmp_path: Path, tmp_vault: Vault, student_user_id: str
 ) -> None:
-    # The workspace stream is not user-scoped yet: it checks its topic against the repository root
-    # (`SessionService.open_vault()`) while `POST /api/subjects` writes the one student's folder
-    # (#550), so the topic the stream is opened on has to exist in both until #551 moves the route.
-    subject = create_subject(tmp_vault, "Biología")
-    create_topic(tmp_vault, subject.slug, "Fotosíntesis")
+    user_vault = tmp_vault.for_user(student_user_id)
+    subject = create_subject(user_vault, "Biología")
+    create_topic(user_vault, subject.slug, "Fotosíntesis")
     app = create_app(
         static_dir=tmp_path / "no-web-build",
         server=ServerSettings(

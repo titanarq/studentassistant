@@ -256,7 +256,7 @@ class SessionService:
     vault lazily on first use (`VaultUnavailableError` while it cannot be opened). Either way the
     handle the service works on is the ROOT one -- the repository's, from which `for_user` narrows
     to a student's folder -- so a user handle it is given is widened back to its root first, and
-    `open_vault()` gives the root to the routes that still read the whole vault (#551). `sync`
+    `open_vault()` gives the root to `server.user_scope`, which narrows it. `sync`
     defaults to a `GitSync` of that vault with `vault_settings.git`: one sync per repository, whose
     `for_user` view is what scopes a student's paths and notes tags. `sync_interval` is how often
     the background loop (only between `startup()` and `shutdown()`) checks what is due.
@@ -339,9 +339,9 @@ class SessionService:
     async def open_vault(self) -> Vault:
         """The vault's ROOT handle, opened (and pulled and scanned) on first use.
 
-        The routes that are not user-scoped yet read the whole repository through it (#551), and
-        `server.user_scope` narrows it to the active user with `for_user`; a lifecycle call of this
-        service never uses it but the user handle `_user_scope` derives from it.
+        `server.user_scope` narrows it to the active user with `for_user`, and that is the only way
+        a content route reaches the vault; a lifecycle call of this service never uses it but the
+        user handle `_user_scope` derives from it.
 
         Raises:
             VaultUnavailableError: the vault cannot be opened.
@@ -365,20 +365,15 @@ class SessionService:
             sync = self._syncs[wanted] = await asyncio.to_thread(self._sync.for_user, wanted)
         return wanted, vault, sync
 
-    async def consumer_scope(self, user_id: str | None) -> tuple[Vault, GitSync | UserGitSync]:
+    async def consumer_scope(self, user_id: str | None) -> tuple[Vault, UserGitSync]:
         """The `(vault, sync)` a consumer or editor call works through for `user_id`.
 
-        A named user gets their own handle and sync view (`user_handles`). `None` is a caller that
-        is not user-scoped yet (the content routes until #551): it keeps the repository's root
-        handle and sync it always had.
+        The user's own handle and that folder's view of the repository's git sync
+        (`user_handles`); `None` is the single-user fallback of `_user_scope`.
 
         Raises:
-            VaultUnavailableError, UnknownUserError: as `_user_scope`.
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        if user_id is None:
-            vault = await self.open_vault()
-            assert self._sync is not None, "the vault is open, so its sync exists"
-            return vault, self._sync
         _, vault, sync = await self.user_handles(user_id)
         return vault, sync
 
@@ -467,10 +462,8 @@ class SessionService:
 
         For background work at server start (the page transcriber's catch-up, #181): each hook
         runs on the event loop with one student's handle, so what it reads and writes is that
-        student's folder. It is also called once with the root handle, for what the routes that
-        are not user-scoped yet (#551) wrote at the repository's root. It must not block:
-        schedule a task. A failure is
-        logged and does not stop the other users' calls.
+        student's folder. It must not block: schedule a task. A failure is logged and does not stop
+        the other users' calls.
         """
         self._on_open.append(hook)
 
@@ -970,9 +963,7 @@ class SessionService:
                 self._root = root
                 self._loaded = True
                 self._start_runner()
-                # The root handle too: until the content routes are user-scoped (#551) they still
-                # write at the repository's root, and what they left behind is caught up as before.
-                for handle in [root, *self._users.values()]:
+                for handle in self._users.values():
                     for hook in self._on_open:
                         try:
                             hook(handle)

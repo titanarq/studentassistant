@@ -34,8 +34,8 @@ AppFactory = Callable[..., FastAPI]
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    return make_revise_topic(user_vault)
 
 
 @pytest.fixture
@@ -220,13 +220,13 @@ def test_a_reached_cap_is_a_coded_error_until_confirmed(
 
 
 def test_the_same_material_generating_is_busy(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, student_user_id: str
 ) -> None:
     materials = client.app.state.materials  # type: ignore[attr-defined]
-    assert materials.claim(topic.subject, topic.topic, "quiz")
+    assert materials.claim(topic.subject, topic.topic, "quiz", user_id=student_user_id)
     kind, error = events_of(_ask(client, topic, "hazme un quiz de 3 preguntas"))[-1]
     assert kind == "error" and error["status"] == 409 and "Ya se está generando" in error["detail"]
-    materials.release(topic.subject, topic.topic, "quiz")
+    materials.release(topic.subject, topic.topic, "quiz", user_id=student_user_id)
     assert fake.requests == []
 
 

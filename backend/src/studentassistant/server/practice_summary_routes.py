@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 
 from studentassistant.generators.practice import (
     DEFAULT_NEW_LIMIT,
@@ -22,7 +22,7 @@ from studentassistant.generators.practice import (
     PracticeSummary,
     practice_summary,
 )
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.user_scope import active_user_vault
 
 VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 
@@ -35,11 +35,7 @@ def practice_summary_router() -> APIRouter:
         request: Request,
         new_limit: Annotated[int, Query(ge=0, le=MAX_NEW_LIMIT)] = DEFAULT_NEW_LIMIT,
     ) -> PracticeSummary:
-        sessions: SessionService = request.app.state.sessions
-        try:
-            vault = await sessions.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(status_code=503, detail=VAULT_UNAVAILABLE_DETAIL) from error
+        vault, _ = await active_user_vault(request)
         return await asyncio.to_thread(practice_summary, vault, new_limit=new_limit)
 
     return router

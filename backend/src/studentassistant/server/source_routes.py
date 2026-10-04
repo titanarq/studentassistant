@@ -38,8 +38,9 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from studentassistant.server.bus import BusError
-from studentassistant.server.read_routes import UNKNOWN_SOURCE_DETAIL, VAULT_UNAVAILABLE_DETAIL
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.read_routes import UNKNOWN_SOURCE_DETAIL
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.vault import (
     NoTranscriptionError,
     SecretRefused,
@@ -94,12 +95,7 @@ def source_router() -> APIRouter:
     )
     async def delete_source(request: Request, vault_id: str) -> Response:
         service: SessionService = request.app.state.sessions
-        try:
-            vault = await service.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
+        vault, sync = await active_user_vault(request)
         try:
             await asyncio.to_thread(remove_source, vault, vault_id)
         except (SourcePathError, SourceNotFoundError) as error:
@@ -110,14 +106,17 @@ def source_router() -> APIRouter:
         parts = vault_id.split("/")
         subject_id, topic_id = parts[1], parts[3]
         source_id = "/".join(parts[4:])
-        sync = service.sync
         if sync is not None:
             sync.note_change()
             await asyncio.to_thread(
                 sync.checkpoint, f"Fuente {source_id} de {subject_id}/{topic_id} retirada"
             )
         active = service.active
-        if active is not None and (active.subject_id, active.topic_id) == (subject_id, topic_id):
+        if (
+            active is not None
+            and active.user_id == vault.user_id
+            and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+        ):
             try:
                 await request.app.state.bus.publish(
                     active.session_id,
@@ -143,13 +142,7 @@ def source_router() -> APIRouter:
         request: Request, vault_id: str, body: TranscriptionEdit
     ) -> EditedTranscription:
         service: SessionService = request.app.state.sessions
-        try:
-            vault = await service.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
-        sync = service.sync
+        vault, sync = await active_user_vault(request)
         parts = vault_id.split("/")
         if sync is not None:
             # Commit what is pending first (the machine's transcription, possibly written moments
@@ -185,7 +178,11 @@ def source_router() -> APIRouter:
                 f"Transcripción de {source_id} de {subject_id}/{topic_id} corregida",
             )
         active = service.active
-        if active is not None and (active.subject_id, active.topic_id) == (subject_id, topic_id):
+        if (
+            active is not None
+            and active.user_id == vault.user_id
+            and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+        ):
             try:
                 await request.app.state.bus.publish(
                     active.session_id,

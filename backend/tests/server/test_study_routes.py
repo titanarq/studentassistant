@@ -86,17 +86,9 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault, user_vault: Vault) -> ReviseTopic:
-    """The fixture topic in both scopes, while the migration to per-user content is underway.
-
-    `POST /api/sessions` is user-scoped (#550), so the subject, the topic and the session the
-    service starts and ends live in the one student's folder; `/study`, `/notes/versions` and the
-    workspace routes still read the repository root (`SessionService.open_vault()`) until #551, so
-    the notes and the materials have to be there too. The handle returned is the root one, which is
-    what those routes and `_material` read and write; `_ended` asks for `user_vault`.
-    """
-    make_revise_topic(user_vault)
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    """The fixture topic, in the one student's folder (every content route is user-scoped)."""
+    return make_revise_topic(user_vault)
 
 
 def _base(topic: Topic) -> str:
@@ -164,7 +156,12 @@ def _options(body: dict[str, Any]) -> dict[str, tuple[str, str, str | None]]:
 
 
 def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_version(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
+    client: TestClient,
+    fake: FakeClaude,
+    topic: ReviseTopic,
+    user_vault: Vault,
+    tmp_vault: Vault,
+    student_user_id: str,
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -175,7 +172,10 @@ def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_versi
     body = response.json()
     assert body["ended_session"] == session_id and body["created_tag"] is True
     assert body["study_version"]["version"] == 1
-    assert body["study_version"]["tag"] == f"{topic.subject}/{topic.topic}/apuntes-v1"
+    assert (
+        body["study_version"]["tag"]
+        == f"{student_user_id}/{topic.subject}/{topic.topic}/apuntes-v1"
+    )
     assert body["study_current"] is True
     assert {o["key"]: o["state"] for o in body["options"]} == {
         "esquema": "sin_generar",
@@ -191,14 +191,19 @@ def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_versi
     assert fake.requests == []
     events = subscription.drain()
     [marked] = [e.data for e in events if e.event == "study.marked"]
-    assert marked == {"version": 1, "tag": f"{topic.subject}/{topic.topic}/apuntes-v1"}
-    assert app.state.notes.holder(topic.subject, topic.topic) is None  # lock released
+    assert marked == {
+        "version": 1,
+        "tag": f"{student_user_id}/{topic.subject}/{topic.topic}/apuntes-v1",
+    }
+    assert (
+        app.state.notes.holder(topic.subject, topic.topic, user_id=student_user_id) is None
+    )  # lock released
 
     # Again, unchanged: the same version, nothing new tagged, no session to end.
     again = client.post(f"{_base(topic)}/study").json()
     assert again["study_version"] == body["study_version"]
     assert again["created_tag"] is False and again["ended_session"] is None
-    tags = GitSync(topic.vault).list_notes_tags(topic.subject, topic.topic)
+    tags = GitSync(tmp_vault).for_user(student_user_id).list_notes_tags(topic.subject, topic.topic)
     assert [t.version for t in tags] == [1]
 
     listing = client.get(f"{_base(topic)}/notes/versions").json()
@@ -230,10 +235,9 @@ def test_switching_is_refused_while_the_notes_are_busy(
 
 
 def test_switching_without_notes_is_refused_and_ends_nothing(
-    client: TestClient, tmp_vault: Vault, user_vault: Vault
+    client: TestClient, user_vault: Vault
 ) -> None:
-    make_topic(user_vault)  # the session routes are user-scoped (#550); `/study` reads the root
-    topic = make_topic(tmp_vault)
+    topic = make_topic(user_vault)
     session_id = _start(client, topic)
 
     response = client.post(f"{_base(topic)}/study")
@@ -368,9 +372,9 @@ def test_a_spoken_study_request_is_dispatched_to_the_same_service(
 
 
 def test_a_study_request_without_notes_is_a_spanish_turn_error(
-    client: TestClient, fake: FakeClaude, tmp_vault: Vault
+    client: TestClient, fake: FakeClaude, user_vault: Vault
 ) -> None:
-    topic = make_topic(tmp_vault)
+    topic = make_topic(user_vault)
     subscription = _subscribe(client, topic)
     _classify_study(fake)
 

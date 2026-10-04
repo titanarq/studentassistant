@@ -39,7 +39,8 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 
 from studentassistant.config import SourcesSettings
 from studentassistant.protocol.base import ID_PATTERN
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import active_user_vault
 from studentassistant.sources import (
     ImportedPdf,
     PageRange,
@@ -283,7 +284,7 @@ def pdf_upload_router() -> APIRouter:
     router = APIRouter(prefix="/api")
     # One lock per topic: imports of one topic run one at a time, so their memory does not add
     # up (`put_source` itself keeps page numbers distinct across concurrent writers).
-    locks: dict[tuple[str, str], asyncio.Lock] = {}
+    locks: dict[tuple[str | None, str, str], asyncio.Lock] = {}
 
     @router.post(
         "/subjects/{subject_id}/topics/{topic_id}/sources/pdf",
@@ -300,12 +301,7 @@ def pdf_upload_router() -> APIRouter:
     ) -> PdfImportResponse:
         service: SessionService = request.app.state.sessions
         limits: SourcesSettings = request.app.state.sources
-        try:
-            vault = await service.open_vault()
-        except VaultUnavailableError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-            ) from error
+        vault, _ = await active_user_vault(request)
         try:
             await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
         except (SubjectNotFoundError, TopicNotFoundError) as error:
@@ -318,7 +314,7 @@ def pdf_upload_router() -> APIRouter:
             raise HTTPException(refusal.status_code, refusal.detail) from refusal
         del parts  # `content` is the only copy kept while the import runs
 
-        async with locks.setdefault((subject_id, topic_id), asyncio.Lock()):
+        async with locks.setdefault((vault.user_id, subject_id, topic_id), asyncio.Lock()):
             try:
                 imported = await asyncio.to_thread(
                     import_pdf,

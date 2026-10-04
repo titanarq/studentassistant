@@ -35,8 +35,8 @@ BOOK_PAGE = "sources/book/page-002.jpg"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
-    return make_revise_topic(tmp_vault)
+def topic(user_vault: Vault) -> ReviseTopic:
+    return make_revise_topic(user_vault)
 
 
 COMPLETE = {"complete": True, "left": "ok", "top": "ok", "right": "ok", "bottom": "ok"}

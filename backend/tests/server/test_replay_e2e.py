@@ -251,7 +251,6 @@ class EndsTheSession(VirtualTime):
             await asyncio.sleep(0.01)
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 @pytest.mark.parametrize(
     ("at_s", "captures_stored"),
     [
@@ -503,7 +502,6 @@ def test_a_socket_that_keeps_dropping_is_a_replay_error(
         asyncio.run(main())
 
 
-@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_a_server_mode_session_the_backend_ended_is_not_reconnected(
     audio_app: FastAPI, audio_recording: Recording, user_vault: Vault
 ) -> None:
