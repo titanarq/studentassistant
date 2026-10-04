@@ -7,6 +7,7 @@ import PairPage from "./pairing/PairPage";
 import NotesPage from "./notes/NotesPage";
 import PendingPage from "./pending/PendingPage";
 import PracticePage from "./practice/PracticePage";
+import ProfilePage from "./users/ProfilePage";
 import QuizPage from "./quiz/QuizPage";
 import StudyPage from "./study/StudyPage";
 import StyleGuidePage from "./styleGuide/StyleGuidePage";
@@ -36,8 +37,7 @@ export default function Router({ pathname = window.location.pathname }: { pathna
   // The capture client (#40): the student picks the subject and topic, opens the session and the
   // page gives way to the capture screen that runs it.
   if (path === "/capture") return <CapturePage />;
-  // The profile page is #553's; until it lands the route says so.
-  if (path === "/profile") return <main><p>Próximamente</p></main>;
+  if (path === "/profile") return <ProfilePage />;
   if (path === "/live") return <LivePage />;
   const guide = STYLE_GUIDE_PATH.exec(path);
   if (guide) {

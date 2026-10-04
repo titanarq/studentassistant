@@ -1506,10 +1506,26 @@ token):
 - `AppBar.tsx`: slim bar above every gated page that publishes its height as
   `--app-bar-height` on the root; viewport-sized pages (workspace, study, capture) subtract it.
   The avatar button (name «Menú de <nombre>») opens a menu: Enter/Space open, arrows move,
-  Escape closes and returns focus. «Editar perfil» goes to `/profile` (page owned by #553; until
-  then «Próximamente»); «Cerrar sesión» asks through `useConfirm()` («¿Cerrar la sesión de
+  Escape closes and returns focus. «Editar perfil» goes to `/profile` (`ProfilePage`, below); «Cerrar sesión» asks through `useConfirm()` («¿Cerrar la sesión de
   <nombre>?») and, confirmed, deletes the cookie and shows the selection. A running capture is
   left to the backend's idle auto-end.
+
+### Profile page (`users/ProfilePage.tsx`, #553)
+- Route `/profile`, inside the gate, for the active user. `api.ts` adds `updateUser` (PATCH),
+  `uploadUserPhoto` (`PUT /api/users/{id}/photo`, the raw image as the body with its own
+  `Content-Type`, not multipart) and `deleteUserPhoto`, all returning `UserWriteResult` (`ok` with
+  the user / `rejected` with status and `detail` / `unreachable`).
+- Form: «Nombre» (required, trimmed, max `USER_NAME_MAX_CHARS`) and «Correo electrónico»
+  (optional, max `USER_EMAIL_MAX_CHARS`, `USER_EMAIL_PATTERN`); `validateName`/`validateEmail`
+  mirror the protocol and show Spanish messages next to the field (`role="alert"`). The id is not
+  a field. «Guardar» sends only changed fields (nothing changed: just «Perfil guardado»);
+  server rejections and network failures show a Spanish error. «Cancelar» goes back in history.
+- Photo: «Cambiar foto» opens a hidden file input (JPG/PNG/WebP, max 5 MiB, checked client-side
+  before upload); the chosen file is previewed (object URL, revoked afterwards) while it uploads.
+  «Quitar foto» (only with a photo) asks through `useConfirm()` («¿Quitar la foto?») and deletes.
+  413/415/422 map to Spanish messages.
+- After any successful write `setUser` from `useActiveUser()` refreshes the shared user, so the
+  app bar avatar and name update without reloading.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
