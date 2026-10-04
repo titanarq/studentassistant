@@ -4,6 +4,8 @@ import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
 import com.titanarq.studentassistant.protocol.ErrorCode
 import com.titanarq.studentassistant.protocol.USER_HEADER
+import com.titanarq.studentassistant.protocol.User
+import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.errorCode
 import com.titanarq.studentassistant.protocol.HealthResponse
@@ -93,6 +95,46 @@ class OkHttpBackendClient(
             BackendResult.HttpError(response.status, userCodeOf(response.body))
         }
     }
+
+    override suspend fun updateUser(
+        backend: BackendCredentials,
+        userId: String,
+        request: UserUpdateRequest,
+    ): BackendResult<User> =
+        call(
+            backend.baseUrl,
+            backend.token,
+            listOf("api", "users", userId),
+            jsonBody(UserUpdateRequest.serializer(), request),
+            User.serializer(),
+            method = "PATCH",
+        )
+
+    // The photo is the one raw body: the image's bytes with their own Content-Type.
+    override suspend fun putUserPhoto(
+        backend: BackendCredentials,
+        userId: String,
+        bytes: ByteArray,
+        contentType: String,
+    ): BackendResult<User> =
+        call(
+            backend.baseUrl,
+            backend.token,
+            listOf("api", "users", userId, "photo"),
+            bytes.toRequestBody(contentType.toMediaType()),
+            User.serializer(),
+            method = "PUT",
+        )
+
+    override suspend fun deleteUserPhoto(backend: BackendCredentials, userId: String): BackendResult<User> =
+        call(
+            backend.baseUrl,
+            backend.token,
+            listOf("api", "users", userId, "photo"),
+            body = null,
+            User.serializer(),
+            method = "DELETE",
+        )
 
     override suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse> =
         call(backend, "api/subjects", body = null, SubjectsListResponse.serializer())
@@ -228,7 +270,7 @@ class OkHttpBackendClient(
         serializer: KSerializer<T>,
     ): BackendResult<T> = call(baseUrl, token, path.split('/'), body, serializer)
 
-    /** `GET` when [body] is null, else `POST`; [token], when given, as the bearer, [userId] as `X-SA-User`. */
+    /** [method] when given (`DELETE` without a body), else `GET` when [body] is null, else `POST`; [token], when given, as the bearer, [userId] as `X-SA-User`. */
     private suspend fun <T> call(
         baseUrl: String,
         token: String?,
@@ -237,6 +279,7 @@ class OkHttpBackendClient(
         serializer: KSerializer<T>,
         http: OkHttpClient = this.http,
         userId: String? = null,
+        method: String? = null,
     ): BackendResult<T> {
         val url = buildUrl(baseUrl, segments)
             ?: return BackendResult.Unreachable("invalid backend URL")
@@ -244,7 +287,14 @@ class OkHttpBackendClient(
             .url(url)
             .apply { if (token != null) header("Authorization", "Bearer $token") }
             .apply { if (userId != null) header(USER_HEADER, userId) }
-            .apply { if (body == null) get() else post(body) }
+            .apply {
+                when {
+                    method == "DELETE" -> delete()
+                    method != null -> method(method, body)
+                    body == null -> get()
+                    else -> post(body)
+                }
+            }
             .build()
         val response = when (val outcome = execute(http.newCall(request))) {
             is Outcome.Failed -> return BackendResult.Unreachable(outcome.reason)

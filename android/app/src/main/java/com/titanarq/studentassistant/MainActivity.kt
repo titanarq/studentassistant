@@ -30,12 +30,13 @@ import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.tutor.TutorScreen
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.tutor.TutorViewModel
-import com.titanarq.studentassistant.ui.ComingSoonScreen
 import com.titanarq.studentassistant.ui.PlaceholderScreen
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.StudentAssistantTheme
 import com.titanarq.studentassistant.ui.routeFor
 import com.titanarq.studentassistant.ui.startRoute
+import com.titanarq.studentassistant.users.ProfileScreen
+import com.titanarq.studentassistant.users.ProfileViewModel
 import com.titanarq.studentassistant.users.UserSelectionScreen
 import com.titanarq.studentassistant.users.UsersViewModel
 
@@ -114,8 +115,11 @@ private fun App(container: AppContainer, imageCapture: ImageCapture) {
             onSelected = { route = Route.HOME },
             onBackends = { route = Route.BACKENDS },
         )
-        // Owned by #555 (the profile editor); until it lands, a placeholder.
-        Route.PROFILE -> ComingSoonScreen(onBack = { route = Route.HOME })
+        Route.PROFILE -> ProfileScreen(
+            viewModel = viewModel<ProfileViewModel>(factory = container.profileViewModelFactory),
+            photos = container.userPhotos,
+            onDone = { route = Route.HOME },
+        )
         Route.TUTOR -> {
             val topic = tutorTopic?.takeIf { it.size == 3 }?.let { TutorTopic(it[0], it[1], it[2]) }
             if (topic == null) {

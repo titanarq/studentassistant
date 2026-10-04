@@ -15,7 +15,22 @@
     <string name="users_edit_profile">Editar perfil</string>
     <string name="users_sign_out">Cerrar sesión</string>
     <string name="users_sign_out_confirm">¿Cerrar la sesión de %1$s?</string>
-    <string name="users_coming_soon">Próximamente</string>
+
+    <!-- Profile (#555) -->
+    <string name="profile_name_label">Nombre</string>
+    <string name="profile_email_label">Correo electrónico</string>
+    <string name="profile_save">Guardar</string>
+    <string name="profile_saving">Guardando…</string>
+    <string name="profile_saved">Perfil guardado</string>
+    <string name="profile_name_required">Escribe tu nombre.</string>
+    <string name="profile_name_too_long">El nombre admite como máximo %1$d caracteres.</string>
+    <string name="profile_email_invalid">El correo electrónico no es válido.</string>
+    <string name="profile_email_too_long">El correo admite como máximo %1$d caracteres.</string>
+    <string name="profile_rejected">El ordenador no aceptó estos datos. Revisa el nombre y el correo.</string>
+    <string name="profile_change_photo">Cambiar foto</string>
+    <string name="profile_remove_photo">Quitar foto</string>
+    <string name="profile_remove_photo_confirm">¿Quitar tu foto?</string>
+    <string name="profile_photo_unreadable">No se pudo leer esa imagen. Prueba con otra.</string>
 
     <!-- Pairing -->
     <string name="pairing_title">Emparejar con el ordenador</string>

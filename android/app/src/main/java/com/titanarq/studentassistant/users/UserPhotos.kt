@@ -4,6 +4,9 @@ import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
 import com.titanarq.studentassistant.protocol.User
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The profile photos of the active backend's users: `GET` of the user's `photo_url` with the
@@ -15,6 +18,10 @@ class UserPhotos(
     private val store: BackendStore,
 ) {
     private val cache = HashMap<String, ByteArray>()
+    private val _version = MutableStateFlow(0)
+
+    /** Grows every time the kept photos are forgotten, so an avatar draws its photo again (#555). */
+    val version: StateFlow<Int> = _version.asStateFlow()
 
     /** The photo's image bytes, or null. */
     suspend fun load(user: User): ByteArray? {
@@ -29,7 +36,10 @@ class UserPhotos(
     }
 
     /** Forgets every kept photo (a user changed theirs, #555). */
-    fun invalidate(): Unit = synchronized(cache) { cache.clear() }
+    fun invalidate() {
+        synchronized(cache) { cache.clear() }
+        _version.value += 1
+    }
 }
 
 /** The one or two capital letters that stand for [name] when there is no photo. */
