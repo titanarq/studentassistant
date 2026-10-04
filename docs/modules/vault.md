@@ -5,10 +5,10 @@
 ## Responsibility
 The only writer of the vault and the only module that runs git on it.
 
-## Layout (format version 1)
+## Layout (format version 2)
 
 ```text
-vault.yaml                                   format_version, created_at, student display name
+vault.yaml                                   format_version (2), created_at, student display name, legacy_root_user?
 .gitattributes                               *.jsonl merge=union, .sa/active.yaml merge=sa-active
 .sa/active.yaml                              active-host record: host, user, session, claimed/released
 users/<user-id>/profile.json                 id, name, email, photo, created_at (users.py, #546)
@@ -50,16 +50,24 @@ feedback/inbox.jsonl                         app bugs/improvements reported in a
 ```
 
 Everything from `subjects/` down is written where the handle the writer was given points ("The
-vault -- `vault.py`" below): a root handle puts it at the vault root, which is what `Vault.init`
-creates and what format version 1 means; a user handle puts the same tree inside
-`users/<user-id>/`, with the same inner layout and the same vault-relative ids, now relative to
-that folder. `create_user` (`users.py`, #546) is what makes the folder, with its `profile.json` and
-an empty `subjects/` that survives a clone; nothing else does, and `Vault.init` creates no user.
-`FORMAT_VERSION` is still 1: #546 writes `users/` without changing it, and a vault with a `users/`
-folder opens exactly as one without. Format version 2 -- the user folder as the only place content
-lives, and `Vault.open` refusing a format-1 vault until `studentassistant vault migrate-users` has
-moved its root `subjects/` into its first user's in one commit -- is #548 and is not written yet:
-until then a vault holds its content at the root, under a `users/<user-id>/`, or both.
+vault -- `vault.py`" below), and since format version 2 (#548, epic #544) the only handle with
+content of its own to write is a user's: the `subjects/...` lines above are the tree as a handle
+holds it, so each one lives at `users/<user-id>/` + that path, with the same inner layout and the
+same vault-relative ids, now relative to that folder. What the repository root keeps is what is
+the repository's -- `vault.yaml`, `.gitattributes`, `.sa/`, the locks and `feedback/inbox.jsonl` --
+and it holds nobody's subjects. `create_user` (`users.py`, #546) is what makes a user's folder,
+with its `profile.json` and an empty `subjects/` that survives a clone, and `Vault.init` calls it
+for the first one, so a vault is never born with nowhere to put a subject.
+
+`FORMAT_VERSION` is 2 and `LEGACY_FORMAT_VERSION` is the 1 this backend still reads -- reads only
+so that it can be migrated. A format-1 vault holds its content at the repository root, where it is
+nobody's; `Vault.open` refuses one with a Spanish message naming
+`studentassistant vault migrate-users`, and `Vault.open_for_migration` is the single way in, for
+the migration that moves the root's `subjects/` into its first user's folder in one commit
+("Migration to users" below). A vault of any other version is a `VaultFormatError`, which is what
+one written by a newer backend looks like. The two directions do not forgive each other: a format-2
+backend refuses a vault an older installation left behind until that command has run, and an older
+backend refuses a migrated one.
 
 Slugs are lowercase ASCII with hyphens derived from the Spanish name (accents stripped); ids
 of sessions are `YYYYMMDD-HHMMSS`. A user's id is `slugify(name)` with the first free numeric
@@ -68,8 +76,9 @@ the name is edited, because every subject, session and notes tag under it is nam
 it lives at.
 
 ## Public surface
-What exists today, after issues #19, #20, #21, #22, #135, #23, #546 and #547: the vault itself and the
-two handles on it (the repository root and one user's folder), its users and their profiles,
+What exists today, after issues #19, #20, #21, #22, #135, #23, #546, #547 and #548: the vault
+itself and the two handles on it (the repository root and one user's folder), its users and their
+profiles, the migration that gives a format-1 vault's root content to its first user,
 its subjects and its topics, their sessions with the two append-only logs, their sources, the
 secret guard, the helpers all of them are written with, the read-only functions the web read API
 uses, the git sync that commits, pushes and pulls them -- one per repository, with a view per
@@ -78,14 +87,37 @@ vault from GitHub, and the derived SQLite index, one database per user. The layo
 yet" at the end of this section for what no code touches.
 
 ### The vault -- `vault.py`
-`Vault.init(path, student)` creates the directory (parents included), writes `vault.yaml` and
-`.gitattributes` and runs `git init -b main`; it refuses a `path` that already exists, so a typo
-cannot turn a directory that already holds something into a vault. `Vault.open(path)` reads one
-back without writing to it. An open vault is a frozen dataclass of `path`, `meta`, `root` and
-`user_id`. Every refusal is a `VaultError`: `VaultNotFoundError` (no such directory),
-`VaultMetaError` (`vault.yaml` missing or not readable as a `VaultMeta`) and, under that one,
-`VaultFormatError` (a `format_version` other than the single one this backend reads and writes,
-which is what a vault written by a newer backend looks like).
+`Vault.init(path, student, *, email=None)` creates the directory (parents included), writes
+`vault.yaml` and `.gitattributes`, runs `git init -b main` and creates the vault's FIRST user
+(`create_user(vault, student, email)`, #548), because format 2 leaves nowhere else to put content:
+a vault born without a user would be one whose own student could not write a subject into it until
+somebody added them to it. `student` is the display name `vault.yaml` records -- the one the web UI
+and the editor call the student by -- and the name that first user is created with, their id derived
+from it the way a subject's slug is; `email` (`None` until the student gives one) goes into their
+profile. The handle returned is still the root one, the repository's, from which `for_user` narrows
+to that first user's folder. A `student` or an `email` no profile accepts is a `UserProfileError`
+(Spanish, for whoever typed the name) and leaves a vault there with no user in it, which
+`studentassistant users add` (#549) can still put right; `init` refuses a `path` that already
+exists, so a typo cannot turn a directory that already holds something into a vault.
+
+`Vault.open(path)` reads one back without writing to it, and refuses a format-1 vault, whose
+content is at the root and is nobody's: this backend reads that layout only in order to migrate it.
+The refusal is a `VaultNeedsMigrationError` -- a `VaultFormatError`, so whatever catches the format
+errors catches it -- whose Spanish message names the vault's path and
+`studentassistant vault migrate-users` (`MIGRATE_USERS_COMMAND`), because that message is what a
+student reads when the backend refuses the vault an older installation left them, and a refusal
+that did not say how to fix it would look like their notes were lost.
+`Vault.open_for_migration(path)` is the one way to open a format-1 vault: the handle `open` would
+return -- the same root, the same read-only opening, nothing written -- except that its `meta` says
+format 1, which is what lets the migration read the `student` its first user is named after and
+know that the content to move is the root's own. Nothing else may open one this way, and it refuses
+a vault of any other version, both because there is no root content of theirs to move and because
+writing `vault.yaml` back through a handle that says format 1 would undo a migration. An open vault
+is a frozen dataclass of `path`, `meta`, `root` and `user_id`. Every refusal is a `VaultError`:
+`VaultNotFoundError` (no such directory), `VaultMetaError` (`vault.yaml` missing or not readable as
+a `VaultMeta`) and, under that one, `VaultFormatError` (a `format_version` other than the two this
+backend reads -- 2, which it writes, and 1, which it migrates -- which is what a vault written by a
+newer backend looks like).
 
 **Two handles on one vault** (#546, ADR-0002, epic #544). A handle knows two directories: `root`,
 the git repository (`.git`, `vault.yaml`, `.gitattributes`, `.sa/`, the locks), and `path`, where
@@ -112,10 +144,13 @@ active-host record and the `.gitattributes` line that gives it its merge driver 
 `root`; and so is `feedback/inbox.jsonl`. What a handle still decides is what is *somebody's*: the
 paths and the notes version tags a sync translates for one user (`GitSync.for_user`), the one index
 database per user (`user_index_path`), the per-user breakdown of the size report (`VaultStats.users`)
-and the topic a purge plans and rewrites inside. All of it keeps today's behaviour on a root handle
-of a vault with no `users/` folder, which is what every vault is until #548 migrates one: the
-unprefixed notes tags, the single index database at the configured path and an empty `users` list
-are that case, not a special one.
+and the topic a purge plans and rewrites inside. All of it keeps the behaviour it had on a root
+handle of a vault with no `users/` folder -- which since #548 is a vault awaiting its migration
+(the one `open_for_migration` opens) or one whose users somebody removed by hand, and is no longer
+every vault: the unprefixed notes tags, the single index database at the configured path and an
+empty `users` list are that case, not a special one. A format-2 vault's root handle has nothing of
+anybody's at the root to read, so the index, the size report and the purge reach a student's
+content through a user's handle or a view of the sync.
 
 ### Users -- `users.py` (#546)
 The users of the vault: one folder each under `users/`, and the profile that says who they are.
@@ -134,6 +169,14 @@ changes), `name`, `email` and `photo`, both `None` until the student gives one, 
   no empty directory, so a profile on its own would arrive from a clone as a folder with nowhere to
   put a first subject. A refusal writes nothing and creates no folder, and a `FileExistsError` says
   the id picked is taken already -- the same user created twice at once -- without overwriting it.
+- `prospective_user(vault, name, email=None)` is the user `create_user` would add -- the same id
+  rule, the same validation, the same profile -- with nothing written and no folder created, for a
+  caller that has to say what adding somebody would do instead of keeping a second copy of the rule
+  that could drift from it: the migration's `--dry-run` names the user the root's content would
+  become (#548). `created_at` is this moment and is the one field the later `create_user` does not
+  keep, a profile recording when the user was added and not when a dry run guessed at them. It
+  refuses a user handle (`ValueError`) and a name or an email no profile accepts
+  (`UserProfileError`) as `create_user` does.
 - `list_users(vault)` reads every profile and sorts by `name` case-insensitively and then by id, so
   a listing never depends on the order the file system gives. An accented vowel therefore sorts by
   its code point, after every plain letter: this backend has no collation table, and a screen that
@@ -184,6 +227,100 @@ server caller runs them in a worker thread (`asyncio.to_thread`).
 This module builds its paths from `vault.root`, not from `vault.path`: users belong to the
 repository, not to one user's content, so a user handle lists and edits profiles exactly as a root
 one does. Nothing here runs git; the sync commits what these writers leave behind.
+
+### Migration to users -- `migrate.py` (#548)
+The move that turns a format-1 vault into a format-2 one whose first user owns everything the root
+held, in one commit, losing nothing (epic #544, "Migration"; ADR-0002). Names are imported from
+`studentassistant.vault.migrate`, which the CLI imports directly: nothing here is re-exported by
+`studentassistant.vault`.
+
+`migrate_to_users(vault, sync, *, name=None, email=None, dry_run=False) -> MigrationReport`. `vault`
+is the root handle `Vault.open_for_migration` gives -- the only one that opens a format-1 vault --
+and `sync` the repository's own `GitSync`, every step of a migration being the whole repository's:
+a user handle, or a user's view of the sync, is a `MigrationError`. `name` and `email` are the first
+user's, and `name` defaults to `vault.yaml`'s `student`, the content at the root being that
+student's since it is the name they gave `setup --create`. One run does this, in this order:
+
+1. `sync.sync()`, which commits whatever is pending and rebases onto the remote: a migration moves
+   the whole of a student's content at once, so it starts from a vault every PC of it agrees on. A
+   `conflict` refuses and names the paths, because moving both sides of a divergence under a user
+   would leave the student to settle it inside a folder neither PC wrote; an `offline` remote does
+   not refuse -- what a migration does is local, and the push it ends with is retried by the next
+   sync -- but the report says which of the two happened.
+2. It refuses while any session of any topic is unended, and names them: a capture still writing a
+   transcript would write it where the directory it is writing into just went. The sync of step 1
+   has by then committed what that capture had written, which is what a sync does anyway and loses
+   nothing; what has not happened is any part of the move.
+3. `create_user` makes the first user and their `profile.json` with it.
+4. `git mv` of every entry of the root `subjects/` into `users/<id>/subjects/`: a rename git records
+   as one, never a copy and a delete, which is what keeps `git log --follow` of a moved
+   `notes/apuntes.md` reaching the commits it had before, and what keeps moving a vault of
+   photographs as cheap as moving one file. An entry git tracks nothing in cannot be moved and is
+   not: it stays on disk at the root and is named in `left_behind`, so nothing a student had there
+   is quietly left out of their folder. The root `subjects/` the moves emptied is then removed,
+   format 2 keeping none; one that is not empty stays, and so does one this process may not write
+   to, neither worth failing a migration that has moved everything else.
+5. `vault.yaml` is rewritten as format 2 naming `legacy_root_user: <id>`, the field `sync.py` reads
+   to know whose the notes versions tagged before the move were ("Git sync" below).
+6. ONE commit, `migración: contenido al usuario <id>` (`migration_commit_subject(user_id)`, whose
+   `MIGRATION_COMMIT_PREFIX` a `git log --grep` finds as `purge.PURGE_COMMIT_PREFIX` does for a
+   purge's), carries the moves, the profile and `vault.yaml` together: a vault is either migrated or
+   it is not, and a reader that opened it between two commits would find content that is nobody's.
+7. Every notes tag `<s>/<t>/apuntes-vN` is re-created as the annotated tag
+   `<id>/<s>/<t>/apuntes-vN` on that commit, with the same version number and the same message, the
+   old tag kept where it was (`sync.retag_notes`): a study label names the tag it was made from, and
+   a version a student read by its tag keeps reading.
+8. `push_now()`, so the other PCs of the vault get the move and its tags. A push that fails undoes
+   nothing; the report carries the `PushFailure` and the next sync retries it.
+
+`MigrationReport` (frozen) says what the run did: `dry_run`, `migrated` (whether a migration commit
+was made -- `False` in a dry run and in a vault that was already format 2), `user_id` and
+`user_name`, `subjects`, `moved_files` (the repository-relative paths the move took, named as they
+were before it, `subjects/...`), `tags` (`RetaggedNotes` each: `subject`, `topic`, `version`,
+`old_name`, `new_name`, `message`, `commit`, `created`), `commit`, `sync_outcome` and
+`sync_message`, `pushed` and `push_failure`, `left_behind`, and `reason`, which is Spanish and is
+what a run with nothing to do says instead of a report of moves.
+
+`dry_run=True` answers what a run would do and changes nothing: no `sync()` (which commits), no
+user, no move, no commit, no tag -- the user it names comes from `prospective_user`, the plan from
+the vault as this PC holds it, so the one thing a dry run cannot see is what the remote has and this
+PC has not pulled. A vault that is already format 2 is not an error either: the run does nothing and
+`reason` says so, which is what makes a second `migrate-users` -- the one a student who did not read
+the first output runs -- harmless.
+
+Refusals are two kinds. `MigrationRefusedError` (a `MigrationError`, a `VaultError`) is a vault this
+backend will not migrate in the state it is in -- the sync came back with a conflict, a session of
+some topic is unended, another process holds the repository's git lock, or the user's folder is
+there already -- and its Spanish message is the one a caller shows as it is, because what it says is
+for the student whose vault it is (a conflict to settle, a capture to end, a backend to stop) and
+not for whoever reads a log: no migration was made, the vault is still format 1 with its content at
+the root, and the only thing a run that was not a dry one has done by then is the commit of what was
+pending, which the sync it starts with makes and which loses nothing. `MigrationError` is the rest:
+a handle or a sync that is not the repository's, or a migration commit that did not happen -- which
+leaves the moves and `vault.yaml` on disk, in the layout that file then names, so the vault still
+reads and the next sync commits what the migration staged; what it will not have is the re-created
+tags. A `name` or an `email` no profile accepts is a `UserProfileError` and writes nothing; a
+session a topic lists and whose files do not read is the usual `SubjectError`, `TopicError` or
+`SessionFileError`, a vault to fix before moving all of it; a git that fails a step or stays busy
+past the sync's timeout is a `GitCommandError`.
+
+Nothing here rebuilds the derived index and nothing here reopens the vault: the handle a migration
+is given keeps the `meta` it was opened with, so a caller that goes on using the vault opens it
+again, and the CLI rebuilds the indexes after a migration that worked (one database per user since
+#547). Stop the backend first, which is what the command's own help says:
+`studentassistant vault migrate-users [--name NAME] [--email EMAIL] [--dry-run]` on the configured
+vault prints in Spanish the user the root's content became, the subjects and how many files moved,
+the commit and its subject, every notes version re-created (old name, new name, and a name that was
+taken already), what the sync before it and the push after it had to say, and any entry left behind
+at the root; then it rebuilds the per-user indexes, and a refusal exits 1 with its Spanish reason.
+An unmigrated vault is refused by every other command that opens one the way the backend does --
+`cost`, `import-pdf`, `index rebuild`, `vault stats`, `feedback` and `purge` among them, all through
+`Vault.open` -- with the message above, and by the server itself, whose `SessionService` opens the
+vault the same way: `migrate-users` is the only command that goes through `open_for_migration`, and
+`doctor` the only one that turns the refusal into an `aviso` naming the command instead of a failure
+(`install/doctor.py`, `docs/modules/infra.md`).
+The procedure for the PC's real vault -- stop the service, a dry run, the run, `vault stats` after
+it, start the service again -- is `docs/runbooks/operations.md`.
 
 ### Subjects -- `subjects.py`
 `create_subject(vault, name, style_guide=None)` writes `subjects/<slug>/subject.yaml`, the slug
@@ -662,10 +799,25 @@ It never sleeps and starts no thread:
   `<topic-slug>/apuntes-vN` is not read and needs no migration: no writer created notes tags
   before this format (the editor, which will, is not written yet), so no vault holds one. On a
   `GitSync` these are the repository's own unprefixed tags, which is what the content at the root
-  of a vault that has not been migrated to format 2 has; one user's notes are tagged by their view,
-  which prefixes the tag with their id and lists nothing else (ADR-0002's
-  `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`). Re-creating a migrated vault's existing tags
-  under that prefix, on the migration's own commit, is #548's.
+  of a format-1 vault has; one user's notes are tagged by their view, which prefixes the tag with
+  their id and lists nothing else (ADR-0002's `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`).
+  Re-creating the tags of a vault a migration moves under that prefix, on the migration's own
+  commit, is `retag_notes`, next.
+- `retag_notes(user_id, subject_slug, topic_slug, tags, commit="HEAD") -> list[NotesTag]` (#548)
+  re-creates the `tags` it is given as that user's notes versions of the topic, on `commit`: each
+  new tag is annotated and keeps the version number and the message of the one it copies, so only
+  the name changes, to the form that user's handle writes and lists (`user_id=None` gives the
+  repository's own unprefixed one). Copying rather than tagging the next free version is the point:
+  a notes version a student read by its tag, and a study label (`study/version.yaml`) that names
+  one, keep the number they were given when the content they tag moves into its user's folder. The
+  tags copied are left exactly as they were -- this adds names, it never moves or deletes one -- and
+  a name that is taken already is skipped rather than refused, so doing it twice does nothing the
+  second time. Nothing is committed and no push is scheduled: the caller owns both, which for the
+  migration that needs this is its one commit and the `push_now()` that follows it. A non-slug
+  subject or topic, or a `commit` this vault may not be asked about, is a `ValueError`; git refusing
+  a tag, or another process keeping it busy past `timeout_seconds`, is a `GitCommandError`. It
+  returns the new tags as git lists them, oldest version first, a skipped name not among them. The
+  migration is its only caller.
 - `status()` -- a `SyncStatus` snapshot that runs no git: `pending_changes`, `last_commit`,
   `last_commit_at`, `pending_commits` (ahead of the remote), `last_push_at`, `last_push_failure`,
   `consecutive_push_failures`, `next_push_due` (clock time), `last_sync`, `last_error`,
@@ -707,11 +859,13 @@ divergence it lists, whose paths are the ones git holds, not this user's.
   user-prefixed path is not in that revision and `vault.yaml`'s `legacy_root_user` names this user,
   the root path is read instead, and without that field there is simply no such file. That is what
   keeps the notes versions of the vault's first user -- committed while their content was still the
-  repository's own -- readable after the migration moves it (#548 writes the field). The field is
-  read from `vault.yaml` and not from `vault.meta`, because `VaultMeta` declares it only from
-  format 2 on, and a file that cannot be read names nobody. It is re-read on every such miss rather
-  than cached, so a caller that loops over revisions a user's folder is not in pays a `vault.yaml`
-  read per revision.
+  repository's own -- readable after the migration moves it, and `migrate_to_users` is what writes
+  the field (#548). The field is read from `vault.yaml` and not from `vault.meta`, which is the
+  snapshot `Vault.open` took: the migration writes it into a vault a handle is already open on, and
+  the versions committed before the move have to stay readable to whoever holds that handle. A file
+  that cannot be read names nobody. It is re-read on every such miss
+  rather than cached, so a caller that loops over revisions a user's folder is not in pays a
+  `vault.yaml` read per revision.
 - `create_notes_tag(subject_slug, topic_slug, message=None)` and
   `list_notes_tags(subject_slug, topic_slug)` use and list only
   `<user-id>/<subject-slug>/<topic-slug>/apuntes-vN`: two users with the same subject and topic
@@ -799,15 +953,27 @@ status` succeeds, otherwise a `TokenHost` when a token is set, otherwise raises 
   creates it private when it does not exist; an existing empty one is used once `repo_is_private`
   says so -- a public one is refused, and when the host cannot tell (token, no `gh`) `warn` gets
   `NOT_KNOWN_PRIVATE_WARNING` (Spanish: confirm on GitHub it is private; the CLI prints it); then `Vault.init(path,
-  student)`, commits the first files (`vault creado`), adds `origin`, pushes `main` and verifies
-  push access. Everything GitHub could refuse is checked before anything is written locally.
-- `clone_vault(path, repo, host, post_clone=<no-op>, author_email=..., timeout=...)` -- refuses a
-  non-empty `path` and a repository that does not exist; clones; `Vault.open` checks the format (a
-  `VaultFormatError` becomes a Spanish `SetupError` and the clone stays in place); verifies push
-  access; then calls `post_clone(vault)` once (the CLI passes the index rebuild).
+  student)`, which makes the vault's first user as it makes the vault (#548), so the repository
+  pushed to GitHub holds somebody's folder from its first commit and the student who just ran
+  `setup --create` can write a subject straight away; commits the first files (`vault creado`), adds
+  `origin`, pushes `main` and verifies push access. Everything GitHub could refuse is checked before
+  anything is written locally.
+- `clone_vault(path, repo, host, post_clone=<no-op>, author_email=..., timeout=..., warn=<no-op>)`
+  -- refuses a non-empty `path` and a repository that does not exist; clones; then opens what it
+  cloned, and a `format_version` this backend cannot read at all -- a vault a newer backend wrote --
+  becomes a Spanish `SetupError` with the clone left in place for that newer backend. A format-1 one
+  is NOT refused (#548): a repository an older installation pushed is cloned without complaint, the
+  handle the result carries is `open_for_migration`'s, and `warn` gets the `Vault.open` refusal it
+  would have been -- «Aviso: El vault de … es de formato 1 …», naming
+  `studentassistant vault migrate-users`, the one command that unlocks what has just been downloaded
+  (`setup` gives it `typer.echo`, so the student reads it).
+  Refusing it instead would leave a student who brought their notes to a new PC with a directory
+  they may not use and no way to find out why. Push access is verified and `post_clone(vault)`
+  called once (the CLI passes the index rebuild).
 - Idempotence: a git repository at `path` whose `origin` is `host.remote_url(repo)` (a trailing
   `.git` or `/` ignored) is accepted as already set up -- only push access is checked again (and a
-  create whose first push never happened is pushed); `post_clone` is not called.
+  create whose first push never happened is pushed); `post_clone` is not called. A format-1 vault
+  already on this PC warns the same way, through the same `warn`.
 - Credential helper (#308): every flow (created, cloned, already set up) calls
   `ensure_credential_helper(path, host, author_email=..., timeout=...) -> bool | None`, which
   writes `host.credential_helper()` to the vault's own `.git/config` (`None`: the host has none;
@@ -886,7 +1052,8 @@ user**, each beside the configured path -- `user_index_path(index_path, user_id)
 `<dir>/<stem>-<user_id><suffix>`, i.e. `index-ana.sqlite3` next to `index.sqlite3`, and never
 inside the vault either, so one directory holds the whole cache and can be thrown away with it --
 and each built over that user's handle: what a search answers with is one student's own notes, and
-never another's. A vault with no `users/` folder keeps the single database at the path itself.
+never another's. A vault with no `users/` folder -- a format-1 one awaiting its migration (#548) --
+keeps the single database at the path itself.
 `user_index_path` checks the id with `is_slug` before any path is built out of it, so a value that
 came from a URL cannot name a database somewhere else, and raises `UserNotFoundError` for one that
 is not a slug. Nothing derives it for a caller: `VaultIndex.open` indexes the handle it is given
@@ -973,16 +1140,22 @@ The command: `studentassistant index rebuild` rebuilds the configured vault's in
 number of searchable documents and any unit left out -- on a root handle of a vault with users that
 is every user's database, the documents the sum of theirs and a unit left out named
 `<user-id>/<unit>`; `setup` rebuilds it right after a clone
-(ADR-0002: install -> setup -> clone -> index rebuild).
+(ADR-0002: install -> setup -> clone -> index rebuild), and `vault migrate-users` ends a migration
+that worked with the same call on a root handle (#548), so the databases of the vault that has just
+been rearranged appear one per user. The format-1 database at the configured path is left where it
+is, as every root-handle rebuild leaves it: a cache nobody opens once every handle is a user's, and
+one the student may delete. A rebuild the migration's CLI cannot do is said in Spanish and is not a
+failure of the migration, which is committed and complete -- `index rebuild` recreates a cache from
+the vault whenever it is asked.
 
 `studentassistant.vault` re-exports the vault, subject, topic, session, topic-state, source, JSONL,
 ledger, notes, git sync (with `Divergence`, `DivergentVersions`, `UserGitSync`, `notes_tag_prefix`),
 active-host (`ActiveHost`,
 `ActiveHostWarning`, `claim_active_host`, `release_active_host`, `read_active_host`,
 `check_active_host`, `active_host_warning`) and secret-guard names of this section; the YAML models, the slug helpers, the
-file writers, `redact`, `summarize_changes` and the GitHub, setup and index names are imported
-from their own module (`studentassistant.vault.github`, `studentassistant.vault.setup`,
-`studentassistant.vault.index`).
+file writers, `redact`, `summarize_changes` and the GitHub, setup, index and migration names are
+imported from their own module (`studentassistant.vault.github`, `studentassistant.vault.setup`,
+`studentassistant.vault.index`, `studentassistant.vault.migrate`).
 
 ### Not written yet
 As of issues #21, #117, #119, #135 and #61 (which writes the notes) no code reads or writes these parts of the layout:
@@ -1210,3 +1383,56 @@ status change reaches an item whichever handle marks it, a context that already 
 it, and a line from before there were users still reads and folds) and `test_stats.py` (`categorize`
 reads a user's path as the same path inside their folder, a root handle reports each user with their
 own subjects, and a user handle measures their folder and the repository's store).
+
+Format 2 and the migration of #548 changed what a test vault is, so the fixtures changed with it.
+`tmp_vault` is born with its first user (`STUDENT_USER_ID`, the `slugify` of the `STUDENT` its
+`vault.yaml` records, for the tests that become user-scoped in #549-#551) and hands out the ROOT
+handle; most of the suite still writes its content through that handle, at the root, because nothing
+in it hands out user handles yet -- a format-2 vault with content at its root is a test's, not a
+state the product writes. `vault_with_no_users` takes that first user out again (`users/` removed),
+for the tests that ask what a vault nobody belongs to says -- `list_users`, the id a first
+`create_user` picks, a photo of a user that is not there -- and for the root-handle measurements of
+`test_stats.py`, `test_index.py`, `test_index_user_view.py` and `test_user_photo.py`. `legacy_vault`
+goes the rest of the way to a format-1 vault: a `vault.yaml` of the three fields that layout had and
+no `legacy_root_user`, and the handle `open_for_migration` gives, since `open` refuses it.
+`user_helpers.py` gained `write_everything`, which writes the whole layout through the public
+writers, with `handle_relative` and `ledger_entry`; `test_user_isolation.py` and the nothing-lost
+test share it.
+
+`test_migrate.py`: that the root's content becomes the first user's and `vault.yaml` then says
+format 2 naming them, that the whole migration is ONE commit named after the user, that the move is
+a rename git's history follows, that every notes version is re-created under the user keeping its
+number and its message, that a version tagged before the move still reads through the user's handle,
+that a dry run says what would happen and changes nothing, that an already-migrated vault has
+nothing to do, that an unended session refuses the migration and names it, that a conflict with the
+remote refuses it and names the paths, that the migration pushes its commit and its new tags, that a
+push which fails leaves the migration done and says so, that the name and email given are the first
+user's and one that is not refuses it, that a vault with nothing at its root still becomes format 2
+with its first user, that content written but not committed yet moves too, that a user handle or a
+user's view of the sync is refused, and that an entry git cannot move is left where it is and named
+in the report.
+
+`test_migrate_nothing_lost.py` is the "nothing is lost" criterion, on a vault `write_everything`
+built through the public writers alone -- two subjects, sessions with transcripts and events, every
+source kind, notes with two tags, conversations, ledger, study and generated material: that every
+file the root held is byte-identical under the user, that `git log --follow` of a moved
+`notes/apuntes.md` reaches the commits it had, that every notes version keeps its number, its
+message and the text `read_file_at` gives for its pre-migration tag, that the user's index finds the
+search hits the root's index found, and that a dry run of a vault this full changes none of it.
+
+Extended: `test_init_open.py` (a vault born with this format names no legacy user of its root and
+`open` reads back the one a migration named, `init` creates the first user and stores the email it
+was given, a name no user may be called by is refused in Spanish and leaves a vault `users add` can
+still put right, `open` refuses a format-1 vault and names the command that migrates it, and
+`open_for_migration` opens that one and refuses a vault of the format this backend writes and one it
+cannot read at all), `test_models.py` (a meta nobody was moved into names no legacy user, one that
+was says which, and a legacy meta reads back so that it can be migrated), `test_setup_clone.py` (a
+clone of a format-1 vault succeeds and says how to migrate it, and a format-1 vault already on this
+PC warns the same way) and `tests/install/test_doctor.py` (a format-1 vault is an `aviso` naming the
+migration and the vault's path, not a `fallo`, and the checks that need a vault this backend may use
+stop there). `tests/test_cli_vault_migrate_users.py` drives the command with a `SA_CONFIG` inside
+`tmp_path`: that it moves the content, names the user and rebuilds the index; that `--dry-run` lists
+the move and changes nothing; that an unended session refuses it in Spanish and exits 1; that
+`--name` and `--email` are the first user's; that a vault with a remote is pushed with its new tags;
+that a second run says there was nothing to do; that the help says to stop the backend first; and
+that a vault that is not there exits 1.
