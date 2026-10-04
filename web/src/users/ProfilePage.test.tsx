@@ -35,6 +35,13 @@ afterEach(() => {
 });
 
 describe("ProfilePage", () => {
+  it("«Cambiar de perfil» forgets the user and shows the selection", async () => {
+    await renderProfile();
+    fireEvent.click(screen.getByRole("button", { name: "Cambiar de perfil" }));
+    expect(await screen.findByRole("heading", { name: "¿Quién eres?" })).toBeTruthy();
+    expect(document.cookie).not.toContain("sa_user=ana");
+  });
+
   it("shows the current name and email and no id field", async () => {
     await renderProfile();
     expect((screen.getByLabelText(/^Nombre/) as HTMLInputElement).value).toBe("Ana López");

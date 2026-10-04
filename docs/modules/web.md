@@ -1526,6 +1526,18 @@ token):
   413/415/422 map to Spanish messages.
 - After any successful write `setUser` from `useActiveUser()` refreshes the shared user, so the
   app bar avatar and name update without reloading.
+- «Cambiar de perfil» (#576) sits next to «Cancelar»: it calls `signOut()` (no confirmation) and the
+  selection «¿Quién eres?» shows again.
+
+### New profile (`users/NewProfileForm.tsx`, #576)
+- The selection screen has «Nuevo perfil» (also with zero users, whose message now points to it).
+  It swaps the cards for a form: «Nombre» (required), «Correo electrónico» (optional) and an
+  optional photo («Añadir foto», same type/size checks as above), validated with `validateName` /
+  `validateEmail`. «Crear perfil» sends `POST /api/users` (`createUser`; the server picks the id;
+  409/422 show the backend `detail`), then `PUT /api/users/{id}/photo` if a photo was picked, and
+  chooses the new user. A photo that fails after the profile exists is not retried: the user is
+  chosen anyway and the photo is fixed from «Editar perfil». No server change: the endpoint
+  already existed (#549) and, like the whole selection, is not authentication.
 
 ## Boundaries
 - Talks only to the backend REST/SSE API; no direct vault or LLM access.
