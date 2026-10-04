@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
+import { ConfirmProvider } from "../ui/ConfirmDialog";
 import UserGate from "./UserGate";
 import { reportUserError } from "./userRequired";
 
@@ -17,9 +18,11 @@ function clearCookie() {
 
 function renderGate(pathname = "/") {
   return render(
-    <UserGate pathname={pathname}>
-      <p>contenido</p>
-    </UserGate>,
+    <ConfirmProvider>
+      <UserGate pathname={pathname}>
+        <p>contenido</p>
+      </UserGate>
+    </ConfirmProvider>,
   );
 }
 

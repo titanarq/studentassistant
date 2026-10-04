@@ -339,7 +339,7 @@
     position: sticky;
     top: 0;
     flex: 0 0 26rem;
-    max-height: 100vh;
+    max-height: calc(100vh - var(--app-bar-height));
     overflow-y: auto;
     margin: 0;
     padding: var(--space-5) var(--space-4) var(--space-4);

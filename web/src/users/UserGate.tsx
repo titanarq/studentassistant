@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { USER_COOKIE, type User } from "../protocol";
 import { listUsers } from "./api";
+import AppBar from "./AppBar";
 import Avatar from "./Avatar";
 import { USER_REQUIRED_EVENT } from "./userRequired";
 import "./userGate.css";
@@ -151,5 +152,8 @@ export default function UserGate({ children, pathname = window.location.pathname
       </ChooseContext.Provider>
     );
   }
-  return <ActiveUserContext.Provider value={{ user, signOut }}>{children}</ActiveUserContext.Provider>;
+  return <ActiveUserContext.Provider value={{ user, signOut }}>
+      <AppBar />
+      {children}
+    </ActiveUserContext.Provider>;
 }
