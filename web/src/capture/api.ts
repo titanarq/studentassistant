@@ -7,6 +7,7 @@
  * sent or kept here.
  */
 
+import { reportUserError } from "../users/userRequired";
 import {
   type CaptureUploadRequest,
   type CaptureUploadResponse,
@@ -114,6 +115,7 @@ async function call<N extends Answer>(
     body = undefined;
   }
   if (!response.ok) {
+    reportUserError(body);
     const detail = detailOf(body);
     return detail === null
       ? { kind: "error", status: response.status }

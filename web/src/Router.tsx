@@ -36,6 +36,8 @@ export default function Router({ pathname = window.location.pathname }: { pathna
   // The capture client (#40): the student picks the subject and topic, opens the session and the
   // page gives way to the capture screen that runs it.
   if (path === "/capture") return <CapturePage />;
+  // The profile page is #553's; until it lands the route says so.
+  if (path === "/profile") return <main><p>Próximamente</p></main>;
   if (path === "/live") return <LivePage />;
   const guide = STYLE_GUIDE_PATH.exec(path);
   if (guide) {

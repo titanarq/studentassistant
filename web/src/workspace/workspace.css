@@ -12,7 +12,7 @@
   margin: 0;
   padding: var(--space-2) var(--space-4) var(--space-4);
   overflow-wrap: anywhere;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--app-bar-height));
   box-sizing: border-box;
   background: var(--desk);
 }
@@ -162,7 +162,7 @@
 .workspace-document {
   position: sticky;
   top: 0;
-  max-height: 100vh;
+  max-height: calc(100vh - var(--app-bar-height));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -185,8 +185,8 @@
   .workspace {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100vh - var(--app-bar-height));
+    height: calc(100dvh - var(--app-bar-height));
     box-sizing: border-box;
     overflow: hidden;
     padding-bottom: var(--space-2);
@@ -212,7 +212,7 @@
      as the screen grows taller (a third of every extra pixel of height is taken off), down to 38 %
      from about 1080 px on; never under 8rem. The chat takes the rest. */
   .workspace-sources {
-    --workspace-sources-share: clamp(38%, calc(50% - (100dvh - 45rem) / 3), 50%);
+    --workspace-sources-share: clamp(38%, calc(50% - (100dvh - var(--app-bar-height) - 45rem) / 3), 50%);
     flex: 0 0 var(--workspace-sources-share);
     min-height: 8rem;
     display: flex;
@@ -630,8 +630,8 @@
   .workspace[data-view="document"] {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100vh - var(--app-bar-height));
+    height: calc(100dvh - var(--app-bar-height));
     overflow: hidden;
   }
 
@@ -1235,7 +1235,7 @@
   z-index: 4;
   min-width: 0;
   min-height: 0;
-  max-height: 100vh;
+  max-height: calc(100vh - var(--app-bar-height));
   display: flex;
   flex-direction: column;
 }
