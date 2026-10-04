@@ -13,6 +13,10 @@ An end body's `prepare_notes` (protocol 1.6) is still accepted from old clients 
 (`session_health.py`): observer calls, page transcriptions, the vault's push streak, and whether the
 observer is paused by a cost cap; every count 0 for a healthy session.
 Every route sits behind the LAN guard, the Host allowlist and the bearer check.
+
+These routes do not resolve the active user of a request yet, so they hand the `SessionService` no
+user and it acts for the vault's single one (protocol 1.8's fallback); wiring them to
+`server.user_scope.active_user_vault` is the next stage of #550.
 """
 
 from __future__ import annotations
@@ -31,9 +35,11 @@ from studentassistant.server.errors import ApiError
 from studentassistant.server.session_health import SessionHealth, SessionHealthResponse
 from studentassistant.server.sessions import (
     ActiveSessionExistsError,
+    OtherUserSessionOpenError,
     SessionConflictError,
     SessionService,
     UnknownSessionError,
+    UnknownUserError,
     VaultUnavailableError,
 )
 from studentassistant.vault import SubjectNotFoundError, SyncStatus, TopicNotFoundError
@@ -55,7 +61,12 @@ def _principal(request: Request) -> Principal | None:
 async def _http_errors() -> AsyncIterator[None]:
     try:
         yield
-    except (UnknownSessionError, SubjectNotFoundError, TopicNotFoundError) as error:
+    except (
+        UnknownSessionError,
+        UnknownUserError,
+        SubjectNotFoundError,
+        TopicNotFoundError,
+    ) as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
     except ActiveSessionExistsError as error:
         raise ApiError(
@@ -64,6 +75,10 @@ async def _http_errors() -> AsyncIterator[None]:
             ErrorCode.SESSION_OPEN,
             headers={"X-Open-Session-Id": error.session_id},
         ) from error
+    except OtherUserSessionOpenError as error:
+        # 409 `session_open` too, but with NO `X-Open-Session-Id`: another user's session id is
+        # never revealed, and the `detail` is the Spanish one `sessions.py` gives it (#550).
+        raise ApiError(status.HTTP_409_CONFLICT, str(error), ErrorCode.SESSION_OPEN) from error
     except SessionConflictError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
     except VaultUnavailableError as error:
@@ -77,21 +92,21 @@ def session_router() -> APIRouter:
     @router.get("/subjects", response_model_exclude_none=True)
     async def list_subjects(request: Request) -> protocol.SubjectsListResponse:
         async with _http_errors():
-            return await _service(request).list_subjects()
+            return await _service(request).list_subjects(None)
 
     @router.post("/subjects", status_code=status.HTTP_201_CREATED, response_model_exclude_none=True)
     async def create_subject(
         request: Request, body: protocol.SubjectCreateRequest
     ) -> protocol.Subject:
         async with _http_errors():
-            return await _service(request).create_subject(body.name)
+            return await _service(request).create_subject(None, body.name)
 
     @router.get("/subjects/{subject_id}/topics", response_model_exclude_none=True)
     async def list_topics(request: Request, subject_id: SubjectId) -> protocol.TopicsListResponse:
         async with _http_errors():
             principal = _principal(request)
             client = principal.protocol_version if principal is not None else PROTOCOL_VERSION
-            return await _service(request).list_topics(subject_id, protocol_version=client)
+            return await _service(request).list_topics(None, subject_id, protocol_version=client)
 
     @router.post(
         "/subjects/{subject_id}/topics",
@@ -102,7 +117,7 @@ def session_router() -> APIRouter:
         request: Request, subject_id: SubjectId, body: protocol.TopicCreateRequest
     ) -> protocol.Topic:
         async with _http_errors():
-            return await _service(request).create_topic(subject_id, body.name)
+            return await _service(request).create_topic(None, subject_id, body.name)
 
     @router.post("/sessions", status_code=status.HTTP_201_CREATED, response_model_exclude_none=True)
     async def start_session(
@@ -110,6 +125,7 @@ def session_router() -> APIRouter:
     ) -> protocol.Session:
         async with _http_errors():
             return await _service(request).start(
+                None,
                 body.subject_id,
                 body.topic_id,
                 client_time_ms=body.client_time_ms,
@@ -119,7 +135,7 @@ def session_router() -> APIRouter:
     @router.post("/sessions/{session_id}/resume", response_model_exclude_none=True)
     async def resume_session(request: Request, session_id: SessionId) -> protocol.Session:
         async with _http_errors():
-            return await _service(request).resume(session_id, principal=_principal(request))
+            return await _service(request).resume(None, session_id, principal=_principal(request))
 
     @router.post("/sessions/{session_id}/end", response_model_exclude_none=True)
     async def end_session(
@@ -138,7 +154,7 @@ def session_router() -> APIRouter:
     async def session_health(request: Request, session_id: SessionId) -> SessionHealthResponse:
         service = _service(request)
         async with _http_errors():
-            if not await service.is_known(session_id):
+            if not await service.is_known(None, session_id):
                 raise UnknownSessionError(f"no existe la sesión {session_id}")
         health: SessionHealth = request.app.state.health
         sync = service.sync

@@ -1,11 +1,26 @@
 """The session lifecycle service: subjects, topics and the `active` -> `ended` session machine.
 
-A session belongs to exactly one topic of one subject, fixed when it starts (ADR-0003); switching
-topic means ending the session and starting another. The backend has at most one active session
-at a time: starting one while any session is still unended is refused, and so is resuming one
-while another is active. An unended session found in the vault (the backend stopped without
-ending it) blocks a new start until it is resumed or ended. Resuming continues its logs' `seq`
-where they stopped.
+A session belongs to exactly one topic of one subject of ONE USER, all three fixed when it starts
+(ADR-0003, epic #544); switching topic means ending the session and starting another. The service
+holds the vault's root handle -- the repository, where git, the locks and `.sa/active.yaml` live --
+and every subject, topic and session it reads or writes goes through `vault.for_user(user_id)`, so
+nothing a lifecycle call does can land in another student's folder. Opening the vault therefore
+scans EVERY user's topics for unended sessions: one backend still has at most one active session
+at a time, whichever student it is, and a session another PC or another student left unended is
+found whoever asks next.
+
+Which user a call acts for is its first argument. A call that names none (`user_id is None`, what
+the routes still do until they resolve the active user of the request, #550) acts for the vault's
+single user, the same fallback protocol 1.8 gives a request with neither `X-SA-User` nor `sa_user`;
+with any other number of users there is nobody to assume and `NoUserError` says so.
+
+Starting a session while one is still unended is refused, and so is resuming one while another is
+active. The refusal names the session only to the student it is theirs: another user's start or
+resume gets `OtherUserSessionOpenError`, whose Spanish message says somebody else is capturing on
+this computer and carries no session id, because another user's session is never revealed (#550).
+A session id asked for by a user it is not theirs is unknown, never theirs: `require_active`,
+`resume`, `is_known` and `open_session_of` look under one user's folder only. Resuming continues
+the session's logs' `seq` where they stopped.
 
 Every lifecycle change is itself published on the `SessionBus` as a persisted event
 (`session.started`, `session.resumed`, `session.ended`, origin `user`); ending a session then
@@ -25,7 +40,9 @@ sessions, and again before every session start; a `conflict` refuses the start
 (offline-first). While the app is serving (`startup()` .. `shutdown()`, the app's lifespan) the
 `GitSync.run()` loop commits and pushes in the background once the vault is open, and shutdown
 flushes whatever is still pending. `add_on_open(hook)` hooks are called with the vault once it is
-first opened, pulled and scanned (the page transcriber's server-start catch-up, #181).
+first opened, pulled and scanned (the page transcriber's server-start catch-up, #181); the
+handle they get is the root one, so a hook that works over one student's content narrows it with
+`for_user` itself (#550).
 
 One active writer between PCs (ADR-0002): after each of those pulls the vault's active-host record
 (`.sa/active.yaml`) is checked, and another PC's unreleased, not stale claim becomes the
@@ -41,8 +58,11 @@ keeps it current in the background next to the sync loop; after the pull at ever
 closes the index.
 
 Ids on the wire are vault slugs: `subject_id` is the subject's slug, `topic_id` the topic's slug
-within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. Every vault call
-runs in a worker thread, and lifecycle changes are serialised by one lock.
+within that subject, and `session_id` the vault's `YYYYMMDD-HHMMSS` session id. They are relative
+to the user's folder, as every vault-relative id is (epic #544), so two students may have a
+`fisica/cinematica` and a session id is only unique inside one of them: which is why every call
+here is told whose it is. Every vault call runs in a worker thread, and lifecycle changes are
+serialised by one lock.
 
 A session's stored captures are the `capture.stored` events of its `events.jsonl`
 (`stored_captures`): session start and resume report their ids in `received_capture_ids`, and the
@@ -57,7 +77,7 @@ import logging
 import socket
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, TypeVar
 
@@ -81,6 +101,7 @@ from studentassistant.vault import (
     Session,
     StoredSubject,
     SyncResult,
+    UserNotFoundError,
     Vault,
     VaultError,
     check_active_host,
@@ -94,6 +115,7 @@ from studentassistant.vault import (
     release_active_host,
     resume_session,
     start_session,
+    user_ids,
 )
 from studentassistant.vault.index import VaultIndex, VaultIndexError
 
@@ -119,6 +141,15 @@ DEFAULT_INDEX_INTERVAL_SECONDS = 5.0
 DEFAULT_END_HOOK_TIMEOUT_SECONDS = 10.0
 """How long `end` waits for each end hook before logging it and ending the session anyway."""
 
+OTHER_USER_SESSION_OPEN_DETAIL = (
+    "Otro usuario tiene una sesión de captura abierta en este ordenador"
+)
+"""What a start or resume by another user is told while a session is unended (#550).
+
+Spanish, and it names neither the user nor the session: the one active session of a backend
+belongs to somebody else, and that is all the student asking is told.
+"""
+
 EndHook = Callable[[str], Awaitable[object]]
 """An end hook: awaited with the id of the session being ended."""
 
@@ -141,6 +172,23 @@ class UnknownSessionError(LifecycleError, LookupError):
     """No topic of the vault lists this session id."""
 
 
+class UnknownUserError(LifecycleError, LookupError):
+    """The vault has no such user, so nothing can be read or written as them."""
+
+    def __init__(self, user_id: str) -> None:
+        super().__init__(f"this vault has no user {user_id!r}")
+        self.user_id = user_id
+
+
+class NoUserError(LifecycleError):
+    """The call named no user and the vault does not hold exactly one, so none can be assumed.
+
+    The routes of #550 resolve the active user of a request and name it, which is why a refusal
+    here is a defect rather than something a client is told: it means a caller left the fallback
+    in place over a vault several students share.
+    """
+
+
 class SessionConflictError(LifecycleError):
     """The request clashes with the current state (another session active, or already ended)."""
 
@@ -151,6 +199,18 @@ class ActiveSessionExistsError(SessionConflictError):
     def __init__(self, message: str, session_id: str) -> None:
         super().__init__(message)
         self.session_id = session_id
+
+
+class OtherUserSessionOpenError(SessionConflictError):
+    """The one active session of this backend is another user's (#550).
+
+    Deliberately not an `ActiveSessionExistsError`: it carries no session id, because the route
+    answers it with `409 session_open` and NO `X-Open-Session-Id` header, and its message is the
+    Spanish `OTHER_USER_SESSION_OPEN_DETAIL` the student reads.
+    """
+
+    def __init__(self, message: str = OTHER_USER_SESSION_OPEN_DETAIL) -> None:
+        super().__init__(message)
 
 
 class SessionAlreadyEndedError(SessionConflictError):
@@ -171,9 +231,14 @@ class VaultSyncConflictError(SessionConflictError):
 
 @dataclass(frozen=True)
 class OpenSession:
-    """The active session as other server code (the WebSocket gateway) sees it."""
+    """The active session as other server code (the WebSocket gateway) sees it.
+
+    `user_id` is the student the session belongs to: every consumer that reads or writes its
+    content goes through `vault.for_user(user_id)` and `sync.for_user(user_id)` (#550).
+    """
 
     session_id: str
+    user_id: str
     subject_id: str
     topic_id: str
     started_at: datetime
@@ -187,9 +252,13 @@ class SessionService:
     """Subjects/topics listing and creation, and the session lifecycle, over one vault.
 
     Give it an open `vault` (tests: `tmp_vault`), or `vault_settings` to open the configured
-    vault lazily on first use (`VaultUnavailableError` while it cannot be opened). `sync` defaults
-    to a `GitSync` of that vault with `vault_settings.git`. `sync_interval` is how often the
-    background loop (only between `startup()` and `shutdown()`) checks what is due.
+    vault lazily on first use (`VaultUnavailableError` while it cannot be opened). Either way the
+    handle the service works on is the ROOT one -- the repository's, from which `for_user` narrows
+    to a student's folder -- so a user handle it is given is widened back to its root first, and
+    `open_vault()` gives the root to the routes that still read the whole vault (#551). `sync`
+    defaults to a `GitSync` of that vault with `vault_settings.git`: one sync per repository, whose
+    `for_user` view is what scopes a student's paths and notes tags. `sync_interval` is how often
+    the background loop (only between `startup()` and `shutdown()`) checks what is due.
     `end_hook_timeout` bounds each end hook (`add_before_ended`, `add_before_close`).
     `index_interval` is how often the background loop updates the search index, which lives at
     `vault_settings.index_path`.
@@ -214,8 +283,11 @@ class SessionService:
         self.host = host or socket.gethostname()
         self._lock = asyncio.Lock()
         self._loaded = False
-        # Unended sessions by (subject, topic); the attached one is `_active`.
-        self._open: dict[tuple[str, str], str] = {}
+        # The root handle of the vault (the repository), and the user handles derived from it.
+        self._root: Vault | None = None
+        self._users: dict[str, Vault] = {}
+        # Unended sessions by (user, subject, topic); the attached one is `_active`.
+        self._open: dict[tuple[str, str, str], str] = {}
         self._active: Session | None = None
         self._sync_interval = sync_interval
         self._serving = False
@@ -237,20 +309,35 @@ class SessionService:
 
     @property
     def active(self) -> OpenSession | None:
-        """The session currently attached to the bus, if any."""
+        """The session currently attached to the bus, if any, whichever user's it is."""
         return None if self._active is None else _open_session(self._active)
 
-    def get_active(self, session_id: str) -> OpenSession | None:
-        """The active session when it is `session_id`, else None (unknown, ended, not resumed)."""
+    async def get_active(self, user_id: str | None, session_id: str) -> OpenSession | None:
+        """`user_id`'s active session when it is `session_id`, else None.
+
+        None covers every case a caller has nothing to do about: unknown, ended, not resumed, and
+        -- what must not be told apart from them -- a session that is another user's.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+            NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        wanted, _ = await self._user_scope(user_id)
         active = self.active
-        return active if active is not None and active.session_id == session_id else None
+        if active is None or active.session_id != session_id or active.user_id != wanted:
+            return None
+        return active
 
     @property
     def sync(self) -> GitSync | None:
         return self._sync
 
     async def open_vault(self) -> Vault:
-        """The vault, opened (and pulled and scanned) on first use, for the read-only routes.
+        """The vault's ROOT handle, opened (and pulled and scanned) on first use.
+
+        The routes that are not user-scoped yet read the whole repository through it (#551), and
+        `server.user_scope` narrows it to the active user with `for_user`; a lifecycle call of this
+        service never uses it but the user handle `_user_scope` derives from it.
 
         Raises:
             VaultUnavailableError: the vault cannot be opened.
@@ -382,28 +469,46 @@ class SessionService:
 
     # -- subjects and topics -------------------------------------------------------------------
 
-    async def list_subjects(self) -> protocol.SubjectsListResponse:
-        vault = await self._ready()
+    async def list_subjects(self, user_id: str | None) -> protocol.SubjectsListResponse:
+        """The subjects of `user_id`'s folder, and nobody else's.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        _, vault = await self._user_scope(user_id)
         stored = await asyncio.to_thread(list_subjects, vault)
         return protocol.SubjectsListResponse(subjects=[_subject(s) for s in stored])
 
-    async def create_subject(self, name: str) -> protocol.Subject:
-        vault = await self._ready()
+    async def create_subject(self, user_id: str | None, name: str) -> protocol.Subject:
+        """A new subject under `user_id`'s folder.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        _, vault = await self._user_scope(user_id)
         async with self._lock:
             stored = await asyncio.to_thread(create_subject, vault, name)
         self._note_change()
         return _subject(stored)
 
     async def list_topics(
-        self, subject_id: str, *, protocol_version: str = PROTOCOL_VERSION
+        self,
+        user_id: str | None,
+        subject_id: str,
+        *,
+        protocol_version: str = PROTOCOL_VERSION,
     ) -> protocol.TopicsListResponse:
-        """The subject's topics, shaped for a client speaking `protocol_version`.
+        """The subject's topics of `user_id`, shaped for a client speaking `protocol_version`.
 
         Peers speak the lower MINOR, and a client refuses unknown fields, so a topic carries
         `last_session_at_ms` and `pending_count` (added in 1.1) only for a 1.1+ client and
-        `digest_excerpt` (added in 1.3) only for a 1.3+ client.
+        `digest_excerpt` (added in 1.3) only for a 1.3+ client. A topic's `open_session_id` is
+        the unended session of that user's topic, so a student never sees another's.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        vault = await self._ready()
+        wanted, vault = await self._user_scope(user_id)
         stored = await asyncio.to_thread(list_topics, vault, subject_id)
         if _speaks_at_least(protocol_version, TOPIC_ACTIVITY_SINCE):
             activity = await asyncio.to_thread(
@@ -420,41 +525,53 @@ class SessionService:
         return protocol.TopicsListResponse(
             subject_id=subject_id,
             topics=[
-                self._topic(subject_id, t.slug, t.topic.title, last, pending, excerpt)
+                self._topic(wanted, subject_id, t.slug, t.topic.title, last, pending, excerpt)
                 for t, (last, pending), excerpt in zip(stored, activity, excerpts, strict=True)
             ],
         )
 
-    async def create_topic(self, subject_id: str, name: str) -> protocol.Topic:
-        vault = await self._ready()
+    async def create_topic(self, user_id: str | None, subject_id: str, name: str) -> protocol.Topic:
+        """A new topic of `user_id`'s subject.
+
+        Raises:
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
+        """
+        wanted, vault = await self._user_scope(user_id)
         async with self._lock:
             stored = await asyncio.to_thread(create_topic, vault, subject_id, name)
         self._note_change()
-        return self._topic(subject_id, stored.slug, stored.topic.title)
+        return self._topic(wanted, subject_id, stored.slug, stored.topic.title)
 
     # -- sessions ------------------------------------------------------------------------------
 
     async def start(
         self,
+        user_id: str | None,
         subject_id: str,
         topic_id: str,
         *,
         client_time_ms: int,
         principal: Principal | None = None,
     ) -> protocol.Session:
-        """Start a session of one topic and publish `session.started`.
+        """Start a session of one of `user_id`'s topics and publish `session.started`.
 
         The vault is pulled first; see `_pull`.
 
         Raises:
-            ActiveSessionExistsError: a session is active or still unended.
+            ActiveSessionExistsError: a session of this same user is active or still unended.
+            OtherUserSessionOpenError: the one unended session of this backend is another user's.
             VaultSyncConflictError: pulling the vault hit a conflict; nothing was started.
-            SubjectNotFoundError, TopicNotFoundError: no such subject or topic.
+            SubjectNotFoundError, TopicNotFoundError: no such subject or topic of this user.
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        vault = await self._ready()
+        root = await self._ready()
+        wanted, vault = await self._user_scope(user_id)
         async with self._lock:
             if self._open:
-                (subject, topic), existing = next(iter(self._open.items()))
+                (owner, subject, topic), existing = self._one_open(wanted)
+                if owner != wanted:
+                    # The session is somebody else's: neither its id nor whose it is is told.
+                    raise OtherUserSessionOpenError()
                 raise ActiveSessionExistsError(
                     f"session {existing} of topic {subject}/{topic} is still open: resume or end"
                     " it before starting another",
@@ -469,15 +586,21 @@ class SessionService:
                     result.conflicts,
                 )
             self._schedule_index_refresh()
-            await self._check_host(vault)
+            await self._check_host(root)
             session = await asyncio.to_thread(
                 start_session, vault, subject_id, topic_id, self.host, PROTOCOL_VERSION
             )
             await asyncio.to_thread(
-                claim_active_host, vault, self.host, session.id, subject_id, topic_id
+                claim_active_host,
+                vault,
+                self.host,
+                session.id,
+                subject_id,
+                topic_id,
+                user_id=wanted,
             )
             self._note_change()
-            self._open[(subject_id, topic_id)] = session.id
+            self._open[_key(session)] = session.id
             self._attach(session)
             await self.bus.publish(
                 session.id,
@@ -501,23 +624,28 @@ class SessionService:
             return await _wire_session(session)
 
     async def resume(
-        self, session_id: str, *, principal: Principal | None = None
+        self, user_id: str | None, session_id: str, *, principal: Principal | None = None
     ) -> protocol.Session:
-        """Make an unended session active again (or confirm it is) and publish `session.resumed`.
+        """Make one of `user_id`'s unended sessions active again and publish `session.resumed`.
 
         Raises:
-            UnknownSessionError: no topic lists the session.
+            UnknownSessionError: no topic of this user lists the session -- which is also what a
+                session of another user is, since it is never revealed (#550).
             SessionAlreadyEndedError: the session has ended.
-            ActiveSessionExistsError: another session is active.
+            ActiveSessionExistsError: another session of this same user is active.
+            OtherUserSessionOpenError: the active session is another user's.
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        await self._ready()
+        wanted, _ = await self._user_scope(user_id)
         async with self._lock:
             if self._active is not None and self._active.id != session_id:
+                if _user_of(self._active) != wanted:
+                    raise OtherUserSessionOpenError()
                 raise ActiveSessionExistsError(
                     f"session {self._active.id} is active: end it before resuming {session_id}",
                     self._active.id,
                 )
-            session = await self._load_open(session_id)
+            session = await self._load_open(session_id, of_user=wanted)
             self._attach(session)
             await self.bus.publish(
                 session.id, SESSION_RESUMED, "user", {"device_id": _device(principal)}
@@ -534,6 +662,10 @@ class SessionService:
         idle_seconds: float | None = None,
     ) -> protocol.SessionEndResponse:
         """Publish `session.ended`, end the session, then checkpoint and push the vault.
+
+        The session id names the session exactly, and the handle the end writes through is the one
+        of the user the session was opened for, so no user is asked for here: the routes check
+        whose it is before they call (`require_active`, `get_active`).
 
         `reason` `idle` is the backend's own end (`capture_liveness.py`); its `idle_seconds`, how
         long no capture client was sending, is added to the `session.ended` payload.
@@ -575,7 +707,7 @@ class SessionService:
             self._note_change()
             if self._active is not None and self._active.id == session.id:
                 self._active = None
-            self._open.pop((session.subject_slug, session.topic_slug), None)
+            self._open.pop(_key(session), None)
             sync = self._sync
             if sync is not None:
                 await asyncio.to_thread(sync.checkpoint, f"sesión {session.id} terminada")
@@ -585,50 +717,61 @@ class SessionService:
                 session_id=session.id, status="ended", ended_at_ms=_epoch_ms(meta.ended_at)
             )
 
-    async def open_session_of(self, subject_id: str, topic_id: str) -> str | None:
-        """The id of the topic's unended session (active or left open), None when it has none.
+    async def open_session_of(
+        self, user_id: str | None, subject_id: str, topic_id: str
+    ) -> str | None:
+        """The id of `user_id`'s topic's unended session (active or left open), None if it has none.
+
+        A topic of another user with the same slugs is a different topic, and its session is never
+        the answer.
 
         Raises:
-            VaultUnavailableError: the vault cannot be opened.
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        await self._ready()
-        return self._open.get((subject_id, topic_id))
+        wanted, _ = await self._user_scope(user_id)
+        return self._open.get((wanted, subject_id, topic_id))
 
     # -- the active session, for the other routes ----------------------------------------------
 
-    async def require_active(self, session_id: str) -> Session:
-        """The vault handle of the active session when it is `session_id`.
+    async def require_active(self, user_id: str | None, session_id: str) -> Session:
+        """The vault handle of `user_id`'s active session when it is `session_id`.
+
+        The handle carries the user's vault, so what the caller writes through it lands in that
+        student's folder and nowhere else.
 
         Raises:
-            VaultUnavailableError: the vault cannot be opened.
-            UnknownSessionError: no topic lists the session.
+            UnknownSessionError: no topic of this user lists the session -- which is also the
+                answer for a session that is another user's, whose id is never confirmed (#550).
             SessionAlreadyEndedError: the session has ended.
             SessionConflictError: the session is unended but not the active one (not resumed).
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        vault = await self._ready()
+        wanted, _ = await self._user_scope(user_id)
         active = self._active
         if active is not None and active.id == session_id:
+            if _user_of(active) != wanted:
+                raise UnknownSessionError(f"no existe la sesión {session_id}")
             return active
-        if session_id in self._open.values():
+        if session_id in self._open_of(wanted):
             raise SessionConflictError(
                 f"la sesión {session_id} no está activa: reanúdala antes de enviarle nada"
             )
-        if await asyncio.to_thread(self._is_listed, vault, session_id):
+        if await self._listed(wanted, session_id):
             raise SessionAlreadyEndedError(f"la sesión {session_id} ya ha terminado")
         raise UnknownSessionError(f"no existe la sesión {session_id}")
 
-    async def is_known(self, session_id: str) -> bool:
-        """Whether some topic of the vault lists `session_id` (active, unended or ended).
+    async def is_known(self, user_id: str | None, session_id: str) -> bool:
+        """Whether some topic of `user_id` lists `session_id` (active, unended or ended).
 
         Raises:
-            VaultUnavailableError: the vault cannot be opened.
+            VaultUnavailableError, NoUserError, UnknownUserError: as `_user_scope`.
         """
-        vault = await self._ready()
+        wanted, _ = await self._user_scope(user_id)
         if self._active is not None and self._active.id == session_id:
+            return _user_of(self._active) == wanted
+        if session_id in self._open_of(wanted):
             return True
-        if session_id in self._open.values():
-            return True
-        return await asyncio.to_thread(self._is_listed, vault, session_id)
+        return await self._listed(wanted, session_id)
 
     def note_change(self) -> None:
         """Tell the vault's `GitSync` a vault file was written (a no-op before the vault opens)."""
@@ -645,59 +788,120 @@ class SessionService:
             except Exception:
                 logger.exception("session attached hook %r failed", hook)
 
-    async def _load_open(self, session_id: str) -> Session:
-        """The handle of an unended session: the attached one, or reopened from the vault."""
+    async def _load_open(self, session_id: str, *, of_user: str | None = None) -> Session:
+        """The handle of an unended session: the attached one, or reopened from the vault.
+
+        `of_user` restricts the search to one student's folder, and a session that is somebody
+        else's is then unknown rather than theirs (#550). `end` leaves it out: the session it ends
+        is the one the route has already asked about as that user, and the id names it exactly.
+        """
         if self._active is not None and self._active.id == session_id:
-            return self._active
-        vault = await self._ready()
+            if of_user is None or _user_of(self._active) == of_user:
+                return self._active
+            raise UnknownSessionError(f"no topic has a session {session_id}")
         where = next((key for key, value in self._open.items() if value == session_id), None)
+        if where is not None and of_user is not None and where[0] != of_user:
+            raise UnknownSessionError(f"no topic has a session {session_id}")
         if where is None:
-            if await asyncio.to_thread(self._is_listed, vault, session_id):
+            if await self._listed(of_user, session_id):
                 raise SessionAlreadyEndedError(f"session {session_id} has ended")
             raise UnknownSessionError(f"no topic has a session {session_id}")
-        subject_id, topic_id = where
-        session = await asyncio.to_thread(resume_session, vault, subject_id, topic_id)
+        user_id, subject_id, topic_id = where
+        session = await asyncio.to_thread(
+            resume_session, self._users[user_id], subject_id, topic_id
+        )
         if session.id != session_id:
             raise SessionConflictError(
                 f"session {session_id} is not the open session of {subject_id}/{topic_id}"
             )
         return session
 
-    @staticmethod
-    def _is_listed(vault: Vault, session_id: str) -> bool:
-        for subject in list_subjects(vault):
-            for topic in list_topics(vault, subject.slug):
-                if session_id in topic.topic.sessions:
-                    return True
-        return False
+    def _open_of(self, user_id: str) -> set[str]:
+        """The ids of the unended sessions that are `user_id`'s, active or left open."""
+        return {value for (owner, _, _), value in self._open.items() if owner == user_id}
+
+    def _one_open(self, user_id: str) -> tuple[tuple[str, str, str], str]:
+        """The one unended session that blocks a start by `user_id`, and where it is.
+
+        Any unended session blocks it, because a backend has room for one active session whoever it
+        belongs to. When the scan found more than one -- two PCs each left theirs behind, say -- the
+        one the asking user owns is the one they are named, because it is the one they can still
+        resume or end; another user's is `OtherUserSessionOpenError` and names none.
+        """
+        mine = next((item for item in self._open.items() if item[0][0] == user_id), None)
+        return mine if mine is not None else next(iter(self._open.items()))
+
+    async def _listed(self, user_id: str | None, session_id: str) -> bool:
+        """Whether a topic lists `session_id`, ended or not: `user_id`'s, or any user's if none.
+
+        The search over every user is what `end` needs, since it is not told whose the session is;
+        it settles ended-against-unknown and never hands back another student's session.
+        """
+        vaults = [self._users[user_id]] if user_id is not None else list(self._users.values())
+        return await asyncio.to_thread(
+            lambda: any(_topic_lists(vault, session_id) for vault in vaults)
+        )
+
+    async def _user_scope(self, user_id: str | None) -> tuple[str, Vault]:
+        """The user a call acts for, and the handle on their folder of the vault.
+
+        `user_id` names them; `None` is protocol 1.8's single-user fallback -- the vault's only
+        user, which is what keeps a caller that knows nothing about users working on a vault
+        nobody shares. Handles are cached, because `for_user` reads the file system to check the
+        user exists and a lifecycle call should do that once per user, not once per request.
+
+        Raises:
+            VaultUnavailableError: the vault cannot be opened.
+            NoUserError: no user was named and the vault does not hold exactly one.
+            UnknownUserError: the vault has no such user.
+        """
+        root = await self._ready()
+        wanted = user_id
+        if wanted is None:
+            ids = await asyncio.to_thread(user_ids, root)
+            if len(ids) != 1:
+                raise NoUserError(
+                    f"no user was named and the vault at {root.root} holds {len(ids)}: a call has"
+                    " to say which student it acts for"
+                )
+            wanted = ids[0]
+        handle = self._users.get(wanted)
+        if handle is None:
+            try:
+                handle = await asyncio.to_thread(root.for_user, wanted)
+            except UserNotFoundError as error:
+                raise UnknownUserError(wanted) from error
+            self._users[wanted] = handle
+        return wanted, handle
 
     async def _ready(self) -> Vault:
-        """The vault, opened and scanned for unended sessions on first use."""
-        if self._loaded and self._vault is not None:
-            return self._vault
+        """The vault's root handle, opened, pulled and scanned for every user's unended sessions."""
+        if self._loaded and self._root is not None:
+            return self._root
         async with self._lock:
             if not self._loaded:
-                vault = self._vault
-                if vault is None:
-                    vault = await self._call(Vault.open, self._settings.path)
+                given = self._vault
+                root = await self._call(Vault.open, self._settings.path) if given is None else given
+                root = _root_handle(root)
                 if self._sync is None:
-                    self._sync = GitSync(vault, self._settings.git)
+                    self._sync = GitSync(root, self._settings.git)
                 # Pull before the scan, so sessions another PC left open are seen. A conflict is
                 # only logged here: the next session start pulls again and refuses on it.
                 await self._pull("vault open")
-                await self._check_host(vault)
-                self._open = await asyncio.to_thread(_scan_open_sessions, vault)
-                self._index = await self._open_index(vault)
-                self._vault = vault
+                await self._check_host(root)
+                self._users, self._open = await asyncio.to_thread(_scan_open_sessions, root)
+                self._index = await self._open_index(root)
+                self._vault = root
+                self._root = root
                 self._loaded = True
                 self._start_runner()
                 for hook in self._on_open:
                     try:
-                        hook(vault)
+                        hook(root)
                     except Exception:
                         logger.exception("vault open hook %r failed", hook)
-        assert self._vault is not None
-        return self._vault
+        assert self._root is not None
+        return self._root
 
     @staticmethod
     async def _call(function: Callable[..., T], *args: object) -> T:
@@ -767,6 +971,7 @@ class SessionService:
 
     def _topic(
         self,
+        user_id: str,
         subject_id: str,
         topic_id: str,
         title: str,
@@ -778,7 +983,7 @@ class SessionService:
             topic_id=topic_id,
             subject_id=subject_id,
             name=title,
-            open_session_id=self._open.get((subject_id, topic_id)),
+            open_session_id=self._open.get((user_id, subject_id, topic_id)),
             last_session_at_ms=last_session_at_ms,
             pending_count=pending_count,
             digest_excerpt=digest_excerpt,
@@ -840,18 +1045,61 @@ def _topic_excerpt(vault: Vault, subject_id: str, topic_id: str) -> str | None:
     return digest_excerpt(text, protocol.DIGEST_EXCERPT_MAX)
 
 
-def _scan_open_sessions(vault: Vault) -> dict[tuple[str, str], str]:
-    found: dict[tuple[str, str], str] = {}
+def _scan_open_sessions(
+    root: Vault,
+) -> tuple[dict[str, Vault], dict[tuple[str, str, str], str]]:
+    """Every user's handle, and the unended session of every one of their topics.
+
+    The scan is what makes a session a student left unended -- here or on another PC, whose pull
+    has just brought it in -- block a new start by anybody, and what lets a topic list its own
+    `open_session_id` after a restart. A user whose folder holds no readable `profile.json` gets no
+    handle and is skipped with a warning: one damaged student must not stop the others capturing.
+    """
+    users: dict[str, Vault] = {}
+    found: dict[tuple[str, str, str], str] = {}
+    for user_id in user_ids(root):
+        try:
+            vault = root.for_user(user_id)
+        except UserNotFoundError as error:
+            logger.warning("vault user %s has no handle; not scanned: %s", user_id, error)
+            continue
+        users[user_id] = vault
+        for subject in list_subjects(vault):
+            for topic in list_topics(vault, subject.slug):
+                if not topic.topic.sessions:
+                    continue
+                try:
+                    session = resume_session(vault, subject.slug, topic.slug)
+                except NoOpenSessionError:
+                    continue
+                found[(user_id, subject.slug, topic.slug)] = session.id
+    return users, found
+
+
+def _topic_lists(vault: Vault, session_id: str) -> bool:
+    """Whether some topic of this handle lists `session_id`, ended or not. Blocking file I/O."""
     for subject in list_subjects(vault):
         for topic in list_topics(vault, subject.slug):
-            if not topic.topic.sessions:
-                continue
-            try:
-                session = resume_session(vault, subject.slug, topic.slug)
-            except NoOpenSessionError:
-                continue
-            found[(subject.slug, topic.slug)] = session.id
-    return found
+            if session_id in topic.topic.sessions:
+                return True
+    return False
+
+
+def _key(session: Session) -> tuple[str, str, str]:
+    """The `_open` key of a session: whose it is, and the topic it belongs to."""
+    return (_user_of(session), session.subject_slug, session.topic_slug)
+
+
+def _user_of(session: Session) -> str:
+    """The user a session handle belongs to: every one this service builds is a user's."""
+    user_id = session.vault.user_id
+    assert user_id is not None, "a session handle is built from a user's vault handle"
+    return user_id
+
+
+def _root_handle(vault: Vault) -> Vault:
+    """The root handle of `vault`: `for_user` needs one, and a caller may have given either."""
+    return vault if vault.user_id is None else replace(vault, path=vault.root, user_id=None)
 
 
 def _subject(stored: StoredSubject) -> protocol.Subject:
@@ -861,6 +1109,7 @@ def _subject(stored: StoredSubject) -> protocol.Subject:
 def _open_session(session: Session) -> OpenSession:
     return OpenSession(
         session_id=session.id,
+        user_id=_user_of(session),
         subject_id=session.subject_slug,
         topic_id=session.topic_slug,
         started_at=session.meta.started_at,
@@ -910,6 +1159,7 @@ __all__ = [
     "DEFAULT_INDEX_INTERVAL_SECONDS",
     "DEFAULT_SYNC_INTERVAL_SECONDS",
     "LIFECYCLE_KINDS",
+    "OTHER_USER_SESSION_OPEN_DETAIL",
     "SESSION_ENDED",
     "SESSION_RESUMED",
     "SESSION_STARTED",
@@ -917,11 +1167,14 @@ __all__ = [
     "EndHook",
     "EndReason",
     "LifecycleError",
+    "NoUserError",
     "OpenSession",
+    "OtherUserSessionOpenError",
     "SessionAlreadyEndedError",
     "SessionConflictError",
     "SessionService",
     "UnknownSessionError",
+    "UnknownUserError",
     "VaultSyncConflictError",
     "VaultUnavailableError",
     "stored_captures",

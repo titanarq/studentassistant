@@ -349,7 +349,7 @@ def captures_router() -> APIRouter:
         service: SessionService = request.app.state.sessions
         server: ServerSettings = request.app.state.server
         try:
-            session = await service.require_active(session_id)
+            session = await service.require_active(None, session_id)
         except UnknownSessionError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
         except SessionConflictError as error:
@@ -526,7 +526,7 @@ async def _record(
     metadata: protocol.CaptureUploadRequest,
     parts: Mapping[str, _Part],
 ) -> None:
-    open_session = request.app.state.sessions.get_active(session_id)
+    open_session = await request.app.state.sessions.get_active(None, session_id)
     if open_session is None:
         return
     gateway = request.app.state.gateway

@@ -500,7 +500,7 @@ class _Connection:
     # -- flow ----------------------------------------------------------------------------------
 
     async def run(self) -> None:
-        session = self.gateway.sessions.get_active(self.session_id)
+        session = await self.gateway.sessions.get_active(None, self.session_id)
         if (
             session is None
             or not self.bus.is_attached(self.session_id)

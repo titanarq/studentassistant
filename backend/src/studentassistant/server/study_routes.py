@@ -229,7 +229,7 @@ async def switch_to_study(
     if notes is None or not notes.strip():
         raise NotesMissingError
     ended: str | None = None
-    session_id = await sessions.open_session_of(subject_id, topic_id)
+    session_id = await sessions.open_session_of(None, subject_id, topic_id)
     if session_id is not None:
         try:
             await sessions.end(
