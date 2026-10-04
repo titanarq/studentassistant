@@ -9,6 +9,7 @@ as a source, `replay` feeds a recorded session through the gateway as a capture 
 systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
 index from the vault, `vault stats` shows how big the vault is and what makes it big,
 `vault migrate-users` moves the root content of a format-1 vault into its first user's folder,
+`users list` shows the students this backend serves and `users add --name` adds one,
 `purge` applies the vault's retention policy, `generate <kind> --topic`
 builds one kind of study material from a topic's notes (`studentassistant.generators`), and
 `triage <subject> <topic> [--apply]` shows (or stores) the capture triage of a topic.
@@ -94,6 +95,7 @@ from studentassistant.server.replay import (
     replay,
 )
 from studentassistant.server.serving import serve_app
+from studentassistant.server.user_routes import DAMAGED_PROFILE_DETAIL, USER_EXISTS_DETAIL
 from studentassistant.sources import (
     PdfImportError,
     PdfTooLargeError,
@@ -111,13 +113,18 @@ from studentassistant.vault import (
     SecretRefused,
     SubjectNotFoundError,
     TopicNotFoundError,
+    UserFileError,
+    UserProfile,
+    UserProfileError,
     Vault,
     VaultBusyError,
     VaultError,
     VaultNeedsMigrationError,
+    create_user,
     list_feedback,
     list_subjects,
     list_topics,
+    list_users,
     read_ledger,
     read_topic_events,
     require_topic,
@@ -723,7 +730,12 @@ class FeedbackStatusOption(StrEnum):
     DESCARTADO = "descartado"
 
 
-def _open_feedback_vault() -> Vault:
+def _open_configured_vault() -> Vault:
+    """A root handle on the vault the configuration names, or an exit 1 saying why there is none.
+
+    Root and not `for_user(...)`: the inbox lives at the root of the repository, and so does
+    `users/`, which a user's own folder has no copy of (`vault.users`).
+    """
     try:
         return Vault.open(Settings().vault.path)
     except VaultError as error:
@@ -748,7 +760,7 @@ def feedback_list(
     as_json: Annotated[bool, typer.Option("--json", help="Salida en JSON para scripts.")] = False,
 ) -> None:
     """List the inbox, oldest first: id, status, kind, date, title and the triage issue."""
-    vault = _open_feedback_vault()
+    vault = _open_configured_vault()
     try:
         items = list_feedback(vault, status_filter.value if status_filter else None)
     except JsonlError as error:
@@ -778,7 +790,7 @@ def feedback_mark(
     ] = None,
 ) -> None:
     """Record a new status of an inbox item (appended; safe while the service runs)."""
-    vault = _open_feedback_vault()
+    vault = _open_configured_vault()
     try:
         item = set_feedback_status(vault, feedback_id, new_status.value, issue)
     except FeedbackNotFoundError as error:
@@ -801,6 +813,81 @@ def feedback_mark(
         typer.echo(f"No se ha cambiado el estado: {error}")
         raise typer.Exit(code=1) from error
     typer.echo(_feedback_line(item))
+
+
+users_cli = typer.Typer(
+    help="The students this backend serves: one folder per user in the vault (#544)."
+)
+cli.add_typer(users_cli, name="users")
+
+
+def _user_line(profile: UserProfile) -> str:
+    """One user of `users list`: id, name, email and photo, in the columns a maintainer reads."""
+    return (
+        f"{profile.id}\t{profile.name}\t{profile.email or 'sin email'}"
+        f"\t{'con foto' if profile.photo else 'sin foto'}"
+    )
+
+
+@users_cli.command("list")
+def users_list(
+    as_json: Annotated[bool, typer.Option("--json", help="Salida en JSON para scripts.")] = False,
+) -> None:
+    """List the students of the vault, by name: id, name, email and whether they have a photo."""
+    vault = _open_configured_vault()
+    try:
+        profiles = list_users(vault)
+    except UserFileError as error:
+        typer.echo(f"{DAMAGED_PROFILE_DETAIL} ({error})")
+        raise typer.Exit(code=1) from error
+    if as_json:
+        typer.echo(
+            json.dumps(
+                [profile.model_dump(mode="json") for profile in profiles],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+    if not profiles:
+        typer.echo(
+            "Todavía no hay ningún usuario en la bóveda: añade uno con"
+            " `studentassistant users add --name NOMBRE`."
+        )
+        return
+    for profile in profiles:
+        typer.echo(_user_line(profile))
+
+
+@users_cli.command("add")
+def users_add(
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name", help="Nombre del estudiante, como lo lee en la selección de usuario."
+        ),
+    ],
+    email: Annotated[
+        str | None, typer.Option("--email", help="Email del estudiante (opcional).")
+    ] = None,
+) -> None:
+    """Add a student: their folder in the vault, and their new id on the standard output.
+
+    Works while `serve` runs and commits nothing: a user is ordinary vault content, so the
+    service's next batch commit carries the folder, like the inbox line `feedback mark` leaves
+    behind. The name decides the id, which then never changes, and two students with the same name
+    are two folders (`ana-garcia` and `ana-garcia-2`), so nobody's notes are written over.
+    """
+    vault = _open_configured_vault()
+    try:
+        created = create_user(vault, name, email)
+    except UserProfileError as error:
+        typer.echo(str(error))
+        raise typer.Exit(code=1) from error
+    except FileExistsError as error:
+        typer.echo(f"{USER_EXISTS_DETAIL} ({error})")
+        raise typer.Exit(code=1) from error
+    typer.echo(created.id)
 
 
 stt_cli = typer.Typer(help="Speech-to-text on this PC (server mode, ADR-0008).")

@@ -46,6 +46,10 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 
 DEFAULT_MAX_CAPTURE_IMAGE_BYTES = 15 * 1024 * 1024
 DEFAULT_MAX_CAPTURE_IMAGES = 5
+# `PUT /api/users/{user_id}/photo` (#549): a profile photo is downscaled to an avatar before it is
+# stored, so its upload cap sits far below a photographed page's. `vault.users.MAX_USER_PHOTO_BYTES`
+# keeps one of its own at this same value, as the ceiling no configuration lifts.
+DEFAULT_MAX_USER_PHOTO_BYTES = 5 * 1024 * 1024
 # `[server] capture_idle_end_seconds` (#425): 5 minutes.
 DEFAULT_CAPTURE_IDLE_END_SECONDS = 300.0
 DEFAULT_GRACEFUL_SHUTDOWN_SECONDS = 5.0
@@ -73,6 +77,9 @@ class ServerSettings(BaseModel):
     # the most images one burst may hold; beyond either the upload is refused with 413.
     max_capture_image_bytes: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGE_BYTES, ge=1)
     max_capture_images: int = Field(default=DEFAULT_MAX_CAPTURE_IMAGES, ge=1)
+    # `PUT /api/users/{id}/photo` (#549): the largest profile photo accepted, the body being read
+    # as it streams in and the upload refused with 413 the moment it goes past this.
+    max_user_photo_bytes: int = Field(default=DEFAULT_MAX_USER_PHOTO_BYTES, ge=1)
     # Where `studentassistant serve --record` writes each session's recording (what `replay`
     # reads back), one directory per session id; it must not be inside the vault.
     recordings_dir: Path = DEFAULT_RECORDINGS_DIR
