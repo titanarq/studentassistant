@@ -3,6 +3,7 @@ import { USER_COOKIE, type User } from "../protocol";
 import { listUsers } from "./api";
 import AppBar from "./AppBar";
 import Avatar from "./Avatar";
+import NewProfileForm from "./NewProfileForm";
 import { USER_REQUIRED_EVENT } from "./userRequired";
 import "./userGate.css";
 
@@ -51,6 +52,7 @@ type Listing = { state: "loading" } | { state: "error" } | { state: "ready"; use
 function Selection({ note }: { note: string | null }) {
   const [listing, setListing] = useState<Listing>({ state: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [creating, setCreating] = useState(false);
   const choose = useContext(ChooseContext);
 
   useEffect(() => {
@@ -66,14 +68,15 @@ function Selection({ note }: { note: string | null }) {
 
   return (
     <main className="user-gate">
-      <h1 className="user-gate-title">¿Quién eres?</h1>
+      <h1 className="user-gate-title">{creating ? "Nuevo perfil" : "¿Quién eres?"}</h1>
       {note !== null && (
         <p className="user-gate-note" role="status">
           {note}
         </p>
       )}
-      {listing.state === "loading" && <p className="user-gate-status">Cargando usuarios…</p>}
-      {listing.state === "error" && (
+      {creating && <NewProfileForm onCreated={choose} onCancel={() => setCreating(false)} />}
+      {!creating && listing.state === "loading" && <p className="user-gate-status">Cargando usuarios…</p>}
+      {!creating && listing.state === "error" && (
         <div className="user-gate-status" role="alert">
           <p>No se pudo cargar la lista de usuarios.</p>
           <button type="button" className="user-gate-retry" onClick={() => setAttempt((n) => n + 1)}>
@@ -81,12 +84,12 @@ function Selection({ note }: { note: string | null }) {
           </button>
         </div>
       )}
-      {listing.state === "ready" && listing.users.length === 0 && (
+      {!creating && listing.state === "ready" && listing.users.length === 0 && (
         <p className="user-gate-status">
-          No hay usuarios. Créalos con <code>studentassistant users add</code>.
+          No hay usuarios. Crea el primero con «Nuevo perfil».
         </p>
       )}
-      {listing.state === "ready" && listing.users.length > 0 && (
+      {!creating && listing.state === "ready" && listing.users.length > 0 && (
         <ul className="user-gate-list">
           {listing.users.map((user) => (
             <li key={user.id}>
@@ -98,6 +101,11 @@ function Selection({ note }: { note: string | null }) {
             </li>
           ))}
         </ul>
+      )}
+      {!creating && listing.state !== "loading" && (
+        <button type="button" className="user-gate-new" onClick={() => setCreating(true)}>
+          Nuevo perfil
+        </button>
       )}
     </main>
   );

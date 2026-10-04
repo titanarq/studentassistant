@@ -43,7 +43,7 @@ function goBack(): void {
 
 /** «Editar perfil»: name and email of the active user (the id is never shown as a field). */
 export default function ProfilePage() {
-  const { user, setUser } = useActiveUser();
+  const { user, setUser, signOut } = useActiveUser();
   const confirm = useConfirm();
   const fileInput = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -220,6 +220,9 @@ export default function ProfilePage() {
           </button>
           <button type="button" className="profile-cancel" onClick={goBack}>
             Cancelar
+          </button>
+          <button type="button" className="profile-cancel profile-switch" onClick={signOut}>
+            Cambiar de perfil
           </button>
         </div>
       </form>

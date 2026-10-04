@@ -1,4 +1,4 @@
-import { decodeUser, decodeUsersListResponse, type User, type UserUpdateRequest } from "../protocol";
+import { decodeUser, decodeUsersListResponse, type User, type UserCreateRequest, type UserUpdateRequest } from "../protocol";
 
 export type UsersResult = { kind: "ok"; users: User[] } | { kind: "error" };
 
@@ -36,6 +36,15 @@ async function userRequest(path: string, init: RequestInit): Promise<UserWriteRe
   } catch {
     return { kind: "error" };
   }
+}
+
+/** `POST /api/users`: a new profile (the server picks its id). */
+export function createUser(request: UserCreateRequest): Promise<UserWriteResult> {
+  return userRequest("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 /** `PATCH /api/users/{id}`: only the fields given change; an `email` of `""` clears it. */

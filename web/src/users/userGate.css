@@ -175,3 +175,23 @@
 .app-bar-menu button:focus-visible {
   background: var(--accent-soft);
 }
+
+.user-gate-new {
+  min-height: 2.75rem;
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.user-gate-new:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.user-gate .new-profile-form {
+  max-width: 28rem;
+}
