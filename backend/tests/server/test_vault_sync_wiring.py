@@ -115,7 +115,7 @@ async def test_sync_loop_commits_and_pushes_without_any_request(
 ) -> None:
     await service.startup()
     try:
-        await service.create_subject("Física")
+        await service.create_subject(None, "Física")
         assert service.sync_running
         before = commits(tmp_vault.path)
 
@@ -134,7 +134,7 @@ async def test_sync_loop_commits_and_pushes_without_any_request(
 async def test_sync_loop_waits_for_the_vault_to_open_and_for_the_app_to_serve(
     service: SessionService,
 ) -> None:
-    await service.list_subjects()  # opened before serving: no loop yet
+    await service.list_subjects(None)  # opened before serving: no loop yet
     assert not service.sync_running
     await service.startup()
     assert service.sync_running
@@ -146,7 +146,7 @@ async def test_shutdown_flushes_pending_changes_in_a_worker_thread(
     service: SessionService, tmp_vault: Vault, git_origin: Path
 ) -> None:
     await service.startup()
-    await service.create_subject("Física")
+    await service.create_subject(None, "Física")
 
     await service.shutdown()
 
@@ -159,46 +159,59 @@ async def test_shutdown_flushes_pending_changes_in_a_worker_thread(
 
 
 @pytest.fixture
-def pc_b(tmp_vault: Vault, git_origin: Path, tmp_path: Path) -> Vault:
-    """A second PC sharing `git_origin`, cloned once the first one has pushed a topic."""
+def pc_b(tmp_vault: Vault, user_vault: Vault, git_origin: Path, tmp_path: Path) -> Vault:
+    """A second PC sharing `git_origin`, cloned once the first one has pushed a topic.
+
+    The topic is built through `user_vault`, the vault's one student, because that is where a
+    user-scoped `SessionService` reads and writes content (#550), and so where the scan for the
+    unended sessions another PC left behind looks for them. The handle handed back is the clone's
+    ROOT one: git runs over the repository, and `for_user` narrows it to that same student.
+    """
     bootstrap = GitSync(tmp_vault, SETTINGS, clock=ManualClock())
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, "fisica", "Cinemática")
+    create_subject(user_vault, "Física")
+    create_topic(user_vault, "fisica", "Cinemática")
     bootstrap.flush()
     return clone(git_origin, tmp_path / "pc-b")
 
 
 async def test_the_vault_is_synced_before_the_scan_for_unended_sessions(
-    service: SessionService, pc_b: Vault
+    service: SessionService, pc_b: Vault, student_user_id: str
 ) -> None:
-    on_b = start_session(pc_b, "fisica", "cinematica", "pc-b", "1")
+    on_b = start_session(pc_b.for_user(student_user_id), "fisica", "cinematica", "pc-b", "1")
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
 
-    topics = await service.list_topics("fisica")
+    topics = await service.list_topics(None, "fisica")
 
     assert topics.topics[0].open_session_id == on_b.id
 
 
 async def test_a_sync_conflict_refuses_the_sessions_start_naming_the_paths(
-    service: SessionService, tmp_vault: Vault, pc_b: Vault
+    service: SessionService,
+    tmp_vault: Vault,
+    user_vault: Vault,
+    student_user_id: str,
+    pc_b: Vault,
 ) -> None:
-    await service.list_subjects()
-    (pc_b.path / "subjects" / "fisica" / "subject.yaml").write_text(
-        "name: Física B\nstyle_guide: null\n"
-    )
+    await service.list_subjects(None)
+    # The subject's metadata, in the one student's folder on each of the two PCs.
+    on_b = pc_b.for_user(student_user_id).path / "subjects" / "fisica" / "subject.yaml"
+    local = user_vault.path / "subjects" / "fisica" / "subject.yaml"
+    on_b.write_text("name: Física B\nstyle_guide: null\n")
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
     mine = "name: Física A\nstyle_guide: null\n"
-    (tmp_vault.path / "subjects" / "fisica" / "subject.yaml").write_text(mine)
+    local.write_text(mine)
 
     with pytest.raises(VaultSyncConflictError) as refused:
-        await service.start("fisica", "cinematica", client_time_ms=0)
+        await service.start(None, "fisica", "cinematica", client_time_ms=0)
 
-    assert refused.value.conflicts == ("subjects/fisica/subject.yaml",)
-    assert "subjects/fisica/subject.yaml" in str(refused.value)
+    # The service pulls through the repository's own sync, so git names the path from the root.
+    conflicted = f"users/{student_user_id}/subjects/fisica/subject.yaml"
+    assert refused.value.conflicts == (conflicted,)
+    assert conflicted in str(refused.value)
     assert service.active is None
-    assert (await service.list_topics("fisica")).topics[0].open_session_id is None
+    assert (await service.list_topics(None, "fisica")).topics[0].open_session_id is None
     # Nothing was auto-resolved: the local change is still there, committed, no rebase left.
-    assert (tmp_vault.path / "subjects" / "fisica" / "subject.yaml").read_text() == mine
+    assert local.read_text() == mine
     assert git(tmp_vault.path, "status", "--porcelain") == ""
 
 
@@ -209,11 +222,11 @@ async def test_an_offline_remote_is_logged_and_the_sessions_start_proceeds(
     service = SessionService(
         SessionBus(), vault=tmp_vault, sync=GitSync(tmp_vault, SETTINGS, clock=ManualClock())
     )
-    await service.create_subject("Física")
-    await service.create_topic("fisica", "Cinemática")
+    await service.create_subject(None, "Física")
+    await service.create_topic(None, "fisica", "Cinemática")
 
     with caplog.at_level(logging.WARNING, logger="studentassistant.server.sessions"):
-        session = await service.start("fisica", "cinematica", client_time_ms=0)
+        session = await service.start(None, "fisica", "cinematica", client_time_ms=0)
 
     assert session.status == "active"
     assert "session start: offline" in caplog.text
@@ -245,13 +258,14 @@ def test_the_app_lifespan_runs_the_sync_loop_and_flushes_on_shutdown(
 
 
 def test_a_sync_conflict_answers_409_on_post_sessions(
-    app: FastAPI, tmp_vault: Vault, pc_b: Vault
+    app: FastAPI, user_vault: Vault, student_user_id: str, pc_b: Vault
 ) -> None:
-    (pc_b.path / "subjects" / "fisica" / "subject.yaml").write_text(
+    # The subject's metadata, in the one student's folder on each of the two PCs (#550).
+    (pc_b.for_user(student_user_id).path / "subjects" / "fisica" / "subject.yaml").write_text(
         "name: Física B\nstyle_guide: null\n"
     )
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
-    (tmp_vault.path / "subjects" / "fisica" / "subject.yaml").write_text(
+    (user_vault.path / "subjects" / "fisica" / "subject.yaml").write_text(
         "name: Física A\nstyle_guide: null\n"
     )
     client = TestClient(app, base_url="http://localhost:8765", client=("127.0.0.1", 5000))

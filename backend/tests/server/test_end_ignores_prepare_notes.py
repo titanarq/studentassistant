@@ -24,7 +24,16 @@ LOCAL_BASE_URL = "http://localhost:8765"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> GenerateTopic:
+def topic(tmp_vault: Vault, user_vault: Vault) -> GenerateTopic:
+    """The fixture topic in both scopes, while the migration to per-user content is underway.
+
+    `POST /api/sessions` is user-scoped (#550), so the subject and the topic have to be in the one
+    student's folder for the start to be accepted; the notes routes still read the repository root
+    (`SessionService.open_vault()`) until #551, and that is where a generation -- the thing this
+    test proves does not happen -- would write its `apuntes.md`. The handle returned is the root
+    one, which is what the assertions read.
+    """
+    make_topic(user_vault)
     return make_topic(tmp_vault)
 
 

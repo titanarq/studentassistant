@@ -35,7 +35,7 @@ from studentassistant.server.recording import (
 from studentassistant.server.replay import AsgiTransport, ReplayResult, replay
 from studentassistant.stt import SpeechToTextProvider
 from studentassistant.stt.fakes import FakeProvider
-from studentassistant.vault import Vault, sources_directory
+from studentassistant.vault import Vault, sources_directory, user_ids
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sessions" / "sample"
 CLIENT_STT = SttSettings(mode="client", provider="web-speech", language="es")
@@ -93,12 +93,25 @@ def fresh_vault(tmp_path: Path, tmp_vault: Vault) -> Vault:
     return Vault.init(tmp_path / "fresh-vault", student="Ana García")
 
 
+@pytest.fixture
+def fresh_user_vault(fresh_vault: Vault) -> Vault:
+    """`fresh_vault` narrowed to its one user: where the replayed session's content lands.
+
+    The replay starts its session through `POST /api/sessions`, which acts for that user (#550),
+    so the events and the captures it reads back are under `users/<id>/` of the fresh vault too.
+    """
+    (user_id,) = user_ids(fresh_vault)
+    return fresh_vault.for_user(user_id)
+
+
 def test_a_recorded_session_replays_into_a_fresh_vault_with_the_same_finals_and_captures(
     server: ServerSettings,
     codes: PairingCodes,
     tmp_path: Path,
     tmp_vault: Vault,
+    user_vault: Vault,
     fresh_vault: Vault,
+    fresh_user_vault: Vault,
 ) -> None:
     recordings = tmp_path / "recordings"
     live = make_app(server, codes, tmp_path, tmp_vault, CLIENT_STT, SessionRecorder(recordings))
@@ -132,11 +145,11 @@ def test_a_recorded_session_replays_into_a_fresh_vault_with_the_same_finals_and_
     fresh = make_app(server, codes, tmp_path, fresh_vault, CLIENT_STT)
     fresh_result = run_replay(fresh, recorded)
 
-    assert vault_finals(fresh_vault, fresh_result) == finals(sample)
-    assert vault_finals(fresh_vault, fresh_result) == vault_finals(tmp_vault, live_result)
+    assert vault_finals(fresh_user_vault, fresh_result) == finals(sample)
+    assert vault_finals(fresh_user_vault, fresh_result) == vault_finals(user_vault, live_result)
     assert fresh_result.captures_stored == live_result.captures_stored == 1
-    live_book = sources_directory(tmp_vault, "biologia", "la-celula", "book")
-    fresh_book = sources_directory(fresh_vault, "biologia", "la-celula", "book")
+    live_book = sources_directory(user_vault, "biologia", "la-celula", "book")
+    fresh_book = sources_directory(fresh_user_vault, "biologia", "la-celula", "book")
     assert (fresh_book / "page-001.jpg").read_bytes() == (live_book / "page-001.jpg").read_bytes()
 
 

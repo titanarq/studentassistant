@@ -86,7 +86,16 @@ def client(make_app: AppFactory, fake: FakeClaude) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> ReviseTopic:
+def topic(tmp_vault: Vault, user_vault: Vault) -> ReviseTopic:
+    """The fixture topic in both scopes, while the migration to per-user content is underway.
+
+    `POST /api/sessions` is user-scoped (#550), so the subject, the topic and the session the
+    service starts and ends live in the one student's folder; `/study`, `/notes/versions` and the
+    workspace routes still read the repository root (`SessionService.open_vault()`) until #551, so
+    the notes and the materials have to be there too. The handle returned is the root one, which is
+    what those routes and `_material` read and write; `_ended` asks for `user_vault`.
+    """
+    make_revise_topic(user_vault)
     return make_revise_topic(tmp_vault)
 
 
@@ -103,8 +112,9 @@ def _start(client: TestClient, topic: Topic) -> str:
     return str(started.json()["session_id"])
 
 
-def _ended(topic: Topic, session_id: str) -> bool:
-    meta = {m.id: m for m in list_sessions(topic.vault, topic.subject, topic.topic)}
+def _ended(user_vault: Vault, topic: Topic, session_id: str) -> bool:
+    """Whether the service ended `session_id`: its session is in the student's folder (#550)."""
+    meta = {m.id: m for m in list_sessions(user_vault, topic.subject, topic.topic)}
     return meta[session_id].ended_at is not None
 
 
@@ -154,7 +164,7 @@ def _options(body: dict[str, Any]) -> dict[str, tuple[str, str, str | None]]:
 
 
 def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_version(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -176,7 +186,7 @@ def test_switching_ends_the_capture_without_preparing_notes_and_labels_the_versi
         "diapositivas": "sin_generar",
     }
     app: Any = client.app
-    assert app.state.sessions.active is None and _ended(topic, session_id)
+    assert app.state.sessions.active is None and _ended(user_vault, topic, session_id)
     # No "prepárame el tema": no Claude call, no generation.
     assert fake.requests == []
     events = subscription.drain()
@@ -205,7 +215,7 @@ def test_switching_works_without_claude(make_app: AppFactory, topic: ReviseTopic
 
 
 def test_switching_is_refused_while_the_notes_are_busy(
-    client: TestClient, topic: ReviseTopic
+    client: TestClient, topic: ReviseTopic, user_vault: Vault
 ) -> None:
     session_id = _start(client, topic)
     app: Any = client.app
@@ -215,13 +225,14 @@ def test_switching_is_refused_while_the_notes_are_busy(
 
     assert response.status_code == 409
     assert "trabajando" in response.json()["detail"]
-    assert app.state.sessions.active is not None and not _ended(topic, session_id)
+    assert app.state.sessions.active is not None and not _ended(user_vault, topic, session_id)
     app.state.notes.release(topic.subject, topic.topic)
 
 
 def test_switching_without_notes_is_refused_and_ends_nothing(
-    client: TestClient, tmp_vault: Vault
+    client: TestClient, tmp_vault: Vault, user_vault: Vault
 ) -> None:
+    make_topic(user_vault)  # the session routes are user-scoped (#550); `/study` reads the root
     topic = make_topic(tmp_vault)
     session_id = _start(client, topic)
 
@@ -229,7 +240,7 @@ def test_switching_without_notes_is_refused_and_ends_nothing(
 
     assert response.status_code == 409
     assert response.json()["detail"].startswith("Todavía no hay apuntes")
-    assert not _ended(topic, session_id)
+    assert not _ended(user_vault, topic, session_id)
 
 
 def test_an_unknown_topic_is_404(client: TestClient, topic: ReviseTopic) -> None:
@@ -292,7 +303,7 @@ def _classify_study(fake: FakeClaude) -> None:
 
 
 def test_a_typed_study_message_ends_the_capture_and_offers_go_study(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -307,7 +318,7 @@ def test_a_typed_study_message_ends_the_capture_and_offers_go_study(
     _settle(client)
 
     app: Any = client.app
-    assert app.state.sessions.active is None and _ended(topic, session_id)
+    assert app.state.sessions.active is None and _ended(user_vault, topic, session_id)
     assert len(fake.requests) == 1  # only the classification: no notes generation
     events = subscription.drain()
     assert _names(events) == ["request.detected", "turn.started", "study.marked", "turn.result"]
@@ -326,7 +337,7 @@ def test_a_typed_study_message_ends_the_capture_and_offers_go_study(
 
 
 def test_a_spoken_study_request_is_dispatched_to_the_same_service(
-    client: TestClient, fake: FakeClaude, topic: ReviseTopic
+    client: TestClient, fake: FakeClaude, topic: ReviseTopic, user_vault: Vault
 ) -> None:
     session_id = _start(client, topic)
     subscription = _subscribe(client, topic)
@@ -348,7 +359,7 @@ def test_a_spoken_study_request_is_dispatched_to_the_same_service(
     client.portal.call(publish)  # type: ignore[union-attr]
     _settle(client)
 
-    assert _ended(topic, session_id)
+    assert _ended(user_vault, topic, session_id)
     events = subscription.drain()
     result = next(e.data for e in events if e.event == "turn.result")
     assert result["origin"] == "voice" and result["request"]["request_id"] == "req-1"

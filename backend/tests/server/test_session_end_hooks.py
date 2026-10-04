@@ -27,10 +27,11 @@ def service(tmp_vault: Vault) -> SessionService:
 
 
 async def _start(service: SessionService) -> Session:
-    subject = await service.create_subject("Física")
-    topic = await service.create_topic(subject.subject_id, "Cinemática")
-    started = await service.start(subject.subject_id, topic.topic_id, client_time_ms=1)
-    return await service.require_active(started.session_id)
+    # `None` names the vault's one user (#550): these tests are about the end hooks, not users.
+    subject = await service.create_subject(None, "Física")
+    topic = await service.create_topic(None, subject.subject_id, "Cinemática")
+    started = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=1)
+    return await service.require_active(None, started.session_id)
 
 
 def _kinds(session: Session) -> list[str]:

@@ -69,9 +69,10 @@ PAGE_PATH = "subjects/fisica/topics/cinematica/sources/notes/page-001.page.jpg"
 
 
 async def _started(service: SessionService) -> str:
-    subject = await service.create_subject("Física")
-    topic = await service.create_topic(subject.subject_id, "Cinemática")
-    session = await service.start(subject.subject_id, topic.topic_id, client_time_ms=0)
+    # `None` names the vault's one user (#550): the stream follows a session, whoever it is.
+    subject = await service.create_subject(None, "Física")
+    topic = await service.create_topic(None, subject.subject_id, "Cinemática")
+    session = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=0)
     return session.session_id
 
 

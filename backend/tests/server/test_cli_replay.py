@@ -4,6 +4,10 @@ Without `--url` the command builds the app in-process from the configuration, wh
 at `tmp_vault` and a temporary devices file through `SA_*` variables (the autouse
 `isolated_config` already cleared the machine's). `--speed 1000` keeps the real pacing to a few
 milliseconds. `--url` is checked by standing an in-process app in for the running server.
+
+The replay reaches the backend through its subject, topic and session routes, which act for the
+vault's one user (#550): what it writes is read back through `user_vault`, that student's folder,
+while the configured vault path and `create_app` keep taking the ROOT handle.
 """
 
 from __future__ import annotations
@@ -47,29 +51,31 @@ def recorded_finals() -> list[str]:
     return [message.text for message in transcript if isinstance(message, TranscriptClientFinal)]
 
 
-def test_replay_in_process_fills_the_configured_vault(configured: Vault) -> None:
+def test_replay_in_process_fills_the_configured_vault(configured: Vault, user_vault: Vault) -> None:
     result = CliRunner().invoke(cli, ["replay", str(FIXTURE), "--speed", "1000"])
 
     assert result.exit_code == 0, result.output
     assert "reproducida en biologia/la-celula: 3 frases finales" in result.output
     assert "1 eventos, 0 tramas de audio, 1 capturas guardadas." in result.output
-    assert finals_in(configured, "biologia", "la-celula") == recorded_finals()
-    book = sources_directory(configured, "biologia", "la-celula", "book")
+    assert finals_in(user_vault, "biologia", "la-celula") == recorded_finals()
+    book = sources_directory(user_vault, "biologia", "la-celula", "book")
     assert (book / "page-001.jpg").is_file()
 
 
-def test_the_topic_option_overrides_the_recorded_topic(configured: Vault) -> None:
+def test_the_topic_option_overrides_the_recorded_topic(
+    configured: Vault, user_vault: Vault
+) -> None:
     result = CliRunner().invoke(
         cli, ["replay", str(FIXTURE), "--speed", "1000", "--topic", "fisica/cinematica"]
     )
 
     assert result.exit_code == 0, result.output
-    assert finals_in(configured, "fisica", "cinematica") == recorded_finals()
+    assert finals_in(user_vault, "fisica", "cinematica") == recorded_finals()
     assert not (configured.path / "subjects" / "biologia").exists()
 
 
 def test_the_url_option_talks_to_that_backend(
-    configured: Vault, monkeypatch: pytest.MonkeyPatch
+    configured: Vault, user_vault: Vault, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     urls: list[str] = []
 
@@ -85,7 +91,7 @@ def test_the_url_option_talks_to_that_backend(
 
     assert result.exit_code == 0, result.output
     assert urls == ["http://localhost:8765"]
-    assert finals_in(configured, "biologia", "la-celula") == recorded_finals()
+    assert finals_in(user_vault, "biologia", "la-celula") == recorded_finals()
 
 
 def test_a_backend_in_the_other_stt_mode_is_refused(
