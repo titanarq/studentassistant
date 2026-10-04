@@ -7,8 +7,9 @@ recorded in the vault's ledgers cost, `import-pdf` adds a PDF (or a page range o
 as a source, `replay` feeds a recorded session through the gateway as a capture client would,
 `setup` gets a PC from clone to running (the vault, the Anthropic API key, the STT model, the
 systemd service), `doctor` checks that it is, `index rebuild` recreates the derived search
-index from the vault, `vault stats` shows how big the vault is and what makes it big, `purge`
-applies the vault's retention policy, `generate <kind> --topic`
+index from the vault, `vault stats` shows how big the vault is and what makes it big,
+`vault migrate-users` moves the root content of a format-1 vault into its first user's folder,
+`purge` applies the vault's retention policy, `generate <kind> --topic`
 builds one kind of study material from a topic's notes (`studentassistant.generators`), and
 `triage <subject> <topic> [--apply]` shows (or stores) the capture triage of a topic.
 
@@ -113,6 +114,7 @@ from studentassistant.vault import (
     Vault,
     VaultBusyError,
     VaultError,
+    VaultNeedsMigrationError,
     list_feedback,
     list_subjects,
     list_topics,
@@ -130,6 +132,12 @@ from studentassistant.vault.github import (
     select_host,
 )
 from studentassistant.vault.index import IndexReport, VaultIndexError, rebuild_index
+from studentassistant.vault.migrate import (
+    MigrationRefusedError,
+    MigrationReport,
+    migrate_to_users,
+    migration_commit_subject,
+)
 from studentassistant.vault.purge import (
     REASON_TEXT,
     Compaction,
@@ -541,6 +549,164 @@ def vault_stats_command(
         typer.echo(stats.model_dump_json(indent=2))
     else:
         _print_vault_stats(stats)
+
+
+SYNC_OUTCOME_TEXT: dict[str, str] = {
+    "offline": (
+        "el remoto no responde; la migración es local y la subida se reintentará en la próxima"
+        " sincronización"
+    ),
+    "auth": "el remoto no ha aceptado las credenciales; pasa `studentassistant doctor`",
+    "error": "la sincronización no ha terminado bien; pasa `studentassistant doctor`",
+}
+"""What a migration says of the sync it starts with, unless that sync found the vault up to date.
+
+`conflict` is not here because a migration refuses one instead of reporting it
+(`vault.migrate.MigrationRefusedError`).
+"""
+
+
+def _open_vault_whatever_its_format(path: Path) -> Vault:
+    """A root handle on the vault at `path`, whichever of the two formats it is.
+
+    `Vault.open` refuses a format-1 vault, whose content is at the root and is nobody's, and
+    `open_for_migration` refuses any other, so trying the one and then the other is what lets
+    `migrate-users` migrate a vault that needs it and answer that there was nothing to do to a vault
+    that does not, instead of answering either of them with the other's refusal.
+
+    Raises:
+        VaultError: as `Vault.open` and `Vault.open_for_migration`.
+    """
+    try:
+        return Vault.open(path)
+    except VaultNeedsMigrationError:
+        return Vault.open_for_migration(path)
+
+
+def _print_migration(report: MigrationReport) -> None:
+    """The user a migration gave the root's content to, and the move itself; what one would do.
+
+    The files are counted and not listed because a vault of them is a vault of photographs, and
+    what a student needs to see is that all of them went where the subjects they know did.
+    """
+    user = f"{report.user_id} ({report.user_name})"
+    where = f"users/{report.user_id}/subjects/"
+    if report.dry_run:
+        typer.echo(f"Simulación: el contenido de la raíz pasaría al usuario {user}.")
+        verb = "que se moverían"
+    else:
+        typer.echo(f"El contenido de la raíz del vault es ahora del usuario {user}.")
+        verb = "movidos"
+    if report.subjects:
+        typer.echo(f"  Asignaturas: {', '.join(report.subjects)}")
+    typer.echo(f"  Archivos {verb}: {len(report.moved_files)} (a {where})")
+    if report.commit is not None and report.user_id is not None:
+        typer.echo(
+            f"  Todo en un único commit: {report.commit[:10]}"
+            f" «{migration_commit_subject(report.user_id)}»"
+        )
+    _print_migration_tags(report)
+
+
+def _print_migration_tags(report: MigrationReport) -> None:
+    """Every notes version a migration names inside its user's folder, old name and new."""
+    if not report.tags:
+        return
+    typer.echo(
+        f"  Versiones de apuntes {'que se recrearían' if report.dry_run else 'recreadas'} con el"
+        f" prefijo del usuario: {len(report.tags)}"
+    )
+    for tag in report.tags:
+        taken = "" if report.dry_run or tag.created else " (ese nombre ya existía)"
+        typer.echo(f"    {tag.old_name} -> {tag.new_name}{taken}")
+
+
+def _print_migration_outcome(report: MigrationReport) -> None:
+    """What the sync before the move, the push after it and the move itself left to say."""
+    outcome = report.sync_outcome
+    if outcome is not None and outcome != "ok":
+        detail = SYNC_OUTCOME_TEXT.get(outcome, outcome)
+        git_said = f" ({report.sync_message})" if report.sync_message else ""
+        typer.echo(f"Sincronización previa: {detail}{git_said}.")
+    if report.pushed:
+        typer.echo("Subida a GitHub: sí.")
+    else:
+        failure = report.push_failure
+        why = f" ({failure.kind}: {failure.message})" if failure is not None else ""
+        typer.echo(
+            f"Subida a GitHub: no se ha podido subir ahora{why}; se reintentará en la próxima"
+            " sincronización."
+        )
+    for entry in report.left_behind:
+        typer.echo(f"AVISO: {entry} no se ha podido mover con git y sigue en la raíz del vault.")
+
+
+def _rebuild_indexes_after_migration(settings: Settings) -> None:
+    """The per-user indexes of a vault the move has just rearranged (one database per user, #547).
+
+    A failure here is not a failure of the migration, which is committed and complete: the index is
+    a cache that `studentassistant index rebuild` recreates from the vault, so the student is told
+    how and the command still exits 0.
+    """
+    try:
+        report = rebuild_index(Vault.open(settings.vault.path), settings.vault.index_path)
+    except VaultError as error:
+        typer.echo(
+            f"No se ha podido reconstruir el índice de búsqueda ({error}). La migración sí"
+            " está hecha: ejecuta `studentassistant index rebuild`."
+        )
+        return
+    typer.echo(_index_summary(report))
+
+
+@vault_cli.command("migrate-users")
+def vault_migrate_users_command(
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name", help="Nombre del primer usuario; el que guarda el vault si se omite."
+        ),
+    ] = None,
+    email: Annotated[
+        str | None, typer.Option("--email", help="Email del primer usuario (opcional).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Solo listar lo que se movería, sin cambiar nada.")
+    ] = False,
+) -> None:
+    """Move a format-1 vault's root content into its first user's folder, in one commit.
+
+    Stop the backend first (`systemctl --user stop studentassistant`): it holds a handle on a vault
+    this move makes stale, and would commit into a repository whose content is on its way to
+    another directory. Nothing is lost -- the content moves with `git mv`, so its history follows
+    it, and every notes version is re-created under the user's prefix -- and a vault that is
+    already migrated is left alone and says so.
+    """
+    settings = Settings()
+    try:
+        vault = _open_vault_whatever_its_format(settings.vault.path)
+    except VaultError as error:
+        typer.echo(f"No se puede abrir la bóveda: {error}")
+        raise typer.Exit(code=1) from error
+    try:
+        report = migrate_to_users(
+            vault, GitSync(vault, settings.vault.git), name=name, email=email, dry_run=dry_run
+        )
+    except MigrationRefusedError as error:
+        typer.echo(str(error))
+        raise typer.Exit(code=1) from error
+    except VaultError as error:
+        typer.echo(f"La migración no se ha completado: {error}")
+        raise typer.Exit(code=1) from error
+    if report.reason is not None:
+        typer.echo(report.reason)
+        return
+    _print_migration(report)
+    if report.dry_run:
+        typer.echo("No se ha cambiado nada.")
+        return
+    _print_migration_outcome(report)
+    _rebuild_indexes_after_migration(settings)
 
 
 feedback_cli = typer.Typer(

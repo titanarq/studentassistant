@@ -15,7 +15,9 @@ from studentassistant.install.apikey import API_KEY_ENV_VAR, store_api_key
 from studentassistant.install.doctor import Check, DoctorProbes, run_doctor
 from studentassistant.install.service import SystemctlResult
 from studentassistant.llm import ClaudeCodeStatus, LLMAPIError, LLMConnectionError
+from studentassistant.vault import Vault
 from studentassistant.vault.setup import create_vault
+from studentassistant.vault.vault import MIGRATE_USERS_COMMAND
 from whisper_fakes import hide_faster_whisper, install_fakes
 
 KEY = "sk-" + "ant-" + "api03-" + "y" * 40
@@ -207,6 +209,21 @@ def test_a_missing_vault_fails_and_skips_the_remote(env: Path, host: LocalHost) 
     assert checks["Vault"].failed
     assert "Remoto del vault" not in checks
     assert "Subida al vault" not in checks
+
+
+def test_a_format_1_vault_is_an_aviso_naming_the_migration(
+    env: Path, host: LocalHost, legacy_vault: Vault, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vault to migrate is not a broken one (#548): `doctor` says how to migrate it and passes."""
+    monkeypatch.setenv("SA_VAULT__PATH", str(legacy_vault.root))
+
+    checks = by_name(run_doctor(Settings(), probes=probes(host)))
+
+    vault = checks["Vault"]
+    assert vault.status == "aviso" and not vault.failed
+    assert MIGRATE_USERS_COMMAND in vault.detail
+    assert str(legacy_vault.root) in vault.detail, "the student is told which vault it is"
+    assert "Remoto del vault" not in checks, "what follows needs a vault this backend may use"
 
 
 def test_the_wrong_origin_and_no_push_access_fail(

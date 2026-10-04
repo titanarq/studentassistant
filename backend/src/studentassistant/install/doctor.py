@@ -5,10 +5,11 @@ when faster-whisper is selected, faster-whisper itself, CUDA and the downloaded 
 Anthropic API key (present; with `api_call` also accepted by the API, through one free call) or,
 when `[llm] backend` resolves to `claude-code`, the Claude Code CLI (on PATH and signed in,
 through one `claude auth status`, never a model call),
-the vault (opens, has an `origin`, may be pushed to, answers `git ls-remote` the way the systemd
-service reaches it -- no terminal, no askpass, no `gh` environment -- (#308; with `fix`, the
-vault's credential helper is written first), stays under `vault.size_warning_mb`), the
-server port, the systemd service, and
+the vault (opens -- one of format 1, whose content no user owns yet, is an `aviso` naming
+`studentassistant vault migrate-users` and not a `fallo` (#548) -- has an `origin`, may be
+pushed to, answers `git ls-remote` the way the systemd service reaches it -- no terminal, no
+askpass, no `gh` environment -- (#308; with `fix`, the vault's credential helper is written
+first), stays under `vault.size_warning_mb`), the server port, the systemd service, and
 Marp CLI (the slides generator's PDF/PPTX export; missing is only an `aviso`).
 A check is `ok`, `aviso` (works, but worse than it could) or `fallo`; any `fallo` makes the
 command exit 1. Everything the student reads is Spanish, and no check ever prints a secret.
@@ -49,7 +50,7 @@ from studentassistant.llm import (
     resolve_backend,
 )
 from studentassistant.stt.registry import UnknownProviderError, provider_class
-from studentassistant.vault import Vault, VaultError
+from studentassistant.vault import Vault, VaultError, VaultNeedsMigrationError
 from studentassistant.vault.credentials import probe_unattended_access, unattended_runner
 from studentassistant.vault.git import GitIdentity
 from studentassistant.vault.github import GitHubHost, GitHubHostError, select_host
@@ -262,6 +263,11 @@ def check_vault(settings: Settings, probes: DoctorProbes, fix: bool = False) -> 
     path = settings.vault.path
     try:
         vault = Vault.open(path)
+    except VaultNeedsMigrationError as error:
+        # A vault whose content is at the root is one to migrate, not a broken one (#548): the
+        # error's own Spanish message names the command that migrates it, which is the whole check.
+        # What follows needs a handle this backend may use, so a format-1 vault stops here.
+        return [Check("Vault", "aviso", str(error))]
     except VaultError as error:
         return [Check("Vault", "fallo", f"no se puede abrir {path}: {error}")]
     checks = [Check("Vault", "ok", f"{vault.path} (de {vault.meta.student})")]
