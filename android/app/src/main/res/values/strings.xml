@@ -63,6 +63,8 @@
     <string name="connection_no_backend">No hay ningún ordenador activo. Empareja uno primero.</string>
     <string name="connection_health">Servidor accesible</string>
     <string name="connection_subjects">Acceso autorizado (asignaturas)</string>
+    <string name="connection_users">Acceso autorizado (usuarios)</string>
+    <string name="connection_users_ok">Correcto (%1$s usuarios)</string>
     <string name="connection_not_run">Sin comprobar</string>
     <string name="connection_running">Comprobando…</string>
     <string name="connection_health_ok">Correcto (protocolo %1$s)</string>

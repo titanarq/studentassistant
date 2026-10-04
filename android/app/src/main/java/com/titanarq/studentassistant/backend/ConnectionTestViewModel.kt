@@ -29,15 +29,22 @@ data class ConnectionTestUiState(
     val noBackend: Boolean = false,
     /** `GET /api/health` (unauthenticated). */
     val health: CheckState = CheckState.NotRun,
-    /** `GET /api/subjects` (authenticated with the stored token). */
-    val subjects: CheckState = CheckState.NotRun,
+    /**
+     * The authenticated check with the stored token: `GET /api/subjects` as the selected user, or,
+     * while nobody is selected ([asUser] false), `GET /api/users`, which needs no user.
+     */
+    val access: CheckState = CheckState.NotRun,
+    /** True when [access] ran as the selected user (subjects), false when it listed the users. */
+    val asUser: Boolean = true,
 ) {
-    val running: Boolean get() = health == CheckState.Running || subjects == CheckState.Running
+    val running: Boolean get() = health == CheckState.Running || access == CheckState.Running
 }
 
 /**
- * Tests the active backend: `GET /api/health`, then one authenticated call (`GET /api/subjects`).
- * Both always run, so the screen shows the outcome of each.
+ * Tests the active backend: `GET /api/health`, then one authenticated call: `GET /api/subjects` as
+ * the selected user or, while nobody is selected (right after pairing, a vault with several users
+ * would answer 400 `user_required`), `GET /api/users`. Both always run, so the screen shows the
+ * outcome of each.
  */
 class ConnectionTestViewModel(
     private val client: BackendClient,
@@ -58,15 +65,21 @@ class ConnectionTestViewModel(
                 _state.value = ConnectionTestUiState(noBackend = true)
                 return@launch
             }
+            val userId = users.current.value?.id
             _state.value = ConnectionTestUiState(
                 backendName = backend.displayName,
                 health = CheckState.Running,
-                subjects = CheckState.Running,
+                access = CheckState.Running,
+                asUser = userId != null,
             )
             val health = client.health(backend.baseUrl).toCheck { it.protocolVersion }
             _state.update { it.copy(health = health) }
-            val subjects = client.listSubjects(backend.credentials.forUser(users.current.value?.id)).toCheck { it.subjects.size.toString() }
-            _state.update { it.copy(subjects = subjects) }
+            val access = if (userId != null) {
+                client.listSubjects(backend.credentials.forUser(userId)).toCheck { it.subjects.size.toString() }
+            } else {
+                client.listUsers(backend.credentials).toCheck { it.users.size.toString() }
+            }
+            _state.update { it.copy(access = access) }
         }
     }
 

@@ -40,8 +40,14 @@ fun ConnectionTestScreen(
                 CheckRow(stringResource(R.string.connection_health), state.health) {
                     stringResource(R.string.connection_health_ok, it)
                 }
-                CheckRow(stringResource(R.string.connection_subjects), state.subjects) {
-                    stringResource(R.string.connection_subjects_ok, it)
+                if (state.asUser) {
+                    CheckRow(stringResource(R.string.connection_subjects), state.access) {
+                        stringResource(R.string.connection_subjects_ok, it)
+                    }
+                } else {
+                    CheckRow(stringResource(R.string.connection_users), state.access) {
+                        stringResource(R.string.connection_users_ok, it)
+                    }
                 }
                 Button(onClick = viewModel::run, enabled = !state.running) {
                     Text(stringResource(R.string.connection_run_again))

@@ -65,7 +65,7 @@ Thin capture client (ADR-0001), Spanish UI:
 - **Screens** (Spanish, `res/values/strings.xml`; failure messages in `ui/Messages.kt`): pairing
   (QR + manual form), paired backends (`PairedBackendsViewModel`: switch active, remove with
   confirmation) and connection test (`ConnectionTestViewModel`: `GET /api/health`, then
-  `GET /api/subjects` with the token, each outcome shown). `AppContainer(filesDir, deviceName)`
+  `GET /api/subjects` as the selected user or `GET /api/users` when none is selected, each outcome shown). `AppContainer(filesDir, deviceName)`
   holds `backendClient`, `backendStore` and the three view-model factories; `MainActivity`
   switches between the screens (`ui.Route`) and opens pairing when no backend is stored.
 - **Cleartext**: the backend serves plain HTTP on the LAN, and its address is only known at
@@ -104,8 +104,10 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
   on the WebSocket handshake (`SessionConnection(..., userId)`). The view models take the user from
   `UserHolder` when they read the active backend (`HomeViewModel`, `ShareViewModel`,
   `TutorViewModel`, `StudyDeskViewModel`, `ConnectionTestViewModel`); a user change reloads the home.
-  The connection test's "asignaturas" check acts as the selected user and, right after pairing
-  (nobody selected), sends no header.
+  The connection test (#568) runs `GET /api/health`, then one authenticated check with the stored
+  token: «asignaturas» (`GET /api/subjects`) as the selected user, or, while nobody is selected
+  (right after pairing), «usuarios» (`GET /api/users`, user-independent), so a vault with several
+  users never answers it `400 user_required`. No `X-SA-User` is sent without a selected user.
 - **Study desk**: next to `sa_token` the WebView gets `sa_user=<id>; Path=/; SameSite=Strict`
   (`StudyDesk.userCookie`, `DeskPage.userCookie`); `removeAllCookies` drops both when the screen is
   left.
