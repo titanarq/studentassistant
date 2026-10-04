@@ -28,8 +28,13 @@ def test_a_vault_just_created_or_read_back_is_a_root_handle_on_the_repository(
     assert opened == tmp_vault, "the same directory read back is the same handle"
 
 
-def test_init_creates_no_user_folder_of_its_own(tmp_vault: Vault) -> None:
-    assert not (tmp_vault.root / USERS_DIRNAME).exists()
+def test_init_leaves_the_handle_on_the_root_beside_the_first_user_it_created(
+    tmp_vault: Vault,
+) -> None:
+    assert tmp_vault.user_id is None and tmp_vault.path == tmp_vault.root
+    assert (tmp_vault.root / USERS_DIRNAME / USER_ID / USER_PROFILE_NAME).is_file(), (
+        "a vault is born with the user its content belongs to (#548)"
+    )
 
 
 def test_for_user_gives_a_handle_on_the_users_folder_of_the_same_repository(
@@ -63,15 +68,15 @@ def test_a_vault_read_back_gives_the_handle_of_the_same_user(tmp_vault: Vault) -
 
 def test_for_user_refuses_a_user_that_is_not_there(tmp_vault: Vault) -> None:
     with pytest.raises(UserNotFoundError):
-        tmp_vault.for_user(USER_ID)
+        tmp_vault.for_user(OTHER_USER_ID)
 
 
 def test_for_user_refuses_a_folder_that_holds_no_profile(tmp_vault: Vault) -> None:
-    user_directory(tmp_vault, USER_ID).mkdir(parents=True)
+    user_directory(tmp_vault, OTHER_USER_ID).mkdir(parents=True)
 
     with pytest.raises(UserNotFoundError):
-        tmp_vault.for_user(USER_ID)
-    assert not (user_directory(tmp_vault, USER_ID) / USER_PROFILE_NAME).exists()
+        tmp_vault.for_user(OTHER_USER_ID)
+    assert not (user_directory(tmp_vault, OTHER_USER_ID) / USER_PROFILE_NAME).exists()
 
 
 @pytest.mark.parametrize(

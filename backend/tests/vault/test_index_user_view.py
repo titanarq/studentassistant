@@ -155,13 +155,15 @@ def test_a_users_index_is_keyed_to_the_repositorys_head(tmp_vault: Vault, index_
 
 
 def test_a_root_handle_rebuilds_one_database_per_user_in_list_users_order(
-    tmp_vault: Vault, index_path: Path
+    vault_with_no_users: Vault, index_path: Path
 ) -> None:
-    # `list_users` sorts by name, so these two come out in the other order than their ids do.
-    ana = give_notes(tmp_vault, "ana", "Zoe Ruiz", "los cloroplastos")
-    bea = give_notes(tmp_vault, "bea", "Ana García", "las mitocondrias")
+    # `list_users` sorts by name, so these two come out in the other order than their ids do. The
+    # vault has nobody else in it: the user `Vault.init` creates is named "Ana García" too, and a
+    # third user of that name would say nothing about the order (#548).
+    ana = give_notes(vault_with_no_users, "ana", "Zoe Ruiz", "los cloroplastos")
+    bea = give_notes(vault_with_no_users, "bea", "Ana García", "las mitocondrias")
 
-    report = rebuild_index(tmp_vault, index_path)
+    report = rebuild_index(vault_with_no_users, index_path)
 
     assert [user_id for user_id, _ in report.users] == ["bea", "ana"]
     assert report.rebuilt
@@ -217,17 +219,19 @@ def test_a_unit_a_users_index_cannot_read_is_named_as_theirs_in_the_combined_rep
 
 
 def test_a_vault_with_no_users_keeps_the_one_database_at_the_path(
-    tmp_vault: Vault, index_path: Path
+    vault_with_no_users: Vault, index_path: Path
 ) -> None:
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, SUBJECT, "Cinemática")
-    write_notes(tmp_vault, SUBJECT, TOPIC, f"# de siempre\nLa {WORD} de antes de los usuarios.\n")
+    create_subject(vault_with_no_users, "Física")
+    create_topic(vault_with_no_users, SUBJECT, "Cinemática")
+    write_notes(
+        vault_with_no_users, SUBJECT, TOPIC, f"# de siempre\nLa {WORD} de antes de los usuarios.\n"
+    )
 
-    report = rebuild_index(tmp_vault, index_path)
+    report = rebuild_index(vault_with_no_users, index_path)
 
     assert report.users == ()
     assert report.documents == 1
     assert index_path.is_file()
-    with VaultIndex.open(tmp_vault, index_path) as index:
+    with VaultIndex.open(vault_with_no_users, index_path) as index:
         assert [hit.path for hit in index.search("fotosintesis")] == [NOTES]
         assert index.note_versions() == []

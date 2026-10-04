@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -9,9 +10,14 @@ import pytest
 
 from studentassistant.install import service
 from studentassistant.vault import Vault
+from studentassistant.vault.files import dump_yaml, write_text_atomic
+from studentassistant.vault.models import LEGACY_FORMAT_VERSION
+from studentassistant.vault.vault import USERS_DIRNAME, VAULT_META_NAME
 
 # The name a test vault records in its `vault.yaml`; tests that assert on it import it from here.
 STUDENT = "Ana García"
+# The id of the user every test vault is born with, which is `slugify(STUDENT)` (#548).
+STUDENT_USER_ID = "ana-garcia"
 
 
 @pytest.fixture
@@ -22,10 +28,50 @@ def tmp_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Vault:
     the global configuration of whoever runs it: a test must neither depend on the student's home
     directory nor write into it. `XDG_CONFIG_HOME` goes with it, since git looks there before it
     looks in `~/.gitconfig`.
+
+    The handle is the ROOT one, `Vault.init`'s own: the repository, whose `users/` holds the first
+    user, `STUDENT_USER_ID`. Most of the suite still writes its content through this handle, at the
+    root, because nothing hands out user handles yet -- the server becomes user-scoped in #549,
+    #550 and #551. A test of what one student sees asks for `tmp_vault.for_user(STUDENT_USER_ID)`.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return Vault.init(tmp_path / "vault", student=STUDENT)
+
+
+@pytest.fixture
+def vault_with_no_users(tmp_vault: Vault) -> Vault:
+    """`tmp_vault` with the user it was born with taken out: a vault nobody belongs to yet.
+
+    `Vault.init` creates the first user (#548), so the state these tests ask about -- what
+    `list_users` says of a vault with nobody in it, which id the first `create_user` picks -- no
+    longer comes with a vault. Removing `users/` is what a repository an older backend wrote looks
+    like, and nothing else about it changes.
+    """
+    shutil.rmtree(tmp_vault.root / USERS_DIRNAME)
+    return tmp_vault
+
+
+@pytest.fixture
+def legacy_vault(vault_with_no_users: Vault) -> Vault:
+    """A format-1 vault: its content at the repository root, no user, opened for migration.
+
+    `Vault.open` refuses a vault like this one and names the command that migrates it, so the
+    handle handed out is `Vault.open_for_migration`'s -- the only one that opens it. Its
+    `vault.yaml` holds the three fields the format-1 layout had, and no `legacy_root_user`: that
+    field is what format 2 writes to say who received the root's content (#548).
+    """
+    write_text_atomic(
+        vault_with_no_users.root / VAULT_META_NAME,
+        dump_yaml(
+            {
+                "format_version": LEGACY_FORMAT_VERSION,
+                "created_at": vault_with_no_users.meta.created_at.isoformat(),
+                "student": STUDENT,
+            }
+        ),
+    )
+    return Vault.open_for_migration(vault_with_no_users.root)
 
 
 @pytest.fixture

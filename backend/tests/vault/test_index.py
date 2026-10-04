@@ -377,19 +377,21 @@ def test_open_reports_a_rebuild_only_when_head_moved(
 
 
 def test_an_index_of_another_vault_or_a_corrupt_file_is_rebuilt(
-    tmp_vault: Vault, content: dict[str, str], index_path: Path, tmp_path: Path
+    vault_with_no_users: Vault, content: dict[str, str], index_path: Path, tmp_path: Path
 ) -> None:
+    # `content` is this same vault's, written at its root; with nobody in it, that is the content
+    # a root handle's one database is built over (#548).
     other = Vault.init(tmp_path / "other", student="Luis")
     with VaultIndex.open(other, index_path) as index:
         assert index.subjects() == []
-    with VaultIndex.open(tmp_vault, index_path) as index:
+    with VaultIndex.open(vault_with_no_users, index_path) as index:
         assert len(index.subjects()) == 2
 
     index_path.write_bytes(b"this is not a database" * 100)
-    with VaultIndex.open(tmp_vault, index_path) as index:
+    with VaultIndex.open(vault_with_no_users, index_path) as index:
         assert len(index.subjects()) == 2
     index_path.write_bytes(b"still not a database" * 100)
-    assert rebuild_index(tmp_vault, index_path).documents > 0
+    assert rebuild_index(vault_with_no_users, index_path).documents > 0
 
 
 def test_run_keeps_the_index_updated(

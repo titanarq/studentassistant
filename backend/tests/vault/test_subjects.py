@@ -22,7 +22,7 @@ from studentassistant.vault import (
 from studentassistant.vault.files import read_yaml
 from studentassistant.vault.models import Subject
 from studentassistant.vault.subjects import SUBJECT_FILE_NAME, SUBJECTS_DIRNAME
-from studentassistant.vault.vault import GITATTRIBUTES_NAME, VAULT_META_NAME
+from studentassistant.vault.vault import GITATTRIBUTES_NAME, USERS_DIRNAME, VAULT_META_NAME
 
 
 def subject_file(vault: Vault, slug: str) -> Path:
@@ -75,6 +75,7 @@ def test_creating_a_subject_adds_only_its_own_directory_to_the_vault(tmp_vault: 
         ".git",
         GITATTRIBUTES_NAME,
         SUBJECTS_DIRNAME,
+        USERS_DIRNAME,
         VAULT_META_NAME,
     ]
     assert sorted(entry.name for entry in subject_directory(tmp_vault, stored.slug).iterdir()) == [

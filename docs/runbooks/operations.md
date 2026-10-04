@@ -75,6 +75,53 @@ time instead of retrying.
 no required reviews, and `enforce_admins=false`, so the human's direct pushes still work. Read it
 with `gh api repos/titanarq/studentassistant/branches/main/protection` (REST).
 
+## The PC's real vault: migrating it to users (format 2)
+
+The vault this host's backend writes (`[vault] path` in `~/.config/studentassistant/config.toml`) is
+the human's real study content, not a fixture: no agent run may point `vault migrate-users`,
+`purge`, `setup` or any other vault command at it (tests use `tmp_vault` and a `SA_CONFIG` inside
+`tmp_path`). The procedure is the human's; it is written down here because its *timing* is the
+mechanism's. Between the merge of #548 and the last server task of epic #544 (#549, #550, #551),
+`main` is a backend that refuses a format-1 vault and is not yet user-scoped, so **do not redeploy
+the PC's backend from `main` in that window**: migrate the real vault once those are merged.
+
+What the move does (`docs/modules/vault.md`, "Migration to users"): the root `subjects/` becomes
+the first user's, with `git mv` in ONE commit that keeps the history, and every notes version tag
+re-created under that user's prefix. Nothing is copied and nothing is deleted by hand.
+
+```sh
+systemctl --user stop studentassistant                  # it holds a handle the move makes stale
+uv run studentassistant vault migrate-users --dry-run   # lists the move; changes nothing
+uv run studentassistant vault migrate-users --name "Ana García"   # --name and --email are optional
+uv run studentassistant vault stats                     # the migrated vault, per user
+systemctl --user start studentassistant
+```
+
+Without `--name` the first user is the `student` `vault.yaml` already names; `--email` fills the
+profile's address, which the student can edit later in the app.
+
+`vault stats` is AFTER the move, not before it: it opens the vault the way the backend does, and a
+format-1 vault is refused with the same Spanish message that names this command (exit 1). For the
+size before the move, read `du -sh <vault>` and `git -C <vault> count-objects -vH`, and the
+`--dry-run` output for the subjects, the number of files and the tags that are about to move. After
+the move `vault stats` reports the whole repository from its root handle: no per-subject section
+(there is nothing at the root), the largest files with their `users/<id>/...` paths, and `--json`
+carrying the per-user breakdown.
+
+The run first commits what is pending and syncs (a conflict refuses it naming the paths, no network
+goes ahead and says so), refuses while any session of any topic is still unended, then moves,
+writes `vault.yaml` with `format_version: 2` and `legacy_root_user`, commits once, re-creates the
+tags, pushes and rebuilds the per-user search indexes. Everything it prints is Spanish; a refusal
+exits 1 with the reason and changes nothing. A second run says there was nothing to do, so
+repeating it is safe. A push that could not happen (offline, credentials) leaves the migration
+complete locally and the next sync carries it; the index rebuild failing does not undo anything
+either -- `studentassistant index rebuild` recreates a cache from the vault.
+
+`studentassistant doctor` reports a vault that still needs this as an `aviso` naming the command,
+not as a failure. A backend of format 2 refuses a format-1 vault until it is migrated, and an older
+backend refuses a migrated one, so the move is one-way: take the backup first (a `git clone` of the
+vault repository, or its GitHub remote up to date and a copy of it) and only then run the command.
+
 ## Known mechanism issues filed upstream
 
 - agent-os#14, #18, #27, #32, #33, #37, #39, #41, #51, #52, #71, #75, #86: fixed upstream,

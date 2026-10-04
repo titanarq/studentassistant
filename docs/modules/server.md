@@ -1519,6 +1519,20 @@ WebSocket gateway publish and subscribe here.
   batch commit of the vault carries it.
 - `studentassistant devices` / `devices list`: the paired devices (id, name, paired-at; never a
   token). `studentassistant devices revoke <id>` removes one, and its token stops being accepted.
+- `studentassistant vault migrate-users [--name NAME] [--email EMAIL] [--dry-run]` (#548, epic
+  #544): a format-1 vault's root content becomes its first user's, moved with `git mv` in ONE
+  commit that keeps the history, and every notes version tag is re-created under that user's
+  prefix (`vault.migrate`; the whole of it in `docs/modules/vault.md`, "Migration to users", and
+  the procedure for the PC's real vault in `docs/runbooks/operations.md`). Listed here because it
+  is the one command that must not run while `serve` does: a running backend holds a `Vault` handle
+  and a `GitSync` whose paths the move makes stale, and would commit into a repository whose
+  content is on its way to another directory, so both the command's `--help` and the runbook say to
+  stop the service first (`systemctl --user stop studentassistant`). It prints in Spanish what it
+  moved, the new user's id, the tags re-created and the push outcome, then rebuilds the per-user
+  indexes; any refusal exits 1 with the Spanish reason and changes nothing, and a vault that is
+  already format 2 is told there was nothing to do. Until #549-#551 land, a backend of format 2
+  refuses a format-1 vault and is not yet user-scoped: `main` in that window is not what the PC's
+  service should run.
 
 ### Shutdown on SIGTERM/SIGINT -- `server/serving.py` (#466)
 

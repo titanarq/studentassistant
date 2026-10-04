@@ -44,6 +44,12 @@ the `studentassistant` console script.
 - `studentassistant vault stats [--top N] [--json]` -- the vault's size by category, per subject
   and topic, the N largest files (default 10) and git's object store, as a Spanish table or JSON
   (`vault.stats`, `docs/modules/vault.md`, "Size report").
+- `studentassistant vault migrate-users [--name NAME] [--email EMAIL] [--dry-run]` -- a format-1
+  vault's root content becomes its first user's, in one commit that keeps the history, with every
+  notes version tag re-created under that user's prefix (#548). Run with the backend stopped: a
+  running one holds a handle and a sync whose paths the move makes stale
+  (`vault.migrate`, `docs/modules/vault.md`, "Migration to users"; the procedure for the PC's real
+  vault, `docs/runbooks/operations.md`).
 - Not built yet: `replay` (server).
 - `studentassistant eval run [--case NAME]... [--yes]` -- the eval set (below, "Evals"): prints
   the estimated cost per case and role, asks before any Claude call (`--yes` does not), runs
@@ -97,7 +103,10 @@ The PC-side pieces `setup`, `serve` and `doctor` use. Runbook (Spanish): `docs/r
   `loggedIn`, one subprocess, no model call), else the API key (in the environment, in a `0600` key
   file or, failing both, an `ant auth` profile found by `llm.find_ant_profile` through the
   `ant_profile` probe; the line names the source; with `api_call`, `llm.check_api_key` with the
-  key, or with none so the SDK resolves the profile); the vault opens; `origin` is `vault.repo`
+  key, or with none so the SDK resolves the profile); the vault opens -- one of format 1, whose
+  content no user owns yet, is an `aviso` naming `studentassistant vault migrate-users` and the
+  vault's path, not a `fallo`, and stops the check there, because what follows needs a handle this
+  backend may use (#548); `origin` is `vault.repo`
   and `git push --dry-run` succeeds (`vault.setup.check_remote_access`; no GitHub credentials
   means git's own); `git ls-remote origin` works the way the service runs git (`Acceso del
   servicio a GitHub`: `vault.credentials.probe_unattended_access`, no host environment, no prompt

@@ -13,8 +13,9 @@ from git_helpers import commit_count, git
 from secret_samples import GITHUB_PAT
 
 from github_fakes import LocalHost, bare_repo, remote_base
-from studentassistant.vault import Vault
+from studentassistant.vault import Vault, list_users
 from studentassistant.vault.github import GitHubHostError, TokenHost
+from studentassistant.vault.models import FORMAT_VERSION
 from studentassistant.vault.setup import SetupError, create_vault
 
 REPO = "ana/vault"
@@ -50,11 +51,24 @@ def test_create_makes_a_private_repo_and_pushes_the_initial_commit(
     origin = github / "ana" / "vault.git"
     assert git(result.vault.path, "remote", "get-url", "origin").strip() == host.remote_url(REPO)
     assert git(origin, "rev-parse", "main") == git(result.vault.path, "rev-parse", "HEAD")
-    assert set(git(origin, "ls-tree", "--name-only", "main").split()) == {
+    assert set(git(origin, "ls-tree", "-r", "--name-only", "main").split()) == {
         ".gitattributes",
         "vault.yaml",
-    }
+        "users/ana-garcia/profile.json",
+        "users/ana-garcia/subjects/.gitkeep",
+    }, "the vault is pushed with the first user in it, so a clone of it is a vault somebody can use"
     assert git(result.vault.path, "status", "--porcelain") == ""
+
+
+def test_create_makes_a_vault_of_the_format_this_backend_reads_with_its_first_user(
+    tmp_path: Path, host: LocalHost
+) -> None:
+    result = create_vault(tmp_path / "vault", REPO, STUDENT, host)
+
+    assert result.vault.meta.format_version == FORMAT_VERSION
+    assert result.vault.meta.legacy_root_user is None, "nothing was moved into it: it was born so"
+    assert [profile.id for profile in list_users(result.vault)] == ["ana-garcia"]
+    assert Vault.open(result.vault.path) == result.vault
 
 
 def test_create_uses_an_existing_empty_repository(

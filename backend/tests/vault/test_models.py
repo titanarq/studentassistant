@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from studentassistant.vault.models import (
     DEFAULT_FIDELITY_MODE,
     FORMAT_VERSION,
+    LEGACY_FORMAT_VERSION,
     Subject,
     Topic,
     VaultFileModel,
@@ -22,13 +23,37 @@ CREATED_AT = datetime(2026, 9, 24, 18, 30, tzinfo=UTC)
 def test_vault_meta_defaults_to_the_format_version_this_backend_writes() -> None:
     meta = VaultMeta(created_at=CREATED_AT, student="Ana")
 
-    assert meta.format_version == FORMAT_VERSION == 1
+    assert meta.format_version == FORMAT_VERSION == 2
 
 
-@pytest.mark.parametrize("format_version", [0, 2, 99])
+def test_a_vault_meta_nobody_was_moved_into_is_one_that_names_no_legacy_user() -> None:
+    assert VaultMeta(created_at=CREATED_AT, student="Ana").legacy_root_user is None
+
+
+def test_a_vault_meta_says_which_user_received_the_content_of_a_migrated_vault() -> None:
+    meta = VaultMeta(created_at=CREATED_AT, student="Ana", legacy_root_user="ana-garcia")
+
+    assert meta.legacy_root_user == "ana-garcia"
+
+
+def test_a_legacy_vault_meta_reads_back_so_that_it_can_be_migrated() -> None:
+    meta = VaultMeta(format_version=LEGACY_FORMAT_VERSION, created_at=CREATED_AT, student="Ana")
+
+    assert meta.format_version == LEGACY_FORMAT_VERSION
+    assert meta.legacy_root_user is None
+
+
+@pytest.mark.parametrize("format_version", [0, -1, FORMAT_VERSION + 1, 99])
 def test_vault_meta_refuses_a_format_version_it_does_not_know(format_version: int) -> None:
-    with pytest.raises(ValidationError, match="unsupported vault format version"):
+    with pytest.raises(ValidationError, match="unsupported vault format version") as refused:
         VaultMeta(format_version=format_version, created_at=CREATED_AT, student="Ana")
+
+    message = str(refused.value)
+    assert f"reads and writes {FORMAT_VERSION}" in message
+    assert f"migrates {LEGACY_FORMAT_VERSION}" in message, (
+        "the refusal names the two versions this backend does handle, so that a vault it cannot"
+        " read at all is not mistaken for one it migrates"
+    )
 
 
 def test_subject_defaults_to_no_style_guide() -> None:
@@ -83,7 +108,7 @@ def test_a_key_the_model_does_not_declare_is_refused_instead_of_dropped() -> Non
 @pytest.mark.parametrize(
     ("model", "order"),
     [
-        (VaultMeta, ["format_version", "created_at", "student"]),
+        (VaultMeta, ["format_version", "created_at", "student", "legacy_root_user"]),
         (Subject, ["name", "style_guide"]),
         (Topic, ["title", "fidelity_mode", "created_at", "sessions"]),
     ],
