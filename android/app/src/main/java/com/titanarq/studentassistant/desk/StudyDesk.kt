@@ -1,5 +1,6 @@
 package com.titanarq.studentassistant.desk
 
+import com.titanarq.studentassistant.protocol.USER_COOKIE
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -33,11 +34,18 @@ data class DeskTopic(
 )
 
 /**
- * What the WebView loads: [url], after setting [cookie] for [cookieUrl] (the backend's origin).
- * [token] is the paired token itself, sent as `Authorization: Bearer` on the downloads the page
- * hands to the system (#259). [cookie] and [token] never appear in [toString].
+ * What the WebView loads: [url], after setting [cookie] (and [userCookie], the `sa_user` cookie
+ * naming the user the page acts for, #554) for [cookieUrl] (the backend's origin). [token] is the
+ * paired token itself, sent as `Authorization: Bearer` on the downloads the page hands to the
+ * system (#259). [cookie] and [token] never appear in [toString].
  */
-data class DeskPage(val url: String, val cookieUrl: String, val cookie: String, val token: String) {
+data class DeskPage(
+    val url: String,
+    val cookieUrl: String,
+    val cookie: String,
+    val token: String,
+    val userCookie: String? = null,
+) {
     override fun toString(): String = "DeskPage(url=$url, cookieUrl=$cookieUrl, cookie=<redacted>, token=<redacted>)"
 }
 
@@ -79,11 +87,20 @@ fun backendOrigin(baseUrl: String): String? = baseUrl.toHttpUrlOrNull()?.let { o
  */
 fun tokenCookie(token: String): String = "$TOKEN_COOKIE=$token; Path=/; HttpOnly; SameSite=Strict"
 
-/** The page [DeskTopic.view] of [topic] on the backend at [baseUrl] with [token]; null for a bad base URL. */
-fun deskPage(baseUrl: String, token: String, topic: DeskTopic): DeskPage? {
+/**
+ * The `Set-Cookie` string that tells the backend which user the page acts for (the web page's own
+ * cookie, protocol 1.8): readable by the page, like the web app's. No `Secure`, as above.
+ */
+fun userCookie(userId: String): String = "$USER_COOKIE=$userId; Path=/; SameSite=Strict"
+
+/**
+ * The page [DeskTopic.view] of [topic] on the backend at [baseUrl] with [token], acting for
+ * [userId] when given; null for a bad base URL.
+ */
+fun deskPage(baseUrl: String, token: String, topic: DeskTopic, userId: String? = null): DeskPage? {
     val url = topicPageUrl(baseUrl, topic.subjectId, topic.topicId, topic.view) ?: return null
     val cookieUrl = backendOrigin(baseUrl) ?: return null
-    return DeskPage(url, cookieUrl, tokenCookie(token), token)
+    return DeskPage(url, cookieUrl, tokenCookie(token), token, userId?.let(::userCookie))
 }
 
 /**

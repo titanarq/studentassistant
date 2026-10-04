@@ -132,7 +132,7 @@ class CaptureUploadQueue(
         val request = request(entry.shot, entry.commandId, burst.stills)
         val images = burst.stills.map { it.bytes }
         val onDisk = spool?.put(
-            SpooledCaptureMeta(entry.shot.sessionId, entry.backend.baseUrl, request),
+            SpooledCaptureMeta(entry.shot.sessionId, entry.backend.baseUrl, request, userId = entry.backend.userId),
             images,
             burst.thumbnail,
         ) == true
@@ -158,14 +158,15 @@ class CaptureUploadQueue(
 
     /**
      * Queues again every capture left in the spool by an earlier run of the app (oldest first),
-     * with the credentials [credentials] gives for its backend's base URL; one whose backend is no
+     * with the credentials [credentials] gives for its backend's base URL, acting for the burst's own user; one whose backend is no
      * longer paired stays on disk untouched.
      */
     suspend fun restore(credentials: suspend (baseUrl: String) -> BackendCredentials?) {
         val spool = spool ?: return
         for (meta in spool.list()) {
             if (find(meta.captureId) != null) continue
-            val backend = credentials(meta.baseUrl) ?: continue
+            // The burst goes out as the user who took it, not as the one selected now.
+            val backend = credentials(meta.baseUrl)?.forUser(meta.userId) ?: continue
             val request = meta.request
             val shot = CaptureShot(
                 request.captureId,

@@ -15,6 +15,7 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
 
@@ -28,6 +29,8 @@ class FakeBackendClient : BackendClient {
 
     var pairResult: BackendResult<PairResponse> = notScripted
     var healthResult: BackendResult<HealthResponse> = notScripted
+    var listUsersResult: BackendResult<UsersListResponse> = notScripted
+    var userPhotoResult: BackendResult<ByteArray> = notScripted
     var listSubjectsResult: BackendResult<SubjectsListResponse> = notScripted
     var createSubjectResult: BackendResult<Subject> = notScripted
     var listTopicsResult: BackendResult<TopicsListResponse> = notScripted
@@ -52,6 +55,13 @@ class FakeBackendClient : BackendClient {
     var lastPairRequest: PairRequest? = null
         private set
 
+    /** The `userId` of the last authenticated call's credentials, if any. */
+    var lastUserId: String? = null
+        private set
+
+    /** The `userId` of every authenticated call, oldest first (null: no user). */
+    val userIds: MutableList<String?> = mutableListOf()
+
     /** The token of the last authenticated call, if any. */
     var lastToken: String? = null
         private set
@@ -66,6 +76,12 @@ class FakeBackendClient : BackendClient {
         calls += "health $baseUrl"
         return healthResult
     }
+
+    override suspend fun listUsers(backend: BackendCredentials): BackendResult<UsersListResponse> =
+        record("listUsers", backend) { listUsersResult }
+
+    override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> =
+        record("userPhoto", backend, photoUrl) { userPhotoResult }
 
     override suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse> =
         record("listSubjects", backend) { listSubjectsResult }
@@ -129,6 +145,8 @@ class FakeBackendClient : BackendClient {
     ): BackendResult<T> {
         calls += listOfNotNull(endpoint, backend.baseUrl, argument).joinToString(" ")
         lastToken = backend.token
+        lastUserId = backend.userId
+        userIds += backend.userId
         return result()
     }
 }

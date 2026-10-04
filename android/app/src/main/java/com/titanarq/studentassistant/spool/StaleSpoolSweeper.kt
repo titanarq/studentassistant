@@ -14,7 +14,8 @@ data class SweepResult(val sessions: List<String> = emptyList(), val captures: L
  * otherwise keep its audio, events and captures, and its share of the cap, for ever.
  *
  * A session's data is swept when nothing touched it for [graceMs] and its backend reports it as
- * ended or unknown: no topic of that backend lists it as its `open_session_id` (the read-only
+ * ended or unknown: no topic of that backend (read as the session's own user, #554; a session
+ * recorded without a user is read with no user header) lists it as its `open_session_id` (the read-only
  * `GET /api/subjects` and `GET .../topics`; resuming it just to ask would reopen it). A session
  * with a pending end (the [com.titanarq.studentassistant.capture.SessionFinisher]'s), the one
  * [activeSessionId] names, or one a capture screen opened in this process is never swept. The
@@ -48,27 +49,32 @@ class StaleSpoolSweeper(
         if (sessions.isEmpty() && captures.isEmpty()) return SweepResult()
 
         val paired = pairedBackends()
-        val openByBackend = HashMap<String, Set<String>?>()
-        suspend fun openOn(backend: BackendCredentials): Set<String>? =
-            if (openByBackend.containsKey(backend.baseUrl)) {
-                openByBackend[backend.baseUrl]
+        // Sessions are listed per backend and per user: a user's sessions are only visible as them.
+        val openByBackend = HashMap<Pair<String, String?>, Set<String>?>()
+        suspend fun openOn(backend: BackendCredentials): Set<String>? {
+            val key = backend.baseUrl to backend.userId
+            return if (openByBackend.containsKey(key)) {
+                openByBackend[key]
             } else {
-                openSessions(backend).also { openByBackend[backend.baseUrl] = it }
+                openSessions(backend).also { openByBackend[key] = it }
             }
+        }
 
-        /** True when every backend asked answered and none holds [sessionId] open. */
-        suspend fun over(sessionId: String, baseUrl: String?): Boolean {
+        /** True when every backend asked answered and none holds [sessionId] open for [userId]. */
+        suspend fun over(sessionId: String, baseUrl: String?, userId: String?): Boolean {
             val asked = if (baseUrl != null) paired.filter { it.baseUrl == baseUrl } else paired
             if (asked.isEmpty()) return false
             for (backend in asked) {
-                val open = openOn(backend) ?: return false
+                val open = openOn(backend.forUser(userId)) ?: return false
                 if (sessionId in open) return false
             }
             return true
         }
 
-        val sweptSessions = sessions.filter { over(it, spools.backendOf(it)) && spools.deleteIfStale(it, cutoff) }
-        val sweptCaptures = captures.filter { over(it.sessionId, it.baseUrl) }.map { meta ->
+        val sweptSessions = sessions.filter {
+            over(it, spools.backendOf(it), spools.userOf(it)) && spools.deleteIfStale(it, cutoff)
+        }
+        val sweptCaptures = captures.filter { over(it.sessionId, it.baseUrl, it.userId) }.map { meta ->
             spools.captures.remove(meta.captureId)
             meta.captureId
         }

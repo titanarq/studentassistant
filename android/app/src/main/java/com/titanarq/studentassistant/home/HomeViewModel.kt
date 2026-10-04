@@ -14,11 +14,13 @@ import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.SubjectCreateRequest
 import com.titanarq.studentassistant.protocol.Topic
+import com.titanarq.studentassistant.protocol.User
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.session.NoPendingEnds
 import com.titanarq.studentassistant.session.OpenSession
 import com.titanarq.studentassistant.session.PendingEnds
 import com.titanarq.studentassistant.session.SessionHolder
+import com.titanarq.studentassistant.users.UserHolder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,9 +106,13 @@ class HomeViewModel(
     private val sessions: SessionHolder,
     private val clock: Clock,
     private val pendingEnds: PendingEnds = NoPendingEnds,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow(HomeUiState())
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
+
+    /** The user the app acts for (the avatar of the top bar); every call is made as them. */
+    val user: StateFlow<User?> = users.current
 
     private var backend: BackendCredentials? = null
     private var loadJob: Job? = null
@@ -147,13 +153,14 @@ class HomeViewModel(
                 _state.value = HomeUiState(noBackend = true)
                 return@launch
             }
-            val changed = backend != active.credentials
-            backend = active.credentials
+            val credentials = active.credentials.forUser(users.current.value?.id)
+            val changed = backend != credentials
+            backend = credentials
             _state.update {
                 val keep = if (changed) HomeUiState() else it
                 keep.copy(backendName = active.displayName, noBackend = false, subjects = Loadable.Loading)
             }
-            val subjects = client.listSubjects(active.credentials).toLoadable { it.subjects }
+            val subjects = client.listSubjects(credentials).toLoadable { it.subjects }
             val selected = _state.value.selectedSubject?.let { current ->
                 (subjects as? Loadable.Loaded)?.value?.firstOrNull { it.subjectId == current.subjectId }
                     ?: current.takeIf { subjects !is Loadable.Loaded }
@@ -161,6 +168,16 @@ class HomeViewModel(
             _state.update { it.copy(subjects = subjects, selectedSubject = selected, topics = if (selected == null) null else it.topics) }
             if (selected != null) loadTopics(selected)
         }
+    }
+
+    /**
+     * «Cerrar sesión»: the selected user and the session handed to the capture screen are dropped
+     * and the app asks who is using it again. A session open on the backend stays open there, and
+     * its spool keeps its user, so it can be continued (or ended) later.
+     */
+    fun signOut() {
+        sessions.clear()
+        users.clear()
     }
 
     /** Shows [subject]'s topics. */

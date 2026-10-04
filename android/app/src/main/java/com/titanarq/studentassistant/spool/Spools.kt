@@ -22,11 +22,16 @@ data class PendingEnd(
      * never sent: nothing on the phone asks the backend to prepare the notes.
      */
     @SerialName("prepare_notes") val prepareNotes: Boolean = false,
+    /** The user the session belongs to (the end is sent as them); absent in a file an older version wrote. */
+    @SerialName("user_id") val userId: String? = null,
 )
 
-/** The backend a session's spool belongs to (`sessions/<session_id>/session.json`). */
+/** The backend and user a session's spool belongs to (`sessions/<session_id>/session.json`). */
 @Serializable
-private data class SpooledSession(@SerialName("base_url") val baseUrl: String)
+private data class SpooledSession(
+    @SerialName("base_url") val baseUrl: String,
+    @SerialName("user_id") val userId: String? = null,
+)
 
 /**
  * Every spool of the app under one root in app-private storage (`filesDir/spool`):
@@ -62,15 +67,16 @@ class Spools(val root: File, val budget: SpoolBudget) {
     }
 
     /**
-     * The capture screen works on [sessionId] of the backend at [baseUrl]: recorded on disk, so a
-     * later sweep knows which backend to ask, and kept from [deleteIfStale] for this process.
+     * The capture screen works on [sessionId] of the backend at [baseUrl] for [userId]: recorded on
+     * disk, so a later sweep knows which backend and user to ask, and kept from [deleteIfStale] for
+     * this process.
      */
-    fun bind(sessionId: String, baseUrl: String): Unit = synchronized(this) {
+    fun bind(sessionId: String, baseUrl: String, userId: String? = null): Unit = synchronized(this) {
         bound += sessionId
         val file = File(sessionDir(sessionId), SESSION_FILE)
         try {
             file.parentFile?.mkdirs()
-            val text = ProtocolJson.encodeToString(SpooledSession.serializer(), SpooledSession(baseUrl))
+            val text = ProtocolJson.encodeToString(SpooledSession.serializer(), SpooledSession(baseUrl, userId))
             if (file.isFile && file.readText() == text) return
             val temp = File(file.path + ".tmp")
             temp.writeText(text)
@@ -81,10 +87,15 @@ class Spools(val root: File, val budget: SpoolBudget) {
     }
 
     /** The base URL [bind] recorded for [sessionId], or null (not recorded, or unreadable). */
-    fun backendOf(sessionId: String): String? = synchronized(this) {
+    fun backendOf(sessionId: String): String? = recorded(sessionId)?.baseUrl
+
+    /** The user id [bind] recorded for [sessionId], or null (none recorded, e.g. by an older version). */
+    fun userOf(sessionId: String): String? = recorded(sessionId)?.userId
+
+    private fun recorded(sessionId: String): SpooledSession? = synchronized(this) {
         val file = File(sessionDir(sessionId), SESSION_FILE)
         try {
-            if (file.isFile) ProtocolJson.decodeFromString(SpooledSession.serializer(), file.readText()).baseUrl else null
+            if (file.isFile) ProtocolJson.decodeFromString(SpooledSession.serializer(), file.readText()) else null
         } catch (e: IOException) {
             null
         } catch (e: SerializationException) {

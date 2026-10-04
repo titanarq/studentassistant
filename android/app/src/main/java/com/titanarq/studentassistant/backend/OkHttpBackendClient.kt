@@ -2,6 +2,10 @@ package com.titanarq.studentassistant.backend
 
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
+import com.titanarq.studentassistant.protocol.ErrorCode
+import com.titanarq.studentassistant.protocol.USER_HEADER
+import com.titanarq.studentassistant.protocol.UsersListResponse
+import com.titanarq.studentassistant.protocol.errorCode
 import com.titanarq.studentassistant.protocol.HealthResponse
 import com.titanarq.studentassistant.protocol.PROTOCOL_VERSION
 import com.titanarq.studentassistant.protocol.PairRequest
@@ -23,6 +27,7 @@ import com.titanarq.studentassistant.protocol.isCompatible
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.JsonObject
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
@@ -67,6 +72,27 @@ class OkHttpBackendClient(
     override suspend fun health(baseUrl: String): BackendResult<HealthResponse> =
         call(baseUrl, token = null, "api/health", body = null, HealthResponse.serializer())
             .checkVersion { it.protocolVersion }
+
+    // The users API and the photo are not user-scoped: no X-SA-User, whatever the credentials hold.
+    override suspend fun listUsers(backend: BackendCredentials): BackendResult<UsersListResponse> =
+        call(backend.baseUrl, backend.token, "api/users", body = null, UsersListResponse.serializer())
+
+    override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> {
+        val base = backend.baseUrl.toHttpUrlOrNull() ?: return BackendResult.Unreachable("invalid backend URL")
+        // Only a path of this backend: the bearer token is never sent to another origin.
+        val url = base.resolve(photoUrl)?.takeIf { it.host == base.host && it.port == base.port && it.scheme == base.scheme }
+            ?: return BackendResult.Unreachable("invalid photo URL")
+        val request = Request.Builder().url(url).header("Authorization", "Bearer ${backend.token}").get().build()
+        val response = when (val outcome = execute(http.newCall(request))) {
+            is Outcome.Failed -> return BackendResult.Unreachable(outcome.reason)
+            is Outcome.Answered -> outcome
+        }
+        return if (response.status in 200..299) {
+            BackendResult.Success(response.bytes)
+        } else {
+            BackendResult.HttpError(response.status, userCodeOf(response.body))
+        }
+    }
 
     override suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse> =
         call(backend, "api/subjects", body = null, SubjectsListResponse.serializer())
@@ -167,6 +193,7 @@ class OkHttpBackendClient(
             jsonBody(WebPageAddRequest.serializer(), request),
             WebPageAddResponse.serializer(),
             http = slowHttp,
+            userId = backend.userId,
         )
 
     /** [http] with the longer read timeout of the calls the backend answers after asking Claude. */
@@ -191,7 +218,7 @@ class OkHttpBackendClient(
         segments: List<String>,
         body: RequestBody?,
         serializer: KSerializer<T>,
-    ): BackendResult<T> = call(backend.baseUrl, backend.token, segments, body, serializer)
+    ): BackendResult<T> = call(backend.baseUrl, backend.token, segments, body, serializer, userId = backend.userId)
 
     private suspend fun <T> call(
         baseUrl: String,
@@ -201,7 +228,7 @@ class OkHttpBackendClient(
         serializer: KSerializer<T>,
     ): BackendResult<T> = call(baseUrl, token, path.split('/'), body, serializer)
 
-    /** `GET` when [body] is null, else `POST`; [token], when given, as the bearer. */
+    /** `GET` when [body] is null, else `POST`; [token], when given, as the bearer, [userId] as `X-SA-User`. */
     private suspend fun <T> call(
         baseUrl: String,
         token: String?,
@@ -209,19 +236,23 @@ class OkHttpBackendClient(
         body: RequestBody?,
         serializer: KSerializer<T>,
         http: OkHttpClient = this.http,
+        userId: String? = null,
     ): BackendResult<T> {
         val url = buildUrl(baseUrl, segments)
             ?: return BackendResult.Unreachable("invalid backend URL")
         val request = Request.Builder()
             .url(url)
             .apply { if (token != null) header("Authorization", "Bearer $token") }
+            .apply { if (userId != null) header(USER_HEADER, userId) }
             .apply { if (body == null) get() else post(body) }
             .build()
         val response = when (val outcome = execute(http.newCall(request))) {
             is Outcome.Failed -> return BackendResult.Unreachable(outcome.reason)
             is Outcome.Answered -> outcome
         }
-        if (response.status !in 200..299) return BackendResult.HttpError(response.status)
+        if (response.status !in 200..299) {
+            return BackendResult.HttpError(response.status, userCodeOf(response.body))
+        }
         return try {
             BackendResult.Success(ProtocolJson.decodeFromString(serializer, response.body))
         } catch (e: SerializationException) {
@@ -241,8 +272,25 @@ class OkHttpBackendClient(
         }
     }
 
+    /**
+     * The error body's `code` when it is one of the two user codes, else null: the only part of an
+     * error body this app reads (an unreadable body is no code).
+     */
+    private fun userCodeOf(body: String): ErrorCode? {
+        val code = try {
+            errorCode(ProtocolJson.parseToJsonElement(body) as? JsonObject)
+        } catch (e: SerializationException) {
+            null
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+        return code?.takeIf { it == ErrorCode.USER_REQUIRED || it == ErrorCode.USER_NOT_FOUND }
+    }
+
     private sealed interface Outcome {
-        class Answered(val status: Int, val body: String) : Outcome
+        class Answered(val status: Int, val bytes: ByteArray) : Outcome {
+            val body: String get() = bytes.decodeToString()
+        }
         class Failed(val reason: String) : Outcome
     }
 
@@ -258,7 +306,7 @@ class OkHttpBackendClient(
 
                 override fun onResponse(call: Call, response: Response) {
                     val outcome = try {
-                        response.use { Outcome.Answered(it.code, it.body?.string().orEmpty()) }
+                        response.use { Outcome.Answered(it.code, it.body?.bytes() ?: ByteArray(0)) }
                     } catch (e: IOException) {
                         Outcome.Failed(e.javaClass.simpleName + (e.message?.let { ": $it" } ?: ""))
                     }

@@ -18,6 +18,7 @@ class FakeClock(var now: Long = 1_000_000L) : Clock {
 class FakeSessionSocket(
     val url: String,
     val token: String,
+    val userId: String?,
     private val listener: SessionSocketListener,
 ) : SessionSocket {
     val texts = mutableListOf<String>()
@@ -68,8 +69,8 @@ class FakeSessionSocketFactory : SessionSocketFactory {
 
     val last: FakeSessionSocket get() = sockets.last()
 
-    override fun open(url: String, token: String, listener: SessionSocketListener): SessionSocket =
-        FakeSessionSocket(url, token, listener).also { sockets += it }
+    override fun open(url: String, token: String, userId: String?, listener: SessionSocketListener): SessionSocket =
+        FakeSessionSocket(url, token, userId, listener).also { sockets += it }
 }
 
 /** A recognizer the test drives through [listener]. */

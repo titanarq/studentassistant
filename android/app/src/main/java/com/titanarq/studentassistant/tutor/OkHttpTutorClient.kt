@@ -3,6 +3,7 @@ package com.titanarq.studentassistant.tutor
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.OkHttpBackendClient
 import com.titanarq.studentassistant.backend.defaultOkHttpClient
+import com.titanarq.studentassistant.protocol.USER_HEADER
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
 import okhttp3.Call
@@ -81,6 +82,7 @@ class OkHttpTutorClient(
             listOf("api", "subjects", subjectId, "topics", topicId, "tutor"),
         ) ?: return null
         return Request.Builder().url(url).header("Authorization", "Bearer ${backend.token}")
+            .apply { if (backend.userId != null) header(USER_HEADER, backend.userId) }
     }
 
     private fun refusalOf(status: Int, body: String): TutorResult.Refused = refusal(status, parseObject(body))

@@ -3,6 +3,7 @@ package com.titanarq.studentassistant.desk
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.titanarq.studentassistant.backend.BackendStore
+import com.titanarq.studentassistant.users.UserHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +49,7 @@ sealed interface DeskUiState {
 class StudyDeskViewModel(
     private val store: BackendStore,
     val topic: DeskTopic,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow<DeskUiState>(DeskUiState.Loading)
     val state: StateFlow<DeskUiState> = _state.asStateFlow()
@@ -57,7 +59,7 @@ class StudyDeskViewModel(
             val backend = store.active()
             _state.value = when {
                 backend == null -> DeskUiState.NoBackend
-                else -> deskPage(backend.baseUrl, backend.token, topic)
+                else -> deskPage(backend.baseUrl, backend.token, topic, users.current.value?.id)
                     ?.let { DeskUiState.Ready(backend.displayName, backend.baseUrl, it) }
                     ?: DeskUiState.InvalidBackend
             }

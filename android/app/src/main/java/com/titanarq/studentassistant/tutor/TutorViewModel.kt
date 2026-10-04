@@ -1,5 +1,6 @@
 package com.titanarq.studentassistant.tutor
 
+import com.titanarq.studentassistant.users.UserHolder
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.titanarq.studentassistant.backend.BackendCredentials
@@ -83,6 +84,7 @@ class TutorViewModel(
     val topic: TutorTopic,
     private val voice: VoiceQuestion,
     private val speech: SpeechOutput,
+    private val users: UserHolder = UserHolder(),
 ) : ViewModel() {
     private val _state = MutableStateFlow(TutorUiState(speechAvailable = speech.available))
     val state: StateFlow<TutorUiState> = _state.asStateFlow()
@@ -96,7 +98,7 @@ class TutorViewModel(
             if (active == null) {
                 _state.update { it.copy(setup = TutorSetup.NoBackend, history = TutorHistoryState.Loaded) }
             } else {
-                backend = active.credentials
+                backend = active.credentials.forUser(users.current.value?.id)
                 _state.update { it.copy(setup = TutorSetup.Ready(active.displayName)) }
                 loadHistory()
             }

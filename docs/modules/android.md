@@ -6,6 +6,8 @@
 Thin capture client (ADR-0001), Spanish UI:
 - Pairing: scan the backend's QR (URL + one-time code), exchange for a token, store it in
   DataStore; several backends allowed; connection test.
+- Users (#554): «¿Quién eres?» at every start, the chosen user sent as `X-SA-User` on every call, avatar menu
+  with «Editar perfil» / «Cerrar sesión» on the home.
 - Home: subjects/topics from the backend, create topic, start or continue a session.
 - Capture screen: a large CameraX preview, transcription with SpeechRecognizer (Google) sent as
   segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), the session buttons
@@ -34,7 +36,7 @@ Thin capture client (ADR-0001), Spanish UI:
   `health`, `listSubjects`/`createSubject`, `listTopics`/`createTopic`,
   `startSession`/`resumeSession`/`endSession`, `addWebPage` (#62) and `uploadCapture` (multipart: a `metadata` JSON
   part plus `image_N` parts, typed by each `CaptureImage.content_type`). Authenticated calls take
-  `BackendCredentials(baseUrl, token)` and send `Authorization: Bearer <token>`; `pair` and
+  `BackendCredentials(baseUrl, token, userId)` (see "Users (#554)") and send `Authorization: Bearer <token>`; `pair` and
   `health` take a bare base URL. Every call returns a `BackendResult`: `Success(value)` or a
   `Failure` -- `HttpError(status)`, `Unreachable(reason)`, `IncompatibleVersion(peer, ours)`
   (pair, health and session start/resume answers are checked with `protocol.isCompatible`) or
@@ -71,6 +73,62 @@ Thin capture client (ADR-0001), Spanish UI:
   CAs only). The manifest declares `CAMERA` and `INTERNET`.
 - Known gap: the backend's `GET /api/health` still answers `{status, version}`, not v1's
   `rest.health.response`, so the health check reports `InvalidResponse` until the server conforms.
+
+## Users (#554, epic #544)
+
+Several students share one backend and one vault (protocol 1.8, `docs/modules/server.md`). A
+device pairs with the backend, not with a user; the app asks «¿Quién eres?» and then acts for the
+chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is unchanged).
+
+- **`users.UserHolder`** (on `AppContainer.userHolder`): the selected `User`, in memory only, never
+  written to DataStore or any file. It is empty at every process start, after «Cerrar sesión», and
+  after the active backend changes (`PairedBackendsViewModel.setActive` / `remove` of the active one,
+  and a new pairing, clear it). `clearIfSelected(id)` clears only when `id` is still the selected user.
+- **`users.UsersViewModel` / `UserSelectionScreen`** («¿Quién eres?», `Route.USERS`): the active
+  backend's users from `BackendClient.listUsers` (`GET /api/users`, sent without `X-SA-User`), each
+  row with photo or initials, name and email. A failure shows the existing Spanish backend message
+  with «Reintentar»; no users says «No hay usuarios en este ordenador.». A button leads to
+  «Ordenadores». The photo is `BackendClient.userPhoto(backend, photo_url)` (`GET` with the bearer
+  token, same origin only), cached in memory by `users.UserPhotos` (`invalidate()` for #555);
+  `UserAvatar` draws it in a circle or `initialsOf(name)`.
+- **Routing** (`ui/Route.kt`, tested without Compose): `startRoute(stored, user)` is `PAIRING` with no
+  backend, else `USERS` without a user, else `HOME`; `routeFor(route, hasBackends, user)` sends any
+  screen of `USER_SCOPED_ROUTES` (home, capture, desk, tutor, profile) to `USERS` while a backend is
+  stored and no user is selected. `MainActivity` applies it on every change of route or user, so
+  sign-out, a backend switch and a refused user all end on the selection. Back does not leave `USERS`
+  for the home.
+- **Header**: `BackendCredentials(baseUrl, token, userId)` (`forUser(id)`); every user-scoped call of
+  `OkHttpBackendClient` (subjects, topics, sessions, captures, web pages) and of `OkHttpTutorClient`
+  sends `X-SA-User: <id>` (`USER_HEADER`) when `userId` is not null. `pair`, `health`, `listUsers`
+  and `userPhoto` never send it. `SessionSocketFactory.open(url, token, userId, listener)` sends it
+  on the WebSocket handshake (`SessionConnection(..., userId)`). The view models take the user from
+  `UserHolder` when they read the active backend (`HomeViewModel`, `ShareViewModel`,
+  `TutorViewModel`, `StudyDeskViewModel`, `ConnectionTestViewModel`); a user change reloads the home.
+  The connection test's "asignaturas" check acts as the selected user and, right after pairing
+  (nobody selected), sends no header.
+- **Study desk**: next to `sa_token` the WebView gets `sa_user=<id>; Path=/; SameSite=Strict`
+  (`StudyDesk.userCookie`, `DeskPage.userCookie`); `removeAllCookies` drops both when the screen is
+  left.
+- **Share**: `ShareActivity` shows «¿Quién eres?» before its subjects while no user is selected
+  (same `UserHolder`, same process).
+- **Home top bar**: the user's avatar at the right (content description «Menú de <nombre>») opens a
+  dropdown «Editar perfil» (`Route.PROFILE`, a «Próximamente» screen until #555) and «Cerrar sesión»
+  (dialog «¿Cerrar la sesión de <nombre>?»; confirmed, `HomeViewModel.signOut()` clears `UserHolder`
+  and `SessionHolder`). An open capture session stays open on the backend and its spool keeps its
+  user, so it can be continued or ended later.
+- **`user_required` / `user_not_found`**: `BackendResult.HttpError(status, code)` carries `code` only
+  for these two (`400 user_required`, `404 user_not_found`; `userRejected`); no other error body is
+  read. `AppContainer.scopedBackendClient` and `scopedTutorClient`
+  (`UserRejectionBackendClient` / `UserRejectionTutorClient`) wrap the clients used by the screens
+  and the background workers: such a refusal of a call made as the selected user clears `UserHolder`
+  and the app opens the selection. A refusal of a spooled item sent as another user (or none) changes
+  nothing.
+- **Offline spool**: `SpooledCaptureMeta`, `PendingEnd` and the `session.json` written by
+  `Spools.bind(sessionId, baseUrl, userId)` store `user_id` (`Spools.userOf`). `CaptureUploadQueue.restore`,
+  `SessionFinisher` (`restore`, `continueInstead`) and `StaleSpoolSweeper` send each item's own user,
+  never the one selected now. Items written before this version have no `user_id`: they are sent
+  without the header (the backend's single-user fallback) and still decode. The sweeper reads each
+  backend once per user.
 
 ## Home: subjects, topics and sessions (#37)
 

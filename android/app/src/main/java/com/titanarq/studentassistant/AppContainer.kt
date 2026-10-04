@@ -37,6 +37,11 @@ import com.titanarq.studentassistant.tutor.TutorClient
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.tutor.TutorViewModel
 import com.titanarq.studentassistant.tutor.VoiceQuestion
+import com.titanarq.studentassistant.users.UserHolder
+import com.titanarq.studentassistant.users.UserPhotos
+import com.titanarq.studentassistant.users.UserRejectionBackendClient
+import com.titanarq.studentassistant.users.UserRejectionTutorClient
+import com.titanarq.studentassistant.users.UsersViewModel
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.spool.SpoolBudget
 import com.titanarq.studentassistant.spool.Spools
@@ -114,17 +119,34 @@ class AppContainer(
 
     /** Creates the pairing screen's [PairingViewModel]. */
     val pairingViewModelFactory: ViewModelProvider.Factory by lazy {
-        viewModelFactory { initializer { PairingViewModel(backendClient, backendStore, deviceName) } }
+        viewModelFactory { initializer { PairingViewModel(backendClient, backendStore, deviceName, users = userHolder) } }
     }
 
     /** Creates the paired-backends screen's [PairedBackendsViewModel]. */
     val pairedBackendsViewModelFactory: ViewModelProvider.Factory by lazy {
-        viewModelFactory { initializer { PairedBackendsViewModel(backendStore) } }
+        viewModelFactory { initializer { PairedBackendsViewModel(backendStore, userHolder) } }
     }
 
     /** Creates the connection-test screen's [ConnectionTestViewModel]. */
     val connectionTestViewModelFactory: ViewModelProvider.Factory by lazy {
-        viewModelFactory { initializer { ConnectionTestViewModel(backendClient, backendStore) } }
+        viewModelFactory { initializer { ConnectionTestViewModel(scopedBackendClient, backendStore, userHolder) } }
+    }
+
+    /** The user the student picked on «¿Quién eres?», in memory only (#554). */
+    val userHolder: UserHolder by lazy { UserHolder() }
+
+    /**
+     * [backendClient] for the user-scoped calls: a `user_required` / `user_not_found` refusal of
+     * the selected user clears [userHolder], so the app asks who is using it again.
+     */
+    val scopedBackendClient: BackendClient by lazy { UserRejectionBackendClient(backendClient, userHolder) }
+
+    /** The users' photos of the active backend. */
+    val userPhotos: UserPhotos by lazy { UserPhotos(backendClient, backendStore) }
+
+    /** Creates the «¿Quién eres?» screen's [UsersViewModel]. */
+    val usersViewModelFactory: ViewModelProvider.Factory by lazy {
+        viewModelFactory { initializer { UsersViewModel(backendClient, backendStore, userHolder) } }
     }
 
     /** The session the capture screen works on, handed over by the home screen. */
@@ -132,7 +154,7 @@ class AppContainer(
 
     /** Creates the home screen's [HomeViewModel]. */
     val homeViewModelFactory: ViewModelProvider.Factory by lazy {
-        viewModelFactory { initializer { HomeViewModel(backendClient, backendStore, sessionHolder, clock, sessionFinisher) } }
+        viewModelFactory { initializer { HomeViewModel(scopedBackendClient, backendStore, sessionHolder, clock, sessionFinisher, userHolder) } }
     }
 
     /** The camera every capture burst is taken with. */
@@ -146,7 +168,7 @@ class AppContainer(
 
     /** Uploads every capture burst, with retries, on [uploadScope]; pending ones are spooled to disk. */
     val captureUploads: CaptureUploadQueue by lazy {
-        CaptureUploadQueue(uploadScope, backendClient, spool = spools.captures)
+        CaptureUploadQueue(uploadScope, scopedBackendClient, spool = spools.captures)
     }
 
     /** Opens the session WebSockets of the capture screen. */
@@ -156,7 +178,7 @@ class AppContainer(
     val sessionFinisher: SessionFinisher by lazy {
         SessionFinisher(
             scope = uploadScope,
-            client = backendClient,
+            client = scopedBackendClient,
             spools = spools,
             uploads = captureUploads,
             socketFactory = sessionSocketFactory,
@@ -170,7 +192,7 @@ class AppContainer(
     val staleSpoolSweeper: StaleSpoolSweeper by lazy {
         StaleSpoolSweeper(
             spools = spools,
-            client = backendClient,
+            client = scopedBackendClient,
             clock = clock,
             pairedBackends = { backendStore.current().backends.map { it.credentials } },
             activeSessionId = { sessionHolder.current.value?.session?.sessionId },
@@ -196,11 +218,14 @@ class AppContainer(
 
     /** Creates the study desk screen's [StudyDeskViewModel] for [topic] (#83). */
     fun studyDeskViewModelFactory(topic: DeskTopic): ViewModelProvider.Factory = viewModelFactory {
-        initializer { StudyDeskViewModel(backendStore, topic) }
+        initializer { StudyDeskViewModel(backendStore, topic, userHolder) }
     }
 
     /** The voice tutor API client (#248). */
     val tutorClient: TutorClient by lazy(tutorClientFactory)
+
+    /** [tutorClient] with the same user-refusal rule as [scopedBackendClient]. */
+    val scopedTutorClient: TutorClient by lazy { UserRejectionTutorClient(tutorClient, userHolder) }
 
     /** Reads the tutor's answers aloud; one synthesizer for the whole app. */
     val speechOutput: SpeechOutput by lazy(speechOutputFactory)
@@ -208,22 +233,29 @@ class AppContainer(
     /** Creates the tutor screen's [TutorViewModel] for [topic] (#248). */
     fun tutorViewModelFactory(topic: TutorTopic): ViewModelProvider.Factory = viewModelFactory {
         initializer {
-            TutorViewModel(tutorClient, backendStore, topic, VoiceQuestion(recognizerEngineFactory()), speechOutput)
+            TutorViewModel(
+                scopedTutorClient,
+                backendStore,
+                topic,
+                VoiceQuestion(recognizerEngineFactory()),
+                speechOutput,
+                userHolder,
+            )
         }
     }
 
     /** Creates the share screen's [ShareViewModel] for what another app shared ([sharedText], [sharedSubject]). */
     fun shareViewModelFactory(sharedText: String?, sharedSubject: String?): ViewModelProvider.Factory = viewModelFactory {
-        initializer { ShareViewModel(sharedText, sharedSubject, backendClient, backendStore) }
+        initializer { ShareViewModel(sharedText, sharedSubject, scopedBackendClient, backendStore, userHolder) }
     }
 
     /** Creates the capture screen's [CaptureViewModel] for [session]. */
     fun captureViewModelFactory(session: OpenSession): ViewModelProvider.Factory = viewModelFactory {
         initializer {
-            spools.bind(session.session.sessionId, session.backend.baseUrl)
+            spools.bind(session.session.sessionId, session.backend.baseUrl, session.backend.userId)
             CaptureViewModel(
                 open = session,
-                backendClient = backendClient,
+                backendClient = scopedBackendClient,
                 sessionHolder = sessionHolder,
                 clock = clock,
                 socketFactory = sessionSocketFactory,

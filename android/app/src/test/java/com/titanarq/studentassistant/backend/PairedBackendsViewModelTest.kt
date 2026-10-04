@@ -1,8 +1,10 @@
 package com.titanarq.studentassistant.backend
 
 import com.titanarq.studentassistant.MainDispatcherRule
+import com.titanarq.studentassistant.protocol.User
 import com.titanarq.studentassistant.ui.Route
 import com.titanarq.studentassistant.ui.startRoute
+import com.titanarq.studentassistant.users.UserHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -54,8 +56,24 @@ class PairedBackendsViewModelTest {
     }
 
     @Test
+    fun `switching to another backend clears the selected user, selecting the same one does not`() = runBlocking {
+        store.save(home)
+        store.save(lab)
+        val users = UserHolder().also { it.select(User("laura", "Laura")) }
+        val viewModel = PairedBackendsViewModel(store, users)
+
+        viewModel.setActive("d2") // already active
+        assertEquals("laura", users.current.value?.id)
+
+        viewModel.setActive("d1")
+        viewModel.backends.first { it?.activeDeviceId == "d1" }
+        assertEquals(null, users.current.value)
+    }
+
+    @Test
     fun `the app opens pairing only when no backend is stored`() {
-        assertEquals(Route.PAIRING, startRoute(PairedBackends()))
-        assertEquals(Route.HOME, startRoute(PairedBackends(listOf(home), "d1")))
+        assertEquals(Route.PAIRING, startRoute(PairedBackends(), null))
+        assertEquals(Route.USERS, startRoute(PairedBackends(listOf(home), "d1"), null))
+        assertEquals(Route.HOME, startRoute(PairedBackends(listOf(home), "d1"), User("laura", "Laura")))
     }
 }

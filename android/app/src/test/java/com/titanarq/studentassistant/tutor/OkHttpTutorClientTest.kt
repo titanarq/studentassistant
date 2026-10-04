@@ -57,6 +57,18 @@ class OkHttpTutorClientTest {
     }
 
     @Test
+    fun `the tutor calls name the user when there is one`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"subject":"c","topic":"d","turns":[]}"""))
+        server.enqueue(MockResponse().setBody("""{"subject":"c","topic":"d","turns":[]}"""))
+
+        client.history(backend.forUser("laura-mendez"), "c", "d")
+        client.history(backend, "c", "d")
+
+        assertEquals("laura-mendez", taken().getHeader("X-SA-User"))
+        assertEquals(null, taken().getHeader("X-SA-User"))
+    }
+
+    @Test
     fun `ask posts the question and streams the answer`() = runTest {
         server.enqueue(
             MockResponse()
