@@ -8,6 +8,8 @@ about it, and that opening the vault finds an unended session of either of them.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from datetime import datetime, timedelta, tzinfo
 
 import pytest
@@ -57,6 +59,23 @@ class _Later(datetime):
         return datetime.now(tz) + timedelta(minutes=1)
 
 
+@contextlib.contextmanager
+def _a_minute_later() -> Iterator[None]:
+    """Shift the vault's clock a minute for the block: a session id is only a second wide.
+
+    Two students cannot really start a session in the same second on one backend -- the second
+    start is refused while the first is unended -- but a test that ends one and starts the other's
+    inside the same second would give both the same id, and the second session would then be
+    indistinguishable from the first.
+    """
+    real = vault_sessions.datetime
+    vault_sessions.datetime = _Later  # type: ignore[misc]
+    try:
+        yield
+    finally:
+        vault_sessions.datetime = real  # type: ignore[misc]
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
@@ -87,13 +106,10 @@ def _unended_in(vault: Vault, host: str = "other-pc", later: bool = False) -> st
     capturing at the same instant would otherwise share one.
     """
     subject_id, topic_id = _topic_in(vault)
-    real = vault_sessions.datetime
-    if later:
-        vault_sessions.datetime = _Later  # type: ignore[misc]
-    try:
+    with contextlib.ExitStack() as stack:
+        if later:
+            stack.enter_context(_a_minute_later())
         return start_session(vault, subject_id, topic_id, host, PROTOCOL_VERSION).id
-    finally:
-        vault_sessions.datetime = real  # type: ignore[misc]
 
 
 async def _topic(service: SessionService, user_id: str) -> tuple[str, str]:
@@ -206,9 +222,11 @@ async def test_a_resume_by_another_user_is_refused_without_naming_the_session(
     session_id = await _started(service, mine)
     their_subject, their_topic = await _topic(service, theirs)
     await service.end(session_id, client_time_ms=2, reason="button")
-    theirs_id = (
-        await service.start(theirs, their_subject, their_topic, client_time_ms=3)
-    ).session_id
+    with _a_minute_later():
+        theirs_id = (
+            await service.start(theirs, their_subject, their_topic, client_time_ms=3)
+        ).session_id
+    assert theirs_id != session_id
 
     with pytest.raises(OtherUserSessionOpenError) as refused:
         await service.resume(mine, session_id)
