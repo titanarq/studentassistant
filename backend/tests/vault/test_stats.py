@@ -48,13 +48,15 @@ def by_category(vault: Vault) -> dict[str, int]:
     return {size.category: size.bytes for size in vault_stats(vault).categories}
 
 
-def test_every_file_lands_in_its_category(tmp_vault: Vault) -> None:
-    base = fill(tmp_vault)
+def test_every_file_lands_in_its_category(vault_with_no_users: Vault) -> None:
+    # A vault with nobody in it, so that every byte counted here is one `fill` wrote: `Vault.init`
+    # gives a vault its first user, whose profile would otherwise weigh into "other" (#548).
+    base = fill(vault_with_no_users)
 
-    stats = vault_stats(tmp_vault)
+    stats = vault_stats(vault_with_no_users)
 
     assert [size.category for size in stats.categories] == list(CATEGORIES)
-    assert by_category(tmp_vault) == {
+    assert by_category(vault_with_no_users) == {
         "source_images": 5000 + 3000 + 2000,
         "pdfs": 7000,
         "other_sources": 200 + 100 + 300,
@@ -70,17 +72,19 @@ def test_every_file_lands_in_its_category(tmp_vault: Vault) -> None:
     assert {size.category: size.files for size in stats.categories}["source_images"] == 3
 
 
-def test_git_directory_is_not_part_of_the_working_tree(tmp_vault: Vault) -> None:
-    base = fill(tmp_vault)
-    subprocess.run(["git", "add", "-A"], cwd=tmp_vault.path, check=True, capture_output=True)
+def test_git_directory_is_not_part_of_the_working_tree(vault_with_no_users: Vault) -> None:
+    base = fill(vault_with_no_users)
+    subprocess.run(
+        ["git", "add", "-A"], cwd=vault_with_no_users.path, check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-c", "user.name=T", "-c", "user.email=t@t.invalid", "commit", "-qm", "x"],
-        cwd=tmp_vault.path,
+        cwd=vault_with_no_users.path,
         check=True,
         capture_output=True,
     )
 
-    stats = vault_stats(tmp_vault)
+    stats = vault_stats(vault_with_no_users)
 
     assert stats.working_tree_bytes == sum(FILES.values()) + base
     assert stats.git is not None and stats.git.loose_objects > 0 and stats.git.loose_bytes > 0
@@ -224,10 +228,14 @@ def test_categorize_reads_a_users_path_as_the_same_path_inside_their_folder() ->
     assert categorize((*user, "photo.jpg")) == "other"
 
 
-def test_a_root_handle_reports_each_user_with_their_own_subjects(tmp_vault: Vault) -> None:
-    write_users(tmp_vault)
+def test_a_root_handle_reports_each_user_with_their_own_subjects(
+    vault_with_no_users: Vault,
+) -> None:
+    # Nobody in the vault but the two this test writes: the user `Vault.init` creates would be a
+    # third one in the listing, with a profile whose bytes are not `write_users`' to account for.
+    write_users(vault_with_no_users)
 
-    stats = vault_stats(tmp_vault)
+    stats = vault_stats(vault_with_no_users)
 
     assert [(user.id, user.bytes, user.files) for user in stats.users] == [
         ("ana", ANA_BYTES, 5),
@@ -247,15 +255,17 @@ def test_a_root_handle_reports_each_user_with_their_own_subjects(tmp_vault: Vaul
     ]
     # The root has no subject of its own here, and the categories are the whole vault's.
     assert stats.subjects == []
-    assert by_category(tmp_vault)["source_images"] == 9000
-    assert by_category(tmp_vault)["pdfs"] == 6000
-    assert by_category(tmp_vault)["notes"] == 700 + 500
-    assert by_category(tmp_vault)["other"] == 120 + 4000 + 30 + 110 + own_bytes(tmp_vault)
-    assert stats.working_tree_bytes == sum(USER_FILES.values()) + own_bytes(tmp_vault)
+    assert by_category(vault_with_no_users)["source_images"] == 9000
+    assert by_category(vault_with_no_users)["pdfs"] == 6000
+    assert by_category(vault_with_no_users)["notes"] == 700 + 500
+    assert by_category(vault_with_no_users)["other"] == (
+        120 + 4000 + 30 + 110 + own_bytes(vault_with_no_users)
+    )
+    assert stats.working_tree_bytes == sum(USER_FILES.values()) + own_bytes(vault_with_no_users)
     assert stats.working_tree_files == len(USER_FILES) + 2
-    assert [file.path for file in vault_stats(tmp_vault, top=1).largest_files] == [
-        "users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg"
-    ]
+    assert [
+        file.path for file in vault_stats(vault_with_no_users, top=1).largest_files
+    ] == ["users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg"]
 
 
 def test_a_user_handle_measures_their_folder_and_the_repositorys_store(tmp_vault: Vault) -> None:

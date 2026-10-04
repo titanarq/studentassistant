@@ -377,15 +377,17 @@ def test_a_profile_cannot_point_the_photo_at_another_path(tmp_vault: Vault) -> N
 
 
 @pytest.mark.parametrize("user_id", ["ana-garcia", "", "..", "../ana-garcia", "Ana García"])
-def test_the_photo_of_a_user_that_is_not_there_is_refused(tmp_vault: Vault, user_id: str) -> None:
+def test_the_photo_of_a_user_that_is_not_there_is_refused(
+    vault_with_no_users: Vault, user_id: str
+) -> None:
     upload = encoded(drawn(80, 60), ".png")
 
     with pytest.raises(UserNotFoundError):
-        read_user_photo(tmp_vault, user_id)
+        read_user_photo(vault_with_no_users, user_id)
     with pytest.raises(UserNotFoundError):
-        remove_user_photo(tmp_vault, user_id)
+        remove_user_photo(vault_with_no_users, user_id)
     with pytest.raises(UserNotFoundError):
-        set_user_photo(tmp_vault, user_id, upload, "image/png")
+        set_user_photo(vault_with_no_users, user_id, upload, "image/png")
 
 
 def test_a_photo_is_written_under_the_users_folder_whichever_handle_asks(
@@ -427,16 +429,18 @@ def test_two_users_never_see_each_others_photo(tmp_vault: Vault) -> None:
     assert read_user_photo(tmp_vault, luis.id) == luis_photo
 
 
-def test_a_user_added_by_a_helper_reads_and_writes_its_photo(tmp_vault: Vault) -> None:
+def test_a_user_added_by_a_helper_reads_and_writes_its_photo(
+    vault_with_no_users: Vault,
+) -> None:
     """`add_user` writes a bare folder: a photo needs a profile and no `subjects/`."""
-    user = add_user(tmp_vault, "ana-garcia", NAME)
+    user = add_user(vault_with_no_users, "ana-garcia", NAME)
 
     profile = set_user_photo(user, "ana-garcia", encoded(drawn(90, 90), ".png"), "image/png")
 
     assert profile.photo == USER_PHOTO_NAME
     assert isinstance(profile, UserProfile)
     assert read_user_photo(user, "ana-garcia") is not None
-    assert everything_under(user_directory(tmp_vault, "ana-garcia")) == [
+    assert everything_under(user_directory(vault_with_no_users, "ana-garcia")) == [
         Path(USER_PHOTO_NAME),
         Path(USER_PROFILE_NAME),
     ]

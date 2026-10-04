@@ -8,6 +8,12 @@ Both are idempotent: a vault already at `path` whose `origin` is the same reposi
 set up (only the push access is checked again, and a create interrupted before its push is pushed),
 so re-running `setup` with the same answers changes nothing.
 
+A vault an older installation pushed -- format 1, its content at the repository root -- is cloned
+without complaint, and the flow ends with `warn` given a Spanish message naming
+`studentassistant vault migrate-users`, the one command that moves that content into its first
+user's folder (#548). Refusing it instead would leave a student who has just brought their notes to
+a new PC with a directory they may not use and no way to find out why.
+
 GitHub is reached through a `GitHubHost` (`vault/github.py`); during setup the credential a git
 command needs reaches it through the host's environment. So that the backend (a systemd service,
 without that environment) can push too, every flow writes the host's credential helper -- a
@@ -34,6 +40,7 @@ from studentassistant.vault.vault import (
     Vault,
     VaultFormatError,
     VaultMetaError,
+    VaultNeedsMigrationError,
 )
 
 REMOTE = "origin"
@@ -171,9 +178,25 @@ def _persist_and_verify(
         verify_push_access(unattended_runner(path, identity, timeout))
 
 
-def _open(path: Path) -> Vault:
+def _open(path: Path, warn: Warn = _no_warning) -> Vault:
+    """Open the vault `setup` has just created, cloned, or found already set up at `path`.
+
+    A format-1 vault is not refused: `setup --clone` of a repository an older installation pushed
+    leaves it in place, opened for migration, with `warn` told to say so in Spanish, because a
+    student who has just cloned their own notes should end the flow with them on disk and the one
+    command that unlocks them, not with a refusal (#548). What is still refused is a format this
+    backend cannot read at all -- a vault a newer backend wrote -- and the clone is left in place
+    for that newer backend.
+
+    Raises:
+        SetupError: when `vault.yaml` declares a format this backend cannot read, or is missing or
+            unreadable (Spanish message).
+    """
     try:
         return Vault.open(path)
+    except VaultNeedsMigrationError as error:
+        warn(f"Aviso: {error}")
+        return Vault.open_for_migration(path)
     except VaultFormatError as error:
         raise SetupError(
             f"el vault de {path} es de una versión de formato que esta aplicación no entiende:"
@@ -200,6 +223,10 @@ def create_vault(
 ) -> SetupResult:
     """Create a new vault at `path` and push it to a new private repository `repo` (`owner/name`).
 
+    What is created is a format-2 vault with its first user already in it, named after `student`
+    (`Vault.init`), so the repository pushed to GitHub holds somebody's folder from its first
+    commit and the student who just ran `setup --create` can write a subject straight away.
+
     An existing empty repository is used as it is (that is how a PC without `gh` creates one: by
     hand on GitHub) once it is known to be private: a public one is refused, and when the host
     cannot tell (a token without `gh`) `warn` is given a Spanish message asking the student to
@@ -215,7 +242,7 @@ def create_vault(
     url = host.remote_url(repo)
 
     if _is_set_up(path, host, repo, identity):
-        vault = _open(path)
+        vault = _open(path, warn)
         runner = _runner(path, host, identity, timeout)
         if not _remote_has_commits(runner, url):
             _push(runner)
@@ -271,12 +298,15 @@ def clone_vault(
     post_clone: PostCloneHook = _no_hook,
     author_email: str = DEFAULT_VAULT_AUTHOR_EMAIL,
     timeout: float = DEFAULT_SETUP_TIMEOUT_SECONDS,
+    warn: Warn = _no_warning,
 ) -> SetupResult:
     """Clone the vault `repo` (`owner/name`) into `path`, check it, then call `post_clone` once.
 
-    A vault of a `format_version` this backend does not read is refused, and the clone is left in
-    place for a newer backend. `post_clone` is where the index rebuild plugs in; it is not called
-    when `path` already held this vault (nothing was cloned).
+    A vault of a `format_version` this backend cannot read at all is refused, and the clone is left
+    in place for a newer backend. A format-1 one is not: the clone succeeds, the handle it returns
+    is the migration's, and `warn` is given the Spanish message that names
+    `studentassistant vault migrate-users` (#548). `post_clone` is where the index rebuild plugs in;
+    it is not called when `path` already held this vault (nothing was cloned).
 
     Raises:
         SetupError: on any refusal or failure (Spanish message).
@@ -287,7 +317,7 @@ def clone_vault(
     url = host.remote_url(repo)
 
     if _is_set_up(path, host, repo, identity):
-        vault = _open(path)
+        vault = _open(path, warn)
         _persist_and_verify(path, host, identity, timeout)
         return SetupResult(vault=vault, repo=repo, action="already-set-up")
 
@@ -300,7 +330,7 @@ def clone_vault(
     result = _runner(path.parent, host, identity, timeout).run("clone", "--quiet", url, str(path))
     if not result.ok:
         raise _fail(f"no se pudo clonar {repo}", result)
-    vault = _open(path)
+    vault = _open(path, warn)
     _persist_and_verify(path, host, identity, timeout)
     post_clone(vault)
     return SetupResult(vault=vault, repo=repo, action="cloned")

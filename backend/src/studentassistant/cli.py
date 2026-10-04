@@ -803,6 +803,7 @@ def setup(
                 post_clone=rebuild_after_clone,
                 author_email=git.author_email,
                 timeout=git.timeout_seconds,
+                warn=typer.echo,
             )
     except (SetupError, GitHubHostError) as error:
         typer.echo(f"No se pudo preparar el vault: {error}")

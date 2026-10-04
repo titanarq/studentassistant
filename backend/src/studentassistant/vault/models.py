@@ -10,7 +10,21 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+"""The layout this backend writes: every student's content under their own `users/<user-id>/`.
+
+The repository root keeps only what belongs to it -- `vault.yaml`, `.gitattributes`,
+`.sa/active.yaml`, the locks and `feedback/inbox.jsonl` (epic #544, `docs/modules/vault.md`).
+"""
+
+LEGACY_FORMAT_VERSION = 1
+"""The layout this backend still reads, and reads only so that it can be migrated.
+
+A format-1 vault holds its content at the repository root, which no user owns: `Vault.open`
+refuses one with a Spanish message naming `studentassistant vault migrate-users`, and
+`Vault.open_for_migration` is the one way to open it (#548).
+"""
+
 DEFAULT_FIDELITY_MODE = "estricto"
 
 
@@ -24,19 +38,33 @@ class VaultFileModel(BaseModel):
 
 
 class VaultMeta(VaultFileModel):
-    """`vault.yaml`: which layout the vault uses, since when, and whose it is."""
+    """`vault.yaml`: which layout the vault uses, since when, and whose it is.
+
+    `legacy_root_user` is the id of the user who received the content a format-1 vault had at its
+    root, and is `None` in every vault born with this layout. The notes versions committed before
+    that move are tagged without a user prefix, so this is the id `vault/sync.py` reads to know
+    whose they were, and the one `vault migrate-users` writes when it makes the move (#548).
+    """
 
     format_version: int = FORMAT_VERSION
     created_at: datetime
     student: str
+    legacy_root_user: str | None = None
 
     @field_validator("format_version")
     @classmethod
     def known_format_version(cls, format_version: int) -> int:
-        if format_version != FORMAT_VERSION:
+        """Accept the layout this backend writes and the one it migrates; refuse every other.
+
+        Which of the two a vault is, and what a caller may do with each, is `Vault.open`'s and
+        `Vault.open_for_migration`'s business: reading a format-1 `vault.yaml` back into a model is
+        what lets the migration learn the `student` the first user is named after.
+        """
+        if format_version not in (LEGACY_FORMAT_VERSION, FORMAT_VERSION):
             raise ValueError(
                 f"unsupported vault format version {format_version}"
-                f" (this backend only reads and writes {FORMAT_VERSION})"
+                f" (this backend reads and writes {FORMAT_VERSION}, and migrates"
+                f" {LEGACY_FORMAT_VERSION})"
             )
         return format_version
 

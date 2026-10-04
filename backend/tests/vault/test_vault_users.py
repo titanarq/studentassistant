@@ -51,17 +51,19 @@ def write_profile(vault: Vault, profile: UserProfile) -> None:
 
 
 def test_a_vault_that_has_no_user_yet_lists_none_and_has_no_users_directory(
-    tmp_vault: Vault,
+    vault_with_no_users: Vault,
 ) -> None:
-    assert list_users(tmp_vault) == []
-    assert user_ids(tmp_vault) == []
-    assert not (tmp_vault.root / USERS_DIRNAME).exists()
+    assert list_users(vault_with_no_users) == []
+    assert user_ids(vault_with_no_users) == []
+    assert not (vault_with_no_users.root / USERS_DIRNAME).exists()
 
 
-def test_creating_a_user_writes_its_folder_its_profile_and_its_subjects(tmp_vault: Vault) -> None:
-    profile = create_user(tmp_vault, NAME, email=EMAIL)
-    directory = user_directory(tmp_vault, profile.id)
-    on_disk = json.loads(profile_file(tmp_vault, profile.id).read_text(encoding="utf-8"))
+def test_creating_a_user_writes_its_folder_its_profile_and_its_subjects(
+    vault_with_no_users: Vault,
+) -> None:
+    profile = create_user(vault_with_no_users, NAME, email=EMAIL)
+    directory = user_directory(vault_with_no_users, profile.id)
+    on_disk = json.loads(profile_file(vault_with_no_users, profile.id).read_text(encoding="utf-8"))
 
     assert profile.id == "ana-garcia"
     assert profile.name == NAME
@@ -121,28 +123,32 @@ def test_the_gitkeep_is_what_makes_the_folder_survive_a_clone(tmp_vault: Vault) 
     assert f"{USERS_DIRNAME}/{profile.id}/{USER_PROFILE_NAME}" in tracked
 
 
-def test_the_id_comes_from_the_name_with_its_accents_stripped(tmp_vault: Vault) -> None:
-    assert create_user(tmp_vault, "José Ángel Ñandú").id == "jose-angel-nandu"
-    assert create_user(tmp_vault, "  Ana   García  ").id == "ana-garcia"
+def test_the_id_comes_from_the_name_with_its_accents_stripped(
+    vault_with_no_users: Vault,
+) -> None:
+    assert create_user(vault_with_no_users, "José Ángel Ñandú").id == "jose-angel-nandu"
+    assert create_user(vault_with_no_users, "  Ana   García  ").id == "ana-garcia"
 
 
 def test_a_second_user_of_a_name_whose_id_is_taken_gets_the_first_free_suffix(
-    tmp_vault: Vault,
+    vault_with_no_users: Vault,
 ) -> None:
-    first = create_user(tmp_vault, NAME)
-    second = create_user(tmp_vault, "Ana Garcia")
-    third = create_user(tmp_vault, NAME)
+    first = create_user(vault_with_no_users, NAME)
+    second = create_user(vault_with_no_users, "Ana Garcia")
+    third = create_user(vault_with_no_users, NAME)
 
     assert [first.id, second.id, third.id] == ["ana-garcia", "ana-garcia-2", "ana-garcia-3"]
-    assert user_ids(tmp_vault) == ["ana-garcia", "ana-garcia-2", "ana-garcia-3"]
-    assert get_user(tmp_vault, second.id).name == "Ana Garcia"
+    assert user_ids(vault_with_no_users) == ["ana-garcia", "ana-garcia-2", "ana-garcia-3"]
+    assert get_user(vault_with_no_users, second.id).name == "Ana Garcia"
 
 
-def test_a_half_created_user_still_holds_its_id(tmp_vault: Vault) -> None:
-    user_directory(tmp_vault, "ana-garcia").mkdir(parents=True)
+def test_a_half_created_user_still_holds_its_id(vault_with_no_users: Vault) -> None:
+    user_directory(vault_with_no_users, "ana-garcia").mkdir(parents=True)
 
-    assert user_ids(tmp_vault) == ["ana-garcia"], "no profile.json, but the folder is somebody's"
-    assert create_user(tmp_vault, NAME).id == "ana-garcia-2"
+    assert user_ids(vault_with_no_users) == ["ana-garcia"], (
+        "no profile.json, but the folder is somebody's"
+    )
+    assert create_user(vault_with_no_users, NAME).id == "ana-garcia-2"
 
 
 def test_the_name_is_stored_trimmed(tmp_vault: Vault) -> None:
@@ -169,13 +175,13 @@ def test_creating_a_user_on_a_user_handle_is_refused(tmp_vault: Vault) -> None:
 
 @pytest.mark.parametrize("name", ["", "   ", "\t\n", "."])
 def test_a_name_that_leaves_nothing_to_call_the_user_by_is_refused(
-    tmp_vault: Vault, name: str
+    vault_with_no_users: Vault, name: str
 ) -> None:
     with pytest.raises(UserProfileError) as refusal:
-        create_user(tmp_vault, name)
+        create_user(vault_with_no_users, name)
 
     assert refusal.value.args[0], "the message is what the profile screen shows"
-    assert not (tmp_vault.root / USERS_DIRNAME).exists(), "a refusal writes nothing"
+    assert not (vault_with_no_users.root / USERS_DIRNAME).exists(), "a refusal writes nothing"
 
 
 def test_a_name_longer_than_the_limit_is_refused(tmp_vault: Vault) -> None:
@@ -190,11 +196,11 @@ def test_a_name_longer_than_the_limit_is_refused(tmp_vault: Vault) -> None:
     "email",
     ["ana@", "ana@ejemplo", "ana @ejemplo.com", "ana@@ejemplo.com", "@ejemplo.com", "ana@ejemplo."],
 )
-def test_an_email_that_is_not_one_is_refused(tmp_vault: Vault, email: str) -> None:
+def test_an_email_that_is_not_one_is_refused(vault_with_no_users: Vault, email: str) -> None:
     with pytest.raises(UserProfileError):
-        create_user(tmp_vault, NAME, email=email)
+        create_user(vault_with_no_users, NAME, email=email)
 
-    assert not (tmp_vault.root / USERS_DIRNAME).exists()
+    assert not (vault_with_no_users.root / USERS_DIRNAME).exists()
 
 
 def test_an_email_longer_than_the_limit_is_refused(tmp_vault: Vault) -> None:
@@ -221,21 +227,23 @@ def test_a_refusal_is_a_value_error_and_a_vault_refusal(tmp_vault: Vault, tmp_pa
     assert everything_under(tmp_path) == before
 
 
-def test_a_name_that_names_no_folder_is_refused_in_spanish(tmp_vault: Vault) -> None:
+def test_a_name_that_names_no_folder_is_refused_in_spanish(vault_with_no_users: Vault) -> None:
     with pytest.raises(UserProfileError) as refusal:
-        create_user(tmp_vault, "¡¿?")
+        create_user(vault_with_no_users, "¡¿?")
 
     assert "letra o un número" in refusal.value.args[0]
-    assert not (tmp_vault.root / USERS_DIRNAME).exists()
+    assert not (vault_with_no_users.root / USERS_DIRNAME).exists()
 
 
-def test_users_are_listed_by_name_whatever_the_case_and_then_by_id(tmp_vault: Vault) -> None:
-    add_user(tmp_vault, "zeta", "Ana")
-    add_user(tmp_vault, "alfa", "ana")
-    create_user(tmp_vault, "Beatriz")
-    create_user(tmp_vault, "Ana García")
+def test_users_are_listed_by_name_whatever_the_case_and_then_by_id(
+    vault_with_no_users: Vault,
+) -> None:
+    add_user(vault_with_no_users, "zeta", "Ana")
+    add_user(vault_with_no_users, "alfa", "ana")
+    create_user(vault_with_no_users, "Beatriz")
+    create_user(vault_with_no_users, "Ana García")
 
-    assert [profile.id for profile in list_users(tmp_vault)] == [
+    assert [profile.id for profile in list_users(vault_with_no_users)] == [
         "alfa",
         "zeta",
         "ana-garcia",
@@ -243,7 +251,7 @@ def test_users_are_listed_by_name_whatever_the_case_and_then_by_id(tmp_vault: Va
     ]
 
 
-def test_the_listing_folds_the_case_but_not_the_accents(tmp_vault: Vault) -> None:
+def test_the_listing_folds_the_case_but_not_the_accents(vault_with_no_users: Vault) -> None:
     """Two spellings of one name are one place in the list; an accent is not its letter.
 
     Names are compared case-insensitively and by nothing else, so an accented vowel sorts by its
@@ -251,18 +259,24 @@ def test_the_listing_folds_the_case_but_not_the_accents(tmp_vault: Vault) -> Non
     "Beatriz"; this backend has none, and the selection screen (#552) is free to re-sort what it
     is given.
     """
-    create_user(tmp_vault, "Ángel")
-    create_user(tmp_vault, "Beatriz")
-    create_user(tmp_vault, "Ana")
+    create_user(vault_with_no_users, "Ángel")
+    create_user(vault_with_no_users, "Beatriz")
+    create_user(vault_with_no_users, "Ana")
 
-    assert [profile.id for profile in list_users(tmp_vault)] == ["ana", "beatriz", "angel"]
+    assert [profile.id for profile in list_users(vault_with_no_users)] == [
+        "ana",
+        "beatriz",
+        "angel",
+    ]
 
 
-def test_listing_users_reads_back_every_profile(tmp_vault: Vault) -> None:
-    created = create_user(tmp_vault, NAME, email=EMAIL)
+def test_listing_users_reads_back_every_profile(vault_with_no_users: Vault) -> None:
+    created = create_user(vault_with_no_users, NAME, email=EMAIL)
 
-    assert list_users(tmp_vault) == [created]
-    assert list_users(tmp_vault.for_user(created.id)) == [created], "users are the repository's"
+    assert list_users(vault_with_no_users) == [created]
+    assert list_users(vault_with_no_users.for_user(created.id)) == [created], (
+        "users are the repository's"
+    )
 
 
 def test_a_user_is_read_back_as_it_was_written(tmp_vault: Vault) -> None:
@@ -274,18 +288,18 @@ def test_a_user_is_read_back_as_it_was_written(tmp_vault: Vault) -> None:
     assert read.created_at.tzinfo is not None, "the profile says when, and when is an instant"
 
 
-def test_reading_a_user_that_is_not_there_is_refused(tmp_vault: Vault) -> None:
+def test_reading_a_user_that_is_not_there_is_refused(vault_with_no_users: Vault) -> None:
     with pytest.raises(UserNotFoundError):
-        get_user(tmp_vault, "ana-garcia")
+        get_user(vault_with_no_users, "ana-garcia")
 
 
 def test_reading_a_folder_that_holds_no_profile_is_refused_as_no_such_user(
-    tmp_vault: Vault,
+    vault_with_no_users: Vault,
 ) -> None:
-    user_directory(tmp_vault, "ana-garcia").mkdir(parents=True)
+    user_directory(vault_with_no_users, "ana-garcia").mkdir(parents=True)
 
     with pytest.raises(UserNotFoundError):
-        get_user(tmp_vault, "ana-garcia")
+        get_user(vault_with_no_users, "ana-garcia")
 
 
 @pytest.mark.parametrize(
@@ -331,12 +345,14 @@ def test_a_profile_that_is_not_a_user_profile_is_refused(tmp_vault: Vault, conte
         get_user(tmp_vault, created.id)
 
 
-def test_user_ids_lists_the_folders_without_reading_a_single_profile(tmp_vault: Vault) -> None:
-    create_user(tmp_vault, "Beatriz")
-    create_user(tmp_vault, NAME)
-    profile_file(tmp_vault, "ana-garcia").write_text("{ roto", encoding="utf-8")
+def test_user_ids_lists_the_folders_without_reading_a_single_profile(
+    vault_with_no_users: Vault,
+) -> None:
+    create_user(vault_with_no_users, "Beatriz")
+    create_user(vault_with_no_users, NAME)
+    profile_file(vault_with_no_users, "ana-garcia").write_text("{ roto", encoding="utf-8")
 
-    assert user_ids(tmp_vault) == ["ana-garcia", "beatriz"]
+    assert user_ids(vault_with_no_users) == ["ana-garcia", "beatriz"]
 
 
 def test_updating_a_name_keeps_the_id_the_photo_and_the_moment_of_creation(
@@ -397,18 +413,20 @@ def test_an_update_that_is_refused_leaves_the_profile_it_found(
     assert get_user(tmp_vault, created.id) == created
 
 
-def test_updating_a_user_that_is_not_there_is_refused(tmp_vault: Vault) -> None:
+def test_updating_a_user_that_is_not_there_is_refused(vault_with_no_users: Vault) -> None:
     with pytest.raises(UserNotFoundError):
-        update_user(tmp_vault, "ana-garcia", name="Otra")
+        update_user(vault_with_no_users, "ana-garcia", name="Otra")
     # the id is looked up before the fields are validated, so a refusal about the user wins
     with pytest.raises(UserNotFoundError):
-        update_user(tmp_vault, "ana-garcia", name="")
+        update_user(vault_with_no_users, "ana-garcia", name="")
 
 
-def test_a_user_handle_reads_and_edits_the_profiles_of_the_whole_vault(tmp_vault: Vault) -> None:
-    ana = create_user(tmp_vault, NAME)
-    create_user(tmp_vault, "Luis Martín")
-    user = tmp_vault.for_user(ana.id)
+def test_a_user_handle_reads_and_edits_the_profiles_of_the_whole_vault(
+    vault_with_no_users: Vault,
+) -> None:
+    ana = create_user(vault_with_no_users, NAME)
+    create_user(vault_with_no_users, "Luis Martín")
+    user = vault_with_no_users.for_user(ana.id)
 
     assert user_ids(user) == ["ana-garcia", "luis-martin"]
     assert update_user(user, "luis-martin", email="luis@instituto.es").email == "luis@instituto.es"

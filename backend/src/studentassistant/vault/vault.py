@@ -8,7 +8,13 @@ the GitHub remote and every later commit expect, and already holds what says whi
 
 Deciding whether a directory IS a vault is `Vault.open`'s job, and it refuses a doubtful one with an
 error that names the reason: the vault is the only place this backend writes content, and opening
-the wrong directory would mean writing a student's notes on top of somebody else's files.
+the wrong directory would mean writing a student's notes on top of somebody else's files. Which
+layout it uses is `format_version`'s, and this backend writes format 2, where content lives under
+`users/<user-id>/` (epic #544). A format-1 vault -- content at the root, nobody's -- is refused by
+`Vault.open` with a `VaultNeedsMigrationError` whose Spanish message names
+`studentassistant vault migrate-users`, the command that moves it into its first user's folder in
+one commit; `Vault.open_for_migration` is the single way to open one, and it is that command's
+(#548).
 
 An open vault is a handle on two directories (ADR-0002, epic #544): `root`, the git repository, and
 `path`, where content is written. `Vault.init` and `Vault.open` give a ROOT handle, whose two
@@ -34,12 +40,16 @@ from yaml import YAMLError
 
 from studentassistant.vault.errors import UserNotFoundError, VaultError
 from studentassistant.vault.files import read_yaml, write_text_atomic, write_yaml_atomic
-from studentassistant.vault.models import FORMAT_VERSION, VaultMeta
+from studentassistant.vault.models import FORMAT_VERSION, LEGACY_FORMAT_VERSION, VaultMeta
 from studentassistant.vault.slugs import is_slug
 
 VAULT_META_NAME = "vault.yaml"
 GITATTRIBUTES_NAME = ".gitattributes"
 MAIN_BRANCH = "main"
+
+# The command that turns a format-1 vault into a format-2 one, named in the refusal of `Vault.open`
+# so that the student who reads it knows what to run (#548).
+MIGRATE_USERS_COMMAND = "studentassistant vault migrate-users"
 
 # One folder per user, under the repository root: `users/<user-id>/` holds that user's profile and
 # every subject, topic, session and note of theirs (`docs/modules/vault.md`, "Layout").
@@ -74,16 +84,28 @@ class VaultFormatError(VaultMetaError):
     """
 
 
+class VaultNeedsMigrationError(VaultFormatError):
+    """The vault is of format 1: its content is at the repository root and is nobody's yet.
+
+    This backend reads that layout only to migrate it, so `Vault.open` refuses one and
+    `Vault.open_for_migration` is the single way in -- the one `MIGRATE_USERS_COMMAND` takes. The
+    message is Spanish and names that command, because it is what the student reads when the
+    backend refuses the vault an older installation left them: a refusal that does not say how to
+    fix it would look like their notes were lost (#548).
+    """
+
+
 @dataclass(frozen=True)
 class Vault:
     """An open vault: the directory its content lives in, the repository holding it, and the
     `vault.yaml` that says what it is.
 
-    A ROOT handle (`Vault.init`, `Vault.open`) has `path == root` and `user_id is None`: its
-    content is the repository's own. A USER handle (`for_user`) has the same `root` and `meta` but
-    a `path` of `root / "users" / user_id`, and every path a writer of this package builds from
-    `vault.path` -- and every vault-relative id it returns -- is then inside that one user's
-    folder.
+    A ROOT handle (`Vault.init`, `Vault.open`, `Vault.open_for_migration`) has `path == root` and
+    `user_id is None`: it is the repository's own, and in format 2 the content a root handle points
+    at is only what the whole repository shares. A USER handle (`for_user`) has the same `root` and
+    `meta` but a `path` of `root / "users" / user_id`, and every path a writer of this package
+    builds from `vault.path` -- and every vault-relative id it returns -- is then inside that one
+    user's folder, which is where their subjects, sessions, sources and notes live.
     """
 
     path: Path
@@ -92,29 +114,43 @@ class Vault:
     user_id: str | None = None
 
     @classmethod
-    def init(cls, path: Path, student: str) -> Vault:
-        """Create the vault at `path`: its directory, its two first files and its git repository.
+    def init(cls, path: Path, student: str, *, email: str | None = None) -> Vault:
+        """Create the vault at `path`: its directory, its two first files, its git repository and
+        its first user.
 
         `student` is the display name `vault.yaml` records, which is what the web UI and the editor
-        call the student by; nothing else here depends on it. The caller decides where the vault
-        lives (`studentassistant.config` holds the default), and this makes the directory itself,
-        parents included, so a first run does not need one to exist already.
+        call the student by, and the name the first user is created with: `create_user` derives
+        their id from it the way a subject's slug is derived from the subject's name, and stores
+        `email` -- `None` until the student gives one -- in their profile. The caller decides where
+        the vault lives (`studentassistant.config` holds the default), and this makes the directory
+        itself, parents included, so a first run does not need one to exist already.
 
-        The handle returned is a root one: it creates no user, so it writes nothing under
-        `users/`.
+        A vault is born with one user because format 2 leaves nowhere else to put content: without
+        a `users/<user-id>/` the student who just ran `setup --create` could not write a subject
+        until somebody added them to their own vault. The handle returned is still a root one, the
+        repository's, from which `for_user` narrows to that first user's folder.
 
         Raises:
             FileExistsError: when `path` already exists, so that a typo cannot turn a directory
                 that already holds something into a vault.
             subprocess.CalledProcessError: when `git init` refuses the directory; the two files are
                 already there and `Vault.open` will still read them.
+            UserProfileError: when `student` or `email` is not one `create_user` accepts (its
+                message is Spanish, for whoever typed the name); the vault is there but has no
+                user, which `studentassistant users add` puts right.
         """
+        # `users.py` imports this module for the handle and the two directory names, so the import
+        # that closes the circle cannot be at the top of either of them.
+        from studentassistant.vault.users import create_user
+
         path.mkdir(parents=True)
         meta = VaultMeta(created_at=datetime.now(UTC), student=student)
         write_yaml_atomic(path / VAULT_META_NAME, meta)
         write_text_atomic(path / GITATTRIBUTES_NAME, GITATTRIBUTES_CONTENT)
         _run_git(path, "init", "-b", MAIN_BRANCH)
-        return cls(path=path, meta=meta, root=path)
+        vault = cls(path=path, meta=meta, root=path)
+        create_user(vault, student, email)
+        return vault
 
     @classmethod
     def open(cls, path: Path) -> Vault:
@@ -128,12 +164,41 @@ class Vault:
             VaultNotFoundError: when `path` is not an existing directory.
             VaultMetaError: when `vault.yaml` is missing, unreadable, not YAML, or holds fields
                 that are not a `VaultMeta`.
-            VaultFormatError: when `vault.yaml` declares a `format_version` other than the one this
-                backend reads and writes.
+            VaultNeedsMigrationError: when the vault is of format 1, whose content sits at the root
+                and is nobody's; the Spanish message names `MIGRATE_USERS_COMMAND`, and
+                `open_for_migration` is the one way to open such a vault.
+            VaultFormatError: when `vault.yaml` declares a `format_version` this backend cannot read
+                at all, which is what a vault written by a newer one looks like.
         """
-        if not path.is_dir():
-            raise VaultNotFoundError(f"{path} is not a vault: there is no such directory")
-        return cls(path=path, meta=_read_meta(path / VAULT_META_NAME), root=path)
+        meta = _read_root_meta(path)
+        if meta.format_version == LEGACY_FORMAT_VERSION:
+            raise VaultNeedsMigrationError(_needs_migration_message(path))
+        return cls(path=path, meta=meta, root=path)
+
+    @classmethod
+    def open_for_migration(cls, path: Path) -> Vault:
+        """The one way to open a format-1 vault: a root handle, for the migration's own use.
+
+        The handle is what `open` would return -- the same root, the same read-only opening,
+        nothing written here -- except that its `meta` says format 1, which is what lets
+        `MIGRATE_USERS_COMMAND` read the `student` the first user is named after and know that the
+        content to move is the root's own. Nothing else may open one this way: a vault of any other
+        version is refused, both because there is no root content of theirs to move and because
+        writing `vault.yaml` back through a handle that says format 1 would undo a migration.
+
+        Raises:
+            VaultNotFoundError, VaultMetaError: as `open`.
+            VaultFormatError: when the vault is not of format 1 -- already migrated, or of a
+                version this backend cannot read at all.
+        """
+        meta = _read_root_meta(path)
+        if meta.format_version != LEGACY_FORMAT_VERSION:
+            raise VaultFormatError(
+                f"{path} declares format_version {meta.format_version}, and open_for_migration"
+                f" opens a format {LEGACY_FORMAT_VERSION} vault only: this one has no root content"
+                " for a migration to move"
+            )
+        return cls(path=path, meta=meta, root=path)
 
     def for_user(self, user_id: str) -> Vault:
         """The handle on one user's content: this same vault, scoped to `users/<user_id>/`.
@@ -163,6 +228,28 @@ class Vault:
                 " not there"
             )
         return replace(self, path=user_path, user_id=user_id)
+
+
+def _read_root_meta(path: Path) -> VaultMeta:
+    """The `vault.yaml` of the vault at `path`, refusing a path that holds no directory.
+
+    Raises:
+        VaultNotFoundError: when `path` is not an existing directory.
+        VaultMetaError: as `_read_meta`.
+    """
+    if not path.is_dir():
+        raise VaultNotFoundError(f"{path} is not a vault: there is no such directory")
+    return _read_meta(path / VAULT_META_NAME)
+
+
+def _needs_migration_message(path: Path) -> str:
+    """The Spanish refusal of a format-1 vault: what it is, and the one command that fixes it."""
+    return (
+        f"El vault de {path} es de formato {LEGACY_FORMAT_VERSION}: su contenido está en la raíz y"
+        " no es de ningún usuario, y esta aplicación trabaja con el formato"
+        f" {FORMAT_VERSION}. Ejecuta `{MIGRATE_USERS_COMMAND}` para convertirlo: tu contenido"
+        " pasará a ser del primer usuario en un único commit, sin perder nada."
+    )
 
 
 def _read_meta(meta_path: Path) -> VaultMeta:

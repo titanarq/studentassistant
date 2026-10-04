@@ -189,6 +189,7 @@ from studentassistant.vault.vault import (
     VaultError,
     VaultFormatError,
     VaultMetaError,
+    VaultNeedsMigrationError,
     VaultNotFoundError,
 )
 
@@ -290,6 +291,7 @@ __all__ = [
     "VaultFormatError",
     "VaultBusyError",
     "VaultMetaError",
+    "VaultNeedsMigrationError",
     "VaultNotFoundError",
     "active_host_warning",
     "append_jsonl",
