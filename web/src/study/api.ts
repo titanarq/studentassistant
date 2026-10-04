@@ -11,6 +11,7 @@
  * fields the page needs is an error.
  */
 
+import { reportUserError } from "../users/userRequired";
 import { getJson, type ReadResult, topicPath } from "../desk/api";
 import { errorCode } from "../protocol/errors";
 import type { OptionKey } from "./options";
@@ -117,6 +118,7 @@ export async function switchToStudy(subjectId: string, topicId: string): Promise
     const state = readStudyState(body);
     return state === null ? { kind: "failed", message: fallback } : { kind: "ok", state };
   }
+  reportUserError(body);
   if (response.status === 409 && errorCode(body) === "notes_busy") return { kind: "busy" };
   const detail = isRecord(body) && typeof body.detail === "string" && body.detail !== "" ? body.detail : fallback;
   return { kind: "failed", message: detail };

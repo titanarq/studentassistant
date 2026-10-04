@@ -9,6 +9,7 @@
  * as in the protocol, and a topic without them is shown without them.
  */
 
+import { reportUserError } from "../users/userRequired";
 import {
   type Decoder,
   decodeSubjectsListResponse,
@@ -84,6 +85,7 @@ export async function getJson<T>(path: string, decode: Decoder<T>): Promise<Read
   } catch {
     body = undefined;
   }
+  if (reportUserError(body)) return { kind: "error", status: response.status };
   if (response.status === 404) {
     const detail = (body as { detail?: unknown } | undefined)?.detail;
     return { kind: "not-found", detail: typeof detail === "string" && detail !== "" ? detail : "No encontrado." };

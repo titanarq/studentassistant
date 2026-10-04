@@ -8,6 +8,7 @@
  * an event that is not understood is `null` (the stream's list of events is open).
  */
 
+import { reportUserError } from "../../users/userRequired";
 import { type ReadResult, topicPath } from "../../desk/api";
 import { isOverCap } from "../../pending/doubts";
 import { errorCode } from "../../protocol";
@@ -467,6 +468,7 @@ export function readWorkspaceEvent(event: string, data: string): WorkspaceEvent 
     }
     case "turn.error": {
       const code = errorCode(body);
+      reportUserError(body);
       return {
         type: event,
         turnId,
