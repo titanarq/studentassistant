@@ -79,6 +79,7 @@ from studentassistant.server.source_routes import source_router
 from studentassistant.server.study_routes import study_router
 from studentassistant.server.style_guide_routes import style_guide_router
 from studentassistant.server.tutor_routes import tutor_router
+from studentassistant.server.user_routes import users_router
 from studentassistant.server.vault_status import vault_status_router
 from studentassistant.server.versions_routes import versions_router
 from studentassistant.server.web_search_routes import web_search_router
@@ -364,6 +365,8 @@ def create_app(
         )
 
     app.include_router(pairing_router(server, devices, app.state.codes))
+    # The users themselves, not one user's content: like pairing and health, never user-scoped.
+    app.include_router(users_router())
     app.include_router(session_router())
     app.include_router(cost_router())
     app.include_router(feedback_router())
