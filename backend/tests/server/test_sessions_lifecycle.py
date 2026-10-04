@@ -56,7 +56,8 @@ async def _topic(
     service: SessionService, subject: str = "Física", topic: str = "Cinemática"
 ) -> tuple[str, str]:
     created = await service.create_subject(None, subject)
-    return created.subject_id, (await service.create_topic(None, created.subject_id, topic)).topic_id
+    created_topic = await service.create_topic(None, created.subject_id, topic)
+    return created.subject_id, created_topic.topic_id
 
 
 # subjects and topics
@@ -96,8 +97,8 @@ async def test_start_opens_a_session_of_one_topic_and_publishes_session_started(
 ) -> None:
     subject_id, topic_id = await _topic(service)
     with service.bus.subscribe() as subscription:
-        session = await service.start(None, 
-            subject_id, topic_id, client_time_ms=1_790_000_000_000, principal=DEVICE
+        session = await service.start(
+            None, subject_id, topic_id, client_time_ms=1_790_000_000_000, principal=DEVICE
         )
         event = subscription.get_nowait()
 

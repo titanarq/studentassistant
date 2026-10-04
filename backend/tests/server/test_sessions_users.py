@@ -302,9 +302,7 @@ async def test_an_ended_session_of_another_user_is_still_not_theirs(
 ) -> None:
     mine, theirs = two_users
     subject_id, topic_id = _topic_in(tmp_vault.for_user(mine))
-    ended = start_session(
-        tmp_vault.for_user(mine), subject_id, topic_id, "pc", PROTOCOL_VERSION
-    )
+    ended = start_session(tmp_vault.for_user(mine), subject_id, topic_id, "pc", PROTOCOL_VERSION)
     end_session(ended)
     service = SessionService(SessionBus(), vault=tmp_vault, host="pc-test")
 

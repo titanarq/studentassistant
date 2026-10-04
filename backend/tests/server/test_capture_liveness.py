@@ -384,7 +384,9 @@ class StubSessions:
     def attach(self, session_id: str) -> None:
         from datetime import UTC, datetime
 
-        self.active = OpenSession(session_id, "ana-garcia", "fisica", "cinematica", datetime.now(UTC))
+        self.active = OpenSession(
+            session_id, "ana-garcia", "fisica", "cinematica", datetime.now(UTC)
+        )
         for hook in self.hooks:
             hook(session_id)
 

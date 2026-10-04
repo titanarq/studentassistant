@@ -255,8 +255,26 @@ def ws(
 
 @pytest.fixture
 def read_vault(tmp_vault: Vault) -> ReadVault:
-    """`tmp_vault` populated as `read_api_fixtures.populate` describes."""
+    """`tmp_vault` populated as `read_api_fixtures.populate` describes.
+
+    The content stays at the repository root, where the routes that are NOT user-scoped yet look
+    for it: they read the root handle `SessionService.open_vault()` gives them, and moving them to
+    `active_user_vault` is #551. A test of a route #550 has already scoped to the user asks for
+    `user_read_vault` instead.
+    """
     return populate(tmp_vault)
+
+
+@pytest.fixture
+def user_read_vault(tmp_vault: Vault, student_user_id: str) -> ReadVault:
+    """The same populated vault, with the content under its one user's folder.
+
+    For a test of a route #550 has already scoped to the user (`/api/subjects*`, `/api/sessions*`):
+    those read `users/<id>/...`, so the content has to be there. `ReadVault.vault` is then the USER
+    handle, which is also what the test reads sessions, sources and digests back through, while
+    `create_app` keeps getting `tmp_vault`, the root handle it takes.
+    """
+    return populate(tmp_vault.for_user(student_user_id))
 
 
 @pytest.fixture
@@ -270,6 +288,20 @@ def read_app(
 
 
 @pytest.fixture
+def user_read_app(
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    user_read_vault: ReadVault,
+) -> FastAPI:
+    """An app over the vault `user_read_vault` populated: the root handle, as `create_app` takes."""
+    return create_app(
+        static_dir=tmp_path / "no-web-build", server=server, codes=codes, vault=tmp_vault
+    )
+
+
+@pytest.fixture
 def reader(read_app: FastAPI) -> TestClient:
     """A loopback client (trusted without a token) of `read_app`."""
     return HostedTestClient(read_app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
@@ -279,3 +311,13 @@ def reader(read_app: FastAPI) -> TestClient:
 def lan_reader(read_app: FastAPI) -> TestClient:
     """A LAN client of `read_app` with no token."""
     return HostedTestClient(read_app, base_url=PUBLIC_URL, client=(LAN_HOST, 50000))
+
+
+@pytest.fixture
+def user_reader(user_read_app: FastAPI) -> TestClient:
+    """A loopback client (trusted without a token) of `user_read_app`.
+
+    For a test of a route #550 has scoped to the user: it sends no `X-SA-User` and no `sa_user`,
+    so protocol 1.8's single-user fallback names the one student the vault holds.
+    """
+    return HostedTestClient(user_read_app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
