@@ -6,8 +6,8 @@
 Thin capture client (ADR-0001), Spanish UI:
 - Pairing: scan the backend's QR (URL + one-time code), exchange for a token, store it in
   DataStore; several backends allowed; connection test.
-- Users (#554): «¿Quién eres?» at every start, the chosen user sent as `X-SA-User` on every call, avatar menu
-  with «Editar perfil» / «Cerrar sesión» on the home.
+- Users (#554, #555): «¿Quién eres?» at every start, the chosen user sent as `X-SA-User` on every call, avatar menu
+  with «Editar perfil» / «Cerrar sesión» on the home; «Editar perfil» edits name, email and photo.
 - Home: subjects/topics from the backend, create topic, start or continue a session.
 - Capture screen: a large CameraX preview, transcription with SpeechRecognizer (Google) sent as
   segments, or AudioRecord PCM16 streaming in server STT mode (ADR-0008), the session buttons
@@ -34,7 +34,7 @@ Thin capture client (ADR-0001), Spanish UI:
 
 - **`backend.BackendClient`** (interface) covers every REST endpoint of protocol v1: `pair`,
   `health`, `listSubjects`/`createSubject`, `listTopics`/`createTopic`,
-  `startSession`/`resumeSession`/`endSession`, `addWebPage` (#62) and `uploadCapture` (multipart: a `metadata` JSON
+  `startSession`/`resumeSession`/`endSession`, `addWebPage` (#62), the users' `updateUser` / `putUserPhoto` / `deleteUserPhoto` (#555, see "Users") and `uploadCapture` (multipart: a `metadata` JSON
   part plus `image_N` parts, typed by each `CaptureImage.content_type`). Authenticated calls take
   `BackendCredentials(baseUrl, token, userId)` (see "Users (#554)") and send `Authorization: Bearer <token>`; `pair` and
   `health` take a bare base URL. Every call returns a `BackendResult`: `Success(value)` or a
@@ -90,7 +90,8 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
   with «Reintentar»; no users says «No hay usuarios en este ordenador.». A button leads to
   «Ordenadores». The photo is `BackendClient.userPhoto(backend, photo_url)` (`GET` with the bearer
   token, same origin only), cached in memory by `users.UserPhotos` (`invalidate()` for #555);
-  `UserAvatar` draws it in a circle or `initialsOf(name)`.
+  `UserAvatar` draws it in a circle or `initialsOf(name)`, and loads it again whenever `UserPhotos.version`
+  grows (`invalidate()`, called after a photo change).
 - **Routing** (`ui/Route.kt`, tested without Compose): `startRoute(stored, user)` is `PAIRING` with no
   backend, else `USERS` without a user, else `HOME`; `routeFor(route, hasBackends, user)` sends any
   screen of `USER_SCOPED_ROUTES` (home, capture, desk, tutor, profile) to `USERS` while a backend is
@@ -106,13 +107,34 @@ chosen user. Selecting a user is not authentication (ADR-0001's bearer trust is 
   `TutorViewModel`, `StudyDeskViewModel`, `ConnectionTestViewModel`); a user change reloads the home.
   The connection test's "asignaturas" check acts as the selected user and, right after pairing
   (nobody selected), sends no header.
+- **Profile (#555)**: `users.ProfileViewModel` / `ProfileScreen` (`Route.PROFILE`) edit the selected
+  user. Fields «Nombre» (required, at most `USER_NAME_MAX_CHARS`) and «Correo electrónico»
+  (optional, at most `USER_EMAIL_MAX_CHARS`; empty clears it) are trimmed and checked by
+  `validateProfile` with the protocol's rules (`ProfileFieldError`, Spanish messages in the screen);
+  «Guardar» sends `PATCH /api/users/{id}` with only the fields that differ from the saved user (a
+  cleared email travels as `""`; nothing changed sends nothing). Success replaces the selection in
+  `UserHolder` with the user the backend answered and returns home with the toast «Perfil guardado»;
+  a 422 shows «El ordenador no aceptó estos datos…», any other failure the usual Spanish backend
+  message. The user id is never shown or editable. These calls (`BackendClient.updateUser`,
+  `putUserPhoto(credentials, userId, bytes, contentType)` raw body with its own `Content-Type`,
+  `deleteUserPhoto`; each a `BackendResult<User>`, scripted in `FakeBackendClient`) are not
+  user-scoped and send no `X-SA-User`.
+  - **Photo**: «Cambiar foto» opens the Photo Picker (`PickVisualMedia.ImageOnly`, no storage
+    permission). `PhotoPreparer` decodes the picked image (sampled with `photoSampleSize`), rotates
+    it by its EXIF orientation (`exifTransform`), scales it to at most `PHOTO_MAX_EDGE_PX` (1024) on
+    the long edge (`photoTargetSize(width, height, exifOrientation)`, never enlarging) and encodes
+    JPEG quality 85 on `Dispatchers.Default`, so the upload stays far under the 5 MiB cap
+    (`PHOTO_MAX_BYTES`, checked again before sending; an unreadable or larger image shows «No se
+    pudo leer esa imagen»). «Quitar foto» (shown only when the user has one) asks for confirmation
+    and sends `DELETE`. After either, `UserPhotos.invalidate()` makes the home bar and the selection
+    screen draw the new `photo_url`.
 - **Study desk**: next to `sa_token` the WebView gets `sa_user=<id>; Path=/; SameSite=Strict`
   (`StudyDesk.userCookie`, `DeskPage.userCookie`); `removeAllCookies` drops both when the screen is
   left.
 - **Share**: `ShareActivity` shows «¿Quién eres?» before its subjects while no user is selected
   (same `UserHolder`, same process).
 - **Home top bar**: the user's avatar at the right (content description «Menú de <nombre>») opens a
-  dropdown «Editar perfil» (`Route.PROFILE`, a «Próximamente» screen until #555) and «Cerrar sesión»
+  dropdown «Editar perfil» (`Route.PROFILE`, see "Profile" below) and «Cerrar sesión»
   (dialog «¿Cerrar la sesión de <nombre>?»; confirmed, `HomeViewModel.signOut()` clears `UserHolder`
   and `SessionHolder`). An open capture session stays open on the backend and its spool keeps its
   user, so it can be continued or ended later.

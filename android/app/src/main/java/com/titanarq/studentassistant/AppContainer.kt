@@ -37,6 +37,7 @@ import com.titanarq.studentassistant.tutor.TutorClient
 import com.titanarq.studentassistant.tutor.TutorTopic
 import com.titanarq.studentassistant.tutor.TutorViewModel
 import com.titanarq.studentassistant.tutor.VoiceQuestion
+import com.titanarq.studentassistant.users.ProfileViewModel
 import com.titanarq.studentassistant.users.UserHolder
 import com.titanarq.studentassistant.users.UserPhotos
 import com.titanarq.studentassistant.users.UserRejectionBackendClient
@@ -147,6 +148,11 @@ class AppContainer(
     /** Creates the «¿Quién eres?» screen's [UsersViewModel]. */
     val usersViewModelFactory: ViewModelProvider.Factory by lazy {
         viewModelFactory { initializer { UsersViewModel(backendClient, backendStore, userHolder) } }
+    }
+
+    /** Creates the «Editar perfil» screen's [ProfileViewModel]. */
+    val profileViewModelFactory: ViewModelProvider.Factory by lazy {
+        viewModelFactory { initializer { ProfileViewModel(backendClient, backendStore, userHolder, userPhotos) } }
     }
 
     /** The session the capture screen works on, handed over by the home screen. */

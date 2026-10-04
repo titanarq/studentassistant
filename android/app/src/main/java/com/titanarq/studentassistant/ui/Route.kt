@@ -20,7 +20,7 @@ enum class Route {
     /** «¿Quién eres?»: which user of the active backend is using the app (#554). */
     USERS,
 
-    /** «Editar perfil» (#555; a «Próximamente» screen until then). */
+    /** «Editar perfil»: the selected user's name, email and photo (#555). */
     PROFILE,
 }
 

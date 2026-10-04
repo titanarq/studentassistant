@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
@@ -32,7 +33,8 @@ fun UserAvatar(
     size: Dp = 40.dp,
     contentDescription: String? = stringResource(R.string.users_photo_description, user.name),
 ) {
-    val photo by produceState<ImageBitmap?>(initialValue = null, user.id, user.photoUrl) {
+    val version by photos.version.collectAsState()
+    val photo by produceState<ImageBitmap?>(initialValue = null, user.id, user.photoUrl, version) {
         value = photos.load(user)?.let { bytes ->
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
         }
