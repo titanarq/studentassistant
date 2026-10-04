@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, stubApi } from "../test/mockApi";
 import { ConfirmProvider } from "../ui/ConfirmDialog";
@@ -90,5 +90,79 @@ describe("ProfilePage", () => {
     vi.spyOn(window.history, "length", "get").mockReturnValue(1);
     fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+  });
+
+  const calls = (fetchMock: ReturnType<typeof stubApi>, method: string) =>
+    fetchMock.mock.calls.filter(([, init]) => init?.method === method);
+
+  it("refuses a wrong type and an oversized photo without a request", async () => {
+    const fetchMock = await renderProfile();
+    const input = screen.getByLabelText("Elegir foto");
+    fireEvent.change(input, { target: { files: [new File(["x"], "a.gif", { type: "image/gif" })] } });
+    expect(await screen.findByText("Formato de foto no admitido. Usa JPG, PNG o WebP.")).toBeTruthy();
+    const big = new File(["x"], "a.png", { type: "image/png" });
+    Object.defineProperty(big, "size", { value: 5 * 1024 * 1024 + 1 });
+    fireEvent.change(input, { target: { files: [big] } });
+    expect(await screen.findByText("La foto es demasiado grande (máximo 5 MiB).")).toBeTruthy();
+    expect(calls(fetchMock, "PUT")).toHaveLength(0);
+  });
+
+  it("uploads the raw file and shows the new photo everywhere", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    URL.revokeObjectURL = vi.fn();
+    const fetchMock = await renderProfile({
+      "PUT /api/users/ana/photo": jsonResponse({ ...ANA, photo_url: "/api/users/ana/photo?v=2" }),
+    });
+    const file = new File(["img"], "a.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Elegir foto"), { target: { files: [file] } });
+    await waitFor(() => expect(document.querySelectorAll('img[src="/api/users/ana/photo?v=2"]').length).toBeGreaterThan(1));
+    const put = calls(fetchMock, "PUT")[0];
+    expect(put[1]!.body).toBe(file);
+    expect((put[1]!.headers as Record<string, string>)["Content-Type"]).toBe("image/png");
+    expect(screen.getByRole("button", { name: "Quitar foto" })).toBeTruthy();
+  });
+
+  it("shows the Spanish message of a 413", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    URL.revokeObjectURL = vi.fn();
+    await renderProfile({ "PUT /api/users/ana/photo": jsonResponse({}, 413) });
+    fireEvent.change(screen.getByLabelText("Elegir foto"), {
+      target: { files: [new File(["i"], "a.png", { type: "image/png" })] },
+    });
+    expect(await screen.findByText("La foto es demasiado grande (máximo 5 MiB).")).toBeTruthy();
+  });
+
+  it("offers «Quitar foto» only with a photo, asks, then deletes", async () => {
+    document.cookie = "sa_user=ana; Path=/";
+    const withPhoto = { ...ANA, photo_url: "/api/users/ana/photo?v=1" };
+    const fetchMock = stubApi({
+      "/api/users": jsonResponse({ users: [withPhoto] }),
+      "DELETE /api/users/ana/photo": jsonResponse(ANA),
+    });
+    render(
+      <UserGate pathname="/profile">
+        <ProfilePage />
+      </UserGate>,
+      { wrapper: ConfirmProvider },
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Quitar foto" }));
+    expect(calls(fetchMock, "DELETE")).toHaveLength(0);
+    const dialog = await screen.findByRole("dialog", { name: "¿Quitar la foto?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Quitar foto" }));
+    await waitFor(() => expect(calls(fetchMock, "DELETE")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Quitar foto" })).toBeNull());
+  });
+
+  it("has no «Quitar foto» without a photo", async () => {
+    await renderProfile();
+    expect(screen.queryByRole("button", { name: "Quitar foto" })).toBeNull();
+  });
+
+  it("updates the app bar avatar and name after saving", async () => {
+    await renderProfile({ "PATCH /api/users/ana": jsonResponse({ id: "ana", name: "Ana María", email: "ana@example.com" }) });
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: "Ana María" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }));
+    await screen.findByText("Perfil guardado");
+    expect(screen.getByLabelText("Menú de Ana María")).toBeTruthy();
   });
 });

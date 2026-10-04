@@ -1,6 +1,13 @@
-import { type FormEvent, useState } from "react";
-import { USER_EMAIL_MAX_CHARS, USER_EMAIL_PATTERN, USER_NAME_MAX_CHARS, type UserUpdateRequest } from "../protocol";
-import { updateUser } from "./api";
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
+import {
+  USER_EMAIL_MAX_CHARS,
+  USER_EMAIL_PATTERN,
+  USER_NAME_MAX_CHARS,
+  USER_PHOTO_CONTENT_TYPES,
+  type UserUpdateRequest,
+} from "../protocol";
+import { useConfirm } from "../ui/ConfirmDialog";
+import { deleteUserPhoto, updateUser, uploadUserPhoto, type UserWriteResult } from "./api";
 import Avatar from "./Avatar";
 import { useActiveUser } from "./UserGate";
 import "./profilePage.css";
@@ -21,6 +28,14 @@ export function validateEmail(raw: string): string | null {
   return null;
 }
 
+export const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+const PHOTO_STATUS_MESSAGES: Record<number, string> = {
+  413: "La foto es demasiado grande (máximo 5 MiB).",
+  415: "Formato de foto no admitido. Usa JPG, PNG o WebP.",
+  422: "No se pudo leer la foto.",
+};
+
 function goBack(): void {
   if (window.history.length > 1) window.history.back();
   else window.location.assign("/");
@@ -28,7 +43,12 @@ function goBack(): void {
 
 /** «Editar perfil»: name and email of the active user (the id is never shown as a field). */
 export default function ProfilePage() {
-  const { user } = useActiveUser();
+  const { user, setUser } = useActiveUser();
+  const confirm = useConfirm();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email ?? "");
   const [nameError, setNameError] = useState<string | null>(null);
@@ -36,6 +56,61 @@ export default function ProfilePage() {
   const [failure, setFailure] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (preview !== null) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
+
+  const photoFailure = (result: UserWriteResult): string =>
+    result.kind === "rejected"
+      ? (result.detail ?? PHOTO_STATUS_MESSAGES[result.status] ?? "No se pudo guardar la foto.")
+      : "No se pudo conectar con el servidor.";
+
+  const pickPhoto = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file === undefined) return;
+    setPhotoError(null);
+    setSaved(false);
+    if (!(USER_PHOTO_CONTENT_TYPES as readonly string[]).includes(file.type)) {
+      setPhotoError("Formato de foto no admitido. Usa JPG, PNG o WebP.");
+      return;
+    }
+    if (file.size > PHOTO_MAX_BYTES) {
+      setPhotoError("La foto es demasiado grande (máximo 5 MiB).");
+      return;
+    }
+    setPreview(URL.createObjectURL(file));
+    setPhotoBusy(true);
+    const result = await uploadUserPhoto(user.id, file);
+    setPhotoBusy(false);
+    setPreview(null);
+    if (result.kind === "ok") setUser(result.user);
+    else setPhotoError(photoFailure(result));
+  };
+
+  const removePhoto = async () => {
+    setPhotoError(null);
+    setSaved(false);
+    const confirmed = await confirm({
+      title: "¿Quitar la foto?",
+      message: "Se mostrarán tus iniciales en su lugar.",
+      confirmLabel: "Quitar foto",
+      destructive: true,
+      onConfirm: async () => {
+        const result = await deleteUserPhoto(user.id);
+        if (result.kind === "ok") {
+          setUser(result.user);
+          return null;
+        }
+        return photoFailure(result);
+      },
+    });
+    void confirmed;
+  };
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -58,6 +133,7 @@ export default function ProfilePage() {
     setSaving(false);
     if (result.kind === "ok") {
       setSaved(true);
+      setUser(result.user);
       setName(result.user.name);
       setEmail(result.user.email ?? "");
     } else if (result.kind === "rejected") {
@@ -71,7 +147,30 @@ export default function ProfilePage() {
     <main className="profile-page">
       <h1 className="profile-title">Editar perfil</h1>
       <div className="profile-avatar">
-        <Avatar user={user} />
+        {preview !== null ? <img className="user-avatar user-avatar-md" src={preview} alt="" /> : <Avatar user={user} />}
+        <div className="profile-photo-actions">
+          <input
+            ref={fileInput}
+            type="file"
+            className="profile-photo-input"
+            accept={USER_PHOTO_CONTENT_TYPES.join(",")}
+            aria-label="Elegir foto"
+            onChange={pickPhoto}
+          />
+          <button type="button" className="profile-cancel" disabled={photoBusy} onClick={() => fileInput.current?.click()}>
+            Cambiar foto
+          </button>
+          {user.photo_url && (
+            <button type="button" className="profile-cancel" disabled={photoBusy} onClick={removePhoto}>
+              Quitar foto
+            </button>
+          )}
+        </div>
+        {photoError !== null && (
+          <p className="profile-error" role="alert">
+            {photoError}
+          </p>
+        )}
       </div>
       <form className="profile-form" onSubmit={save} noValidate>
         <label className="profile-field">

@@ -17,6 +17,8 @@ export interface ActiveUser {
   user: User;
   /** Forgets the user, deletes the cookie and shows the selection. */
   signOut: () => void;
+  /** Replaces the in-memory user with the server's updated one (the app bar and the page follow). */
+  setUser: (user: User) => void;
 }
 
 const ActiveUserContext = createContext<ActiveUser | null>(null);
@@ -170,7 +172,7 @@ export default function UserGate({ children, pathname = window.location.pathname
       </ChooseContext.Provider>
     );
   }
-  return <ActiveUserContext.Provider value={{ user, signOut }}>
+  return <ActiveUserContext.Provider value={{ user, signOut, setUser }}>
       <AppBar />
       {children}
     </ActiveUserContext.Provider>;
