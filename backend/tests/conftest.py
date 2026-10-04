@@ -30,8 +30,9 @@ def tmp_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Vault:
     looks in `~/.gitconfig`.
 
     The handle is the ROOT one, `Vault.init`'s own: the repository, whose `users/` holds the first
-    user, `STUDENT_USER_ID`. A test that writes one student's content asks for
-    `tmp_vault.for_user(STUDENT_USER_ID)`.
+    user, `STUDENT_USER_ID`. Most of the suite still writes its content through this handle, at the
+    root, because nothing hands out user handles yet -- the server becomes user-scoped in #549,
+    #550 and #551. A test of what one student sees asks for `tmp_vault.for_user(STUDENT_USER_ID)`.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)

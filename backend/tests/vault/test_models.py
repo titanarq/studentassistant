@@ -45,8 +45,15 @@ def test_a_legacy_vault_meta_reads_back_so_that_it_can_be_migrated() -> None:
 
 @pytest.mark.parametrize("format_version", [0, -1, FORMAT_VERSION + 1, 99])
 def test_vault_meta_refuses_a_format_version_it_does_not_know(format_version: int) -> None:
-    with pytest.raises(ValidationError, match="unsupported vault format version"):
+    with pytest.raises(ValidationError, match="unsupported vault format version") as refused:
         VaultMeta(format_version=format_version, created_at=CREATED_AT, student="Ana")
+
+    message = str(refused.value)
+    assert f"reads and writes {FORMAT_VERSION}" in message
+    assert f"migrates {LEGACY_FORMAT_VERSION}" in message, (
+        "the refusal names the two versions this backend does handle, so that a vault it cannot"
+        " read at all is not mistaken for one it migrates"
+    )
 
 
 def test_subject_defaults_to_no_style_guide() -> None:

@@ -95,6 +95,22 @@ def test_a_vault_born_with_this_format_names_no_legacy_user_of_its_root(tmp_path
     assert "legacy_root_user: null" in (vault.path / VAULT_META_NAME).read_text(encoding="utf-8")
 
 
+def test_open_reads_back_the_user_a_migration_named_in_vault_yaml(tmp_path: Path) -> None:
+    """The notes versions committed before the move are tagged without a user prefix, so who they
+    belong to lives in this one field: it has to survive the trip through `vault.yaml`."""
+    vault = Vault.init(tmp_path / "vault", student=STUDENT)
+    meta_path = vault.path / VAULT_META_NAME
+    meta_path.write_text(
+        meta_path.read_text(encoding="utf-8").replace(
+            "legacy_root_user: null", f"legacy_root_user: {FIRST_USER_ID}"
+        ),
+        encoding="utf-8",
+    )
+
+    assert Vault.open(vault.path).meta.legacy_root_user == FIRST_USER_ID
+    assert read_yaml(meta_path, VaultMeta).legacy_root_user == FIRST_USER_ID
+
+
 def test_init_creates_the_first_user_of_the_vault_from_the_name_it_is_given(
     tmp_path: Path,
 ) -> None:
@@ -300,6 +316,25 @@ def test_open_for_migration_refuses_a_vault_of_the_format_this_backend_writes(
     vault = Vault.init(tmp_path / "vault", student=STUDENT)
 
     with pytest.raises(VaultFormatError, match="opens a format 1 vault only"):
+        Vault.open_for_migration(vault.path)
+
+
+@pytest.mark.parametrize("format_version", [FORMAT_VERSION + 1, 99])
+def test_open_for_migration_refuses_a_format_version_this_backend_cannot_read_at_all(
+    tmp_path: Path, format_version: int
+) -> None:
+    """A vault a newer backend wrote is that backend's: there is no root content of theirs for a
+    migration to move, and opening one as format 1 would be a guess."""
+    vault = Vault.init(tmp_path / "vault", student=STUDENT)
+    meta_path = vault.path / VAULT_META_NAME
+    meta_path.write_text(
+        meta_path.read_text(encoding="utf-8").replace(
+            f"format_version: {FORMAT_VERSION}", f"format_version: {format_version}"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(VaultFormatError, match=f"declares format_version {format_version}"):
         Vault.open_for_migration(vault.path)
 
 

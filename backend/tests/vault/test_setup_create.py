@@ -13,8 +13,9 @@ from git_helpers import commit_count, git
 from secret_samples import GITHUB_PAT
 
 from github_fakes import LocalHost, bare_repo, remote_base
-from studentassistant.vault import Vault
+from studentassistant.vault import Vault, list_users
 from studentassistant.vault.github import GitHubHostError, TokenHost
+from studentassistant.vault.models import FORMAT_VERSION
 from studentassistant.vault.setup import SetupError, create_vault
 
 REPO = "ana/vault"

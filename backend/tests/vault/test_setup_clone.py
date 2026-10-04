@@ -10,7 +10,9 @@ from git_helpers import git
 
 from github_fakes import LocalHost, bare_repo
 from studentassistant.vault import Vault
+from studentassistant.vault.models import LEGACY_FORMAT_VERSION
 from studentassistant.vault.setup import SetupError, clone_vault, create_vault
+from studentassistant.vault.vault import MIGRATE_USERS_COMMAND
 
 REPO = "ana/vault"
 STUDENT = "Ana García"
@@ -90,6 +92,74 @@ def test_clone_of_a_future_format_is_refused_and_left_in_place(
     assert "actualiza Student Assistant" in str(error.value)
     assert calls == []
     assert (tmp_path / "pc2" / "vault.yaml").is_file()
+
+
+def _publish_as_format_one(vault: Vault) -> None:
+    """Leave the published repository the way an installation of format 1 left it.
+
+    That layout held the content at the root and had no `users/` at all, and its `vault.yaml`
+    declared the three fields it had: no `legacy_root_user`, which is what format 2 writes to say
+    who received the root's content (#548).
+    """
+    meta_path = vault.path / "vault.yaml"
+    published = yaml.safe_load(meta_path.read_text())
+    meta_path.write_text(
+        yaml.safe_dump(
+            {
+                "format_version": LEGACY_FORMAT_VERSION,
+                "created_at": published["created_at"],
+                "student": published["student"],
+            }
+        )
+    )
+    git(vault.path, "rm", "-r", "--quiet", "users")
+    git(vault.path, "commit", "-qam", "un vault de formato 1")
+    git(vault.path, "push", "--quiet", "origin", "main")
+
+
+def test_clone_of_a_format_one_vault_succeeds_and_says_how_to_migrate_it(
+    tmp_path: Path, host: LocalHost, published: Vault
+) -> None:
+    """A student who brings their notes to a new PC ends the flow with them on disk and the one
+    command that unlocks them: refusing the clone would leave a directory they may not use and no
+    way to find out why (#548)."""
+    _publish_as_format_one(published)
+    warnings: list[str] = []
+    calls: list[Vault] = []
+
+    result = clone_vault(
+        tmp_path / "pc2", REPO, host, post_clone=calls.append, warn=warnings.append
+    )
+
+    assert result.action == "cloned"
+    assert result.vault.meta.format_version == LEGACY_FORMAT_VERSION
+    assert result.vault.root == result.vault.path and result.vault.user_id is None, (
+        "what it hands back is the migration's own handle: the content to move is the root's"
+    )
+    assert calls == [result.vault], "the index rebuild still runs, over that same handle"
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Aviso: ")
+    assert MIGRATE_USERS_COMMAND in warnings[0]
+    assert "formato 1" in warnings[0]
+
+
+def test_a_format_one_vault_that_is_already_on_this_pc_warns_the_same_way(
+    tmp_path: Path, host: LocalHost, published: Vault
+) -> None:
+    """Re-running `setup` with the same answers is idempotent, but the vault still needs migrating,
+    so the warning is not something only the first run says. The first clone here is given no
+    `warn` at all, which is the default: a caller that does not ask for warnings still succeeds."""
+    _publish_as_format_one(published)
+    clone_vault(tmp_path / "pc2", REPO, host)
+    warnings: list[str] = []
+
+    again = clone_vault(tmp_path / "pc2", REPO, host, warn=warnings.append)
+
+    assert again.action == "already-set-up"
+    assert again.vault.meta.format_version == LEGACY_FORMAT_VERSION
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Aviso: ")
+    assert MIGRATE_USERS_COMMAND in warnings[0]
 
 
 def test_clone_of_a_repository_that_is_not_a_vault_is_refused(

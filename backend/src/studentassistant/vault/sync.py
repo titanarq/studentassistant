@@ -965,9 +965,10 @@ class UserGitSync:
     def _legacy_root_user(self) -> str | None:
         """The user `vault.yaml` names as the one whose content was the repository's own.
 
-        Read from the file and not from `vault.meta`: `VaultMeta` declares `legacy_root_user` from
-        format 2 on (#548), and the notes versions committed before the move have to stay readable
-        until then. `None` when the file names nobody, or cannot be read.
+        Read from the file and not from `vault.meta`, which is the snapshot `Vault.open` took: the
+        migration writes the field into a vault a handle is already open on (#548), and the notes
+        versions committed before the move have to stay readable to whoever holds that handle.
+        `None` when the file names nobody, or cannot be read.
         """
         try:
             meta = yaml.safe_load((self.vault.root / VAULT_META_NAME).read_text(encoding="utf-8"))

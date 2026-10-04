@@ -263,9 +263,9 @@ def test_a_root_handle_reports_each_user_with_their_own_subjects(
     )
     assert stats.working_tree_bytes == sum(USER_FILES.values()) + own_bytes(vault_with_no_users)
     assert stats.working_tree_files == len(USER_FILES) + 2
-    assert [
-        file.path for file in vault_stats(vault_with_no_users, top=1).largest_files
-    ] == ["users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg"]
+    assert [file.path for file in vault_stats(vault_with_no_users, top=1).largest_files] == [
+        "users/ana/subjects/mates/topics/derivadas/sources/notes/page-001.jpg"
+    ]
 
 
 def test_a_user_handle_measures_their_folder_and_the_repositorys_store(tmp_vault: Vault) -> None:

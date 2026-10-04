@@ -137,7 +137,8 @@ class Vault:
                 already there and `Vault.open` will still read them.
             UserProfileError: when `student` or `email` is not one `create_user` accepts (its
                 message is Spanish, for whoever typed the name); the vault is there but has no
-                user, which `studentassistant users add` puts right.
+                user, and `create_user` called again -- by `studentassistant users add`, which
+                #549 adds -- puts one in it.
         """
         # `users.py` imports this module for the handle and the two directory names, so the import
         # that closes the circle cannot be at the top of either of them.
