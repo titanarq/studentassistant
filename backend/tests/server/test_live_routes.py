@@ -18,7 +18,7 @@ from studentassistant.server.bus import SessionBus
 from studentassistant.server.live_routes import live_events
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.sessions import SessionService
-from studentassistant.vault import Vault
+from studentassistant.vault import Vault, create_user
 
 pytestmark = pytest.mark.anyio
 
@@ -69,17 +69,20 @@ PAGE_PATH = "subjects/fisica/topics/cinematica/sources/notes/page-001.page.jpg"
 
 
 async def _started(service: SessionService) -> str:
-    subject = await service.create_subject("Física")
-    topic = await service.create_topic(subject.subject_id, "Cinemática")
-    session = await service.start(subject.subject_id, topic.topic_id, client_time_ms=0)
+    # `None` names the vault's one user (#550): the stream follows a session, whoever it is.
+    subject = await service.create_subject(None, "Física")
+    topic = await service.create_topic(None, subject.subject_id, "Cinemática")
+    session = await service.start(None, subject.subject_id, topic.topic_id, client_time_ms=0)
     return session.session_id
 
 
 async def test_without_an_active_session_the_stream_is_an_empty_snapshot(
-    tmp_vault: Vault,
+    tmp_vault: Vault, student_user_id: str
 ) -> None:
     bus = SessionBus()
-    stream = live_events(SessionService(bus, vault=tmp_vault, host="pc"), bus)
+    stream = live_events(
+        SessionService(bus, vault=tmp_vault, host="pc"), bus, user_id=student_user_id
+    )
     assert await _next(stream) == ("retry", 3000)
     assert await _next(stream) == (
         "snapshot",
@@ -88,7 +91,38 @@ async def test_without_an_active_session_the_stream_is_an_empty_snapshot(
     await _ends(stream)
 
 
-async def test_the_stream_follows_the_active_session_until_it_ends(tmp_vault: Vault) -> None:
+async def test_a_session_of_another_user_is_not_streamed(
+    tmp_vault: Vault, student_user_id: str
+) -> None:
+    """A student another one is capturing for sees no session at all (#550).
+
+    The empty snapshot and the end of the stream are byte for byte what a backend capturing nothing
+    answers, so the browser reconnects and asks again, and nothing of a session that is not the
+    asking user's -- not its id, not a segment, not a page, not an outline -- reaches them.
+    """
+    bus = SessionBus()
+    service = SessionService(bus, vault=tmp_vault, host="pc")
+    session_id = await _started(service)
+    await bus.publish(session_id, "transcript.final", "stt", _segment("seg-1", 0, "Hoy vemos MRU"))
+    other = create_user(tmp_vault, "Lucía Martín").id
+
+    stream = live_events(service, bus, user_id=other)
+    assert await _next(stream) == ("retry", 3000)
+    assert await _next(stream) == (
+        "snapshot",
+        {"session": None, "segments": [], "captures": [], "outline": [], "open_pending": 0},
+    )
+    await _ends(stream)
+
+    # The session is untouched by being looked at as somebody else: still active, still the owner's.
+    active = service.active
+    assert active is not None
+    assert (active.session_id, active.user_id) == (session_id, student_user_id)
+
+
+async def test_the_stream_follows_the_active_session_until_it_ends(
+    tmp_vault: Vault, student_user_id: str
+) -> None:
     bus = SessionBus()
     service = SessionService(bus, vault=tmp_vault, host="pc")
     session_id = await _started(service)
@@ -113,7 +147,7 @@ async def test_the_stream_follows_the_active_session_until_it_ends(tmp_vault: Va
         {"op": "add_section", "section_id": "mru", "title": "Movimiento rectilíneo"},
     )
 
-    stream = live_events(service, bus, keepalive=WAIT)
+    stream = live_events(service, bus, user_id=student_user_id, keepalive=WAIT)
     assert await _next(stream) == ("retry", 3000)
     name, snapshot = await _next(stream)
     assert name == "snapshot"
@@ -212,11 +246,13 @@ async def test_the_stream_follows_the_active_session_until_it_ends(tmp_vault: Va
     await _ends(stream)
 
 
-async def test_a_quiet_stream_sends_keep_alive_comments(tmp_vault: Vault) -> None:
+async def test_a_quiet_stream_sends_keep_alive_comments(
+    tmp_vault: Vault, student_user_id: str
+) -> None:
     bus = SessionBus()
     service = SessionService(bus, vault=tmp_vault, host="pc")
     await _started(service)
-    stream = aiter(live_events(service, bus, keepalive=0.01))
+    stream = aiter(live_events(service, bus, user_id=student_user_id, keepalive=0.01))
     assert isinstance(stream, AsyncGenerator)
     await _next(stream)
     assert (await _next(stream))[0] == "snapshot"
@@ -224,11 +260,11 @@ async def test_a_quiet_stream_sends_keep_alive_comments(tmp_vault: Vault) -> Non
     await stream.aclose()
 
 
-async def test_a_closed_bus_ends_the_stream(tmp_vault: Vault) -> None:
+async def test_a_closed_bus_ends_the_stream(tmp_vault: Vault, student_user_id: str) -> None:
     bus = SessionBus()
     service = SessionService(bus, vault=tmp_vault, host="pc")
     await _started(service)
-    stream = live_events(service, bus, keepalive=WAIT)
+    stream = live_events(service, bus, user_id=student_user_id, keepalive=WAIT)
     await _next(stream)
     await _next(stream)
     bus.close()

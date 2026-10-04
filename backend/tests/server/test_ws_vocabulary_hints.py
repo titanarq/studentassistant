@@ -143,7 +143,7 @@ def test_with_the_count_unknown_new_hints_ride_on_the_next_observer_notice(ws: W
 def test_unreadable_terms_cost_only_the_hints(ws: WsHarness) -> None:
     async def broken(session: OpenSession) -> TopicTerms:
         return await ws.app.state.gateway._load_terms(
-            OpenSession("missing", "nope", "nada", session.started_at)
+            OpenSession("missing", "nobody", "nope", "nada", session.started_at)
         )
 
     ws.app.state.gateway.terms_loader = broken

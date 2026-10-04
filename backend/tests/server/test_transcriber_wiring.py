@@ -89,7 +89,11 @@ def test_without_an_llm_transport_or_when_disabled_there_is_no_transcriber(
 
 
 def test_the_replayed_capture_is_transcribed_before_the_session_ends(
-    server: ServerSettings, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    user_vault: Vault,
 ) -> None:
     fake = FakeClaude().reply_text("# La célula\n\n- membrana, [[?citoplasma]] y núcleo")
     app = _app(server, codes, tmp_path, tmp_vault, llm_transport=fake, llm_settings=NO_OBSERVER)
@@ -102,15 +106,17 @@ def test_the_replayed_capture_is_transcribed_before_the_session_ends(
     hints = request.messages[0]["content"][-1]["text"]
     assert "membrana, citoplasma y núcleo" in hints  # said 2.5-7 s before the photo
 
-    topic = tmp_vault.path / "subjects" / "biologia" / "topics" / "la-celula"
+    # The transcriber works on the session the lifecycle attached, which is the one user's handle
+    # (#550): the session's events, the transcription and the ledger are in that student's folder.
+    topic = user_vault.path / "subjects" / "biologia" / "topics" / "la-celula"
     events = list(read_jsonl(topic / "sessions" / result.session_id / "events.jsonl", Event))
     [done] = [e for e in events if e.kind == PAGE_TRANSCRIBED_KIND]
     [pending] = [e for e in events if e.kind == STATE_OP_EVENT_KIND]
     ended = next(e.seq for e in events if e.kind == "session.ended")
     assert pending.seq < done.seq < ended
     assert pending.payload["pending_id"] in done.payload["pending_ids"]
-    assert (tmp_vault.path / done.payload["path"]).is_file()
-    assert {entry.role for entry in read_ledger(tmp_vault, "biologia", "la-celula")} == {
+    assert (user_vault.path / done.payload["path"]).is_file()
+    assert {entry.role for entry in read_ledger(user_vault, "biologia", "la-celula")} == {
         "transcriber"
     }
 

@@ -16,6 +16,11 @@ clears.
 No task runs for it: the tracker holds a bus subscription created with the app (only the kinds
 above plus `session.ended`, which forgets the session) and folds what it queued whenever a summary
 is asked for. Held in memory only; a restarted backend starts every count at 0.
+
+The counts are keyed by session id alone, and stay that way with several students on one vault
+(#550): what a summary is worth is settled by the route that serves it, the health route of
+`session_routes.py`, which asks the `SessionService` whether the session is the asking user's
+and answers 404 when it is not, so a student never reads the health of somebody else's session.
 """
 
 from __future__ import annotations

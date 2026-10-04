@@ -21,7 +21,7 @@ from studentassistant.config import ServerSettings, SttSettings
 from studentassistant.server.app import create_app
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.stt import SpeechToTextProvider, provider_from_settings
-from studentassistant.vault import Vault
+from studentassistant.vault import Vault, user_ids
 
 LOOPBACK_HOST = "127.0.0.1"
 LAN_HOST = "192.168.1.30"
@@ -61,6 +61,30 @@ def isolated_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     path = tmp_path / "config.toml"
     monkeypatch.setenv("SA_CONFIG", str(path))
     return path
+
+
+@pytest.fixture
+def student_user_id(tmp_vault: Vault) -> str:
+    """The id of the one user `tmp_vault` was born with (`STUDENT_USER_ID` of `tests/conftest.py`).
+
+    Read off the vault rather than repeated here, so a test that asks for it cannot drift from the
+    name `Vault.init` gives the first student.
+    """
+    (user_id,) = user_ids(tmp_vault)
+    return user_id
+
+
+@pytest.fixture
+def user_vault(tmp_vault: Vault, student_user_id: str) -> Vault:
+    """`tmp_vault` narrowed to its one user: the handle the server's content goes through.
+
+    `SessionService` reads and writes subjects, topics and sessions through `for_user` (#550), so
+    a test that puts one of them in the vault for a lifecycle call to find has to put it here
+    rather than at the repository root, where format 2 leaves nothing of anybody's. A test that
+    reads the whole repository -- git, `.sa/active.yaml`, `users/` itself -- keeps asking for
+    `tmp_vault`, the root handle, which is also the one `create_app` and `GitSync` are given.
+    """
+    return tmp_vault.for_user(student_user_id)
 
 
 @pytest.fixture
@@ -175,10 +199,15 @@ def ws(
     codes: PairingCodes,
     tmp_path: Path,
     tmp_vault: Vault,
+    user_vault: Vault,
     stt_settings: SttSettings,
 ) -> WsHarness:
     """An app over `tmp_vault` with an active session, a recording sink and `provider_from_settings`
-    (the `fake` provider in server mode), and a gateway clock 10 s after the session started."""
+    (the `fake` provider in server mode), and a gateway clock 10 s after the session started.
+
+    The app gets the root handle, which is what `create_app` takes; the harness gets the one
+    user's, because the session it reads back is in that student's folder (#550).
+    """
     app = create_app(
         static_dir=tmp_path / "no-web-build",
         server=server,
@@ -206,7 +235,7 @@ def ws(
     gateway.clock = clock
     client = HostedTestClient(app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
     lan = HostedTestClient(app, base_url=PUBLIC_URL, client=(LAN_HOST, 50000))
-    harness = WsHarness(app, client, lan, tmp_vault, clock, sinks, providers)
+    harness = WsHarness(app, client, lan, user_vault, clock, sinks, providers)
     assert client.post("/api/subjects", json={"name": "Física"}).status_code == 201
     assert (
         client.post("/api/subjects/fisica/topics", json={"name": "Cinemática"}).status_code == 201
@@ -226,8 +255,26 @@ def ws(
 
 @pytest.fixture
 def read_vault(tmp_vault: Vault) -> ReadVault:
-    """`tmp_vault` populated as `read_api_fixtures.populate` describes."""
+    """`tmp_vault` populated as `read_api_fixtures.populate` describes.
+
+    The content stays at the repository root, where the routes that are NOT user-scoped yet look
+    for it: they read the root handle `SessionService.open_vault()` gives them, and moving them to
+    `active_user_vault` is #551. A test of a route #550 has already scoped to the user asks for
+    `user_read_vault` instead.
+    """
     return populate(tmp_vault)
+
+
+@pytest.fixture
+def user_read_vault(tmp_vault: Vault, student_user_id: str) -> ReadVault:
+    """The same populated vault, with the content under its one user's folder.
+
+    For a test of a route #550 has already scoped to the user (`/api/subjects*`, `/api/sessions*`):
+    those read `users/<id>/...`, so the content has to be there. `ReadVault.vault` is then the USER
+    handle, which is also what the test reads sessions, sources and digests back through, while
+    `create_app` keeps getting `tmp_vault`, the root handle it takes.
+    """
+    return populate(tmp_vault.for_user(student_user_id))
 
 
 @pytest.fixture
@@ -241,6 +288,20 @@ def read_app(
 
 
 @pytest.fixture
+def user_read_app(
+    server: ServerSettings,
+    codes: PairingCodes,
+    tmp_path: Path,
+    tmp_vault: Vault,
+    user_read_vault: ReadVault,
+) -> FastAPI:
+    """An app over the vault `user_read_vault` populated: the root handle, as `create_app` takes."""
+    return create_app(
+        static_dir=tmp_path / "no-web-build", server=server, codes=codes, vault=tmp_vault
+    )
+
+
+@pytest.fixture
 def reader(read_app: FastAPI) -> TestClient:
     """A loopback client (trusted without a token) of `read_app`."""
     return HostedTestClient(read_app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))
@@ -250,3 +311,13 @@ def reader(read_app: FastAPI) -> TestClient:
 def lan_reader(read_app: FastAPI) -> TestClient:
     """A LAN client of `read_app` with no token."""
     return HostedTestClient(read_app, base_url=PUBLIC_URL, client=(LAN_HOST, 50000))
+
+
+@pytest.fixture
+def user_reader(user_read_app: FastAPI) -> TestClient:
+    """A loopback client (trusted without a token) of `user_read_app`.
+
+    For a test of a route #550 has scoped to the user: it sends no `X-SA-User` and no `sa_user`,
+    so protocol 1.8's single-user fallback names the one student the vault holds.
+    """
+    return HostedTestClient(user_read_app, base_url=LOCAL_BASE_URL, client=(LOOPBACK_HOST, 50000))

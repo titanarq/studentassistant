@@ -1,4 +1,5 @@
-"""The session WebSocket's authentication, session check and `hello` / `hello.ack` handshake."""
+"""The session WebSocket's authentication, active user, session check and `hello` / `hello.ack`
+handshake."""
 
 from __future__ import annotations
 
@@ -14,12 +15,19 @@ from ws_harness import WsHarness
 from studentassistant.config import SttSettings
 from studentassistant.protocol import (
     PROTOCOL_VERSION,
+    USER_COOKIE,
+    USER_HEADER,
     IncompatibleProtocolVersionError,
     model_for,
     parse_version,
 )
 from studentassistant.server.sessions import SESSION_STARTED
-from studentassistant.server.ws import CLOSE_PROTOCOL_VIOLATION, CLOSE_UNKNOWN_SESSION
+from studentassistant.server.ws import (
+    CLOSE_PROTOCOL_VIOLATION,
+    CLOSE_UNKNOWN_SESSION,
+    USER_REQUIRED_CLOSE_REASON,
+)
+from studentassistant.vault import Vault, create_user
 
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "protocol"
 SERVER_STT = SttSettings(mode="server", provider="fake", language="es")
@@ -156,3 +164,82 @@ def test_a_paired_device_connects_with_its_token(ws: WsHarness) -> None:
     with ws.lan.websocket_connect(f"{ws.path}?token={paired['token']}") as socket:
         socket.send_json(ws.hello())
         assert socket.receive_json()["type"] == "hello.ack"
+
+
+# -- whose the session is (#550) ---------------------------------------------------------------
+
+NEVER_WRITTEN = "20000101-000000"
+"""A session id no topic of anybody's lists."""
+
+
+@pytest.fixture
+def two_users(ws: WsHarness, tmp_vault: Vault) -> tuple[str, str]:
+    """The ids of the vault's two students: the one `ws`'s session is theirs, and a new one.
+
+    The second is added to the vault under the app, which holds the same repository: a handshake
+    resolving the user reads `users/` as it is then, so the new student exists for the socket that
+    names them.
+    """
+    owner = ws.vault.user_id
+    assert owner is not None, "the harness's session is a student's"
+    return owner, create_user(tmp_vault, "Lucía Martín").id
+
+
+def _close_of(ws: WsHarness, path: str, **kwargs: Any) -> tuple[int, str]:
+    """The (code, reason) a handshake to `path` ends with, before any message is exchanged."""
+    with ws.client.websocket_connect(path, **kwargs) as socket:
+        return ws.receive_close(socket)
+
+
+def test_a_handshake_naming_the_session_owner_is_served(ws: WsHarness, two_users: tuple[str, str]):
+    owner, _ = two_users
+    with ws.client.websocket_connect(ws.path, headers={USER_HEADER: owner}) as socket:
+        socket.send_json(ws.hello())
+        assert socket.receive_json()["type"] == "hello.ack"
+
+
+def test_the_cookie_names_the_user_of_a_handshake(ws: WsHarness, two_users: tuple[str, str]):
+    owner, _ = two_users
+    with ws.client.websocket_connect(ws.path, headers={"cookie": f"{USER_COOKIE}={owner}"}) as s:
+        s.send_json(ws.hello())
+        assert s.receive_json()["type"] == "hello.ack"
+
+
+def test_a_session_of_another_user_is_unknown_not_theirs(
+    ws: WsHarness, two_users: tuple[str, str]
+) -> None:
+    _, other = two_users
+
+    code, reason = _close_of(ws, ws.path, headers={USER_HEADER: other})
+    nobody, nobody_reason = _close_of(
+        ws, f"/ws/sessions/{NEVER_WRITTEN}", headers={USER_HEADER: other}
+    )
+
+    assert code == CLOSE_UNKNOWN_SESSION
+    # The answer for a session that is somebody else's is the answer for an id nobody ever wrote,
+    # with the id the caller itself supplied in the path swapped in: it cannot be used to probe
+    # for the sessions of the student sharing the backend.
+    assert (code, reason.replace(ws.session_id, "<id>")) == (
+        nobody,
+        nobody_reason.replace(NEVER_WRITTEN, "<id>"),
+    )
+    assert only_lifecycle_published(ws)
+
+
+def test_a_handshake_naming_no_user_on_a_shared_vault_is_refused(
+    ws: WsHarness, two_users: tuple[str, str]
+) -> None:
+    code, reason = _close_of(ws, ws.path)
+    assert code == CLOSE_PROTOCOL_VIOLATION
+    assert reason == USER_REQUIRED_CLOSE_REASON
+    assert only_lifecycle_published(ws)
+
+
+def test_a_handshake_naming_a_user_the_vault_does_not_have_is_refused(
+    ws: WsHarness, two_users: tuple[str, str]
+) -> None:
+    code, reason = _close_of(ws, ws.path, headers={USER_HEADER: "nadie"})
+    assert code == CLOSE_PROTOCOL_VIOLATION
+    assert reason.startswith("user_not_found:")
+    assert "nadie" in reason
+    assert only_lifecycle_published(ws)

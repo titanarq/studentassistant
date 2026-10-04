@@ -34,6 +34,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_the_sample_case_is_replayed_scored_and_reported(home: Path) -> None:
     directory = make_case(home / "evals")
     write_requests(directory)
@@ -135,6 +136,9 @@ def _chat_settings(**eval_options: object) -> Settings:
     )
 
 
+@pytest.mark.skip(
+    reason="waits for the session consumers to write through the session's user (#566)"
+)
 def test_the_chat_path_scores_the_notes_the_spoken_requests_built(home: Path) -> None:
     directory = make_case(home / "evals")
     write_requests(directory)

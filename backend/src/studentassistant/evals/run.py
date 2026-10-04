@@ -77,6 +77,7 @@ from studentassistant.vault import (
     read_notes_draft,
     read_source,
     sessions_directory,
+    user_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,7 +320,10 @@ async def _generate(client: AsgiTransport, output: CaseOutput) -> None:
         output.generate_error = f"{generated.status}: {generated.detail()}"
 
 
-def _read_back(vault: Vault, output: CaseOutput) -> None:
+def _read_back(root: Vault, output: CaseOutput) -> None:
+    # The session wrote under the case vault's one student (#550); read where it wrote.
+    (student,) = user_ids(root)
+    vault = root.for_user(student)
     subject, topic = output.subject, output.topic
     transcript = sessions_directory(vault, subject, topic) / output.session_id / TRANSCRIPT_FILE
     if transcript.is_file():

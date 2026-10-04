@@ -2,6 +2,9 @@
 
 Bodies are built by hand (`multipart`), so a test controls every part's name and `Content-Type`.
 Every refusal is checked to store no source and publish no event.
+
+The app is built over `tmp_vault`, the ROOT handle `create_app` takes; what a capture stores is
+read back through `user_vault`, the one student's folder the route writes it into (#550).
 """
 
 from __future__ import annotations
@@ -137,6 +140,8 @@ AppFactory = Callable[..., FastAPI]
 def make_app(
     devices_path: Path, codes: PairingCodes, tmp_path: Path, tmp_vault: Vault
 ) -> AppFactory:
+    """Apps over the vault's ROOT handle, which is the one `create_app` takes."""
+
     def make(vault: Vault | None = tmp_vault, **limits: Any) -> FastAPI:
         server = ServerSettings(devices_path=devices_path, public_url=LAN_BASE_URL)
         server = server.model_copy(update=limits)
@@ -228,7 +233,7 @@ def test_the_capture_limits_have_defaults_and_env_overrides(
 
 
 def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_event(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     notes: list[int] = []
     service = app.state.sessions
@@ -247,7 +252,7 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
     assert body["image_count"] == 2
     assert body["received_at_ms"] >= before
 
-    files = stored_files(tmp_vault)
+    files = stored_files(user_vault)
     assert [f.name for f in files] == PAGE_FILES
     still, page, sidecar_path = files  # no `burst<K>` file: only the chosen still is kept
     assert still.read_bytes().startswith(b"\xff\xd8")
@@ -258,7 +263,7 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
     assert len(sharpness) == 2 and sharpness[0] > sharpness[1]
     triage = sidecar.pop("triage")  # its decision: `test_capture_triage_route.py`
     assert triage["decided_by"] == "auto"
-    started = app.state.sessions.get_active(session_id).started_at_ms
+    started = asyncio.run(app.state.sessions.get_active(None, session_id)).started_at_ms
     session_t_ms = max(0, 1_790_000_000_000 - started)
     assert sidecar == {
         "capture_id": CAPTURE_ID,
@@ -279,7 +284,7 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
     }
     assert notes, "the vault write must be noted to GitSync"
 
-    (event,) = capture_events(tmp_vault, session_id)
+    (event,) = capture_events(user_vault, session_id)
     assert event.origin == "phone"
     assert event.payload == {
         "capture_id": CAPTURE_ID,
@@ -290,7 +295,7 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
         "page_path": "subjects/fisica/topics/cinematica/sources/notes/page-001.page.jpg",
         "source_context": "notes",
     }
-    assert (tmp_vault.path / event.payload["source_path"]).read_bytes() == still.read_bytes()
+    assert (user_vault.path / event.payload["source_path"]).read_bytes() == still.read_bytes()
     delivered = subscription.get_nowait()
     assert delivered.session_id == session_id
     assert delivered.seq == event.seq
@@ -298,28 +303,28 @@ def test_a_burst_stores_its_sharpest_still_as_a_notes_page_and_publishes_the_eve
 
 
 def test_a_command_capture_carries_its_command_id(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     meta = metadata(trigger="command", command_id="cmd-7")
     response = upload(client, session_id, burst(meta))
     assert response.status_code == 201
-    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    sidecar = yaml.safe_load((notes_dir(user_vault) / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["trigger"] == "command"
     assert sidecar["command_id"] == "cmd-7"
-    (event,) = capture_events(tmp_vault, session_id)
+    (event,) = capture_events(user_vault, session_id)
     assert event.payload["command_id"] == "cmd-7"
     assert event.payload["trigger"] == "command"
 
 
 def test_a_single_png_still_is_stored_as_a_jpeg_page_without_originals(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     meta = metadata()
     meta["images"] = [dict(meta["images"][1], part="image_0")]
     response = upload(client, session_id, burst(meta, [("image_0", "image/png", PNG)]))
     assert response.status_code == 201
     assert response.json()["image_count"] == 1
-    assert [f.name for f in stored_files(tmp_vault)] == [
+    assert [f.name for f in stored_files(user_vault)] == [
         "page-001.jpg",
         "page-001.page.jpg",
         "page-001.yaml",
@@ -327,26 +332,26 @@ def test_a_single_png_still_is_stored_as_a_jpeg_page_without_originals(
 
 
 def test_the_capture_session_time_uses_the_hello_clock_offset(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
-    started = app.state.sessions.get_active(session_id).started_at_ms
+    started = asyncio.run(app.state.sessions.get_active(None, session_id)).started_at_ms
     # The client clock runs 5 s behind the backend's: its hello set the offset to +5000 ms.
     app.state.gateway.state_for(session_id).clock_offset_ms = 5_000
     captured_client_ms = started + 30_000 - 5_000
     response = upload(client, session_id, burst(metadata(client_time_ms=captured_client_ms)))
     assert response.status_code == 201
-    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    sidecar = yaml.safe_load((notes_dir(user_vault) / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["session_t_ms"] == 30_000
     assert sidecar["transcript_window"] == {"t_start": 10_000, "t_end": 40_000}
 
 
 def test_without_a_hello_the_client_time_is_taken_as_backend_time(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
-    started = app.state.sessions.get_active(session_id).started_at_ms
+    started = asyncio.run(app.state.sessions.get_active(None, session_id)).started_at_ms
     response = upload(client, session_id, burst(metadata(client_time_ms=started + 12_000)))
     assert response.status_code == 201
-    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    sidecar = yaml.safe_load((notes_dir(user_vault) / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["session_t_ms"] == 12_000
     assert sidecar["transcript_window"] == {"t_start": 0, "t_end": 22_000}
 
@@ -355,7 +360,7 @@ def test_without_a_hello_the_client_time_is_taken_as_backend_time(
 
 
 def test_a_repeated_capture_id_is_a_duplicate_that_stores_nothing(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     assert upload(client, session_id).status_code == 201
     subscription = app.state.bus.subscribe(kinds={"capture.stored"})
@@ -367,13 +372,13 @@ def test_a_repeated_capture_id_is_a_duplicate_that_stores_nothing(
     assert body["status"] == "duplicate"
     assert body["image_count"] == 2
     assert body["capture_id"] == CAPTURE_ID
-    assert len(stored_files(tmp_vault)) == len(PAGE_FILES)
-    assert len(capture_events(tmp_vault, session_id)) == 1
+    assert len(stored_files(user_vault)) == len(PAGE_FILES)
+    assert len(capture_events(user_vault, session_id)) == 1
     assert len(subscription) == 0
 
 
 def test_a_duplicate_answers_the_stored_image_count(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     assert upload(client, session_id).status_code == 201
     meta = metadata()
@@ -384,22 +389,22 @@ def test_a_duplicate_answers_the_stored_image_count(
 
 
 def test_another_capture_id_is_stored_as_the_next_page(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     assert upload(client, session_id).status_code == 201
     assert upload(client, session_id, burst(metadata(capture_id=OTHER_CAPTURE_ID))).status_code == (
         201
     )
-    names = [f.name for f in stored_files(tmp_vault)]
+    names = [f.name for f in stored_files(user_vault)]
     assert names == PAGE_FILES + [name.replace("001", "002") for name in PAGE_FILES]
-    assert [e.payload["capture_id"] for e in capture_events(tmp_vault, session_id)] == [
+    assert [e.payload["capture_id"] for e in capture_events(user_vault, session_id)] == [
         CAPTURE_ID,
         OTHER_CAPTURE_ID,
     ]
 
 
 def test_two_concurrent_uploads_of_one_capture_store_it_once(
-    app: FastAPI, session_id: str, tmp_vault: Vault, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, session_id: str, user_vault: Vault, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     real_store_capture = captures_module.store_capture
     entered = threading.Event()
@@ -416,8 +421,8 @@ def test_two_concurrent_uploads_of_one_capture_store_it_once(
     assert entered.is_set()
     assert sorted(r.status_code for r in results) == [200, 201]
     assert sorted(r.json()["status"] for r in results) == ["duplicate", "stored"]
-    assert len(stored_files(tmp_vault)) == len(PAGE_FILES)
-    assert len(capture_events(tmp_vault, session_id)) == 1
+    assert len(stored_files(user_vault)) == len(PAGE_FILES)
+    assert len(capture_events(user_vault, session_id)) == 1
 
 
 # -- source context ----------------------------------------------------------------------------
@@ -438,60 +443,60 @@ def sidecar_of(vault: Vault, kind: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize("source", ["book", "pdf", "notes"])
 def test_a_capture_after_switch_source_is_stored_under_that_source(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault, source: str
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault, source: str
 ) -> None:
     press(app, session_id, "switch_source", source)
     assert upload(client, session_id).status_code == 201
 
-    stored = sources_directory(tmp_vault, "fisica", "cinematica", source) / "page-001.jpg"
+    stored = sources_directory(user_vault, "fisica", "cinematica", source) / "page-001.jpg"
     assert decoded_size(stored) == STILL_SIZE
-    assert sidecar_of(tmp_vault, source)["source_context"] == source
-    (event,) = capture_events(tmp_vault, session_id)
+    assert sidecar_of(user_vault, source)["source_context"] == source
+    (event,) = capture_events(user_vault, session_id)
     assert event.payload["source_context"] == source
     assert event.payload["source_path"] == (
         f"subjects/fisica/topics/cinematica/sources/{source}/page-001.jpg"
     )
     if source != "notes":
-        assert stored_files(tmp_vault) == []
+        assert stored_files(user_vault) == []
 
 
 def test_the_latest_switch_source_wins_and_other_buttons_do_not_count(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     press(app, session_id, "switch_source", "book")
     press(app, session_id, "switch_source", "pdf")
     press(app, session_id, "pause")
     assert upload(client, session_id).status_code == 201
-    assert sidecar_of(tmp_vault, "pdf")["source_context"] == "pdf"
+    assert sidecar_of(user_vault, "pdf")["source_context"] == "pdf"
 
     press(app, session_id, "switch_source", "notes")
     assert upload(client, session_id, burst(metadata(capture_id=OTHER_CAPTURE_ID))).status_code == (
         201
     )
-    assert sidecar_of(tmp_vault, "notes")["source_context"] == "notes"
-    contexts = [e.payload["source_context"] for e in capture_events(tmp_vault, session_id)]
+    assert sidecar_of(user_vault, "notes")["source_context"] == "notes"
+    contexts = [e.payload["source_context"] for e in capture_events(user_vault, session_id)]
     assert contexts == ["pdf", "notes"]
 
 
 def test_without_a_switch_source_captures_stay_notes(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     press(app, session_id, "pause")
     assert upload(client, session_id).status_code == 201
-    assert sidecar_of(tmp_vault, "notes")["source_context"] == "notes"
-    assert not sources_directory(tmp_vault, "fisica", "cinematica", "book").exists()
+    assert sidecar_of(user_vault, "notes")["source_context"] == "notes"
+    assert not sources_directory(user_vault, "fisica", "cinematica", "book").exists()
 
 
 def test_the_source_context_survives_a_backend_restart(
-    app: FastAPI, client: TestClient, session_id: str, make_app: AppFactory, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, make_app: AppFactory, user_vault: Vault
 ) -> None:
     press(app, session_id, "switch_source", "book")
 
     restarted = client_of(make_app())
     assert restarted.post(f"/api/sessions/{session_id}/resume").status_code == 200
     assert upload(restarted, session_id).status_code == 201
-    assert sidecar_of(tmp_vault, "book")["source_context"] == "book"
-    (event,) = capture_events(tmp_vault, session_id)
+    assert sidecar_of(user_vault, "book")["source_context"] == "book"
+    (event,) = capture_events(user_vault, session_id)
     assert event.payload["source_context"] == "book"
 
 
@@ -510,7 +515,7 @@ def test_resume_reports_the_captures_already_stored(client: TestClient, session_
 
 
 def test_the_stored_captures_survive_a_backend_restart(
-    client: TestClient, session_id: str, make_app: AppFactory, tmp_vault: Vault
+    client: TestClient, session_id: str, make_app: AppFactory, user_vault: Vault
 ) -> None:
     assert upload(client, session_id).status_code == 201
 
@@ -521,7 +526,7 @@ def test_the_stored_captures_survive_a_backend_restart(
     again = upload(restarted, session_id)
     assert again.status_code == 200
     assert again.json()["status"] == "duplicate"
-    assert len(capture_events(tmp_vault, session_id)) == 1
+    assert len(capture_events(user_vault, session_id)) == 1
 
 
 # -- refusals ----------------------------------------------------------------------------------
@@ -604,27 +609,27 @@ REFUSED_BODIES: dict[str, Callable[[], list[Part]]] = {
 
 @pytest.mark.parametrize("case", sorted(REFUSED_BODIES))
 def test_an_invalid_burst_is_422_and_stores_nothing(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault, case: str
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault, case: str
 ) -> None:
     subscription = app.state.bus.subscribe(kinds={"capture.stored"})
     response = upload(client, session_id, REFUSED_BODIES[case]())
     assert response.status_code == 422, response.text
     assert isinstance(response.json()["detail"], str)
     assert response.json()["detail"]
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
     assert len(subscription) == 0
 
 
 def test_a_body_that_is_not_multipart_is_422(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     response = client.post(f"/api/sessions/{session_id}/captures", json=metadata())
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], str)
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
-def test_a_truncated_body_is_422(client: TestClient, session_id: str, tmp_vault: Vault) -> None:
+def test_a_truncated_body_is_422(client: TestClient, session_id: str, user_vault: Vault) -> None:
     body, content_type = multipart(burst())
     response = client.post(
         f"/api/sessions/{session_id}/captures",
@@ -632,16 +637,16 @@ def test_a_truncated_body_is_422(client: TestClient, session_id: str, tmp_vault:
         headers={"Content-Type": content_type},
     )
     assert response.status_code == 422
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
-def test_an_image_over_the_byte_limit_is_413(make_app: AppFactory, tmp_vault: Vault) -> None:
+def test_an_image_over_the_byte_limit_is_413(make_app: AppFactory, user_vault: Vault) -> None:
     client = client_of(make_app(max_capture_image_bytes=len(PNG)))
     session_id = start_session(client)
     response = upload(client, session_id)  # the JPEG is larger than the PNG
     assert response.status_code == 413
     assert "tamaño máximo" in response.json()["detail"]
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_an_image_at_the_byte_limit_is_accepted(make_app: AppFactory) -> None:
@@ -650,44 +655,44 @@ def test_an_image_at_the_byte_limit_is_accepted(make_app: AppFactory) -> None:
     assert upload(client, session_id).status_code == 201
 
 
-def test_more_images_than_the_count_limit_is_413(make_app: AppFactory, tmp_vault: Vault) -> None:
+def test_more_images_than_the_count_limit_is_413(make_app: AppFactory, user_vault: Vault) -> None:
     client = client_of(make_app(max_capture_images=1))
     session_id = start_session(client)
     response = upload(client, session_id)
     assert response.status_code == 413
     assert "imágenes" in response.json()["detail"]
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_metadata_declaring_more_images_than_the_limit_is_413(
-    make_app: AppFactory, tmp_vault: Vault
+    make_app: AppFactory, user_vault: Vault
 ) -> None:
     client = client_of(make_app(max_capture_images=1))
     session_id = start_session(client)
     response = upload(client, session_id, burst(images=[("image_0", "image/jpeg", JPEG)]))
     assert response.status_code == 413
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_a_body_larger_than_the_limits_allow_is_413_from_its_length(
-    make_app: AppFactory, tmp_vault: Vault
+    make_app: AppFactory, user_vault: Vault
 ) -> None:
     client = client_of(make_app(max_capture_image_bytes=16, max_capture_images=1))
     session_id = start_session(client)
     big = b"\xff" * (1024 * 1024)
     response = upload(client, session_id, burst(images=[("image_0", "image/jpeg", big)]))
     assert response.status_code == 413
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
-def test_an_unknown_session_is_404(client: TestClient, session_id: str, tmp_vault: Vault) -> None:
+def test_an_unknown_session_is_404(client: TestClient, session_id: str, user_vault: Vault) -> None:
     response = upload(client, "20000101-000000")
     assert response.status_code == 404
     assert isinstance(response.json()["detail"], str)
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
-def test_an_ended_session_is_409(client: TestClient, session_id: str, tmp_vault: Vault) -> None:
+def test_an_ended_session_is_409(client: TestClient, session_id: str, user_vault: Vault) -> None:
     ended = client.post(
         f"/api/sessions/{session_id}/end", json={"client_time_ms": 2_000, "reason": "button"}
     )
@@ -695,16 +700,16 @@ def test_an_ended_session_is_409(client: TestClient, session_id: str, tmp_vault:
     response = upload(client, session_id)
     assert response.status_code == 409
     assert isinstance(response.json()["detail"], str)
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_an_unended_session_that_is_not_resumed_is_409(
-    client: TestClient, session_id: str, make_app: AppFactory, tmp_vault: Vault
+    client: TestClient, session_id: str, make_app: AppFactory, user_vault: Vault
 ) -> None:
     restarted = client_of(make_app())
     response = upload(restarted, session_id)
     assert response.status_code == 409
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_a_vault_that_cannot_be_opened_is_503(
@@ -722,12 +727,12 @@ def test_a_vault_that_cannot_be_opened_is_503(
 
 
 def test_the_route_needs_the_bearer_token_off_loopback(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     lan = TestClient(app, base_url=LAN_BASE_URL, client=("192.168.1.30", 5000))
     response = upload(lan, session_id)
     assert response.status_code == 401
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 def test_a_paired_device_uploads_with_its_token(
@@ -750,12 +755,12 @@ def test_a_paired_device_uploads_with_its_token(
 def test_a_foreign_host_header_is_refused(
     app: FastAPI,
     session_id: str,
-    tmp_vault: Vault,
+    user_vault: Vault,
     client_with_host: Callable[[FastAPI, str], TestClient],
 ) -> None:
     response = upload(client_with_host(app, "evil.example"), session_id)
     assert response.status_code in (400, 403, 421)
-    assert_nothing_stored(tmp_vault, session_id)
+    assert_nothing_stored(user_vault, session_id)
 
 
 # -- capture triage (#324) -------------------------------------------------------------------------
@@ -777,14 +782,14 @@ def _events(vault: Vault, session_id: str) -> list[Event]:
 
 
 def test_each_capture_is_followed_by_its_triage_event(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     from triage_images import framed, paper, written
 
     assert upload(client, session_id, _page_burst(framed(written(3)), C1)).status_code == 201
     assert upload(client, session_id, _page_burst(paper(), C2)).status_code == 201
 
-    events = [e for e in _events(tmp_vault, session_id) if e.kind.startswith("capture.")]
+    events = [e for e in _events(user_vault, session_id) if e.kind.startswith("capture.")]
     assert [e.kind for e in events] == [
         "capture.stored",
         "capture.triaged",
@@ -805,13 +810,13 @@ def test_each_capture_is_followed_by_its_triage_event(
     }
     assert blank.payload["status"] == "set_aside"
     assert blank.payload["reasons"] == ["blank"]
-    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-002.yaml").read_text(encoding="utf-8"))
+    sidecar = yaml.safe_load((notes_dir(user_vault) / "page-002.yaml").read_text(encoding="utf-8"))
     assert sidecar["triage"]["status"] == "set_aside"
-    assert (notes_dir(tmp_vault) / "page-002.jpg").is_file()  # set aside, never deleted
+    assert (notes_dir(user_vault) / "page-002.jpg").is_file()  # set aside, never deleted
 
 
 def test_a_sharper_repeat_publishes_the_older_capture_set_aside(
-    client: TestClient, session_id: str, tmp_vault: Vault
+    client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     from triage_images import framed, written
 
@@ -820,7 +825,7 @@ def test_a_sharper_repeat_publishes_the_older_capture_set_aside(
     assert response.status_code == 201, response.text
     assert upload(client, session_id, _page_burst(framed(written(3)), C2)).status_code == 201
 
-    events = [e for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    events = [e for e in _events(user_vault, session_id) if e.kind == "capture.triaged"]
     assert [e.origin for e in events] == ["sources"] * 3  # the displaced one too (ADR-0003)
     triaged = [e.payload for e in events]
     assert [(p["capture_id"], p["status"]) for p in triaged] == [
@@ -833,7 +838,7 @@ def test_a_sharper_repeat_publishes_the_older_capture_set_aside(
 
 
 def test_with_the_sonnet_stage_an_ambiguous_check_is_asked_before_storing(
-    app: FastAPI, client: TestClient, session_id: str, tmp_vault: Vault
+    app: FastAPI, client: TestClient, session_id: str, user_vault: Vault
 ) -> None:
     from studentassistant.config import SourcesSettings
     from studentassistant.llm import FakeClaude, get_client
@@ -857,8 +862,8 @@ def test_with_the_sonnet_stage_an_ambiguous_check_is_asked_before_storing(
 
     assert len(fake.requests) == 1
     assert bindings[0].session == session_id
-    sidecar = yaml.safe_load((notes_dir(tmp_vault) / "page-001.yaml").read_text(encoding="utf-8"))
+    sidecar = yaml.safe_load((notes_dir(user_vault) / "page-001.yaml").read_text(encoding="utf-8"))
     assert sidecar["triage"]["status"] == "kept"
     assert sidecar["triage"]["metrics"]["llm_verdict"] == {"blurry": False}
-    [triaged] = [e.payload for e in _events(tmp_vault, session_id) if e.kind == "capture.triaged"]
+    [triaged] = [e.payload for e in _events(user_vault, session_id) if e.kind == "capture.triaged"]
     assert triaged["status"] == "kept"

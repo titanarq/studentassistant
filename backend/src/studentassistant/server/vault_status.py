@@ -8,6 +8,16 @@ diverging path, so the student can compare them.
 
 Asking for the status opens the vault if nothing had (which pulls it and reads the active-host
 record); reading it afterwards runs no git. Web-only: not part of the phone protocol.
+
+Both routes are user-scoped (protocol 1.8, #550): they declare
+`server.user_scope.active_user_vault`, so a browser that has not picked a user on a vault holding
+several is refused with 400 `user_required` here as it is on every content route, and the other
+PC's open claim they report names the student capturing on it -- on a shared vault, "another PC is
+capturing" is only half of what a student needs to decide whether to wait (`vault/active.py`). What
+they report is the REPOSITORY's state, though: one git, one set of pending commits, one divergence,
+one claim, and the paths a divergence lists are git's own (`users/<id>/...`), which is why the
+versions of a diverging path are read through the repository's sync and not through the user's view
+of it.
 """
 
 from __future__ import annotations
@@ -18,10 +28,10 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
-from studentassistant.server.sessions import SessionService, VaultUnavailableError
+from studentassistant.server.sessions import SessionService
+from studentassistant.server.user_scope import UserScope
 from studentassistant.vault import ActiveHostWarning, Divergence, SyncStatus
 
-VAULT_UNAVAILABLE_DETAIL = "No se puede abrir la bóveda."
 NO_DIVERGENCE_DETAIL = "Esa ruta no está entre las que divergen."
 
 
@@ -40,6 +50,9 @@ class LastSyncView(BaseModel):
 
 class HostWarningView(BaseModel):
     host: str
+    # The student the other PC is capturing as, `None` in a claim a backend of #547 or earlier
+    # wrote: on a vault several students share, the host alone does not say whether to wait.
+    user: str | None
     session_id: str | None
     subject: str | None
     topic: str | None
@@ -77,21 +90,13 @@ def _service(request: Request) -> SessionService:
     return request.app.state.sessions
 
 
-async def _open(service: SessionService) -> None:
-    try:
-        await service.open_vault()
-    except VaultUnavailableError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, VAULT_UNAVAILABLE_DETAIL
-        ) from error
-
-
 def _host_warning(warning: ActiveHostWarning | None) -> HostWarningView | None:
     if warning is None:
         return None
     record = warning.record
     return HostWarningView(
         host=record.host,
+        user=record.user,
         session_id=record.session_id,
         subject=record.subject,
         topic=record.topic,
@@ -145,18 +150,19 @@ def vault_status_router() -> APIRouter:
     router = APIRouter(prefix="/api/vault")
 
     @router.get("/status")
-    async def vault_status(request: Request) -> VaultStatusResponse:
+    async def vault_status(request: Request, scope: UserScope) -> VaultStatusResponse:
+        # `scope` is the route's user resolution, not a handle it reads: what it reports is the
+        # repository's own state, and the dependency opening the vault is what makes the sync and
+        # the active-host record there to report (a vault it cannot open is its own 503).
         service = _service(request)
-        await _open(service)
         sync = service.sync
         return _response(service, SyncStatus() if sync is None else sync.status())
 
     @router.get("/divergence")
     async def divergence(
-        request: Request, path: str = Query(min_length=1)
+        request: Request, scope: UserScope, path: str = Query(min_length=1)
     ) -> DivergentVersionsResponse:
         service = _service(request)
-        await _open(service)
         sync = service.sync
         versions = None if sync is None else await asyncio.to_thread(sync.divergent_versions, path)
         if versions is None:

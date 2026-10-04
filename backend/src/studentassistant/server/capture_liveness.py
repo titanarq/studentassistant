@@ -32,6 +32,13 @@ close reason ending in `(idle)` (`ended_idle`) so the client can say why.
 
 The watchdog loop (`start` .. `stop`) runs with the app's lifespan and checks every `interval`
 seconds; tests call `tick()` with an injected clock instead.
+
+Whose session the watchdog is watching is not something it needs to know (#550): it watches the one
+session `SessionService` last attached, a backend has room for one active session whatever student
+it belongs to, and the `end` it calls names the session by its id -- the service looks the id up
+across the users' folders itself and writes through the handle of the user the session was opened
+for. The sockets it counts are that session's and nobody else's, because a handshake for a session
+of another user is refused before it can register (`ws.py`).
 """
 
 from __future__ import annotations

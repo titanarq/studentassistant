@@ -27,7 +27,14 @@ from studentassistant.server.capture_liveness import IDLE_CLOSE_MARK, CaptureLiv
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.sessions import OpenSession, SessionAlreadyEndedError
 from studentassistant.server.ws import CLOSE_UNKNOWN_SESSION
-from studentassistant.vault import Event, Vault, read_jsonl, read_notes
+from studentassistant.vault import (
+    Event,
+    Vault,
+    create_subject,
+    create_topic,
+    read_jsonl,
+    read_notes,
+)
 
 GRACE = 300.0
 RECEIVE_TIMEOUT_S = 5.0
@@ -35,7 +42,11 @@ HELLO_AT = 1_000_000
 
 
 class Live:
-    """The app, its entered loopback client, the watchdog and its clock."""
+    """The app, its entered loopback client, the watchdog and its clock.
+
+    `vault` is the handle the sessions' content is read back through: the one student's, where a
+    user-scoped `SessionService` writes their `events.jsonl` (#550).
+    """
 
     def __init__(self, app: FastAPI, client: HostedTestClient, clock: FakeClock, vault: Vault):
         self.app = app
@@ -143,6 +154,12 @@ def make_app(
 
 
 def enter(app: FastAPI, vault: Vault) -> Iterator[Live]:
+    """Create the topic the sessions are started on, and hand out the app's watchdog.
+
+    `vault` is the handle `Live` reads the sessions' events back through: the one student's,
+    because `POST /api/subjects`, `POST /api/sessions` and the watchdog's `end` act for that user
+    and write its folder (#550). `create_app` keeps getting the repository's root handle.
+    """
     clock = FakeClock()
     app.state.liveness.clock = clock
     app.state.liveness.interval = 3600.0  # only explicit ticks
@@ -155,9 +172,9 @@ def enter(app: FastAPI, vault: Vault) -> Iterator[Live]:
 
 @pytest.fixture
 def live(
-    tmp_path: Path, devices_path: Path, codes: PairingCodes, tmp_vault: Vault
+    tmp_path: Path, devices_path: Path, codes: PairingCodes, tmp_vault: Vault, user_vault: Vault
 ) -> Iterator[Live]:
-    yield from enter(make_app(tmp_path, devices_path, codes, tmp_vault), tmp_vault)
+    yield from enter(make_app(tmp_path, devices_path, codes, tmp_vault), user_vault)
 
 
 # -- the backend's own end ------------------------------------------------------------------------
@@ -345,7 +362,11 @@ def test_the_watchdog_runs_with_the_lifespan(
 
 
 def test_an_idle_end_generates_nothing(
-    tmp_path: Path, devices_path: Path, codes: PairingCodes, tmp_vault: Vault
+    tmp_path: Path,
+    devices_path: Path,
+    codes: PairingCodes,
+    tmp_vault: Vault,
+    user_vault: Vault,
 ) -> None:
     fake = FakeClaude()
     app = make_app(
@@ -356,7 +377,12 @@ def test_an_idle_end_generates_nothing(
         llm_transport=fake,
         llm_settings=Settings(observer=ObserverSettings(enabled=False)),
     )
-    for live in enter(app, tmp_vault):
+    # A generation would write the notes through the repository's root handle, which is what
+    # `NotesGenerator` still uses (`SessionService.open_vault()`) until #551 moves it under the
+    # user, so the topic is created there too for that handle to be checkable at all.
+    create_subject(tmp_vault, "Física")
+    create_topic(tmp_vault, "fisica", "Cinemática")
+    for live in enter(app, user_vault):
         session_id = live.start()
         live.clock.advance(GRACE)
         assert live.tick() == session_id
@@ -364,6 +390,8 @@ def test_an_idle_end_generates_nothing(
         assert generator is not None
     assert fake.requests == []
     assert read_notes(tmp_vault, "fisica", "cinematica") is None
+    # The student's own folder stays empty of notes too, which is where #551 will write them.
+    assert read_notes(user_vault, "fisica", "cinematica") is None
 
 
 # -- failures (a stub lifecycle service) ------------------------------------------------------
@@ -384,7 +412,9 @@ class StubSessions:
     def attach(self, session_id: str) -> None:
         from datetime import UTC, datetime
 
-        self.active = OpenSession(session_id, "fisica", "cinematica", datetime.now(UTC))
+        self.active = OpenSession(
+            session_id, "ana-garcia", "fisica", "cinematica", datetime.now(UTC)
+        )
         for hook in self.hooks:
             hook(session_id)
 

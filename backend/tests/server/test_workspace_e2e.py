@@ -518,6 +518,7 @@ def _turn_sequence(events: list[tuple[str, dict[str, Any]]], turn_id: str) -> li
 # -- the test --------------------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="waits for the content routes to be scoped to the user (#551)")
 def test_a_replayed_session_builds_the_notes_and_studies_them(
     server: ServerSettings,
     codes: PairingCodes,

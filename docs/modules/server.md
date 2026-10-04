@@ -224,7 +224,8 @@ Routes registered today:
     publishing nothing. The check and the store are serialised per session, so concurrent
     uploads of one new id store it once. A session that ends between the check and the event is
     409 (the source file may stay; the observer never sees it without its event).
-- `GET /api/vault/status` (`server/vault_status.py`, web-only, not phone protocol) -> the vault's
+- `GET /api/vault/status` (`server/vault_status.py`, web-only, not phone protocol; user-scoped like the
+  session routes, #550, and `host_warning` also names the `user` capturing) -> the vault's
   sync state without blocking anything: `host`, `pending_changes`, `pending_commits`,
   `last_commit_at`, `last_push_at`, `last_push_failure` (`kind`, `message`, `at`), `last_sync`
   (`outcome`, `message`, `conflicts`, `at`), `host_warning` (another PC's open claim on the vault
@@ -387,6 +388,8 @@ Routes registered today:
   Unknown subject or topic 404 (`"No existe ese tema en la bóveda."`), empty title or one that
   looks like a key 422, an unopenable vault 503. No session needed.
 - `GET /api/live` (`server/live_routes.py`, `live_router()`, #57): the web's live session view,
+  streaming only the **requesting user's** active session (another user's is the empty snapshot
+  and end of stream, #550),
   a read-only Server-Sent Events stream (`text/event-stream`, `Cache-Control: no-cache`) of the
   **active** session; web-only, not phone protocol. It opens with `retry: 3000`, then a
   `snapshot` (`LiveSnapshot`: `session` {`session_id`, `subject_id`, `topic_id`,
@@ -1184,7 +1187,7 @@ One backend and one vault serve several students, each with their own `users/<id
   its `profile.json` reads back -- so a caller on the event loop runs it in a worker thread.
 - `resolve_websocket_user(websocket, vault)` is the same rule on the upgrade request's headers and
   cookies. A handshake carries no REST body, so the two refusals travel as the exceptions they are
-  and the gateway decides how to close on them (#550).
+  and the gateway closes the socket on them (`ws.py`, "Session WebSocket").
 - `active_user_vault(request) -> (user_vault, user_sync)` is the FastAPI dependency every
   user-scoped route declares: `vault.for_user(id)` and `sync.for_user(id)`, both views of what
   `SessionService.open_vault()` has open, so a route keeps calling the readers and writers it
@@ -1202,11 +1205,13 @@ the backend, never with a user. That is why a request that sends a user to a rou
 user-scoped is unaffected (the users routes above read nobody's selection), and why neither value
 is redacted in the logs.
 
-**What is scoped today:** the rule, the handshake helper and the dependency -- and no route yet.
-Every route that exists works on the handle `SessionService.open_vault()` gives, which is the root
-one. `/api/health`, `/api/pair*` and `/api/users*` stay that way by design (protocol 1.8 names
-them as not user-scoped); the rest change in #550 (session lifecycle, captures, WebSocket, live,
-search and the session consumers) and #551 (every other content route: notes, sources, study,
+**What is scoped today:** the rule, the handshake helper and the dependency, and the session side
+(#550): `session_routes` (`/api/subjects*`, `/api/sessions*`), `captures`, `ws`, `live_routes`,
+`vault_status` and `session_health`, which work on the active user's handle or hand its id to
+`SessionService`. Every other route still works on the handle `SessionService.open_vault()` gives,
+which is the root one. `/api/health`, `/api/pair*` and `/api/users*` stay that way by design
+(protocol 1.8 names them as not user-scoped); the rest change in #566 (search, the session
+consumers and the per-user index) and #551 (every other content route: notes, sources, study,
 generated material, ...), each declaring `active_user_vault` and working on the two handles it
 returns.
 
@@ -1217,8 +1222,26 @@ end_hook_timeout=10.0, index_interval=5.0)` (on
 `app.state.sessions`) owns subjects/topics listing and creation and the session state machine
 `active` -> `ended`, over the vault's public functions (every call in a worker thread; lifecycle
 changes serialised by one lock). On first use it opens the vault (lazily, when built without one),
-pulls it (`GitSync.sync()`, in a worker thread) and then scans it for unended sessions, so a session
-another PC left open is seen.
+pulls it (`GitSync.sync()`, in a worker thread; one `GitSync`, one `run()` loop for the whole
+repository) and then scans **every user's** topics for unended sessions, so a session another PC
+or another student left open is seen.
+
+**Sessions belong to a user (#550, epic #544).** The service holds the vault's root handle and
+every subject, topic and session call takes the user id first (`list_subjects(user_id)`,
+`create_subject`, `list_topics`, `create_topic`, `start(user_id, ...)`, `resume(user_id,
+session_id, ...)`, `require_active(user_id, session_id)`, `get_active(user_id, session_id)`,
+`is_known`), working through `vault.for_user(user_id)`; `end(session_id, ...)` finds the session's
+user itself. The routes pass the id of the request's active user; `None` is the single-user
+fallback (the vault's only user, else `NoUserError`; an id the vault lacks is `UnknownUserError`).
+`OpenSession` and the session handle carry `user_id`.
+
+- Still one active session per backend, whichever user's it is. A `start` or `resume` by another
+  user while one is unended is `OtherUserSessionOpenError` (a `SessionConflictError`), answered
+  `409` code `session_open` with the Spanish detail «Otro usuario tiene una sesión de captura
+  abierta en este ordenador» and **no** `X-Open-Session-Id` header; the same user keeps today's
+  answer, with the header.
+- A session id of user A asked for by user B is unknown (404, 4404 on the socket): never A's
+  session, and its existence is never confirmed.
 
 - A session belongs to exactly one topic of one subject, fixed at start (ADR-0003). There is no
   topic switch: switching topic is ending the session and starting another.
@@ -1281,10 +1304,11 @@ another PC left open is seen.
   (`button | command | idle`); `idle` is only the watchdog's, and its `idle_seconds` goes into the
   `session.ended` payload.
 - For other server code (the WebSocket gateway): `active` -> `OpenSession | None`
-  (`session_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
-  `get_active(session_id)`, the active session only when it is that one.
+  (`session_id`, `user_id`, `subject_id`, `topic_id`, `started_at`, `started_at_ms`) and
+  `await get_active(user_id, session_id)`, the active session only when it is that user's and
+  that one.
 - For the routes that write into the active session (captures): `await
-  require_active(session_id)` -> the vault `Session` handle, raising `UnknownSessionError`,
+  require_active(user_id, session_id)` -> the vault `Session` handle (built from the user handle), raising `UnknownSessionError`,
   `SessionAlreadyEndedError`, `SessionConflictError` (unended but not resumed) or
   `VaultUnavailableError`; `note_change()` tells `GitSync` about a vault write. The module-level
   `stored_captures(session)` -> `{capture_id: payload}` of the session's `capture.stored` events
@@ -1328,6 +1352,9 @@ grace_seconds, clock=time.monotonic, wall_clock_ms=..., interval=5.0)` (on `app.
   generation. `session.ended` carries `reason: "idle"` and `idle_seconds`; its origin stays `user`
   (ADR-0003's origin list is unchanged). The REST end request does not accept `idle`. The next
   `POST /api/sessions` on the topic succeeds.
+- The watchdog does not need to know whose session it watches: a backend has one active session
+  whichever student it belongs to, and `end` finds the session's user. The sockets it counts are
+  that session's, because a handshake for another user's session is refused before it registers.
 - A socket still open when the session auto-ended is closed as not active (4404) on its next
   message, like after an explicit end, and a socket of that session dialling afterwards is refused
   the same way; both close reasons end with `(idle)` (`IDLE_CLOSE_MARK`, `ended_idle(session_id)`)
@@ -1354,10 +1381,13 @@ replace them.
 - **Before `accept()`**: the LAN guard and the Host allowlist (1008), then
   `authenticate_websocket` (1008 without a valid token or loopback trust). The upgrade request also
   carries the active user, under the same `X-SA-User` / `sa_user` rule
-  (`user_scope.resolve_websocket_user`, "Active user" above): #550 resolves it here and decides how
-  to close on the two refusals; today the gateway reads nobody's selection.
+  (`user_scope.resolve_websocket_user`, "Active user" above), resolved before the session is
+  looked up. A handshake naming nobody on a vault with several users, or one this vault does not
+  have, closes with 1008 and a reason starting `user_required:` / `user_not_found:`; a vault that
+  cannot be opened closes 1011.
 - **Session check** (after `accept()`, so the client can read the reason): a `session_id` that is
-  not the active, attached session (unknown, ended, or unended but not resumed) is closed with
+  not the active, attached session **of that user** (unknown, ended, unended but not resumed, or
+  another user's) is closed with
   `CLOSE_UNKNOWN_SESSION` (4404) and a reason; nothing is published. A session that ends while a
   socket is open is closed with 4404 on the socket's next publish.
 - **Handshake**: the first message must be `hello` (anything else, a binary frame included, is

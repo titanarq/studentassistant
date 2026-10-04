@@ -237,11 +237,19 @@ def test_the_user_header_is_not_a_credential(
 def test_a_route_that_is_not_user_scoped_is_unaffected_by_the_selection(
     scope_app: Callable[[Vault], FastAPI], two_users: Vault
 ) -> None:
-    """Naming a user this vault does not have changes nothing on a route that does not ask."""
+    """Naming a user this vault does not have changes nothing on a route that does not ask.
+
+    The route is `GET /api/users`, which is about the users themselves rather than one user's
+    content and so works on the vault's ROOT handle and reads no selection (`server/user_routes.py`
+    says why: a stale or bogus selection must not stop the selection screen listing the users to
+    choose from). `/api/subjects*` and `/api/sessions*` cannot carry this assertion any more: #550
+    hands them to the `SessionService`, which refuses a two-user vault nobody chose for.
+    """
     client = hosted_client(scope_app(two_users), LOOPBACK_HOST)
-    plain = client.get("/api/subjects")
-    named = client.get("/api/subjects", headers={USER_HEADER: NOBODY})
+    plain = client.get("/api/users")
+    named = client.get("/api/users", headers={USER_HEADER: NOBODY})
     assert plain.status_code == 200
+    assert [user["id"] for user in plain.json()["users"]] == [FIRST_USER, CLASSMATE]
     assert (named.status_code, named.json()) == (plain.status_code, plain.json())
 
 

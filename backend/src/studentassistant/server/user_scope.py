@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from typing import Annotated
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from starlette.websockets import WebSocket
 
 from studentassistant.protocol import USER_COOKIE, USER_HEADER
@@ -124,6 +125,16 @@ async def active_user_vault(request: Request) -> tuple[Vault, UserGitSync]:
         raise user_required_error() from error
     except UnknownUserError as error:
         raise unknown_user_error(error.user_id) from error
+
+
+UserScope = Annotated[tuple[Vault, UserGitSync], Depends(active_user_vault)]
+"""How a user-scoped route declares the dependency: `scope: UserScope` in its signature.
+
+The route then works on `scope[0]` (the user's content handle, whose `user_id` is the student it
+acts for) and `scope[1]` (that folder's view of the repository's git sync). A route that only needs
+to tell the `SessionService` which student a call is for reads `scope[0].user_id` and nothing else,
+because the service narrows the vault itself.
+"""
 
 
 def _user_scope(

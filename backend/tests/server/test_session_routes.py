@@ -60,7 +60,7 @@ def test_the_service_and_the_bus_live_on_app_state(app: FastAPI) -> None:
 
 
 def test_a_paired_device_runs_a_whole_session(
-    app: FastAPI, lan: TestClient, pair_device: PairDevice, tmp_vault: Vault
+    app: FastAPI, lan: TestClient, pair_device: PairDevice, user_vault: Vault
 ) -> None:
     headers = bearer(pair_device()["token"])
 
@@ -104,7 +104,7 @@ def test_a_paired_device_runs_a_whole_session(
     assert (body["session_id"], body["status"]) == (session_id, "ended")
 
     log = (
-        tmp_vault.path / "subjects/fisica/topics/cinematica/sessions" / session_id / "events.jsonl"
+        user_vault.path / "subjects/fisica/topics/cinematica/sessions" / session_id / "events.jsonl"
     )
     events = list(read_jsonl(log, Event))
     assert [e.kind for e in events] == [SESSION_STARTED, "session.resumed", SESSION_ENDED]

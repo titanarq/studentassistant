@@ -28,7 +28,15 @@ LOCAL_BASE_URL = "http://localhost:8765"
 
 
 @pytest.fixture
-def topic(tmp_vault: Vault) -> GenerateTopic:
+def topic(tmp_vault: Vault, user_vault: Vault) -> GenerateTopic:
+    """The fixture topic in both scopes, while the migration to per-user content is underway.
+
+    `POST /api/sessions` is user-scoped (#550), so the subject and the topic have to be in the one
+    student's folder for a start to be accepted; `notes/generate` and its `read_notes` still go
+    through the repository root (`SessionService.open_vault()`) until #551. The handle returned is
+    the root one, which is what the generation assertions read.
+    """
+    make_topic(user_vault)
     return make_topic(tmp_vault)
 
 
@@ -138,7 +146,7 @@ def test_a_claude_failure_is_502_and_writes_nothing(
 
 
 def test_the_event_is_published_to_the_topics_active_session(
-    client: TestClient, fake: FakeClaude, topic: GenerateTopic
+    client: TestClient, fake: FakeClaude, topic: GenerateTopic, user_vault: Vault
 ) -> None:
     started = client.post(
         "/api/sessions",
@@ -151,7 +159,8 @@ def test_the_event_is_published_to_the_topics_active_session(
     response = client.post(_route(topic))
 
     assert response.status_code == 200, response.text
-    path = sessions_directory(topic.vault, topic.subject, topic.topic) / session_id
+    # The session the event lands in is the one the service started: the student's own (#550).
+    path = sessions_directory(user_vault, topic.subject, topic.topic) / session_id
     events: list[Any] = list(read_jsonl(path / "events.jsonl", Event))
     [generated] = [e for e in events if e.kind == "notes.generated"]
     assert generated.origin == "editor"
