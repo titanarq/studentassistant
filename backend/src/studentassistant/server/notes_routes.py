@@ -122,23 +122,41 @@ class NotesGenerator:
         self.doubts: DoubtChat | None = None
         """The app's doubts asker (#325): a generation's doubts go to the live session through
         it, and it asks the next doubt after a generation that wrote the notes."""
-        self._running: dict[tuple[str, str], str] = {}
+        self._running: dict[tuple[str | None, str, str], str] = {}
 
-    def claim(self, subject_id: str, topic_id: str, holder: str = "editor") -> bool:
+    def _key(
+        self, subject_id: str, topic_id: str, user_id: str | None
+    ) -> tuple[str | None, str, str]:
+        """The lock's key: the student's too, so two students' same-named topics are two locks.
+
+        A caller that names no user is the vault's only one, as in the workspace hub.
+        """
+        if self.workspace is not None:
+            user_id = self.workspace.resolve_user(user_id)
+        return (user_id, subject_id, topic_id)
+
+    def claim(
+        self,
+        subject_id: str,
+        topic_id: str,
+        holder: str = "editor",
+        *,
+        user_id: str | None = None,
+    ) -> bool:
         """Take the topic's notes lock for `holder` (`TURN_HOLDER` for an editor chat turn, which
         a student save may interleave with); `False` when something already holds it."""
-        key = (subject_id, topic_id)
+        key = self._key(subject_id, topic_id, user_id)
         if key in self._running:
             return False
         self._running[key] = holder
         return True
 
-    def release(self, subject_id: str, topic_id: str) -> None:
-        self._running.pop((subject_id, topic_id), None)
+    def release(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> None:
+        self._running.pop(self._key(subject_id, topic_id, user_id), None)
 
-    def holder(self, subject_id: str, topic_id: str) -> str | None:
+    def holder(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> str | None:
         """Who holds the topic's notes lock now, `None` when nothing does."""
-        return self._running.get((subject_id, topic_id))
+        return self._running.get(self._key(subject_id, topic_id, user_id))
 
     async def generate(
         self,
@@ -147,9 +165,12 @@ class NotesGenerator:
         topic_id: str,
         *,
         confirm_over_cap: bool = False,
+        user_id: str | None = None,
     ) -> GenerationResult:
-        """Run one generation of a topic the caller has `claim`ed; errors are re-raised."""
-        result = await self._generate(sessions, subject_id, topic_id, confirm_over_cap)
+        """Run one generation of a topic the caller has `claim`ed; errors are re-raised.
+
+        `user_id` is the student whose topic it is (`SessionService.consumer_scope`)."""
+        result = await self._generate(sessions, subject_id, topic_id, confirm_over_cap, user_id)
         if self.workspace is not None and not result.draft and result.version is not None:
             self.workspace.notes_changed(
                 subject_id,
@@ -159,9 +180,10 @@ class NotesGenerator:
                 summary=f"Apuntes preparados (versión {result.version})."
                 if result.version is not None
                 else "Apuntes preparados.",
+                user_id=user_id,
             )
         if self.doubts is not None and not result.draft:
-            self.doubts.schedule(subject_id, topic_id)
+            self.doubts.schedule(subject_id, topic_id, user_id=user_id)
         return result
 
     async def incorporate(
@@ -175,6 +197,7 @@ class NotesGenerator:
         request: ChatRequestRef | None = None,
         turn_id: str | None = None,
         confirm_over_cap: bool = False,
+        user_id: str | None = None,
     ) -> IncorporationResult:
         """One incorporation of a few sources ("incorpora la página 3", #326) of a topic the
         caller has `claim`ed (as `TURN_HOLDER`, like an editor chat turn); the chat router
@@ -185,7 +208,7 @@ class NotesGenerator:
         Raises what `editor.incorporate.incorporate_sources` raises (an `IncorporationError`
         with a Spanish message for a refused request), and `VaultUnavailableError`.
         """
-        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id, user_id)
         return await incorporate_sources(
             vault,
             subject_id,
@@ -200,24 +223,24 @@ class NotesGenerator:
             turn_id=turn_id,
             max_sources=self.settings.editor.incorporate_max_sources,
             host=sessions.host,
-            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
+            live=None
+            if self.doubts is None
+            else self.doubts.live(subject_id, topic_id, user_id=user_id),
         )
 
     async def _editor(
-        self, sessions: SessionService, subject_id: str, topic_id: str
+        self, sessions: SessionService, subject_id: str, topic_id: str, user_id: str | None = None
     ) -> tuple[Vault, Any, Any, Callable[[str, dict[str, Any]], Any]]:
         """The vault, its sync, an `editor` client bound to the topic's ledger and the bus
-        publisher of the topic's active session."""
-        vault = await sessions.open_vault()
-        sync = sessions.sync
-        if sync is None:  # pragma: no cover - the vault opens with its sync
-            raise VaultUnavailableError("the vault has no sync")
+        publisher of the topic's active session (the student's own, when `user_id` is named)."""
+        vault, sync = await sessions.consumer_scope(user_id)
 
         async def publish(kind: str, payload: dict[str, Any]) -> None:
             active = sessions.active
-            if active is not None and (active.subject_id, active.topic_id) == (
-                subject_id,
-                topic_id,
+            if (
+                active is not None
+                and (active.subject_id, active.topic_id) == (subject_id, topic_id)
+                and (user_id is None or active.user_id == user_id)
             ):
                 await sessions.bus.publish(active.session_id, kind, "editor", payload)
 
@@ -230,11 +253,18 @@ class NotesGenerator:
         return vault, sync, client, publish
 
     async def _generate(
-        self, sessions: SessionService, subject_id: str, topic_id: str, confirm_over_cap: bool
+        self,
+        sessions: SessionService,
+        subject_id: str,
+        topic_id: str,
+        confirm_over_cap: bool,
+        user_id: str | None,
     ) -> GenerationResult:
         if self.settings.editor.prepare_mode == "batched":
-            return await self._generate_batched(sessions, subject_id, topic_id, confirm_over_cap)
-        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
+            return await self._generate_batched(
+                sessions, subject_id, topic_id, confirm_over_cap, user_id
+            )
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id, user_id)
         return await generate_notes(
             vault,
             subject_id,
@@ -245,18 +275,25 @@ class NotesGenerator:
             on_event=publish,
             confirm_over_cap=confirm_over_cap,
             host=sessions.host,
-            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
+            live=None
+            if self.doubts is None
+            else self.doubts.live(subject_id, topic_id, user_id=user_id),
         )
 
     async def _generate_batched(
-        self, sessions: SessionService, subject_id: str, topic_id: str, confirm_over_cap: bool
+        self,
+        sessions: SessionService,
+        subject_id: str,
+        topic_id: str,
+        confirm_over_cap: bool,
+        user_id: str | None,
     ) -> GenerationResult:
-        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id)
+        vault, sync, client, publish = await self._editor(sessions, subject_id, topic_id, user_id)
         hub = self.workspace
 
         def progress(payload: dict[str, Any]) -> None:
             if hub is not None:
-                hub.publish(subject_id, topic_id, INCORPORATION_PROGRESS, payload)
+                hub.publish(subject_id, topic_id, INCORPORATION_PROGRESS, payload, user_id=user_id)
 
         settings = self.settings.editor
         result = await incorporate_pending(
@@ -269,10 +306,12 @@ class NotesGenerator:
             max_sources=settings.incorporate_max_sources,
             on_event=publish,
             on_progress=progress,
-            turns=None if hub is None else _BatchTurns(hub, subject_id, topic_id),
+            turns=None if hub is None else _BatchTurns(hub, subject_id, topic_id, user_id),
             confirm_over_cap=confirm_over_cap,
             host=sessions.host,
-            live=None if self.doubts is None else self.doubts.live(subject_id, topic_id),
+            live=None
+            if self.doubts is None
+            else self.doubts.live(subject_id, topic_id, user_id=user_id),
         )
         return _as_generation(vault, result)
 
@@ -280,13 +319,21 @@ class NotesGenerator:
 class _BatchTurns:
     """Each batch of a batched "prepárame el tema" as a chat turn of kind `incorporate`."""
 
-    def __init__(self, hub: WorkspaceHub, subject_id: str, topic_id: str) -> None:
+    def __init__(
+        self, hub: WorkspaceHub, subject_id: str, topic_id: str, user_id: str | None = None
+    ) -> None:
         self.hub, self.subject_id, self.topic_id = hub, subject_id, topic_id
+        self.user_id = user_id
         self._current: TurnBroadcast | None = None
 
     def begin(self, source_ids: list[str]) -> tuple[str | None, ReplySink | None]:
         broadcast = TurnBroadcast(
-            self.hub, self.subject_id, self.topic_id, origin="typed", kind="incorporate"
+            self.hub,
+            self.subject_id,
+            self.topic_id,
+            origin="typed",
+            kind="incorporate",
+            user_id=self.user_id,
         )
         broadcast.started()
         self._current = broadcast

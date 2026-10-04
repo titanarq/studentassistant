@@ -2,12 +2,15 @@
 
 The study workspace (`/subjects/{s}/topics/{t}/workspace`) follows one topic through
 `GET .../workspace/stream` (`workspace_routes.py`). What feeds that stream is this in-memory hub
-(one per app, `app.state.workspace`): the voice turns of `assistant_requests.py`, the typed turns
+(one per app, `app.state.workspace`) it is keyed by the student and the topic: two students
+with the same subject and topic slugs never see each other's events (#566), and a caller that
+names no user is the vault's only one (`SessionService.only_user_id`). It carries the voice turns
+of `assistant_requests.py`, the typed turns
 of `POST .../notes/chat` (`revise_routes.py`, which still streams to its own caller too), the
 student's saves (`notes_edit_routes.py`), "prepárame el tema" (`notes_routes.NotesGenerator`), a
 restore (`versions_routes.py`) and an undo publish to it. It works with or without an active
-session: it is keyed by topic, not by session, and nothing in it is persisted (the conversation
-and the notes are in the vault; a client that reconnects reloads `GET .../notes/chat`).
+session: it is keyed by student and topic, not by session, and nothing in it is persisted (the
+conversation and the notes are in the vault; a client that reconnects reloads `GET .../notes/chat`).
 
 The events (`WORKSPACE_EVENTS`; the list is open, later tasks add kinds):
 
@@ -49,7 +52,7 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Literal, Self
@@ -108,15 +111,25 @@ class WorkspaceEvent:
     topic_id: str
     event: str
     data: Mapping[str, Any]
+    user_id: str | None = None
 
 
 class WorkspaceSubscription:
     """One client's view of a topic: a bounded queue of its `WorkspaceEvent`s."""
 
-    def __init__(self, hub: WorkspaceHub, subject_id: str, topic_id: str, *, maxsize: int) -> None:
+    def __init__(
+        self,
+        hub: WorkspaceHub,
+        subject_id: str,
+        topic_id: str,
+        *,
+        maxsize: int,
+        user_id: str | None = None,
+    ) -> None:
         if maxsize < 1:
             raise ValueError("a subscription queue holds at least one event")
         self.subject_id, self.topic_id, self.maxsize = subject_id, topic_id, maxsize
+        self.user_id = user_id
         self.dropped = 0
         self._hub = hub
         self._queue: deque[WorkspaceEvent] = deque()
@@ -182,25 +195,52 @@ class WorkspaceSubscription:
 
 
 class WorkspaceHub:
-    """Per-topic in-memory publish/subscribe of workspace events (see the module docstring)."""
+    """Per-user, per-topic in-memory publish/subscribe of workspace events (module docstring)."""
 
-    def __init__(self, *, queue_size: int = DEFAULT_QUEUE_SIZE) -> None:
+    def __init__(
+        self,
+        *,
+        queue_size: int = DEFAULT_QUEUE_SIZE,
+        single_user: Callable[[], str | None] | None = None,
+    ) -> None:
         self.queue_size = queue_size
-        self._subscriptions: dict[tuple[str, str], list[WorkspaceSubscription]] = {}
+        self._single_user = single_user
+        """The vault's only user, for a caller that names none (`SessionService.only_user_id`)."""
+        self._subscriptions: dict[tuple[str | None, str, str], list[WorkspaceSubscription]] = {}
 
-    def subscribe(self, subject_id: str, topic_id: str) -> WorkspaceSubscription:
-        """A subscription to every event of the topic published from now on."""
-        subscription = WorkspaceSubscription(self, subject_id, topic_id, maxsize=self.queue_size)
-        self._subscriptions.setdefault((subject_id, topic_id), []).append(subscription)
+    def resolve_user(self, user_id: str | None) -> str | None:
+        """`user_id`, or the vault's only user for a caller that names none."""
+        if user_id is None and self._single_user is not None:
+            return self._single_user()
+        return user_id
+
+    def subscribe(
+        self, subject_id: str, topic_id: str, *, user_id: str | None = None
+    ) -> WorkspaceSubscription:
+        """A subscription to every event of the user's topic published from now on."""
+        user_id = self.resolve_user(user_id)
+        subscription = WorkspaceSubscription(
+            self, subject_id, topic_id, maxsize=self.queue_size, user_id=user_id
+        )
+        self._subscriptions.setdefault((user_id, subject_id, topic_id), []).append(subscription)
         return subscription
 
-    def subscribers(self, subject_id: str, topic_id: str) -> int:
-        return len(self._subscriptions.get((subject_id, topic_id), []))
+    def subscribers(self, subject_id: str, topic_id: str, *, user_id: str | None = None) -> int:
+        return len(self._subscriptions.get((self.resolve_user(user_id), subject_id, topic_id), []))
 
-    def publish(self, subject_id: str, topic_id: str, event: str, data: Mapping[str, Any]) -> None:
-        """Deliver one event to the topic's subscribers (never waits; call in the event loop)."""
-        message = WorkspaceEvent(subject_id, topic_id, event, dict(data))
-        for subscription in list(self._subscriptions.get((subject_id, topic_id), [])):
+    def publish(
+        self,
+        subject_id: str,
+        topic_id: str,
+        event: str,
+        data: Mapping[str, Any],
+        *,
+        user_id: str | None = None,
+    ) -> None:
+        """Deliver one event to the user's topic subscribers (never waits; in the event loop)."""
+        user_id = self.resolve_user(user_id)
+        message = WorkspaceEvent(subject_id, topic_id, event, dict(data), user_id)
+        for subscription in list(self._subscriptions.get((user_id, subject_id, topic_id), [])):
             subscription.offer(message)
 
     def notes_changed(
@@ -212,11 +252,12 @@ class WorkspaceHub:
         origin: NotesOrigin,
         summary: str | None,
         turn_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         data: dict[str, Any] = {"revision": revision, "origin": origin, "summary": summary}
         if turn_id is not None:
             data["turn_id"] = turn_id
-        self.publish(subject_id, topic_id, NOTES_CHANGED, data)
+        self.publish(subject_id, topic_id, NOTES_CHANGED, data, user_id=user_id)
 
     def close(self) -> None:
         """Close every subscription (shutdown): the streams end."""
@@ -225,7 +266,7 @@ class WorkspaceHub:
                 subscription.close()
 
     def _unsubscribe(self, subscription: WorkspaceSubscription) -> None:
-        key = (subscription.subject_id, subscription.topic_id)
+        key = (subscription.user_id, subscription.subject_id, subscription.topic_id)
         subscriptions = self._subscriptions.get(key)
         if subscriptions and subscription in subscriptions:
             subscriptions.remove(subscription)
@@ -250,13 +291,15 @@ class TurnBroadcast:
         request_id: str | None = None,
         kind: TurnKind = "revise",
         turn_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         self.hub, self.subject_id, self.topic_id = hub, subject_id, topic_id
+        self.user_id = user_id
         self.origin, self.request_id, self.kind = origin, request_id, kind
         self.turn_id = turn_id or new_turn_id()
 
     def _publish(self, event: str, data: Mapping[str, Any]) -> None:
-        self.hub.publish(self.subject_id, self.topic_id, event, data)
+        self.hub.publish(self.subject_id, self.topic_id, event, data, user_id=self.user_id)
 
     def started(self) -> None:
         self._publish(
@@ -289,6 +332,7 @@ class TurnBroadcast:
                 origin="editor",
                 summary=payload.get("summary"),
                 turn_id=self.turn_id,
+                user_id=self.user_id,
             )
 
     def error(self, status: int, detail: str, code: str | None = None) -> None:

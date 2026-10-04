@@ -210,26 +210,25 @@ async def switch_to_study(
     *,
     registry: GeneratorRegistry = default_registry,
     reason: Literal["button", "command"] = "button",
+    user_id: str | None = None,
 ) -> StudyState:
     """End the topic's capture session (no notes generation) and label the study version.
 
-    The caller holds the topic's notes lock. Publishes `study.marked` on the workspace stream.
+    The caller holds the topic's notes lock; `user_id` is the student whose topic it is (None:
+    not user-scoped yet, #551). Publishes `study.marked` on the workspace stream.
 
     Raises:
         VaultUnavailableError: the vault cannot be opened.
         NotesMissingError: the topic has no notes (nothing is ended then).
         The vault's errors for an unknown topic.
     """
-    vault = await sessions.open_vault()
-    sync = sessions.sync
-    if sync is None:  # pragma: no cover - the vault opens with its sync
-        raise VaultUnavailableError("the vault has no sync")
+    vault, sync = await sessions.consumer_scope(user_id)
     await asyncio.to_thread(get_topic, vault, subject_id, topic_id)
     notes = await asyncio.to_thread(read_notes, vault, subject_id, topic_id)
     if notes is None or not notes.strip():
         raise NotesMissingError
     ended: str | None = None
-    session_id = await sessions.open_session_of(None, subject_id, topic_id)
+    session_id = await sessions.open_session_of(user_id, subject_id, topic_id)
     if session_id is not None:
         try:
             await sessions.end(
@@ -244,7 +243,13 @@ async def switch_to_study(
     marked: StudyVersion = await asyncio.to_thread(
         mark_study_version, vault, subject_id, topic_id, sync=sync
     )
-    hub.publish(subject_id, topic_id, STUDY_MARKED, {"version": marked.version, "tag": marked.tag})
+    hub.publish(
+        subject_id,
+        topic_id,
+        STUDY_MARKED,
+        {"version": marked.version, "tag": marked.tag},
+        user_id=user_id,
+    )
     state = await asyncio.to_thread(study_state, vault, subject_id, topic_id, registry=registry)
     return state.model_copy(update={"created_tag": marked.created_tag, "ended_session": ended})
 

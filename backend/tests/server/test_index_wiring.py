@@ -25,6 +25,7 @@ from studentassistant.vault import (
     put_source,
     start_session,
 )
+from studentassistant.vault.index import VaultIndex, user_index_path
 
 pytestmark = pytest.mark.anyio
 
@@ -73,47 +74,58 @@ def make_service(
     )
 
 
+def only_index(service: SessionService) -> VaultIndex:
+    """The one user's index the service has opened (one database per user, #566)."""
+    (index,) = service.indexes.values()
+    return index
+
+
 def texts(service: SessionService, query: str) -> list[str]:
-    assert service.index is not None
-    return [hit.path for hit in service.index.search(query)]
+    return [hit.path for hit in only_index(service).search(query)]
 
 
-async def test_the_index_opens_with_the_vault_off_the_loop_at_index_path(
-    tmp_vault: Vault, index_path: Path
+async def test_a_users_index_opens_lazily_off_the_loop_at_their_own_path(
+    tmp_vault: Vault, user_vault: Vault, index_path: Path
 ) -> None:
-    create_subject(tmp_vault, "Física")
+    create_subject(user_vault, "Física")
     service = make_service(tmp_vault, index_path)
-    assert service.index is None
+    assert service.indexes == {}
 
     await service.open_vault()
+    assert service.indexes == {}  # the vault opening opens no index: the first use of a user does
 
-    assert service.index is not None and service.index.path == index_path
-    assert index_path.is_file()
-    assert [s.slug for s in service.index.subjects()] == ["fisica"]
+    index = await service.index_of(None)
+
+    assert index is not None and service.indexes == {user_vault.user_id: index}
+    assert index.path == user_index_path(index_path, str(user_vault.user_id))
+    assert index.path.is_file() and not index_path.exists()
+    assert [s.slug for s in index.subjects()] == ["fisica"]
     assert not service.index_running  # not serving: no background loop
     await service.shutdown()
-    assert service.index is None
+    assert service.indexes == {}
 
 
 async def test_the_background_loop_keeps_the_index_current_and_stops_at_shutdown(
-    tmp_vault: Vault, index_path: Path
+    tmp_vault: Vault, user_vault: Vault, index_path: Path
 ) -> None:
-    subject = create_subject(tmp_vault, "Física").slug
-    topic = create_topic(tmp_vault, subject, "Cinemática").slug
+    subject = create_subject(user_vault, "Física").slug
+    topic = create_topic(user_vault, subject, "Cinemática").slug
     service = make_service(tmp_vault, index_path, interval=0.01)
     await service.startup()
     try:
         await service.open_vault()
+        assert not service.index_running  # no index yet: nothing to keep current
+        await service.index_of(None)
         assert service.index_running
         assert texts(service, "caída libre") == []
 
-        page = put_source(tmp_vault, subject, topic, "web", "Caída", "# Caída libre\n", {})
+        page = put_source(user_vault, subject, topic, "web", "Caída", "# Caída libre\n", {})
 
-        relative = page.relative_to(tmp_vault.path).as_posix()
+        relative = page.relative_to(user_vault.path).as_posix()
         await eventually(lambda: texts(service, "caída libre") == [relative])
     finally:
         await service.shutdown()
-    assert not service.index_running and service.index is None
+    assert not service.index_running and service.indexes == {}
 
 
 def clone(origin: Path, path: Path) -> Vault:
@@ -126,11 +138,8 @@ def clone(origin: Path, path: Path) -> Vault:
 async def test_the_pull_at_session_start_is_followed_by_an_index_refresh(
     tmp_vault: Vault, user_vault: Vault, git_origin: Path, tmp_path: Path, index_path: Path
 ) -> None:
-    create_subject(tmp_vault, "Física")
-    create_topic(tmp_vault, "fisica", "Cinemática")
-    # The service starts a session for the vault's one user (#550), so the topic has to be in
-    # that student's folder too; PC B's session and the index stay at the repository root, which
-    # is what the handle `make_service` gets and the one the index is built over.
+    # The service starts a session for the vault's one user (#550), and indexes that student's
+    # folder (#566): the topic is in it, and so is PC B's session below.
     create_subject(user_vault, "Física")
     create_topic(user_vault, "fisica", "Cinemática")
     GitSync(tmp_vault, SETTINGS, clock=ManualClock()).flush()
@@ -138,8 +147,11 @@ async def test_the_pull_at_session_start_is_followed_by_an_index_refresh(
     service = make_service(
         tmp_vault, index_path, sync=GitSync(tmp_vault, SETTINGS, clock=ManualClock())
     )
-    await service.open_vault()  # indexed before PC B's session exists; no background loop
-    on_b = start_session(pc_b, "fisica", "cinematica", "pc-b", "1.0")
+    # Indexed before PC B's session exists; no background loop.
+    assert await service.index_of(None) is not None
+    on_b = start_session(
+        pc_b.for_user(str(user_vault.user_id)), "fisica", "cinematica", "pc-b", "1.0"
+    )
     on_b.append_transcript(0, 2_000, "El tiro parabólico combina dos movimientos.")
     end_session(on_b)
     GitSync(pc_b, SETTINGS, clock=ManualClock()).flush()
@@ -148,22 +160,21 @@ async def test_the_pull_at_session_start_is_followed_by_an_index_refresh(
     await service.start(None, "fisica", "cinematica", client_time_ms=0)
     await asyncio.wait_for(service.wait_index_refreshed(), timeout=10)
 
-    assert service.index is not None
-    (hit,) = service.index.search("parabólico")
+    (hit,) = only_index(service).search("parabólico")
     assert hit.session == on_b.id
     await service.shutdown()
 
 
 async def test_an_index_that_cannot_open_leaves_search_off_but_the_vault_usable(
-    tmp_vault: Vault, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_vault: Vault, user_vault: Vault, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    unusable = tmp_path / "a-directory"
-    unusable.mkdir()
+    unusable = tmp_path / "index.sqlite3"
+    user_index_path(unusable, str(user_vault.user_id)).mkdir()  # a directory in the way
     service = make_service(tmp_vault, unusable)
     await service.startup()
 
     await service.create_subject(None, "Física")
 
-    assert service.index is None and not service.index_running
+    assert await service.index_of(None) is None and not service.index_running
     assert "search index" in caplog.text
     await service.shutdown()

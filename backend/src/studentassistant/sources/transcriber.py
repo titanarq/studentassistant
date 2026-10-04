@@ -240,7 +240,8 @@ class PageTranscriber:
         self._pending_ids: dict[tuple[str, str], set[str]] = {}
         self._subscription: SubscriptionLike | None = None
         self._task: asyncio.Task[None] | None = None
-        self._startup: asyncio.Task[None] | None = None
+        self._startups: dict[str | None, asyncio.Task[None]] = {}
+        """The server-start catch-up of each user's handle (a root handle is `None`)."""
         self._slots: asyncio.Semaphore | None = None
 
     # -- lifecycle -----------------------------------------------------------------------------
@@ -273,10 +274,10 @@ class PageTranscriber:
         if self._task is not None:
             await self._task
             self._task = None
-        startup, self._startup = self._startup, None
-        if startup is not None:
+        startups, self._startups = list(self._startups.values()), {}
+        for startup in startups:
             startup.cancel()
-            await asyncio.gather(startup, return_exceptions=True)
+        await asyncio.gather(*startups, return_exceptions=True)
         jobs = [job for pages in self._pages.values() for job in pages.jobs.values()]
         for job in jobs:
             job.cancel()
@@ -292,17 +293,19 @@ class PageTranscriber:
     def catch_up_vault(self, vault: Vault) -> None:
         """Server start: queue every topic's owed pages of its unended and newest sessions.
 
-        Called once the vault is open (`SessionService.add_on_open`); runs in the background, once
-        per `start()`, and only while the transcriber runs.
+        Called once the vault is open (`SessionService.add_on_open`, once per user with that
+        user's handle); runs in the background, once per handle's user and `start()`, and only
+        while the transcriber runs.
         """
-        if not self.running or self._startup is not None:
+        if not self.running or vault.user_id in self._startups:
             return
-        self._startup = asyncio.create_task(self._catch_up_vault(vault), name="transcriber:startup")
+        self._startups[vault.user_id] = asyncio.create_task(
+            self._catch_up_vault(vault), name=f"transcriber:startup:{vault.user_id}"
+        )
 
     async def wait_startup(self) -> None:
         """Wait for the server-start catch-up to have queued its jobs (tests)."""
-        if self._startup is not None:
-            await asyncio.gather(self._startup, return_exceptions=True)
+        await asyncio.gather(*self._startups.values(), return_exceptions=True)
 
     async def wait_idle(self, session_id: str) -> None:
         """Wait (without hurrying) until every job of the session has finished."""

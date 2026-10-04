@@ -23,7 +23,8 @@ from studentassistant.server.auth import EXEMPT_ROUTES
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.search_routes import parse_kinds
 from studentassistant.server.sessions import SessionService
-from studentassistant.vault.index import SNIPPET_END, SNIPPET_START
+from studentassistant.vault import Vault
+from studentassistant.vault.index import SNIPPET_END, SNIPPET_START, user_index_path
 
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "protocol"
 LOCAL_HOST_HEADER = "localhost:8765"
@@ -49,15 +50,16 @@ def app(
     server: ServerSettings,
     codes: PairingCodes,
     tmp_path: Path,
-    read_vault: ReadVault,
+    user_read_vault: ReadVault,
+    tmp_vault: Vault,
     index_path: Path,
 ) -> FastAPI:
     return create_app(
         static_dir=tmp_path / "no-web-build",
         server=server,
         codes=codes,
-        vault=read_vault.vault,
-        vault_settings=VaultSettings(path=read_vault.vault.path, index_path=index_path),
+        vault=tmp_vault,
+        vault_settings=VaultSettings(path=tmp_vault.path, index_path=index_path),
     )
 
 
@@ -77,20 +79,21 @@ def search(client: TestClient, **params: Any) -> dict[str, Any]:
 
 
 def test_a_transcript_hit_names_its_session_segment_and_time(
-    read_vault: ReadVault, searcher: TestClient, index_path: Path
+    user_read_vault: ReadVault, searcher: TestClient, index_path: Path, student_user_id: str
 ) -> None:
     body = search(searcher, q="coche frena")
 
     assert body["query"] == "coche frena"
     (hit,) = body["hits"]
     assert hit["kind"] == "transcript"
-    assert (hit["subject"], hit["topic"]) == (read_vault.subject, read_vault.topic)
-    assert hit["session"] == read_vault.ended_session
+    assert (hit["subject"], hit["topic"]) == (user_read_vault.subject, user_read_vault.topic)
+    assert hit["session"] == user_read_vault.ended_session
     assert (hit["seq"], hit["t_start"]) == (3, 154_000)
-    assert hit["path"].endswith(f"sessions/{read_vault.ended_session}/transcript.jsonl")
+    assert hit["path"].endswith(f"sessions/{user_read_vault.ended_session}/transcript.jsonl")
     assert "source" not in hit  # absent, never null
     assert f"{SNIPPET_START}coche{SNIPPET_END}" in hit["snippet"]
-    assert index_path.is_file()
+    assert user_index_path(index_path, student_user_id).is_file()  # the user's own database
+    assert not index_path.exists()
 
 
 def test_accents_and_case_are_ignored(searcher: TestClient) -> None:
@@ -99,10 +102,10 @@ def test_accents_and_case_are_ignored(searcher: TestClient) -> None:
     assert "posición" in hits[0]["snippet"]
 
 
-def test_a_web_hit_names_its_source(read_vault: ReadVault, searcher: TestClient) -> None:
+def test_a_web_hit_names_its_source(user_read_vault: ReadVault, searcher: TestClient) -> None:
     (hit,) = search(searcher, q="rectilíneo", kinds="web")["hits"]
     assert hit["kind"] == "web"
-    assert hit["path"] == hit["source"] == read_vault.web_page
+    assert hit["path"] == hit["source"] == user_read_vault.web_page
     assert "session" not in hit and "seq" not in hit and "t_start" not in hit
 
 
@@ -114,11 +117,14 @@ def test_kinds_filter_the_hits(searcher: TestClient) -> None:
     assert search(searcher, q="rectilíneo", kinds="notes,page")["hits"] == []
 
 
-def test_subject_and_topic_filter_the_hits(read_vault: ReadVault, searcher: TestClient) -> None:
-    subject, topic = read_vault.subject, read_vault.topic
+def test_subject_and_topic_filter_the_hits(
+    user_read_vault: ReadVault, searcher: TestClient
+) -> None:
+    subject, topic = user_read_vault.subject, user_read_vault.topic
     assert len(search(searcher, q="velocidad", subject=subject, topic=topic)["hits"]) == 1
     assert (
-        search(searcher, q="velocidad", subject=subject, topic=read_vault.empty_topic)["hits"] == []
+        search(searcher, q="velocidad", subject=subject, topic=user_read_vault.empty_topic)["hits"]
+        == []
     )
     assert search(searcher, q="velocidad", subject="quimica")["hits"] == []
 
@@ -195,17 +201,20 @@ def test_an_index_that_cannot_be_opened_is_503_and_the_vault_still_works(
     server: ServerSettings,
     codes: PairingCodes,
     tmp_path: Path,
-    read_vault: ReadVault,
+    user_read_vault: ReadVault,
+    tmp_vault: Vault,
+    student_user_id: str,
     client_with_host: ClientWithHost,
 ) -> None:
-    unusable = tmp_path / "a-directory"
-    unusable.mkdir()
+    unusable = tmp_path / "index.sqlite3"
+    # The user's own database is where a directory is in the way.
+    user_index_path(unusable, student_user_id).mkdir()
     app = create_app(
         static_dir=tmp_path / "no-web-build",
         server=server,
         codes=codes,
-        vault=read_vault.vault,
-        vault_settings=VaultSettings(path=read_vault.vault.path, index_path=unusable),
+        vault=tmp_vault,
+        vault_settings=VaultSettings(path=tmp_vault.path, index_path=unusable),
     )
     client = client_with_host(app, LOCAL_HOST_HEADER)
 
@@ -226,5 +235,5 @@ def test_the_lifespan_runs_the_index_loop_and_closes_it_at_shutdown(
     with client_with_host(app, LOCAL_HOST_HEADER) as client:
         assert not service.index_running  # the vault (and so the index) opens lazily
         assert len(search(client, q="velocidad")["hits"]) == 1
-        assert service.index is not None and service.index_running
-    assert service.index is None and not service.index_running
+        assert len(service.indexes) == 1 and service.index_running
+    assert service.indexes == {} and not service.index_running

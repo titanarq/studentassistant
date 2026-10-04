@@ -249,7 +249,8 @@ class ScannedPdfTranscriber:
         self.clock = clock
         self.sleep = sleep
         self._jobs: dict[PageKey, asyncio.Task[None]] = {}
-        self._startup: asyncio.Task[None] | None = None
+        self._startups: dict[str | None, asyncio.Task[None]] = {}
+        """The server-start catch-up of each user's handle (a root handle is `None`)."""
         self._slots: asyncio.Semaphore | None = None
         self._stopped = False
 
@@ -278,22 +279,24 @@ class ScannedPdfTranscriber:
         return queued
 
     def catch_up_vault(self, vault: Vault) -> None:
-        """Server start: queue every scanned page of the vault still without `.md`, once."""
-        if self._stopped or self._startup is not None:
+        """Server start: queue every scanned page of the handle still without `.md`, once per
+        user (`SessionService.add_on_open` calls it with each user's handle)."""
+        if self._stopped or vault.user_id in self._startups:
             return
-        self._startup = asyncio.create_task(self._catch_up(vault), name="pdf-transcriber:startup")
+        self._startups[vault.user_id] = asyncio.create_task(
+            self._catch_up(vault), name=f"pdf-transcriber:startup:{vault.user_id}"
+        )
 
     async def wait_idle(self) -> None:
         """Wait until the start-up catch-up and every queued page are done (tests)."""
-        if self._startup is not None:
-            await asyncio.gather(self._startup, return_exceptions=True)
+        await asyncio.gather(*self._startups.values(), return_exceptions=True)
         while pending := [job for job in self._jobs.values() if not job.done()]:
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def stop(self) -> None:
         """Cancel the catch-up and every job still waiting or calling (shutdown)."""
         self._stopped = True
-        tasks = [*self._jobs.values(), *([self._startup] if self._startup else [])]
+        tasks = [*self._jobs.values(), *self._startups.values()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
