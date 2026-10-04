@@ -20,7 +20,13 @@ from studentassistant.server.app import create_app
 from studentassistant.server.bus import SessionBus
 from studentassistant.server.pairing import PairingCodes
 from studentassistant.server.sessions import SessionService
-from studentassistant.vault import Vault, read_topic_digest, write_topic_digest
+from studentassistant.vault import (
+    Vault,
+    create_subject,
+    create_topic,
+    read_topic_digest,
+    write_topic_digest,
+)
 
 
 @pytest.fixture
@@ -70,10 +76,13 @@ def test_ending_a_session_writes_the_digest_the_routes_serve(
         assert summary["digest_excerpt"] == body["excerpt"]
 
 
-def test_a_topic_without_a_digest_answers_null(local: TestClient) -> None:
+def test_a_topic_without_a_digest_answers_null(local: TestClient, tmp_vault: Vault) -> None:
     with local:
-        local.post("/api/subjects", json={"name": "Física"})
-        local.post("/api/subjects/fisica/topics", json={"name": "Óptica"})
+        # `GET .../digest` and `GET .../summary` are not user-scoped yet: they read the repository
+        # root (`SessionService.open_vault()`), so the topic they answer about is created there
+        # rather than through the user-scoped subject and topic routes (#550, moved by #551).
+        subject = create_subject(tmp_vault, "Física").slug
+        create_topic(tmp_vault, subject, "Óptica")
         body = local.get("/api/subjects/fisica/topics/optica/digest").json()
         assert body == {"subject_id": "fisica", "topic_id": "optica", "text": None, "excerpt": None}
         summary = local.get("/api/subjects/fisica/topics/optica/summary").json()
