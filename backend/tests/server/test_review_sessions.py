@@ -14,9 +14,9 @@ from read_api_fixtures import ReadVault
 from studentassistant.vault import end_session, list_sessions, start_session
 
 
-def _study_then_review(read_vault: ReadVault) -> tuple[str, str]:
+def _study_then_review(populated: ReadVault) -> tuple[str, str]:
     """On the fixture's empty topic: a 20-minute study session, then a review session."""
-    vault, subject, topic = read_vault.vault, read_vault.subject, read_vault.empty_topic
+    vault, subject, topic = populated.vault, populated.subject, populated.empty_topic
     study = start_session(vault, subject, topic, host="ubuntu-pc", protocol_version="1.0")
     end_session(study, ended_at=study.meta.started_at + timedelta(minutes=20))
     review = start_session(
@@ -27,34 +27,37 @@ def _study_then_review(read_vault: ReadVault) -> tuple[str, str]:
 
 
 def test_the_topic_list_dates_the_topic_by_its_latest_study_session(
-    read_vault: ReadVault, reader: TestClient
+    user_read_vault: ReadVault, user_reader: TestClient
 ) -> None:
-    study_id, _ = _study_then_review(read_vault)
-    vault, subject, topic = read_vault.vault, read_vault.subject, read_vault.empty_topic
+    study_id, _ = _study_then_review(user_read_vault)
+    vault = user_read_vault.vault
+    subject, topic = user_read_vault.subject, user_read_vault.empty_topic
 
     study = next(meta for meta in list_sessions(vault, subject, topic) if meta.id == study_id)
 
-    response = reader.get(f"/api/subjects/{subject}/topics")
+    response = user_reader.get(f"/api/subjects/{subject}/topics")
     assert response.status_code == 200
     listed = {entry["topic_id"]: entry for entry in response.json()["topics"]}
     assert listed[topic]["last_session_at_ms"] == int(study.started_at.timestamp() * 1000)
 
 
 def test_a_topic_with_only_review_sessions_has_no_last_session(
-    read_vault: ReadVault, reader: TestClient
+    read_vault: ReadVault, user_read_vault: ReadVault, user_reader: TestClient
 ) -> None:
-    vault, subject, topic = read_vault.vault, read_vault.subject, read_vault.empty_topic
-    end_session(
-        start_session(
-            vault, subject, topic, host="ubuntu-pc", protocol_version="1.0", kind="review"
+    subject, topic = user_read_vault.subject, user_read_vault.empty_topic
+    # `GET /api/subjects/{s}/topics` reads the user's folder (#550) while `.../summary` still
+    # reads the repository root (#551 moves it), so the review session goes where each looks.
+    for vault in (read_vault.vault, user_read_vault.vault):
+        end_session(
+            start_session(
+                vault, subject, topic, host="ubuntu-pc", protocol_version="1.0", kind="review"
+            )
         )
-    )
 
-    listed = {
-        e["topic_id"]: e for e in reader.get(f"/api/subjects/{subject}/topics").json()["topics"]
-    }
+    response = user_reader.get(f"/api/subjects/{subject}/topics")
+    listed = {e["topic_id"]: e for e in response.json()["topics"]}
     assert "last_session_at_ms" not in listed[topic]
-    summary = reader.get(f"/api/subjects/{subject}/topics/{topic}/summary").json()
+    summary = user_reader.get(f"/api/subjects/{subject}/topics/{topic}/summary").json()
     assert (summary["sessions"], summary["session_minutes"]) == (0, 0.0)
 
 

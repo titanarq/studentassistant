@@ -8,7 +8,14 @@ from fastapi.testclient import TestClient
 from read_api_fixtures import JPEG_BYTES, ReadVault
 from ws_harness import WsHarness
 
-from studentassistant.vault import put_page_transcription, put_source, read_topic_events
+from studentassistant.vault import (
+    Vault,
+    create_subject,
+    create_topic,
+    put_page_transcription,
+    put_source,
+    read_topic_events,
+)
 
 
 def _url(path: str) -> str:
@@ -79,10 +86,17 @@ def test_a_lan_client_without_a_token_cannot_edit(
     assert response.status_code in (401, 403)
 
 
-def test_the_live_session_gets_a_transcription_edited_event(ws: WsHarness) -> None:
-    page = put_source(ws.vault, "fisica", "cinematica", "notes", "f.jpg", JPEG_BYTES, {})
-    path = page.relative_to(ws.vault.path).as_posix()
-    put_page_transcription(ws.vault, path, "texto\n")
+def test_the_live_session_gets_a_transcription_edited_event(
+    ws: WsHarness, tmp_vault: Vault
+) -> None:
+    # `PUT /api/sources/{id}/transcription` still reads the ROOT handle (#551 moves it) while the
+    # live session and its log are the user's (#550): the page goes where the route looks, and the
+    # event it publishes is written through the session's own handle, under `users/<id>/`.
+    create_subject(tmp_vault, "Física")
+    create_topic(tmp_vault, "fisica", "Cinemática")
+    page = put_source(tmp_vault, "fisica", "cinematica", "notes", "f.jpg", JPEG_BYTES, {})
+    path = page.relative_to(tmp_vault.path).as_posix()
+    put_page_transcription(tmp_vault, path, "texto\n")
 
     assert ws.client.put(_url(path), json={"text": "texto corregido"}).status_code == 200
 
