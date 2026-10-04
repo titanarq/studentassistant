@@ -13,6 +13,7 @@ import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.SubjectCreateRequest
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
+import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageVia
 import kotlinx.coroutines.test.runTest
@@ -326,5 +327,58 @@ class OkHttpBackendClientTest {
     @Test
     fun `credentials never print their token`() {
         assertFalse(backend.toString().contains(token))
+    }
+
+    private val userJson = """{"id":"laura","name":"Laura","photo_url":"/api/users/laura/photo"}"""
+
+    @Test
+    fun `updateUser patches only the given fields without a user header`() = runTest {
+        enqueue(userJson)
+
+        val result = client.updateUser(backend.forUser("laura"), "laura", UserUpdateRequest(email = ""))
+
+        assertEquals("Laura", value(result).name)
+        val request = taken()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/users/laura", request.path)
+        assertEquals("Bearer $token", request.getHeader("Authorization"))
+        assertNull(request.getHeader("X-SA-User"))
+        assertEquals("""{"email":""}""", request.body.readUtf8())
+    }
+
+    @Test
+    fun `putUserPhoto sends the raw bytes with their content type`() = runTest {
+        enqueue(userJson)
+        val bytes = byteArrayOf(1, 2, 3, 4)
+
+        val result = client.putUserPhoto(backend, "laura", bytes, "image/jpeg")
+
+        assertEquals("/api/users/laura/photo", value(result).photoUrl)
+        val request = taken()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/users/laura/photo", request.path)
+        assertEquals("image/jpeg", request.getHeader("Content-Type"))
+        assertEquals(bytes.toList(), request.body.readByteArray().toList())
+    }
+
+    @Test
+    fun `deleteUserPhoto sends DELETE and decodes the user`() = runTest {
+        enqueue("""{"id":"laura","name":"Laura"}""")
+
+        val result = client.deleteUserPhoto(backend, "laura")
+
+        assertNull(value(result).photoUrl)
+        val request = taken()
+        assertEquals("DELETE", request.method)
+        assertEquals("/api/users/laura/photo", request.path)
+    }
+
+    @Test
+    fun `a 422 on updateUser is an HttpError`() = runTest {
+        enqueue("""{"detail":"mal"}""", status = 422)
+
+        val result = client.updateUser(backend, "laura", UserUpdateRequest(name = "X"))
+
+        assertEquals(BackendResult.HttpError(422), result)
     }
 }

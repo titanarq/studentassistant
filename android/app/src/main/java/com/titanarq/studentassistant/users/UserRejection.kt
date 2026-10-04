@@ -19,6 +19,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.User
+import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
@@ -61,6 +63,22 @@ class UserRejectionBackendClient(
 
     override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> =
         delegate.userPhoto(backend, photoUrl)
+
+    override suspend fun updateUser(
+        backend: BackendCredentials,
+        userId: String,
+        request: UserUpdateRequest,
+    ): BackendResult<User> = delegate.updateUser(backend, userId, request)
+
+    override suspend fun putUserPhoto(
+        backend: BackendCredentials,
+        userId: String,
+        bytes: ByteArray,
+        contentType: String,
+    ): BackendResult<User> = delegate.putUserPhoto(backend, userId, bytes, contentType)
+
+    override suspend fun deleteUserPhoto(backend: BackendCredentials, userId: String): BackendResult<User> =
+        delegate.deleteUserPhoto(backend, userId)
 
     override suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse> =
         delegate.listSubjects(backend).checked(backend)

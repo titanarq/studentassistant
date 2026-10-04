@@ -15,6 +15,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.User
+import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
@@ -31,6 +33,9 @@ class FakeBackendClient : BackendClient {
     var healthResult: BackendResult<HealthResponse> = notScripted
     var listUsersResult: BackendResult<UsersListResponse> = notScripted
     var userPhotoResult: BackendResult<ByteArray> = notScripted
+    var updateUserResult: BackendResult<User> = notScripted
+    var putUserPhotoResult: BackendResult<User> = notScripted
+    var deleteUserPhotoResult: BackendResult<User> = notScripted
     var listSubjectsResult: BackendResult<SubjectsListResponse> = notScripted
     var createSubjectResult: BackendResult<Subject> = notScripted
     var listTopicsResult: BackendResult<TopicsListResponse> = notScripted
@@ -47,6 +52,12 @@ class FakeBackendClient : BackendClient {
     /** The last [WebPageAddRequest] sent, if any. */
     var lastWebPageRequest: WebPageAddRequest? = null
         private set
+
+    /** The [UserUpdateRequest]s sent, oldest first. */
+    val userUpdates: MutableList<UserUpdateRequest> = mutableListOf()
+
+    /** The photos sent, oldest first: the bytes and their content type. */
+    val userPhotoUploads: MutableList<Pair<ByteArray, String>> = mutableListOf()
 
     /** The calls made so far, oldest first. */
     val calls: MutableList<String> = mutableListOf()
@@ -82,6 +93,28 @@ class FakeBackendClient : BackendClient {
 
     override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> =
         record("userPhoto", backend, photoUrl) { userPhotoResult }
+
+    override suspend fun updateUser(
+        backend: BackendCredentials,
+        userId: String,
+        request: UserUpdateRequest,
+    ): BackendResult<User> {
+        userUpdates += request
+        return record("updateUser", backend, userId) { updateUserResult }
+    }
+
+    override suspend fun putUserPhoto(
+        backend: BackendCredentials,
+        userId: String,
+        bytes: ByteArray,
+        contentType: String,
+    ): BackendResult<User> {
+        userPhotoUploads += bytes to contentType
+        return record("putUserPhoto", backend, userId) { putUserPhotoResult }
+    }
+
+    override suspend fun deleteUserPhoto(backend: BackendCredentials, userId: String): BackendResult<User> =
+        record("deleteUserPhoto", backend, userId) { deleteUserPhotoResult }
 
     override suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse> =
         record("listSubjects", backend) { listSubjectsResult }

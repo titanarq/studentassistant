@@ -16,6 +16,8 @@ import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.protocol.TopicsListResponse
+import com.titanarq.studentassistant.protocol.User
+import com.titanarq.studentassistant.protocol.UserUpdateRequest
 import com.titanarq.studentassistant.protocol.UsersListResponse
 import com.titanarq.studentassistant.protocol.WebPageAddRequest
 import com.titanarq.studentassistant.protocol.WebPageAddResponse
@@ -91,6 +93,27 @@ interface BackendClient {
      * image's bytes. Sends no `X-SA-User`.
      */
     suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray>
+
+    /** `PATCH /api/users/{user_id}`: the user after the change (sends no `X-SA-User`). */
+    suspend fun updateUser(
+        backend: BackendCredentials,
+        userId: String,
+        request: UserUpdateRequest,
+    ): BackendResult<User>
+
+    /**
+     * `PUT /api/users/{user_id}/photo`: [bytes] as the raw body typed [contentType] (one of
+     * `USER_PHOTO_CONTENT_TYPES`); the user after the change (sends no `X-SA-User`).
+     */
+    suspend fun putUserPhoto(
+        backend: BackendCredentials,
+        userId: String,
+        bytes: ByteArray,
+        contentType: String,
+    ): BackendResult<User>
+
+    /** `DELETE /api/users/{user_id}/photo`: the user after the change (sends no `X-SA-User`). */
+    suspend fun deleteUserPhoto(backend: BackendCredentials, userId: String): BackendResult<User>
 
     /** `GET /api/subjects`. */
     suspend fun listSubjects(backend: BackendCredentials): BackendResult<SubjectsListResponse>
