@@ -1088,8 +1088,10 @@ runs it first and then applies an ordinary edit citing it (`crop_image`, below, 
   `DEFAULT_TRIAGE_MIN_SHARPNESS`, the capture triage's scale: a crop too blurry to keep as a
   capture is too blurry to cite; `ge=0`) is refused. (3) *Deskew*: `captures.find_page` searches
   the cut for a quadrilateral (a sheet, a card, a framed figure photographed slightly askew); when
-  it finds one, `captures.crop_page` warps it flat (perspective transform), otherwise the plain
-  axis-aligned cut is kept. A PNG source gives a PNG crop, anything else a JPEG
+  it finds one that covers at least `MIN_DESKEW_SHARE` (0.6) of the located box (before the
+  margin), `captures.crop_page` warps it flat (perspective transform), otherwise the plain
+  axis-aligned cut is kept: a smaller quadrilateral is a shape inside the figure (a box in a
+  diagram), and warping to it would discard the rest of the figure (#588). A PNG source gives a PNG crop, anything else a JPEG
   (`captures.encode_jpeg`, `[sources] capture_jpeg_quality`). `CleanCrop`: `data`,
   `content_type`, `extension`, `width`, `height`, `sharpness` (of the cut, before any warp),
   `deskewed`.

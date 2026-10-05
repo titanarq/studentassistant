@@ -104,6 +104,8 @@ REGION_NOT_FOUND_MESSAGE = (
 _PIXEL_DECIMALS = 6
 CROPPED_ORIGIN = "cropped"
 IMAGES_KIND = "images"
+# A quadrilateral warps the cut only when it covers at least this share of the located box.
+MIN_DESKEW_SHARE = 0.6
 BLURRY_CROP_MESSAGE = "El recorte solicitado sale borroso; prueba con otra foto de la página."
 
 
@@ -488,9 +490,14 @@ def clean_decoded(
     *,
     min_sharpness: float,
     jpeg_quality: int = DEFAULT_CAPTURE_JPEG_QUALITY,
+    located: BoundingBox | None = None,
 ) -> CleanCrop:
     """`clean_crop` of an image already decoded (`captures.decode_image`: EXIF orientation
     applied), so the box maps to the pixels the locating call saw.
+
+    `located` is the box before the margin (default: `box`). A quadrilateral found in the cut
+    that covers less than `MIN_DESKEW_SHARE` of it is a shape inside the figure, not its frame:
+    warping to it would discard the rest of the figure (#588), so the plain cut is kept.
 
     Raises:
         BlurryCropError: the cut's sharpness is below `min_sharpness`.
@@ -502,6 +509,11 @@ def clean_decoded(
     if score < min_sharpness:
         raise BlurryCropError(BLURRY_CROP_MESSAGE)
     corners = find_page(region)
+    if corners is not None:
+        l0, t0, r0, b0 = box_pixels(located or box, width, height)
+        wanted = float((r0 - l0) * (b0 - t0))
+        if cv2.contourArea(corners.reshape(-1, 1, 2)) < MIN_DESKEW_SHARE * wanted:
+            corners = None
     deskewed = corners is not None
     if corners is not None:
         region = crop_page(region, corners)
@@ -608,17 +620,18 @@ async def locate_crop(
         )
         tight = map_from_window(local, (left, top, right, bottom), width, height)
 
-    def cut(box: BoundingBox) -> CleanCrop:
+    def cut(box: BoundingBox, located: BoundingBox) -> CleanCrop:
         return clean_decoded(
             decoded,
             media_type,
             box,
             min_sharpness=editor.crop_min_sharpness,
             jpeg_quality=quality,
+            located=located,
         )
 
     box = pad_box(tight, editor.crop_margin)
-    crop = await asyncio.to_thread(cut, box)
+    crop = await asyncio.to_thread(cut, box, tight)
     if not editor.crop_verify:
         return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="unchecked")
     verdict = await check_crop(client, crop.data, crop.content_type, description, feedback=feedback)
@@ -629,7 +642,7 @@ async def locate_crop(
     tight = correct_box(tight, verdict, editor.crop_correction_step)
     corrected = pad_box(tight, editor.crop_margin)
     if corrected != box:
-        box, crop = corrected, await asyncio.to_thread(cut, corrected)
+        box, crop = corrected, await asyncio.to_thread(cut, corrected, tight)
     return LocatedCrop(box=box, crop=crop, coarse=coarse, tight=tight, check="corrected")
 
 
