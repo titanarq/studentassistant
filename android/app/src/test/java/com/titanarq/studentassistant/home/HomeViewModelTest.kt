@@ -8,6 +8,8 @@ import com.titanarq.studentassistant.backend.FakeBackendClient
 import com.titanarq.studentassistant.backend.PairedBackend
 import com.titanarq.studentassistant.protocol.Session
 import com.titanarq.studentassistant.protocol.SessionActiveStatus
+import com.titanarq.studentassistant.protocol.SessionEndResponse
+import com.titanarq.studentassistant.protocol.SessionEndedStatus
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.SubjectsListResponse
 import com.titanarq.studentassistant.protocol.Topic
@@ -277,7 +279,55 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `a 409 for another topic of the user still reports the conflict`() {
+    fun `a 409 for another topic closes that session silently and retries the start once`() {
+        showHistoria()
+        val other = reconquista.copy(openSessionId = "20260924-080000")
+        client.listTopicsResult = BackendResult.Success(TopicsListResponse("historia", listOf(feudalismo, other)))
+        client.startSessionQueue += BackendResult.HttpError(409)
+        val started = session("20260924-101500", feudalismo)
+        client.startSessionResult = BackendResult.Success(started)
+        client.endSessionResult = BackendResult.Success(SessionEndResponse("20260924-080000", SessionEndedStatus.ENDED, 1L))
+
+        viewModel.startOrContinue(TopicRow(feudalismo))
+
+        val state = until { it.openedSession != null }
+        assertEquals(started, state.openedSession)
+        assertEquals(SessionAction.Idle, state.session)
+        assertEquals(1, client.calls.count { it == "endSession http://192.168.1.20:8000 20260924-080000" })
+        assertEquals(2, client.calls.count { it.startsWith("startSession") })
+    }
+
+    @Test
+    fun `a 409 on the retry shows the conflict after a single retry`() {
+        showHistoria()
+        val other = reconquista.copy(openSessionId = "20260924-080000")
+        client.listTopicsResult = BackendResult.Success(TopicsListResponse("historia", listOf(feudalismo, other)))
+        client.startSessionResult = BackendResult.HttpError(409)
+        client.endSessionResult = BackendResult.Success(SessionEndResponse("20260924-080000", SessionEndedStatus.ENDED, 1L))
+
+        viewModel.startOrContinue(TopicRow(feudalismo))
+
+        assertEquals(SessionAction.Failed("feudalismo", SessionFailure.Conflict), until { it.session is SessionAction.Failed }.session)
+        assertEquals(2, client.calls.count { it.startsWith("startSession") })
+        assertEquals(1, client.calls.count { it.startsWith("endSession") })
+    }
+
+    @Test
+    fun `a 409 whose other session cannot be ended shows the conflict without retrying`() {
+        showHistoria()
+        val other = reconquista.copy(openSessionId = "20260924-080000")
+        client.listTopicsResult = BackendResult.Success(TopicsListResponse("historia", listOf(feudalismo, other)))
+        client.startSessionResult = BackendResult.HttpError(409)
+        client.endSessionResult = BackendResult.HttpError(500)
+
+        viewModel.startOrContinue(TopicRow(feudalismo))
+
+        assertEquals(SessionAction.Failed("feudalismo", SessionFailure.Conflict), until { it.session is SessionAction.Failed }.session)
+        assertEquals(1, client.calls.count { it.startsWith("startSession") })
+    }
+
+    @Test
+    fun `a 409 with no open session found still reports the conflict`() {
         showHistoria()
         client.startSessionResult = BackendResult.HttpError(409)
         client.listTopicsResult = BackendResult.Success(TopicsListResponse("historia", listOf(feudalismo, reconquista)))

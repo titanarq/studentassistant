@@ -8,10 +8,13 @@ import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.BackendStore
 import com.titanarq.studentassistant.protocol.Session
+import com.titanarq.studentassistant.protocol.SessionEndReason
+import com.titanarq.studentassistant.protocol.SessionEndRequest
 import com.titanarq.studentassistant.protocol.SessionStartRequest
 import com.titanarq.studentassistant.protocol.Subject
 import com.titanarq.studentassistant.protocol.SubjectCreateRequest
 import com.titanarq.studentassistant.protocol.Topic
+import com.titanarq.studentassistant.protocol.TopicsListResponse
 import com.titanarq.studentassistant.protocol.User
 import com.titanarq.studentassistant.protocol.TopicCreateRequest
 import com.titanarq.studentassistant.session.NoPendingEnds
@@ -268,7 +271,7 @@ class HomeViewModel(
             // A 409 on start: the backend still has an open session of this user. When it is this topic's,
             // take it up silently instead of showing the conflict.
             val result = if (openId == null && first is BackendResult.HttpError && first.status == 409) {
-                adoptOpen(credentials, topic) ?: first
+                adoptOpen(credentials, topic) ?: closeOtherAndRetry(credentials, topic) ?: first
             } else {
                 first
             }
@@ -302,6 +305,31 @@ class HomeViewModel(
         val listed = client.listTopics(credentials, topic.subjectId) as? BackendResult.Success ?: return null
         val openId = listed.value.topics.firstOrNull { it.topicId == topic.topicId }?.openSessionId ?: return null
         return resumeOpen(credentials, openId).takeIf { it is BackendResult.Success }
+    }
+
+    /**
+     * A start answered 409 with no open session on [topic]: the user's open session of another topic is
+     * ended silently and the start is retried ONCE (no loop). Null when none is found or the end fails
+     * (the caller keeps the original conflict); the retry's own answer otherwise.
+     */
+    private suspend fun closeOtherAndRetry(credentials: BackendCredentials, topic: Topic): BackendResult<Session>? {
+        val otherId = findOtherOpenSession(credentials, topic) ?: return null
+        val ended = client.endSession(credentials, otherId, SessionEndRequest(clock.nowMillis(), SessionEndReason.BUTTON))
+        if (ended !is BackendResult.Success) return null
+        return client.startSession(credentials, SessionStartRequest(topic.subjectId, topic.topicId, clock.nowMillis()))
+    }
+
+    /** The id of an open session on a topic other than [topic]: this subject first, then the other subjects. */
+    private suspend fun findOtherOpenSession(credentials: BackendCredentials, topic: Topic): String? {
+        fun open(listed: TopicsListResponse) =
+            listed.topics.firstOrNull { it.topicId != topic.topicId && it.openSessionId != null }?.openSessionId
+        (client.listTopics(credentials, topic.subjectId) as? BackendResult.Success)?.let { open(it.value) }?.let { return it }
+        val subjects = (client.listSubjects(credentials) as? BackendResult.Success)?.value?.subjects ?: return null
+        for (subject in subjects.filter { it.subjectId != topic.subjectId }) {
+            val listed = client.listTopics(credentials, subject.subjectId) as? BackendResult.Success ?: continue
+            open(listed.value)?.let { return it }
+        }
+        return null
     }
 
     /** Hides a start/continue failure. */
