@@ -111,24 +111,29 @@ function Selection({ note }: { note: string | null }) {
   );
 }
 
-const ChooseContext = createContext<(user: User) => void>(() => {});
+const ChooseContext = createContext<(user: User, photoFailed?: boolean) => void>(() => {});
+
+const PHOTO_NOTICE = "No se pudo guardar la foto. Puedes añadirla de nuevo desde «Editar perfil».";
 
 export default function UserGate({ children, pathname = window.location.pathname }: { children: ReactNode; pathname?: string }) {
   const [user, setUser] = useState<User | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [photoNotice, setPhotoNotice] = useState(false);
   const [restoring, setRestoring] = useState(() => readCookie() !== null);
   const userRef = useRef<User | null>(null);
   userRef.current = user;
 
-  const choose = useCallback((chosen: User) => {
+  const choose = useCallback((chosen: User, photoFailed = false) => {
     setCookie(chosen.id);
     setNote(null);
+    setPhotoNotice(photoFailed);
     setUser(chosen);
   }, []);
 
   const signOut = useCallback(() => {
     deleteCookie();
     setNote(null);
+    setPhotoNotice(false);
     setUser(null);
   }, []);
 
@@ -146,6 +151,13 @@ export default function UserGate({ children, pathname = window.location.pathname
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!photoNotice) return;
+    const dismiss = () => setPhotoNotice(false);
+    window.addEventListener("popstate", dismiss);
+    return () => window.removeEventListener("popstate", dismiss);
+  }, [photoNotice]);
 
   useEffect(() => {
     if (userRef.current === null) return;
@@ -182,6 +194,14 @@ export default function UserGate({ children, pathname = window.location.pathname
   }
   return <ActiveUserContext.Provider value={{ user, signOut, setUser }}>
       <AppBar />
+      {photoNotice && (
+        <p className="user-gate-note photo-notice" role="status">
+          {PHOTO_NOTICE}
+          <button type="button" className="photo-notice-close" onClick={() => setPhotoNotice(false)}>
+            Cerrar aviso
+          </button>
+        </p>
+      )}
       {children}
     </ActiveUserContext.Provider>;
 }

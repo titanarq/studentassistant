@@ -7,9 +7,10 @@ import "./profilePage.css";
 /**
  * «Nuevo perfil»: name, optional email and optional photo of a user that does not exist yet. The
  * profile is created first (`POST /api/users`) and the photo goes up right after; whoever is
- * created is handed to `onCreated`, which chooses it.
+ * created is handed to `onCreated`, which chooses it; `photoFailed` tells it the chosen photo did not
+ * upload so it can warn the student (#578).
  */
-export default function NewProfileForm({ onCreated, onCancel }: { onCreated: (user: User) => void; onCancel: () => void }) {
+export default function NewProfileForm({ onCreated, onCancel }: { onCreated: (user: User, photoFailed: boolean) => void; onCancel: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -71,7 +72,7 @@ export default function NewProfileForm({ onCreated, onCancel }: { onCreated: (us
     // The profile exists now: a photo that fails to upload is fixed later from «Editar perfil».
     const uploaded = photo === null ? result : await uploadUserPhoto(result.user.id, photo);
     setSaving(false);
-    onCreated(uploaded.kind === "ok" ? uploaded.user : result.user);
+    onCreated(uploaded.kind === "ok" ? uploaded.user : result.user, uploaded.kind !== "ok");
   };
 
   return (

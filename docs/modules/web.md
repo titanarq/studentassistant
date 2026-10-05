@@ -1536,7 +1536,11 @@ token):
   `validateEmail`. «Crear perfil» sends `POST /api/users` (`createUser`; the server picks the id;
   409/422 show the backend `detail`), then `PUT /api/users/{id}/photo` if a photo was picked, and
   chooses the new user. A photo that fails after the profile exists is not retried: the user is
-  chosen anyway and the photo is fixed from «Editar perfil». No server change: the endpoint
+  chosen anyway and the photo is fixed from «Editar perfil». `onCreated(user, photoFailed)` lets
+  `UserGate` show a non-blocking notice under the app bar («No se pudo guardar la foto. Puedes
+  añadirla de nuevo desde «Editar perfil».», `role="status"`, #578), for a 4xx, a 5xx or a
+  network error alike; it goes away with «Cerrar aviso», on back/forward navigation or on
+  signing out, and never blocks the page. No server change: the endpoint
   already existed (#549) and, like the whole selection, is not authentication.
 
 ## Boundaries
