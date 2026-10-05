@@ -58,6 +58,43 @@ describe("NewProfileForm", () => {
     expect(calls(fetchMock, "PUT")).toHaveLength(1);
   });
 
+  it.each([
+    ["a 4xx answer", jsonResponse({ detail: "Formato no admitido" }, 415)],
+    ["a 5xx answer", jsonResponse({ detail: "boom" }, 500)],
+    ["a network error", new Error("offline")],
+  ])("chooses the new user and warns in Spanish when the photo upload fails with %s", async (_label, answer) => {
+    const fetchMock = await openForm({
+      "POST /api/users": jsonResponse({ id: "eva", name: "Eva" }, 201),
+      "PUT /api/users/eva/photo": answer,
+    });
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:x", revokeObjectURL: () => {} }));
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: "Eva" } });
+    fireEvent.change(screen.getByLabelText("Elegir foto"), { target: { files: [new File(["x"], "a.png", { type: "image/png" })] } });
+    fireEvent.click(screen.getByRole("button", { name: "Crear perfil" }));
+    expect(await screen.findByText("contenido")).toBeTruthy();
+    expect(document.cookie).toContain("sa_user=eva");
+    expect(calls(fetchMock, "PUT")).toHaveLength(1);
+    const notice = screen.getByRole("status");
+    expect(notice.textContent).toContain("No se pudo guardar la foto");
+    expect(notice.textContent).toContain("«Editar perfil»");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar aviso" }));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("contenido")).toBeTruthy();
+  });
+
+  it("shows no photo notice when the upload succeeds", async () => {
+    await openForm({
+      "POST /api/users": jsonResponse({ id: "eva", name: "Eva" }, 201),
+      "PUT /api/users/eva/photo": jsonResponse({ id: "eva", name: "Eva", photo_url: "/api/users/eva/photo?v=1" }),
+    });
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:x", revokeObjectURL: () => {} }));
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: "Eva" } });
+    fireEvent.change(screen.getByLabelText("Elegir foto"), { target: { files: [new File(["x"], "a.png", { type: "image/png" })] } });
+    fireEvent.click(screen.getByRole("button", { name: "Crear perfil" }));
+    expect(await screen.findByText("contenido")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("refuses an empty name, a bad email and a bad photo without sending anything", async () => {
     const fetchMock = await openForm({});
     fireEvent.click(screen.getByRole("button", { name: "Crear perfil" }));
