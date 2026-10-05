@@ -142,6 +142,7 @@ class CaptureViewModel(
     private val reconnectDelaysMs: List<Long> = SessionConnection.DEFAULT_RECONNECT_DELAYS_MS,
     private val spooling: CaptureSpooling? = null,
     private val thumbnails: ThumbnailStore? = null,
+    private val earlierCaptures: EarlierCaptures? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CaptureUiState(open.subjectName, open.topicName))
     val state: StateFlow<CaptureUiState> = _state.asStateFlow()
@@ -154,6 +155,8 @@ class CaptureViewModel(
                     list.forEach { shot -> StoredThumbnail.of(shot)?.let { store.add(key, it) } }
                 }
             }
+            // The topic's earlier photos from the backend (#580), best effort.
+            earlierCaptures?.let { earlier -> viewModelScope.launch { earlier.load(open.backend, key) } }
         }
         spooling?.let { spooling ->
             viewModelScope.launch { spooling.nearCap.collect { near -> _state.update { it.copy(spoolNearCap = near) } } }

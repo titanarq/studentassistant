@@ -9,7 +9,9 @@ The capture-client (web page, Android)<->backend contract (ADR-0001, ADR-0008), 
 - REST: `POST /api/pair`, `GET /api/health`, subjects/topics listing and creation, session
   start/resume/end, `POST /api/sessions/{id}/captures` (multipart burst, idempotent `capture_id`),
   `GET /api/search` (the web's search over the vault index), `POST .../topics/{t}/web-pages`
-  (a web page by URL, #62). Protocol 1.6 (#258) added the end body's optional `prepare_notes`,
+  (a web page by URL, #62). The two read routes `GET .../topics/{t}/captures` and
+  `.../captures/{capture_id}/thumbnail` (#580, `server.md`) feed the Android thumbnail strip; they
+  are additive and not versioned bodies of this contract (no schema, no version bump). Protocol 1.6 (#258) added the end body's optional `prepare_notes`,
   the end response's `notes_generation` and `GET .../topics/{t}/notes/generation`; since #440
   (still 1.6) the backend accepts `prepare_notes` but ignores it, never sends
   `notes_generation`, and the polling route and its `rest.topics.notes.generation.response`

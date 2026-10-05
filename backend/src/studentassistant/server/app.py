@@ -78,6 +78,7 @@ from studentassistant.server.sessions import SessionService
 from studentassistant.server.source_routes import source_router
 from studentassistant.server.study_routes import study_router
 from studentassistant.server.style_guide_routes import style_guide_router
+from studentassistant.server.topic_captures_routes import topic_captures_router
 from studentassistant.server.tutor_routes import tutor_router
 from studentassistant.server.user_routes import users_router
 from studentassistant.server.vault_status import vault_status_router
@@ -373,6 +374,7 @@ def create_app(
     app.include_router(ws_router())
     app.include_router(captures_router())
     app.include_router(read_router())
+    app.include_router(topic_captures_router())
     app.include_router(source_router())
     app.include_router(pdf_upload_router())
     app.include_router(book_router())

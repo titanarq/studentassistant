@@ -176,4 +176,20 @@ interface BackendClient {
         topicId: String,
         request: WebPageAddRequest,
     ): BackendResult<WebPageAddResponse>
+
+    /**
+     * `GET /api/subjects/{subject_id}/topics/{topic_id}/captures` (#580): the topic's earlier photos,
+     * oldest first, for the capture strip.
+     */
+    suspend fun listTopicCaptures(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<TopicCapturesResponse>
+
+    /**
+     * `GET <thumbnailUrl>` (a [TopicCapture.thumbnailUrl], a path of this backend) as the active
+     * user: the downscaled JPEG's bytes.
+     */
+    suspend fun captureThumbnail(backend: BackendCredentials, thumbnailUrl: String): BackendResult<ByteArray>
 }

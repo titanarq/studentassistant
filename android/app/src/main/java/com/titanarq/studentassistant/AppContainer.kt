@@ -19,6 +19,7 @@ import com.titanarq.studentassistant.capture.ClientTranscriber
 import com.titanarq.studentassistant.capture.NoCaptureFeedback
 import com.titanarq.studentassistant.capture.NoStillCamera
 import com.titanarq.studentassistant.capture.OkHttpSessionSocketFactory
+import com.titanarq.studentassistant.capture.EarlierCaptures
 import com.titanarq.studentassistant.capture.SessionFinisher
 import com.titanarq.studentassistant.capture.SessionSocketFactory
 import com.titanarq.studentassistant.capture.StillCamera
@@ -253,6 +254,7 @@ class AppContainer(
                     loopContext = ioContext,
                 ),
                 thumbnails = thumbnailStore,
+                earlierCaptures = EarlierCaptures(scopedBackendClient, thumbnailStore),
             )
         }
     }

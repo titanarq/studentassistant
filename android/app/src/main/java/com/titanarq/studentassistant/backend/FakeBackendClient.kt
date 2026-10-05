@@ -44,6 +44,8 @@ class FakeBackendClient : BackendClient {
     var resumeSessionResult: BackendResult<Session> = notScripted
     var endSessionResult: BackendResult<SessionEndResponse> = notScripted
     var uploadCaptureResult: BackendResult<CaptureUploadResponse> = notScripted
+    var listTopicCapturesResult: BackendResult<TopicCapturesResponse> = notScripted
+    var captureThumbnailResult: BackendResult<ByteArray> = notScripted
     var addWebPageResult: BackendResult<WebPageAddResponse> = notScripted
 
     /** The [SessionEndRequest]s sent, oldest first. */
@@ -182,4 +184,14 @@ class FakeBackendClient : BackendClient {
         userIds += backend.userId
         return result()
     }
+
+    override suspend fun listTopicCaptures(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<TopicCapturesResponse> =
+        record("listTopicCaptures", backend, "$subjectId/$topicId") { listTopicCapturesResult }
+
+    override suspend fun captureThumbnail(backend: BackendCredentials, thumbnailUrl: String): BackendResult<ByteArray> =
+        record("captureThumbnail", backend, thumbnailUrl) { captureThumbnailResult }
 }

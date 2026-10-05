@@ -302,6 +302,13 @@ Routes registered today:
     source routes below take, `kind` one of `notes`, `book`, `pdf`, `web`, `images`, and `title`
     comes from the sidecar (`title`, as a web snapshot has, else `original_name`, as a PDF has;
     `null` without either). An empty topic lists `[]`; reads only.
+  - `GET /api/subjects/{subject_id}/topics/{topic_id}/captures` -> `TopicCaptures` (#580,
+    `server/topic_captures_routes.py`): the capture strip's earlier photos, per user: one
+    `{capture_id, session_id, captured_at_ms, thumbnail_url}` per `notes`/`book` page whose sidecar
+    has a `capture_id`, oldest first (by the sidecar's `captured_at`), the newest 40 at most; a
+    retired source and a capture the triage set aside are left out. `GET .../captures/{capture_id}/thumbnail`
+    answers that capture's still downscaled to 256 px on the long side as `image/jpeg` (404 with a
+    Spanish `detail` for an unknown topic or capture). Reads only.
   - `GET /api/subjects/{subject_id}/topics/{topic_id}/sources/status` -> `TopicSourcesStatus`
     (#326): `subject_id`, `topic_id` and `sources`, one `SourceStatus` per stored source
     (`editor.incorporate.source_status`, `docs/modules/editor.md`): `source_id` (topic-relative,

@@ -102,8 +102,8 @@ Thin capture client (ADR-0001), Spanish UI:
   downscaled JPEG (about 256 px) is kept. `CaptureViewModel` mirrors its session's shots into it
   and `shots` shows the earlier ones of the topic first, so re-entering capture does not show an
   empty strip. Cleared whenever the selected user changes (profile switch, sign-out, backend
-  switch). The future «delete by dragging down» task calls `remove`; #580 (persistent listing of
-  a topic's earlier captures) can `replace` a topic's contents. A photo whose thumbnail is made
+  switch). The future «delete by dragging down» task calls `remove`; `add` keeps the list
+  ordered by photo time. A photo whose thumbnail is made
   after the screen was left is not mirrored.
 
 ## Users (#554, epic #544)
@@ -390,8 +390,10 @@ pending doubts, nor any warning (the plumbing stays: a hidden UI, not a protocol
   `FAILED`, and a tap on its thumbnail retries it. Statuses: `CAPTURING`, `PENDING`, `UPLOADING`,
   `UPLOADED`, `FAILED`, `CAMERA_FAILED`; full-size stills are dropped once uploaded.
 - **Thumbnail strip** (`CaptureScreen`): a row at the bottom of the screen, below the «Capturar»
-  button (#575); it shows the photos of the session being captured (the backend has no list of a
-  topic's earlier captures), each its own keyed `Thumbnail` composable so a later task can add
+  button (#575); it shows the topic's earlier photos plus the session's own, newest last (#580:
+  `capture.EarlierCaptures` lists `GET .../topics/{t}/captures` through `BackendClient.listTopicCaptures`,
+  downloads each missing 256 px thumbnail with `captureThumbnail` as the active user and `add`s it to
+  the `ThumbnailStore` as uploaded; best effort, a failure keeps what the process already has), each its own keyed `Thumbnail` composable so a later task can add
   discarding by dragging a thumbnail down (not implemented). One 72 dp tile per capture with a badge (spinner while capturing/uploading, «↑» pending, «✓»
   sent, «!» failed) and a Spanish content description.
 - In the app the queue spools every burst to disk before its first upload (see "Offline spool
