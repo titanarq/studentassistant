@@ -41,6 +41,9 @@ class FakeBackendClient : BackendClient {
     var listTopicsResult: BackendResult<TopicsListResponse> = notScripted
     var createTopicResult: BackendResult<Topic> = notScripted
     var startSessionResult: BackendResult<Session> = notScripted
+
+    /** Answers of the next `startSession` calls, consumed first; [startSessionResult] once empty. */
+    val startSessionQueue: ArrayDeque<BackendResult<Session>> = ArrayDeque()
     var resumeSessionResult: BackendResult<Session> = notScripted
     var endSessionResult: BackendResult<SessionEndResponse> = notScripted
     var uploadCaptureResult: BackendResult<CaptureUploadResponse> = notScripted
@@ -140,7 +143,7 @@ class FakeBackendClient : BackendClient {
     override suspend fun startSession(
         backend: BackendCredentials,
         request: SessionStartRequest,
-    ): BackendResult<Session> = record("startSession", backend, request.topicId) { startSessionResult }
+    ): BackendResult<Session> = record("startSession", backend, request.topicId) { startSessionQueue.removeFirstOrNull() ?: startSessionResult }
 
     override suspend fun resumeSession(backend: BackendCredentials, sessionId: String): BackendResult<Session> =
         record("resumeSession", backend, sessionId) { resumeSessionResult }

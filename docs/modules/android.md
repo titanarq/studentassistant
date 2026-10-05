@@ -93,7 +93,9 @@ Thin capture client (ADR-0001), Spanish UI:
   running. Starting a session (`HomeViewModel.startOrContinue`, topic without an open session)
   first waits up to 10 s for `PendingEnds.awaitIdle`; a start answered 409 lists the topics and,
   when this topic has an open session, resumes it silently (`adoptOpen`); an open session of
-  another topic still shows the conflict message. The app process being killed mid-capture
+  another topic (current subject first, then the others) is ended silently and the start is
+  retried exactly once (`closeOtherAndRetry`, #589); the conflict message shows only when that
+  end or the retry fails. The app process being killed mid-capture
   cannot end the session: the backend's idle auto-end closes it, and the next entry to that
   topic adopts it if it is still open.
 - **`capture.ThumbnailStore`** (`AppContainer.thumbnailStore`): in-memory thumbnails keyed by
