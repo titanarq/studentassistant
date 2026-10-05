@@ -4,6 +4,7 @@ import com.titanarq.studentassistant.backend.BackendClient
 import com.titanarq.studentassistant.backend.BackendCredentials
 import com.titanarq.studentassistant.backend.BackendResult
 import com.titanarq.studentassistant.backend.CaptureImageBytes
+import com.titanarq.studentassistant.backend.TopicCapturesResponse
 import com.titanarq.studentassistant.protocol.CaptureUploadRequest
 import com.titanarq.studentassistant.protocol.CaptureUploadResponse
 import com.titanarq.studentassistant.protocol.HealthResponse
@@ -118,4 +119,14 @@ class UserRejectionBackendClient(
         request: WebPageAddRequest,
     ): BackendResult<WebPageAddResponse> =
         delegate.addWebPage(backend, subjectId, topicId, request).checked(backend)
+
+    override suspend fun listTopicCaptures(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<TopicCapturesResponse> =
+        delegate.listTopicCaptures(backend, subjectId, topicId).checked(backend)
+
+    override suspend fun captureThumbnail(backend: BackendCredentials, thumbnailUrl: String): BackendResult<ByteArray> =
+        delegate.captureThumbnail(backend, thumbnailUrl).checked(backend)
 }

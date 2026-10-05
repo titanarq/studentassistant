@@ -46,8 +46,8 @@ class StoredThumbnail(
  * bounded: thumbnails are small and a topic keeps at most [maxPerTopic] (the oldest are dropped).
  *
  * Meant to be extended: a later task discards a photo by dragging it down ([remove]), and the
- * persistent listing of a topic's earlier captures (#580) can [replace] the contents of a topic
- * with what the backend lists.
+ * persistent listing of a topic's earlier captures (#580, [EarlierCaptures]) [add]s what the
+ * backend lists.
  */
 class ThumbnailStore(private val maxPerTopic: Int = MAX_PER_TOPIC) {
     init {
@@ -65,12 +65,12 @@ class ThumbnailStore(private val maxPerTopic: Int = MAX_PER_TOPIC) {
     /** [list] as a flow that emits on every change of [key]'s thumbnails. */
     fun flow(key: ThumbnailKey): Flow<List<StoredThumbnail>> = state.map { it[key].orEmpty() }.distinctUntilChanged()
 
-    /** Adds [thumbnail], or replaces the one with the same capture id (its status changed). */
+    /** Adds [thumbnail], or replaces the one with the same capture id (its status changed); the list stays ordered by photo time (earlier photos can arrive late, #580). */
     fun add(key: ThumbnailKey, thumbnail: StoredThumbnail) {
         state.update { map ->
             val current = map[key].orEmpty()
             val index = current.indexOfFirst { it.captureId == thumbnail.captureId }
-            val next = if (index >= 0) current.toMutableList().also { it[index] = thumbnail } else current + thumbnail
+            val next = if (index >= 0) current.toMutableList().also { it[index] = thumbnail } else (current + thumbnail).sortedBy { it.clientTimeMs }
             map + (key to next.takeLast(maxPerTopic))
         }
     }

@@ -79,12 +79,38 @@ class OkHttpBackendClient(
     override suspend fun listUsers(backend: BackendCredentials): BackendResult<UsersListResponse> =
         call(backend.baseUrl, backend.token, "api/users", body = null, UsersListResponse.serializer())
 
-    override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> {
+    override suspend fun userPhoto(backend: BackendCredentials, photoUrl: String): BackendResult<ByteArray> =
+        bytesOf(backend, photoUrl, asUser = false, what = "photo")
+
+    override suspend fun listTopicCaptures(
+        backend: BackendCredentials,
+        subjectId: String,
+        topicId: String,
+    ): BackendResult<TopicCapturesResponse> =
+        call(
+            backend,
+            listOf("api", "subjects", subjectId, "topics", topicId, "captures"),
+            body = null,
+            TopicCapturesResponse.serializer(),
+        )
+
+    override suspend fun captureThumbnail(backend: BackendCredentials, thumbnailUrl: String): BackendResult<ByteArray> =
+        bytesOf(backend, thumbnailUrl, asUser = true, what = "image")
+
+    /** `GET` of [path] of this backend with the bearer token (and `X-SA-User` when [asUser]): the raw bytes. */
+    private suspend fun bytesOf(
+        backend: BackendCredentials,
+        path: String,
+        asUser: Boolean,
+        what: String,
+    ): BackendResult<ByteArray> {
         val base = backend.baseUrl.toHttpUrlOrNull() ?: return BackendResult.Unreachable("invalid backend URL")
         // Only a path of this backend: the bearer token is never sent to another origin.
-        val url = base.resolve(photoUrl)?.takeIf { it.host == base.host && it.port == base.port && it.scheme == base.scheme }
-            ?: return BackendResult.Unreachable("invalid photo URL")
-        val request = Request.Builder().url(url).header("Authorization", "Bearer ${backend.token}").get().build()
+        val url = base.resolve(path)?.takeIf { it.host == base.host && it.port == base.port && it.scheme == base.scheme }
+            ?: return BackendResult.Unreachable("invalid $what URL")
+        val request = Request.Builder().url(url).header("Authorization", "Bearer ${backend.token}")
+            .apply { if (asUser && backend.userId != null) header(USER_HEADER, backend.userId) }
+            .get().build()
         val response = when (val outcome = execute(http.newCall(request))) {
             is Outcome.Failed -> return BackendResult.Unreachable(outcome.reason)
             is Outcome.Answered -> outcome
