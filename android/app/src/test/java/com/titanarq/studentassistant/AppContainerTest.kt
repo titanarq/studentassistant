@@ -51,6 +51,25 @@ class AppContainerTest {
     private fun <T : ViewModel> ViewModelProvider.Factory.make(type: Class<T>): T = create(type, MutableCreationExtras())
 
     @Test
+    fun `the thumbnail store is emptied when the selected user changes`() {
+        val container = AppContainer(filesDir = folder.root, uploadScope = scope)
+        val store = container.thumbnailStore
+        val key = com.titanarq.studentassistant.capture.ThumbnailKey("historia", "feudalismo")
+        container.userHolder.select(com.titanarq.studentassistant.protocol.User("ana", "Ana"))
+        store.add(
+            key,
+            com.titanarq.studentassistant.capture.StoredThumbnail(
+                "c1", "s1", 1, com.titanarq.studentassistant.capture.ShotStatus.UPLOADED,
+                com.titanarq.studentassistant.backend.CaptureImageBytes(byteArrayOf(1)),
+            ),
+        )
+        assertEquals(1, store.list(key).size)
+
+        container.userHolder.select(com.titanarq.studentassistant.protocol.User("luis", "Luis"))
+        assertEquals(0, store.list(key).size)
+    }
+
+    @Test
     fun `a container can be constructed with its defaults`() {
         val container = AppContainer(filesDir = folder.root)
 
