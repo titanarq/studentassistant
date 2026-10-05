@@ -41,7 +41,7 @@ fun UserAvatar(
     }
     val shape = CircleShape
     Box(
-        modifier = modifier.size(size).clip(shape).background(MaterialTheme.colorScheme.primaryContainer),
+        modifier = modifier.size(size).clip(shape).background(MaterialTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
     ) {
         val image = photo
@@ -56,7 +56,7 @@ fun UserAvatar(
             Text(
                 initialsOf(user.name),
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
     }

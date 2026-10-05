@@ -35,6 +35,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -140,11 +141,20 @@ class CaptureViewModel(
     private val stillCapture: StillCapture = NoStillCapture,
     private val reconnectDelaysMs: List<Long> = SessionConnection.DEFAULT_RECONNECT_DELAYS_MS,
     private val spooling: CaptureSpooling? = null,
+    private val thumbnails: ThumbnailStore? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CaptureUiState(open.subjectName, open.topicName))
     val state: StateFlow<CaptureUiState> = _state.asStateFlow()
 
     init {
+        thumbnails?.let { store ->
+            val key = ThumbnailKey(open.session.subjectId, open.session.topicId)
+            viewModelScope.launch {
+                stillCapture.shots.collect { list ->
+                    list.forEach { shot -> StoredThumbnail.of(shot)?.let { store.add(key, it) } }
+                }
+            }
+        }
         spooling?.let { spooling ->
             viewModelScope.launch { spooling.nearCap.collect { near -> _state.update { it.copy(spoolNearCap = near) } } }
         }
@@ -156,8 +166,19 @@ class CaptureViewModel(
     private var releaseWhenEnded = false
 
     /** This session's captures for the thumbnail strip, oldest first, with their upload state. */
-    val shots: StateFlow<List<CaptureShot>> =
-        stillCapture.shots.stateIn(viewModelScope, SharingStarted.WhileSubscribed(SHOTS_STOP_TIMEOUT_MS), emptyList())
+    val shots: StateFlow<List<CaptureShot>> = run {
+        val key = ThumbnailKey(open.session.subjectId, open.session.topicId)
+        val merged = if (thumbnails == null) {
+            stillCapture.shots
+        } else {
+            // Photos of earlier visits to this topic first (#583), then this session's own.
+            combine(stillCapture.shots, thumbnails.flow(key)) { current, earlier ->
+                val own = current.mapTo(HashSet()) { it.captureId }
+                earlier.filter { it.captureId !in own }.map(StoredThumbnail::toShot) + current
+            }
+        }
+        merged.stateIn(viewModelScope, SharingStarted.WhileSubscribed(SHOTS_STOP_TIMEOUT_MS), emptyList())
+    }
 
     private var connection: SessionConnection? = null
     private var jobs: List<Job> = emptyList()
@@ -301,7 +322,20 @@ class CaptureViewModel(
         when (_state.value.phase) {
             CapturePhase.ENDED -> closeEnded()
             CapturePhase.ENDING -> Unit
-            CapturePhase.RUNNING -> end()
+            CapturePhase.RUNNING -> {
+                val spooling = spooling
+                if (spooling != null) {
+                    // The end must outlive this screen (#583): its view model scope dies with the screen, so
+                    // the app-wide finisher takes it (written to disk first, retried until the backend
+                    // answers) instead of an HTTP call that the screen's cancellation could drop.
+                    _state.update { it.copy(phase = CapturePhase.ENDING, endFailure = null) }
+                    val endedAtMs = clock.nowMillis()
+                    sendButton(ButtonName.END_SESSION, force = true)
+                    handOffEnd(spooling, endedAtMs)
+                } else {
+                    end()
+                }
+            }
             CapturePhase.IDLE -> {
                 // The screen never started the session (no camera permission): end it all the same.
                 _state.update { it.copy(phase = CapturePhase.ENDING) }
@@ -372,6 +406,23 @@ class CaptureViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Safety net (#583): a view model dropped while its session still runs (the screen went away
+     * by any route) must not leave the session open on the backend.
+     */
+    override fun onCleared() {
+        if (_state.value.phase == CapturePhase.RUNNING) {
+            val spooling = spooling
+            if (spooling != null) {
+                releaseWhenEnded = true
+                _state.update { it.copy(phase = CapturePhase.ENDING) }
+                handOffEnd(spooling, clock.nowMillis())
+            }
+        }
+        leave()
+        super.onCleared()
     }
 
     private fun markEnded() {
@@ -470,10 +521,6 @@ class CaptureViewModel(
         transcriptLines[line.segmentId] = line
         while (transcriptLines.size > MAX_TRANSCRIPT_LINES) transcriptLines.remove(transcriptLines.keys.first())
         _state.update { it.copy(transcript = transcriptLines.values.toList()) }
-    }
-
-    override fun onCleared() {
-        leave()
     }
 
     companion object {

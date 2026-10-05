@@ -74,6 +74,38 @@ Thin capture client (ADR-0001), Spanish UI:
 - Known gap: the backend's `GET /api/health` still answers `{status, version}`, not v1's
   `rest.health.response`, so the health check reports `InvalidResponse` until the server conforms.
 
+## Look, session end on leave and thumbnails (#583)
+
+- **Theme**: `ui.Theme` derives the Material 3 light and dark colour schemes from the web design
+  tokens (`web/src/styles/tokens.css`, #296/#299; `ui.DesignTokens` holds the same hex values and
+  `DesignTokensTest` fails when they differ from the CSS). The top bar is the web's header band:
+  `--header-bg` / `--on-header` as `primaryContainer` / `onPrimaryContainer` (title, Back and
+  action icons use the on-colour); the status bar icons are light over it. Buttons use `--accent`,
+  the page `--paper`, cards `--surface`, errors `--correction`. The user avatar uses
+  `secondaryContainer` (`--accent-soft`) so it stands out on the bar.
+- **Leaving capture ends the session reliably.** Root cause of «Hay otra sesión abierta»: the
+  end ran in the capture view model's scope (after waiting for the connection to drain), which is
+  cancelled the moment the screen is left, so `POST .../end` often never left the phone, and the
+  next «start» met the still-open session (409 `session_open`). Now `endOnLeave()` (Back, system
+  back, gear, avatar) writes a `PendingEnd` to disk and hands it to the app-wide
+  `SessionFinisher` (uploads scope, retried until the backend answers; it flushes the spool and
+  confirms the captures first); `onCleared()` does the same for a view model dropped while
+  running. Starting a session (`HomeViewModel.startOrContinue`, topic without an open session)
+  first waits up to 10 s for `PendingEnds.awaitIdle`; a start answered 409 lists the topics and,
+  when this topic has an open session, resumes it silently (`adoptOpen`); an open session of
+  another topic still shows the conflict message. The app process being killed mid-capture
+  cannot end the session: the backend's idle auto-end closes it, and the next entry to that
+  topic adopts it if it is still open.
+- **`capture.ThumbnailStore`** (`AppContainer.thumbnailStore`): in-memory thumbnails keyed by
+  `ThumbnailKey(subjectId, topicId)` with `add` (replaces the same capture id), `remove`,
+  `replace`, `list`, `flow` and `clear`; at most `MAX_PER_TOPIC` (40) per topic, only the
+  downscaled JPEG (about 256 px) is kept. `CaptureViewModel` mirrors its session's shots into it
+  and `shots` shows the earlier ones of the topic first, so re-entering capture does not show an
+  empty strip. Cleared whenever the selected user changes (profile switch, sign-out, backend
+  switch). The future «delete by dragging down» task calls `remove`; #580 (persistent listing of
+  a topic's earlier captures) can `replace` a topic's contents. A photo whose thumbnail is made
+  after the screen was left is not mirrored.
+
 ## Users (#554, epic #544)
 
 Several students share one backend and one vault (protocol 1.8, `docs/modules/server.md`). A

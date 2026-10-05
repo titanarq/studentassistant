@@ -20,6 +20,12 @@ interface PendingEnds {
      * returned.
      */
     suspend fun continueInstead(sessionId: String, resume: suspend () -> Boolean): Boolean
+
+    /**
+     * Suspends until no end is being completed any more, at most [timeoutMs]: a new session must
+     * not start while the previous one is still being ended (#583). True when none is pending.
+     */
+    suspend fun awaitIdle(timeoutMs: Long): Boolean
 }
 
 /** No pending ends: [continueInstead] just runs the resume. */
@@ -29,4 +35,6 @@ object NoPendingEnds : PendingEnds {
     override val pending: StateFlow<Set<String>> get() = none
 
     override suspend fun continueInstead(sessionId: String, resume: suspend () -> Boolean): Boolean = resume()
+
+    override suspend fun awaitIdle(timeoutMs: Long): Boolean = true
 }

@@ -254,18 +254,23 @@ class HomeViewModel(
         _state.update { it.copy(session = SessionAction.Opening(topic.topicId)) }
         sessionJob = viewModelScope.launch {
             val openId = topic.openSessionId
-            val result = if (openId != null) {
-                var resumed: BackendResult<Session> = BackendResult.Unreachable("not resumed")
-                pendingEnds.continueInstead(openId) {
-                    resumed = client.resumeSession(credentials, openId)
-                    resumed is BackendResult.Success
-                }
-                resumed
+            // The previous session's end (the student just left the capture screen) must be over before a
+            // new one starts, or the backend still has the old one open (#583).
+            if (openId == null) pendingEnds.awaitIdle(END_WAIT_MS)
+            val first = if (openId != null) {
+                resumeOpen(credentials, openId)
             } else {
                 client.startSession(
                     credentials,
                     SessionStartRequest(topic.subjectId, topic.topicId, clock.nowMillis()),
                 )
+            }
+            // A 409 on start: the backend still has an open session of this user. When it is this topic's,
+            // take it up silently instead of showing the conflict.
+            val result = if (openId == null && first is BackendResult.HttpError && first.status == 409) {
+                adoptOpen(credentials, topic) ?: first
+            } else {
+                first
             }
             when (result) {
                 is BackendResult.Success -> {
@@ -281,6 +286,22 @@ class HomeViewModel(
                 }
             }
         }
+    }
+
+    private suspend fun resumeOpen(credentials: BackendCredentials, openId: String): BackendResult<Session> {
+        var resumed: BackendResult<Session> = BackendResult.Unreachable("not resumed")
+        pendingEnds.continueInstead(openId) {
+            resumed = client.resumeSession(credentials, openId)
+            resumed is BackendResult.Success
+        }
+        return resumed
+    }
+
+    /** The topic's open session, resumed, when the backend lists one (a start answered 409); null otherwise. */
+    private suspend fun adoptOpen(credentials: BackendCredentials, topic: Topic): BackendResult<Session>? {
+        val listed = client.listTopics(credentials, topic.subjectId) as? BackendResult.Success ?: return null
+        val openId = listed.value.topics.firstOrNull { it.topicId == topic.topicId }?.openSessionId ?: return null
+        return resumeOpen(credentials, openId).takeIf { it is BackendResult.Success }
     }
 
     /** Hides a start/continue failure. */
@@ -322,3 +343,6 @@ class HomeViewModel(
         is BackendResult.Failure -> Loadable.Failed(this)
     }
 }
+
+/** How long a new session waits for the previous one's end to complete (#583). */
+private const val END_WAIT_MS = 10_000L

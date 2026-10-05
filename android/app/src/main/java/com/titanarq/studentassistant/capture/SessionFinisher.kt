@@ -83,6 +83,9 @@ class SessionFinisher(
     /** Session ids whose end is being completed now (a refused one leaves this set, not the disk). */
     override val pending: StateFlow<Set<String>> = _pending.asStateFlow()
 
+    override suspend fun awaitIdle(timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) { _pending.first { it.isEmpty() } } != null
+
     /** Records [end] on disk and completes it in the background. */
     fun finish(backend: BackendCredentials, end: PendingEnd) {
         synchronized(jobs) { continued -= end.sessionId }

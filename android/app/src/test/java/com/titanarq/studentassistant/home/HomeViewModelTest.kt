@@ -54,6 +54,12 @@ class HomeViewModelTest {
     private class FakePendingEnds : PendingEnds {
         override val pending = MutableStateFlow<Set<String>>(emptySet())
         val continued = mutableListOf<Pair<String, Boolean>>()
+        val awaited = mutableListOf<Long>()
+
+        override suspend fun awaitIdle(timeoutMs: Long): Boolean {
+            awaited += timeoutMs
+            return pending.value.isEmpty()
+        }
 
         override suspend fun continueInstead(sessionId: String, resume: suspend () -> Boolean): Boolean {
             val resumed = resume()
@@ -247,6 +253,39 @@ class HomeViewModelTest {
 
         viewModel.dismissSessionFailure()
         assertEquals(SessionAction.Idle, viewModel.state.value.session)
+    }
+
+    @Test
+    fun `a new session waits for the previous end, and a 409 for this topic adopts its open session silently`() {
+        showHistoria()
+        pendingEnds.pending.value = setOf("20260924-090000")
+        val stale = session("20260924-090000", feudalismo)
+        client.startSessionResult = BackendResult.HttpError(409)
+        client.listTopicsResult = BackendResult.Success(
+            TopicsListResponse("historia", listOf(feudalismo.copy(openSessionId = "20260924-090000"))),
+        )
+        client.resumeSessionResult = BackendResult.Success(stale)
+
+        viewModel.startOrContinue(TopicRow(feudalismo))
+
+        val state = until { it.openedSession != null }
+        assertEquals(stale, state.openedSession)
+        assertEquals(SessionAction.Idle, state.session)
+        assertEquals(1, pendingEnds.awaited.size)
+        assertEquals(listOf("20260924-090000" to true), pendingEnds.continued)
+        assertEquals(stale, sessions.current.value!!.session)
+    }
+
+    @Test
+    fun `a 409 for another topic of the user still reports the conflict`() {
+        showHistoria()
+        client.startSessionResult = BackendResult.HttpError(409)
+        client.listTopicsResult = BackendResult.Success(TopicsListResponse("historia", listOf(feudalismo, reconquista)))
+
+        viewModel.startOrContinue(TopicRow(feudalismo))
+
+        assertEquals(SessionAction.Failed("feudalismo", SessionFailure.Conflict), until { it.session is SessionAction.Failed }.session)
+        assertNull(sessions.current.value)
     }
 
     @Test

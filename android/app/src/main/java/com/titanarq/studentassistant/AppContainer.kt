@@ -22,6 +22,7 @@ import com.titanarq.studentassistant.capture.OkHttpSessionSocketFactory
 import com.titanarq.studentassistant.capture.SessionFinisher
 import com.titanarq.studentassistant.capture.SessionSocketFactory
 import com.titanarq.studentassistant.capture.StillCamera
+import com.titanarq.studentassistant.capture.ThumbnailStore
 import com.titanarq.studentassistant.home.HomeViewModel
 import com.titanarq.studentassistant.pairing.PairingViewModel
 import com.titanarq.studentassistant.session.OpenSession
@@ -40,6 +41,8 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
@@ -151,6 +154,18 @@ class AppContainer(
     /** The capture trigger's vibration and shutter sound. */
     val captureFeedback: CaptureFeedback by lazy(captureFeedbackFactory)
 
+    /**
+     * The thumbnails of the photos taken per (subject, topic), so the capture strip is not empty on
+     * re-entry (#583). Cleared whenever the selected user changes (profile switch, sign-out).
+     */
+    val thumbnailStore: ThumbnailStore by lazy {
+        ThumbnailStore().also { store ->
+            uploadScope.launch {
+                userHolder.current.map { it?.id }.distinctUntilChanged().collect { store.clear() }
+            }
+        }
+    }
+
     /** The offline spool (android-offline, #53): `filesDir/spool`, capped at [spoolMaxBytes]. */
     val spools: Spools by lazy { Spools(File(filesDir, Spools.DIR_NAME), SpoolBudget(spoolMaxBytes)) }
 
@@ -237,6 +252,7 @@ class AppContainer(
                     finisher = sessionFinisher,
                     loopContext = ioContext,
                 ),
+                thumbnails = thumbnailStore,
             )
         }
     }
